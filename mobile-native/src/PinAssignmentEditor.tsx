@@ -19,6 +19,7 @@ export interface PinAssignmentEditorProps {
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
+	previousChange: boolean;
 	error: string | null;
 	refresh(): void;
 	more(): void;
@@ -44,6 +45,7 @@ export function PinAssignmentEditor({
 	remaining,
 	pending,
 	uncertain,
+	previousChange,
 	error,
 	refresh,
 	more,
@@ -54,11 +56,12 @@ export function PinAssignmentEditor({
 	const colors = useColors();
 	const blocked = pending || uncertain || !canEdit || !connected;
 	const valid =
-		(selection?.kind === "existing" &&
-			sections.some((section) => section.id === selection.sectionId)) ||
+		(selection?.kind === "existing" && sections.some((section) => section.id === selection.sectionId)) ||
 		(selection?.kind === "new" && validName(selection.name));
 	const reason = uncertain
-		? "Refresh to confirm the previous pin change before editing it."
+		? previousChange
+			? "Refresh to confirm the previous pin change before editing it."
+			: "Refresh to reload this session's pins before editing."
 		: pending
 			? "Checking the pin assignment…"
 			: !connected
@@ -87,23 +90,14 @@ export function PinAssignmentEditor({
 				</View>
 				<ErrorMessage message={error} />
 				{reason ? <Copy muted>{reason}</Copy> : null}
-				<View
-					accessibilityRole="radiogroup"
-					accessibilityLabel="Pinned section"
-					style={{ gap: 4 }}
-				>
+				<View accessibilityRole="radiogroup" accessibilityLabel="Pinned section" style={{ gap: 4 }}>
 					{sections.map((section) => (
 						<Choice
 							key={section.id}
 							label={`${section.name} · ${section.count} ${section.count === 1 ? "session" : "sessions"}`}
-							selected={
-								selection?.kind === "existing" &&
-								selection.sectionId === section.id
-							}
+							selected={selection?.kind === "existing" && selection.sectionId === section.id}
 							disabled={blocked}
-							onPress={() =>
-								change({ kind: "existing", sectionId: section.id })
-							}
+							onPress={() => change({ kind: "existing", sectionId: section.id })}
 						/>
 					))}
 				</View>
@@ -134,9 +128,7 @@ export function PinAssignmentEditor({
 							},
 						]}
 					/>
-					{selection?.kind === "new" && !validName(selection.name) ? (
-						<Copy muted>Use 1–80 characters.</Copy>
-					) : null}
+					{selection?.kind === "new" && !validName(selection.name) ? <Copy muted>Use 1–80 characters.</Copy> : null}
 				</View>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
 					<Action tone="primary" disabled={blocked || !valid} onPress={save}>
@@ -146,23 +138,15 @@ export function PinAssignmentEditor({
 						Unpin
 					</Action>
 				</View>
-				{loading ? (
-					<ActivityIndicator accessibilityLabel="Loading pinned sections" />
-				) : null}
-				{updating({ loading, error, stale, remaining }) ? (
-					<Copy muted>Updating…</Copy>
-				) : null}
+				{loading ? <ActivityIndicator accessibilityLabel="Loading pinned sections" /> : null}
+				{updating({ loading, error, stale, remaining }) ? <Copy muted>Updating…</Copy> : null}
 				{!loading && remaining > 0 ? (
 					<Action disabled={blocked} onPress={more}>
 						{`Load more sections (${remaining} remaining)`}
 					</Action>
 				) : null}
 				{uncertain ? (
-					<Action
-						tone="quiet"
-						disabled={!connected || loading || pending}
-						onPress={refresh}
-					>
+					<Action tone="quiet" disabled={!connected || loading || pending} onPress={refresh}>
 						Refresh sections
 					</Action>
 				) : null}

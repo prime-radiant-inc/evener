@@ -21,8 +21,7 @@ export function ConnectionStatus({ inset = 16 }: { inset?: number } = {}) {
 			>
 				<View style={styles.fill}>
 					<Copy muted>
-						{activeProfile?.name ?? "No hub selected"} ·{" "}
-						{state === "ready" ? "Connected" : state}
+						{activeProfile?.name ?? "No hub selected"} · {state === "ready" ? "Connected" : state}
 					</Copy>
 				</View>
 				{state !== "ready" ? <Action onPress={retry}>Reconnect</Action> : null}

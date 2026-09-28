@@ -1,7 +1,7 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// Subagents, Tasks, Ask aside, Shut down and Delete appear only when they can
-// act.
+// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside and Shut down
+// appear only when they can act. Delete lives in the Session sheet.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
 	NativeStackHeaderItem,
@@ -12,15 +12,19 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "subagents" | "tasks" | "info" | "aside" | "pin" | "archive" | "shutDown" | "delete" };
+	| { kind: "find" | "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
 	hasSubagents: boolean;
+	/** The session wrote or linked documents (Files & artifacts, spec 10.1). */
+	hasDocuments: boolean;
 	connected: boolean;
+	/** The session keeps shared notes (`capabilities.sharedNotes`). They read
+	 * without a connection, so this needs none. */
+	sharedNotes: boolean;
 	canAside: boolean;
 	canShutDown: boolean;
-	deletable: boolean;
 	choose(action: SessionMenuAction): void;
 }
 
@@ -53,8 +57,11 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	};
 	const entries: Entry[] = [
 		levels,
+		item("Find in session", "find"),
+		...(input.hasDocuments ? [item("Files & artifacts", "files")] : []),
 		...(input.hasSubagents ? [item("Subagents", "subagents")] : []),
 		...(input.connected ? [item("Tasks", "tasks")] : []),
+		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),
 		...(input.canAside
 			? [item("Ask aside…", "aside", { description: "A side question in its own session; this one keeps working" })]
@@ -62,7 +69,6 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),
-		...(input.deletable ? [item("Delete saved session", "delete", { destructive: true })] : []),
 	];
 	return [
 		{

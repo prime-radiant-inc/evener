@@ -14,9 +14,9 @@ package hostops
 //
 // What this file deliberately does not own: the per-host gate and the probe
 // (§6 step 3, the hub package), the worker's execution and post-operation
-// refresh (§6, the hub package), retention and compaction and the
-// compacted-ID tombstone replay path (S6), and the cross-file commit intents
-// (§9, S7).
+// refresh (§6, the hub package), and the cross-file commit intents (§9, S7).
+// Retention and compaction live in retention.go; the compacted-ID tombstone
+// replay rides the dedup lookup below.
 
 import (
 	"encoding/json"
@@ -151,6 +151,50 @@ func lookupOperationLocked(state *snapshot, q OperationDedupQuery) (Record, bool
 			return Record{}, false, &ConflictingOperationIDError{Record: cloneRecord(record)}
 		}
 		return cloneRecord(record), true, nil
+	}
+	// The same-key dedup tombstone (§4): "A replay naming a tombstoned ID
+	// returns the full retained record with `compacted: true` instead of
+	// opening a fresh operation, but only while the tombstone's pinned pair
+	// still equals the comparison pair for the name: the registry's current
+	// pair for a live host, the tombstone's own removed pair for a removed host
+	// (which has no live current pair)." No deploy/restart caller ever runs for
+	// a detached name, so for a removed host the store's own retained
+	// historical boundary — the removal marker's pair, which mirrors the
+	// registry tombstone the mirror write carried — IS the comparison pair: a
+	// tombstone pinned to an older removal (a re-add followed by a second
+	// remove) never equals it and never replays. The newest matching tombstone
+	// wins.
+	best := -1
+	for i := range state.Tombstones {
+		tombstone := state.Tombstones[i]
+		if tombstone.Host != q.Host || tombstone.Kind != q.Kind || tombstone.ClientOperationID != q.ClientOperationID {
+			continue
+		}
+		comparison := q.Current
+		if removed, ok := state.RemovedHosts[tombstone.Host]; ok {
+			marker := OperationPair{Generation: removed.Generation, IncarnationID: removed.IncarnationID}
+			if q.Current.equal(marker) {
+				// The request names the removal the marker records: for a
+				// removed host the comparison pair is the marker's own pair.
+				comparison = marker
+			}
+			// A differing marker is stale — a re-add whose clear mirror trailed
+			// — so the comparison stays the caller's current pair: the live
+			// incarnation's tombstone replays, while a tombstone pinned to the
+			// older removal never equals the live pair and never replays.
+		}
+		if !comparison.equal(OperationPair{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}) {
+			// "A tombstone pinned to a superseded pair on a live host never
+			// replays; the clean-slate re-add rule wins over the tombstone."
+			continue
+		}
+		if best < 0 || state.Tombstones[best].CompactedSeq < tombstone.CompactedSeq ||
+			(state.Tombstones[best].CompactedSeq == tombstone.CompactedSeq && state.Tombstones[best].ID < tombstone.ID) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		return state.Tombstones[best].record(), true, nil
 	}
 	// Collisions: any current-generation record with this ID that is not the
 	// same-key record above. A record of this name is judged against the
@@ -628,6 +672,13 @@ func (s *Store) interruptInFlight(note string) (int, error) {
 	for i := range next.Records {
 		record := &next.Records[i]
 		if !record.State.InFlight() {
+			continue
+		}
+		// §3/§7: a record whose spawn intent is still open is fenced, not
+		// interrupted. A shutdown that moved it to `interrupted` would drop the
+		// fence while the boundary may still hold the orphan; the boot reap
+		// resolves the record instead, on evidence.
+		if len(record.PendingSpawns) > 0 {
 			continue
 		}
 		record.State = StateInterrupted

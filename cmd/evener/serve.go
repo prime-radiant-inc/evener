@@ -104,6 +104,7 @@ type serveServer interface {
 	// fallible step has already happened by the time anything is announced.
 	ReplaceAppIdentity(server.PreparedAppIdentity, func())
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
+	SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error))
 	SetCompactFunc(func(context.Context) error)
 	SetSteerFunc(func(string) error)
 	SetSteerWithImagesFunc(func(string, []server.ImageAttachment) error)
@@ -1422,6 +1423,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return getSession().ResolveSandboxEscalation(id, approve)
+	})
+	srv.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
+		return getSession().StopDelegateRun(delegateID)
 	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	// The steer RPC carries human-sent steering, so it takes the user-sourced

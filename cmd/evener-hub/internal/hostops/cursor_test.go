@@ -932,18 +932,50 @@ func TestOperationsReadIsReadOnlyOnTheStoreFile(t *testing.T) {
 	}
 }
 
-// TestOperationsReadRefusesARecordHostWithNoMirroredBoundary pins the one
-// state the store's own writers never produce: a host holding records but no
-// boundary triple. A bounds entry needs a triple to validate against, so the
-// read refuses rather than minting an entry later pages cannot check.
-func TestOperationsReadRefusesARecordHostWithNoMirroredBoundary(t *testing.T) {
+// TestOperationsReadGroundsARecordHostWithNoMirroredBoundary pins the one state
+// the store's own writers never produce but the custody import does: a host
+// holding records but no boundary triple. The read mints the host's entry from
+// its own newest record — the pair it is pinned to, with the documented 0
+// presence placeholder — so the closed name stays addressable; a mirror landing
+// later moves the entry and refuses the continuation.
+func TestOperationsReadGroundsARecordHostWithNoMirroredBoundary(t *testing.T) {
 	store, _ := openTestStore(t)
 	cursorTestRecord(t, store, "m4", "op-1", 2, "inc-m4")
-	if _, err := store.ReadOperations(OperationsQuery{Host: "m4"}); !errors.Is(err, ErrMissingHostBoundary) {
-		t.Fatalf("err = %v, want ErrMissingHostBoundary", err)
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4"})
+	if err != nil {
+		t.Fatalf("host-pinned err = %v, want the record's own pinned pair", err)
 	}
-	if _, err := store.ReadOperations(OperationsQuery{}); !errors.Is(err, ErrMissingHostBoundary) {
-		t.Fatalf("unfiltered err = %v, want ErrMissingHostBoundary", err)
+	if len(page.Records) != 1 || page.Records[0].ID == "" {
+		t.Fatalf("host-pinned page = %+v, want the record listed", page.Records)
+	}
+	if page.Generation == nil || *page.Generation != 2 || page.IncarnationID != "inc-m4" {
+		t.Fatalf("host-pinned page pair = %v/%q, want the record's own pair", page.Generation, page.IncarnationID)
+	}
+	if _, err := store.ReadOperations(OperationsQuery{ID: page.Records[0].ID}); err != nil {
+		t.Fatalf("id detail err = %v, want the record addressable by id", err)
+	}
+	unfiltered, err := store.ReadOperations(OperationsQuery{})
+	if err != nil {
+		t.Fatalf("unfiltered err = %v", err)
+	}
+	if len(unfiltered.Records) != 1 {
+		t.Fatalf("unfiltered page = %+v, want the record listed", unfiltered.Records)
+	}
+	bound := unfiltered.HostBoundaries["m4"]
+	if bound.Absent || bound.Boundary.Generation != 2 || bound.Boundary.IncarnationID != "inc-m4" ||
+		bound.Boundary.PresenceEpoch != 0 {
+		t.Fatalf("the synthesized entry = %+v, want the record's pair with presence 0", bound)
+	}
+	if unfiltered.NextCursor == "" {
+		t.Fatal("no cursor to continue with")
+	}
+	if _, err := store.ReadOperations(OperationsQuery{Cursor: unfiltered.NextCursor}); err != nil {
+		t.Fatalf("continuation under the synthesized entry: %v", err)
+	}
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	_, err = store.ReadOperations(OperationsQuery{Cursor: unfiltered.NextCursor})
+	if _, ok := errors.AsType[*CursorStaleError](err); !ok {
+		t.Fatalf("continuation after the mirror landed = %v, want a typed stale-entry refusal", err)
 	}
 }
 

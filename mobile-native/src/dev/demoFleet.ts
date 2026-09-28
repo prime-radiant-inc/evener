@@ -15,8 +15,11 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
+	ArchiveParams,
+	ArchiveResponse,
 	AuthListResponse,
 	NavigationCapability,
+	NavigationInvalidatedPayload,
 	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
@@ -28,27 +31,18 @@ import type {
 	Source,
 } from "@evener/appwire-client";
 
-// The generation id demo-hub.mts advertises in the initialize handshake's
-// navigation capability. Every wireV2 response must carry the exact same
-// id: the shared navigation store rejects any other generation as a
-// mismatch (appwire-client/typescript/state/navigation/revalidator.ts's
-// `validate`, "generation mismatch"), so this is exported and imported by
-// demo-hub.mts rather than each file keeping its own string.
+// The generation id the fleet's navigationCapability advertises in demo-hub.mts's
+// initialize handshake. Every wireV2 response must carry the exact same id:
+// the shared navigation store rejects any other generation as a mismatch
+// (appwire-client/typescript/state/navigation/revalidator.ts's `validate`,
+// "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
-const DEMO_ETAG = '"demo-fleet-1"';
-const DEMO_REVISION = 1;
-const respond = (params: NavigationReadParams, data: unknown): NavigationReadResponse =>
-	wireV2(params, data, DEMO_ETAG, DEMO_REVISION, DEMO_FLEET_GENERATION);
-
-// demo-hub.mts's handshake capability, built here so it is the one file in
-// mobile-native that touches @evener/appwire-client/testing/ at all: that
-// subpath is in-repo test support (AGENTS.md "Importing the AppWire
-// TypeScript package"), and only a test or dev-support file may import it --
-// this one qualifies by living under src/dev/, the way the web's own
-// analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
-export function navigationCapability(): NavigationCapability {
-	return capability(DEMO_FLEET_GENERATION);
-}
+// Every resource shares one revision, bumped when the fleet changes (the
+// question askQuestion below poses, or an archive), so an invalidation's
+// target revision is one the next read actually reaches: the navigation
+// store refuses a response below the revision it was told to expect.
+const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
+	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
 const M = 60;
 const H = 3600;
@@ -75,22 +69,98 @@ const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED Â
 // project_page(tier=archived) read paging through the real, full list.
 const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
 
+// The base62 alphabet the hub's own ids use
+// (appwire-client/typescript/entityIds.ts, identifier/uuid.go). A real hub
+// names a session with a 22-character id of exactly these, and a `local:` ref
+// is recognised only when its id is that shape
+// (mobile-native/src/sessionDeletionResult.ts's localSessionId). The Board's
+// archiveTarget reads a local row's identity through that same check, so a
+// session the demo fleet names with a readable slug (s-gateway, ...) must
+// still carry a real-shaped id on the wire.
+const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// The 22-character wire id a fleet session with this slug carries. Derived
+// from the slug so it is stable (a slug always yields the same id) and spread
+// across the whole id space so no two fleet rows share one. The slug stays the
+// fixture's own key -- and the handle the tests name -- while only the wire's
+// ref and session_id carry this id.
+export function demoSessionId(slug: string): string {
+	// FNV-1a seeds a xorshift32 generator. A nonzero state keeps the generator
+	// periodic, and because xorshift32 is a bijection distinct seeds yield
+	// distinct sequences, so distinct slugs collide only if their hashes do --
+	// which the fleet's own uniqueness test rules out for every slug it names.
+	let state = 0x811c9dc5;
+	for (let i = 0; i < slug.length; i++) {
+		state = Math.imul(state ^ slug.charCodeAt(i), 0x01000193) >>> 0;
+	}
+	if (state === 0) state = 0x9e3779b9;
+	let id = "";
+	for (let i = 0; i < 22; i++) {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		id += SESSION_ID_ALPHABET[state % SESSION_ID_ALPHABET.length];
+	}
+	return id;
+}
+
 // Names cycled through for a swarm whose members aren't individually named in
 // the fixture, copied verbatim from data.js's swarmNames.
 const SWARM_NAMES = [
-	"Reproduce TestRetirementTreeSettle locally", "Bisect settle ordering change", "Check drain ordering in tests", "Audit delegate settle callers",
-	"Run agent tests under -race", "Run hubcore tests under -race", "Check appwire projector ordering", "Stabilize TestFoldPublicationMarkers",
-	"Trace retirement drain wakeups", "Verify job tree revisions", "Run cmd/evener-hub browser guards", "Check interrupt marker ownership",
-	"Explore retirement drain callers", "Review settle lock scope", "Run linux -race on agent", "Check TestQueueRetirement flake",
-	"Read CI logs for run 34717544502", "Compare failing seeds", "Check compaction fold timing", "Audit watch timer shutdown",
-	"Run jobstore descendant merge tests", "Check delegate attention flags", "Stabilize TestTranscriptPaging", "Probe navigation invalidation order",
-	"Run make lint on changed modules", "Check go vet windows tags", "Replay failing job trees", "Measure settle pass duration",
-	"Check restart continuity path", "Verify cancel queued on retire", "Run hub relay tests", "Inspect secret-scan output",
-	"Check stacked merge duplication", "Run appwire codec tests", "Verify ask pending clears", "Run TUI transcript suite",
-	"Check mutation outbox replay", "Run native shared-session tests", "Stabilize TestRelayCloseFrame", "Check projector item paging",
-	"Run fuzz smoke on tool args", "Verify steering injection order", "Check delegate budget accounting", "Run workspace isolation tests",
-	"Verify lane branch disposal", "Check CI cache keys", "Run makefile audits", "Check TestHostAttachRetry",
-	"Verify session namer fallback", "Run SDK package qualification", "Check provider retry caps", "Run docs freshness check",
+	"Reproduce TestRetirementTreeSettle locally",
+	"Bisect settle ordering change",
+	"Check drain ordering in tests",
+	"Audit delegate settle callers",
+	"Run agent tests under -race",
+	"Run hubcore tests under -race",
+	"Check appwire projector ordering",
+	"Stabilize TestFoldPublicationMarkers",
+	"Trace retirement drain wakeups",
+	"Verify job tree revisions",
+	"Run cmd/evener-hub browser guards",
+	"Check interrupt marker ownership",
+	"Explore retirement drain callers",
+	"Review settle lock scope",
+	"Run linux -race on agent",
+	"Check TestQueueRetirement flake",
+	"Read CI logs for run 34717544502",
+	"Compare failing seeds",
+	"Check compaction fold timing",
+	"Audit watch timer shutdown",
+	"Run jobstore descendant merge tests",
+	"Check delegate attention flags",
+	"Stabilize TestTranscriptPaging",
+	"Probe navigation invalidation order",
+	"Run make lint on changed modules",
+	"Check go vet windows tags",
+	"Replay failing job trees",
+	"Measure settle pass duration",
+	"Check restart continuity path",
+	"Verify cancel queued on retire",
+	"Run hub relay tests",
+	"Inspect secret-scan output",
+	"Check stacked merge duplication",
+	"Run appwire codec tests",
+	"Verify ask pending clears",
+	"Run TUI transcript suite",
+	"Check mutation outbox replay",
+	"Run native shared-session tests",
+	"Stabilize TestRelayCloseFrame",
+	"Check projector item paging",
+	"Run fuzz smoke on tool args",
+	"Verify steering injection order",
+	"Check delegate budget accounting",
+	"Run workspace isolation tests",
+	"Verify lane branch disposal",
+	"Check CI cache keys",
+	"Run makefile audits",
+	"Check TestHostAttachRetry",
+	"Verify session namer fallback",
+	"Run SDK package qualification",
+	"Check provider retry caps",
+	"Run docs freshness check",
 ];
 
 type ProtoHost = "magic-kingdom" | "paradise-park";
@@ -186,7 +256,8 @@ function genericChildren(sessionId: string, counts: { run: number; fail: number;
 	const pick = (i: number) => SWARM_NAMES[(prefix.length * 7 + i * 3) % SWARM_NAMES.length] as string;
 	const out: RawSubagent[] = [];
 	let k = 0;
-	for (let i = 0; i < counts.fail; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "failed", ago: 20 * M });
+	for (let i = 0; i < counts.fail; i++)
+		out.push({ id: `${prefix}${k}`, title: pick(k++), state: "failed", ago: 20 * M });
 	for (let i = 0; i < counts.run; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "running", ago: 10 });
 	for (let i = 0; i < counts.done; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "done", ago: 40 * M });
 	return out;
@@ -207,8 +278,20 @@ const SESSIONS: RawSession[] = [
 		ago: 2 * M,
 		children: RETRY_CHILDREN,
 	},
-	{ id: "s-audit", title: "Audit Tool Descriptions for Implied Options", state: "question", ago: 14 * M, subs: { run: 0, fail: 0, done: 8 } },
-	{ id: "s-mirror", title: "Mirror Docs Site Locally", project: "prime-radiant-inc.github.io", state: "approval", ago: 21 * M },
+	{
+		id: "s-audit",
+		title: "Audit Tool Descriptions for Implied Options",
+		state: "question",
+		ago: 14 * M,
+		subs: { run: 0, fail: 0, done: 8 },
+	},
+	{
+		id: "s-mirror",
+		title: "Mirror Docs Site Locally",
+		project: "prime-radiant-inc.github.io",
+		state: "approval",
+		ago: 21 * M,
+	},
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
 	// Finished, not yet seen (4)
@@ -261,7 +344,13 @@ const SESSIONS: RawSession[] = [
 		subs: { run: 2, fail: 0, done: 1 },
 		activity: "Running make test-wasm",
 	},
-	{ id: "s-resume", title: "Fix Missing Prompt on Session Resume", state: "working", ago: 4, activity: "Reading agent/session_resume.go" },
+	{
+		id: "s-resume",
+		title: "Fix Missing Prompt on Session Resume",
+		state: "working",
+		ago: 4,
+		activity: "Reading agent/session_resume.go",
+	},
 	{
 		id: "s-readintent",
 		title: "Fix Missing File Read Intent Lines",
@@ -301,14 +390,49 @@ const SESSIONS: RawSession[] = [
 	{ id: "s-roster", title: "Hub Roster Latency", state: "shutdown", ago: 1 * D },
 	{ id: "s-sandbox", title: "Sandbox Network Egress Audit", state: "shutdown", ago: 2 * D },
 	{ id: "s-skills", title: "Skills Lifecycle Cleanup", project: "superpowers", state: "shutdown", ago: 3 * D },
-	{ id: "s-house", title: "Thermostat Schedule Script", host: "paradise-park", project: "house", state: "shutdown", ago: 4 * D },
+	{
+		id: "s-house",
+		title: "Thermostat Schedule Script",
+		host: "paradise-park",
+		project: "house",
+		state: "shutdown",
+		ago: 4 * D,
+	},
 	{ id: "s-copy", title: "Tighten Pricing Page Copy", project: "copy-writing", state: "shutdown", ago: 5 * D },
-	{ id: "s-wasm2", title: "WASM Linker Symbol Clash", host: "paradise-park", project: "c-to-wasm", state: "shutdown", ago: 2 * D },
+	{
+		id: "s-wasm2",
+		title: "WASM Linker Symbol Clash",
+		host: "paradise-park",
+		project: "c-to-wasm",
+		state: "shutdown",
+		ago: 2 * D,
+	},
 
 	// Test runs (3)
-	{ id: "s-test1", title: "Live Stack Smoke: Session on Host", project: "hub-test-env", state: "shutdown", ago: 20 * H, test: true },
-	{ id: "s-test2", title: "Retirement Browser Guard Run", project: "hub-test-env", state: "shutdown", ago: 26 * H, test: true },
-	{ id: "s-test3", title: "Spawn Guard Fixture Session", project: "hub-test-env", state: "shutdown", ago: 30 * H, test: true },
+	{
+		id: "s-test1",
+		title: "Live Stack Smoke: Session on Host",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 20 * H,
+		test: true,
+	},
+	{
+		id: "s-test2",
+		title: "Retirement Browser Guard Run",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 26 * H,
+		test: true,
+	},
+	{
+		id: "s-test3",
+		title: "Spawn Guard Fixture Session",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 30 * H,
+		test: true,
+	},
 
 	// Archived (5)
 	{ id: "s-gocache", title: "Investigate Go Test Caching", state: "shutdown", ago: 6 * D, archived: true },
@@ -462,18 +586,29 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 	];
 }
 
+// The project a fleet session belongs to; the fixture leaves evener's unset.
+function projectKeyOf(raw: { project?: string }): string {
+	return raw.project ?? "evener";
+}
+
+// The ref the wire names a fleet session by: its owning host and its id.
+function sessionRef(raw: RawSession): string {
+	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
+}
+
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
-	const project = raw.project ?? "evener";
+	const project = projectKeyOf(raw);
+	const sessionId = demoSessionId(raw.id);
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const { capped, omitted } = capChildren(rawChildren(raw));
 	const jobs = runningJobs(raw);
 	return {
-		ref: `${owner}:${raw.id}`,
+		ref: sessionRef(raw),
 		host_id: owner,
-		session_id: raw.id,
+		session_id: sessionId,
 		title: raw.title,
 		project,
 		state,
@@ -495,23 +630,23 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 // `ago` the row's age already carries.
 const underProjects = (raw: RawSession) => !raw.archived && !raw.test;
 
-function projectSessionsRaw(projectKey: string): RawSession[] {
-	return SESSIONS.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
+function projectSessionsRaw(sessions: RawSession[], projectKey: string): RawSession[] {
+	return sessions.filter((raw) => underProjects(raw) && projectKeyOf(raw) === projectKey);
 }
 
 // The hosts that own a project's sessions, in the hub's own shape
 // (NavigationProjectSummary.sources): "local" for this hub's sessions and a
 // host's name for its own, omitted when this hub owns every one.
-function projectSources(projectKey: string): string[] | undefined {
-	const owners = new Set(SESSIONS.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
+function projectSources(sessions: RawSession[], projectKey: string): string[] | undefined {
+	const owners = new Set(sessions.filter((raw) => projectKeyOf(raw) === projectKey).map((raw) => hostId(raw.host)));
 	if ([...owners].every((owner) => owner === "local")) return undefined;
 	return ["local", "paradise-park"].filter((owner) => owners.has(owner));
 }
 
-function projectSummary(key: string, sessionCount: number): NavigationProjectSummary {
+function projectSummary(sessions: RawSession[], key: string, sessionCount: number): NavigationProjectSummary {
 	const meta = PROJECT_META.find((project) => project.key === key);
 	if (!meta) throw new Error(`Unknown demonstration project: ${key}`);
-	const sources = projectSources(key);
+	const sources = projectSources(sessions, key);
 	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount, ...(sources ? { sources } : {}) };
 }
 
@@ -523,6 +658,20 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_FLEET_OFFLINE_HOST: marks paradise-park's source
 	// offline and every one of its rows offline, for the offline frames.
 	offlineHost?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_EMPTY: serves a hub with nothing live -- zero
+	// sessions, so the manifest, sections, pin catalog, project catalogs and
+	// search all come back empty. The sources still name a host (a real empty
+	// hub is still a hub), so only offlineHost touches them. For the Board's
+	// EmptyBoard state.
+	empty?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_ASK_AFTER: that many seconds after the demo
+	// hub starts, the working row s-gateway ("Design Gateway Token Command
+	// MVP") asks a question, moving from Working into Needs you, so the
+	// Board's spring and amber wash can be watched on a still list. The fleet
+	// itself only knows how to make the change (askQuestion); demo-hub.mts
+	// owns the timer and sends the resulting invalidation, so a test fires the
+	// change by calling askQuestion directly instead of sleeping.
+	askAfterSeconds?: number;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -530,27 +679,150 @@ export interface DemoFleetOptions {
 	clock?: () => number;
 }
 
-export interface DemoFleet {
+interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
 }
 
+export interface DemoFleet extends FleetAnswers {
+	// demo-hub.mts's handshake capability, carrying the sequence the fleet
+	// has reached: the navigation store refuses a reconnect whose sequence
+	// moved backward within the generation. Built here so this is the one
+	// file in mobile-native that touches @evener/appwire-client/testing/ at
+	// all: that subpath is in-repo test support (AGENTS.md "Importing the
+	// AppWire TypeScript package"), and only a test or dev-support file may
+	// import it -- this one qualifies by living under src/dev/, the way the
+	// web's own analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
+	navigationCapability(): NavigationCapability;
+	// Turns ASKING_SESSION_ID's working row into a pending question and
+	// returns the evener/navigation/invalidated payload a real hub would send
+	// for that change.
+	askQuestion(): NavigationInvalidatedPayload;
+	// Answers evener/archive/set for a session, named as the Board's
+	// archiveTarget names it: a local row by its session id (or its local:
+	// ref), another host's by its ref. Returns the reply and the
+	// evener/navigation/invalidated payload a real hub sends for it.
+	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
+}
+
+// The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
+// local "evener" session with no pin category, subagents or running job, so
+// the only thing that changes on the Board is its band.
+const ASKING_SESSION_ID = "s-gateway";
+const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
+
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	const offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
-	const rowById = new Map(SESSIONS.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
+	// Building the fleet from an empty list, rather than special-casing each
+	// answer, keeps every count, section and catalog below in step for free:
+	// a hub with nothing live just has nothing to filter, page or search over.
+	// The fleet as it stands; each change replaces it with a changed copy.
+	let sessionsList = options.empty ? [] : SESSIONS;
+	// Every resource's revision is one ahead of the navigation sequence: both
+	// start there and each change advances them together.
+	let sequence = 0;
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+
+	// Moves the fleet to `changed` at the next sequence and revision, and
+	// returns the evener/navigation/invalidated payload for the targets the
+	// change names at that revision.
+	function commit(
+		changed: RawSession[],
+		targets: (revision: number) => NavigationInvalidatedPayload["targets"],
+	): NavigationInvalidatedPayload {
+		sessionsList = changed;
+		sequence += 1;
+		const revision = sequence + 1;
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
+	}
+
+	function askQuestion(): NavigationInvalidatedPayload {
+		// A negative `ago` puts updated_at at the moment of asking, after
+		// startup, the way a real hub stamps a row when its state changes.
+		const askedAgo = (startupMs - clock()) / 1000;
+		const asked = sessionsList.map((raw) =>
+			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
+		);
+		// The resources a real hub invalidates for one row's state change
+		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
+		// Board sections, and the row's project. Search has no invalidation
+		// target; the next search simply answers from the changed fleet.
+		return commit(asked, (revision) => [
+			{ kind: "manifest", revision },
+			{ kind: "section", section: "live", revision },
+			{ kind: "section", section: "needs_you", revision },
+			{ kind: "project", projectKey: ASKING_PROJECT, revision },
+		]);
+	}
+
+	function archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload } {
+		if (params.kind !== "session") throw new Error("The demo fleet archives sessions only");
+		// The hub reads a local: ref as the bare session id its rows carry
+		// (app_archive.go's NormalizeDecisionSessionID); another host's session
+		// is named by its ref.
+		const target = sessionsList.find((raw) => {
+			return params.id === sessionRef(raw) || (hostId(raw.host) === "local" && params.id === demoSessionId(raw.id));
+		});
+		if (!target) throw new Error(`Unknown demonstration session: ${params.id}`);
+		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, archived: params.archived } : raw));
+		// A session archive changes the manifest's counts, the Board's
+		// sections, the project catalogs' counts and the row's project, and
+		// the real hub adds every loaded project page besides
+		// (app_archive.go's AllLoadedProjects hint, appended last by
+		// navigation_service.go's commitTargetsLocked). The list is fixed, a
+		// superset of the real hub's, which names only resources that changed;
+		// the client just re-reads the extra ones.
+		const invalidated = commit(changed, (revision) => [
+			{ kind: "manifest", revision },
+			{ kind: "section", section: "live", revision },
+			{ kind: "section", section: "needs_you", revision },
+			{ kind: "catalog", catalog: "projects", revision },
+			{ kind: "catalog", catalog: "archived_projects", revision },
+			{ kind: "project", projectKey: projectKeyOf(target), revision },
+			{ kind: "all_loaded_projects" },
+		]);
+		return {
+			response: { ok: true, navigation: { generation_id: DEMO_FLEET_GENERATION, targets: invalidated.targets } },
+			invalidated,
+		};
+	}
+
+	return {
+		answerNavigationRead: (params) => answers.answerNavigationRead(params),
+		answerSearch: (params) => answers.answerSearch(params),
+		answerAuthList: () => answers.answerAuthList(),
+		answerPluginList: () => answers.answerPluginList(),
+		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
+		askQuestion,
+		archive,
+	};
+}
+
+// Every answer the fleet gives, for one fixed list of sessions at one
+// revision; each change swaps in a new one rather than mutating this.
+function fleetAnswers(
+	sessionsList: RawSession[],
+	revision: number,
+	startupMs: number,
+	offlineHost: boolean,
+	clock: () => number,
+): FleetAnswers {
+	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
-	const liveRaw = SESSIONS.filter((raw) => raw.state !== "shutdown");
+	// An archived session leaves Live, whatever its state.
+	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown" && !raw.archived);
 	const liveSessions = liveRaw.map(rowOf);
 	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
 	// which excludes the approval row despite its sharing state "active".
-	const workingCount = SESSIONS.filter((raw) => raw.state === "working").length;
-	const erroredCount = SESSIONS.filter((raw) => raw.state === "failed").length;
+	const workingCount = liveRaw.filter((raw) => raw.state === "working").length;
+	const erroredCount = liveRaw.filter((raw) => raw.state === "failed").length;
 
 	const sources: Source[] = [
 		{ id: "local", label: "this host", kind: "local", online: true },
@@ -558,19 +830,45 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	];
 
 	const pinCategoryIds = ["release", "research"] as const;
-	const pinSessions = (id: string) => liveRaw.filter((raw) => raw.category === id).map(rowOf);
-	const pinSections = pinCategoryIds.map((id) => ({
-		id,
-		name: id === "release" ? "Release" : "Research",
-		count: pinSessions(id).length,
-	}));
+	// A named pin stays reachable when its session is archived, as the real
+	// hub's PinCandidates keeps it (cmd/evener-hub/internal/hubcore/tree.go).
+	const pinSessions = (id: string) =>
+		sessionsList.filter((raw) => raw.state !== "shutdown" && raw.category === id).map(rowOf);
+	// A category with nothing pinned in it doesn't get a row, which is what
+	// empties the pin catalog for the empty fleet. The real hub keeps empty
+	// durable sections (navigation_projection.go buildPinSectionsContext);
+	// both demo categories hold rows in the full fleet, so only the empty
+	// fleet sees the difference.
+	const pinSections = pinCategoryIds
+		.map((id) => ({ id, name: id === "release" ? "Release" : "Research", count: pinSessions(id).length }))
+		.filter((section) => section.count > 0);
 
-	const projectKeys = PROJECT_META.map((project) => project.key);
-	const projects = projectKeys.map((key) => projectSummary(key, projectSessionsRaw(key).length));
-	const archivedRaw = SESSIONS.filter((raw) => raw.archived);
-	const archivedProjects: NavigationProjectSummary[] = [projectSummary("evener", ARCHIVED_TOTAL)];
-	const testRunRaw = SESSIONS.filter((raw) => raw.test);
-	const testRunProjects: NavigationProjectSummary[] = [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }];
+	// PROJECT_META is static fixture metadata, not derived from sessionsList
+	// (the full fleet lists "home" with no sessions), so an empty fleet needs
+	// its own check here rather than falling out of a filter for free.
+	const projectKeys = sessionsList.length > 0 ? PROJECT_META.map((project) => project.key) : [];
+	const archivedRaw = sessionsList.filter((raw) => raw.archived);
+	const archivedIn = (key: string) => archivedRaw.filter((raw) => projectKeyOf(raw) === key);
+	// The real hub moves a project whose every session is archived into
+	// Archived projects (cmd/evener-hub/internal/hubcore/tree.go's Tree).
+	const allArchived = (key: string) => {
+		const sessions = sessionsList.filter((raw) => projectKeyOf(raw) === key && !raw.test);
+		return sessions.length > 0 && sessions.every((raw) => raw.archived);
+	};
+	// An active project counts only its unarchived sessions, unlike the real
+	// hub's TotalSessionCount, so evener keeps the fixture's count.
+	const projects = projectKeys
+		.filter((key) => !allArchived(key))
+		.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
+	// evener is the fixture's stand-in: data.js lists its 271 archived
+	// sessions as an archived evener row though evener still has live ones.
+	// An archived row counts only its archived sessions.
+	const archivedProjects: NavigationProjectSummary[] = projectKeys
+		.filter((key) => archivedIn(key).length > 0 && (key === "evener" || allArchived(key)))
+		.map((key) => projectSummary(sessionsList, key, archivedIn(key).length));
+	const testRunRaw = sessionsList.filter((raw) => raw.test);
+	const testRunProjects: NavigationProjectSummary[] =
+		testRunRaw.length > 0 ? [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }] : [];
 
 	function knownProjectKey(params: NavigationReadParams): string {
 		const projectKey = params.projectKey as string;
@@ -579,16 +877,25 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return projectKey;
 	}
 
+	// The tier a row is served under, in one place: the location branch reports
+	// this tier and a reveal then asks that exact project_page tier, so the two
+	// must come from one computation. An archived row's is "archived", a
+	// hub-test-env test-run row's is "current" (test runs are never split by
+	// age), every other row's current or recent by the same 24h boundary.
+	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
+		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
+	}
+
 	// Every tier is a real, fully pageable list -- including archived, now
 	// that SESSIONS carries all 271 (5 named plus the generated filler) --
 	// so callers page it with the same page() every other resource uses
 	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
-		if (tier === "archived") return projectKey === "evener" ? archivedRaw.map(rowOf) : [];
-		if (projectKey === "hub-test-env") return tier === "current" ? testRunRaw.map(rowOf) : [];
-		const inProject = projectSessionsRaw(projectKey);
-		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return inTier.map(rowOf);
+		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
+		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
+		return projectSessionsRaw(sessionsList, projectKey)
+			.filter((raw) => servedTier(raw) === tier)
+			.map(rowOf);
 	}
 
 	// A value the wire's own uint32 field could actually carry: a safe integer
@@ -614,7 +921,8 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		if (offset < 0) throw new Error(`offset must not be negative: ${offset}`);
 		let limit = maximum;
 		if (params.limit !== undefined) {
-			if (!fitsWireUint32(params.limit)) throw new Error(`limit must be an integer the wire can carry: ${params.limit}`);
+			if (!fitsWireUint32(params.limit))
+				throw new Error(`limit must be an integer the wire can carry: ${params.limit}`);
 			if (params.limit <= 0) throw new Error("limit must be greater than zero");
 			if (params.limit > maximum) throw new Error(`limit exceeds maximum of ${maximum}`);
 			limit = params.limit;
@@ -633,7 +941,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
 		switch (params.resource) {
 			case "manifest":
-				return respond(params, {
+				return respond(revision, params, {
 					sources,
 					attentionSummary: { needsYou: needsYouSessions.length, error: erroredCount, working: workingCount },
 					sections: {
@@ -654,26 +962,31 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
 				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
 				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
-				return respond(params, { pin_sections: sections, remaining });
+				return respond(revision, params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
 				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
 				// a silent fallback to the projects catalog.
 				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
-				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
+				const source =
+					params.catalog === "archived_projects"
+						? archivedProjects
+						: params.catalog === "test_runs"
+							? testRunProjects
+							: projects;
 				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
-				return respond(params, { projects: rows, remaining });
+				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
@@ -687,7 +1000,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				// same 5 rows this call showed before archived became fully
 				// pageable; "See all" is what project_page is for.
 				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
-				return respond(params, {
+				return respond(revision, params, {
 					key: projectKey,
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
@@ -703,7 +1016,42 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
-				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, {
+					key: projectKey,
+					tier,
+					sessions,
+					remaining,
+					truncated: anyTruncated(sessions),
+				});
+			}
+			case "location": {
+				const ref = params.ref as string;
+				const raw = sessionsList.find((session) => rowOf(session).ref === ref);
+				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
+				// The hub's location is a shallow summary (navigation_projection.go's
+				// projectShallow), not a row with its descendants: a location resource
+				// holds exactly one entity, and projectShallow sets no omitted_descendants
+				// (the child cap is a list-row fact, not the summary's), so the capped
+				// count is dropped with the children. servedTier is the one place this
+				// row's tier is decided, so the reveal that asks this exact tier's
+				// project_page cannot drift from what tierRows serves it under.
+				const tier = servedTier(raw);
+				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
+				const response = respond(revision, params, {
+					session: { ...shallow, children: [] },
+					top_level_ref: ref,
+					top_level: true,
+				});
+				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// ref/top_level_ref/top_level; a real hub also names the row's project,
+				// tier and pin section, so they are stamped on here, the way the web's
+				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
+				// fixture.ts) stamps the top_level it serves.
+				const { metadata } = response.data as { metadata: Record<string, unknown> };
+				metadata.project_key = projectKeyOf(raw);
+				metadata.tier = tier;
+				if (raw.category) metadata.pin_section_id = raw.category;
+				return response;
 			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);
@@ -712,7 +1060,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 
 	function answerSearch(params: SearchParams): SearchResponse {
 		const query = params.query?.trim().toLowerCase();
-		const matches = query ? SESSIONS.filter((raw) => raw.title.toLowerCase().includes(query)) : SESSIONS;
+		const matches = query ? sessionsList.filter((raw) => raw.title.toLowerCase().includes(query)) : sessionsList;
 		// Sampled per call, not the startup instant: a hit's age should grow as
 		// the demo hub keeps running, the same as a real search would.
 		const now = clock();

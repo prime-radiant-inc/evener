@@ -36,10 +36,28 @@ func (c *delegateTreeController) tally() appwire.SubagentTally {
 // thread list row (S3). Only the tree's root owns the controller: a child
 // session shares its root's, and it and a session with no delegate tree report
 // false. It takes the controller's lock, as DetailedStatus does, and never
-// the session's.
+// the session's. subagentTallyForTest, when set, answers instead - see
+// SubagentTallyForTest.
 func (s *Session) SubagentTally() (appwire.SubagentTally, bool) {
-	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
+	if s == nil {
+		return appwire.SubagentTally{}, false
+	}
+	if s.subagentTallyForTest != nil {
+		return *s.subagentTallyForTest, true
+	}
+	if !s.ownsDelegateController || s.delegateController == nil {
 		return appwire.SubagentTally{}, false
 	}
 	return s.delegateController.tally(), true
+}
+
+// SubagentTallyForTest makes SubagentTally report one completed delegate,
+// exposing enough of the unexported delegate controller for the daemon's
+// server-side tests (which live outside package agent) to give a session a
+// tally distinct from a fresh session's empty one - for example to prove
+// which of two sessions' tally seams a caller is actually reading, which a
+// real delegate tree would take a whole scripted run to arrange.
+func (s *Session) SubagentTallyForTest() {
+	tally := appwire.SubagentTally{Done: 1}
+	s.subagentTallyForTest = &tally
 }

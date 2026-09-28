@@ -76,7 +76,7 @@ export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefin
 	return tally;
 }
 
-export type ChipKind = "subagents" | "tasks" | "goal" | "queue";
+export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 
 export interface ContextChip {
 	kind: ChipKind;
@@ -85,18 +85,23 @@ export interface ContextChip {
 	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
+	/** A blue dot after the label: a document is new or changed (Files). */
+	dot?: boolean;
 	accessibilityLabel: string;
 }
 
 /** The chips under the nav bar, each only when it has content (spec 8.1).
- * Files waits for phase 4's Reader (ruling 6). Subagents and Tasks open a
- * live sheet (today's ActivitySheet/TasksSheet), so they hide while
- * disconnected rather than looking tappable and doing nothing (Calm); Goal
- * (opens the local Session sheet) and Queue (a local toggle) need no
- * connection and always show when they have content. */
+ * Subagents and Tasks open a live sheet (today's ActivitySheet/TasksSheet),
+ * so they hide while disconnected rather than looking tappable and doing
+ * nothing (Calm). Files opens the documents the session wrote or linked, as
+ * the screen last read them; Goal (opens the local Session sheet) and Queue
+ * (a local toggle) need no connection either, and all three always show when
+ * they have content. `files` counts the session's documents, and `fresh`
+ * says one is new or changed since you last opened it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
+	files: { count: number; fresh: boolean } = { count: 0, fresh: false },
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
 	const subagents = subagentTally(session.delegates);
@@ -110,6 +115,14 @@ export function contextChips(
 			accessibilityLabel: failed ? `Subagents, ${subagents.total}, ${failed}` : `Subagents, ${subagents.total}`,
 		});
 	}
+	if (files.count > 0)
+		chips.push({
+			kind: "files",
+			label: `Files ${files.count}`,
+			attention: false,
+			dot: files.fresh,
+			accessibilityLabel: `Files, ${files.count}${files.fresh ? ", new or changed" : ""}`,
+		});
 	const tasks = session.tasks;
 	if (connected && tasks && tasks.total > 0)
 		chips.push({
@@ -120,7 +133,12 @@ export function contextChips(
 		});
 	if (session.goal) {
 		const blocked = session.goal.status === "blocked";
-		chips.push({ kind: "goal", label: "Goal", attention: blocked, accessibilityLabel: blocked ? "Goal, blocked" : "Goal" });
+		chips.push({
+			kind: "goal",
+			label: "Goal",
+			attention: blocked,
+			accessibilityLabel: blocked ? "Goal, blocked" : "Goal",
+		});
 	}
 	const depth = session.queue?.depth ?? 0;
 	if (depth > 0)

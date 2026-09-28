@@ -13,13 +13,26 @@
 // superseded, or binding-mismatched) re-plans and re-renders before any retry;
 // and the no-token arm branches on `reason` with a per-reason affordance.
 //
-// `operations` polling (S15) and the remnant/orphan affordances (S16) are NOT
-// here: a started operation's record is retained under `operations` as the seed
-// S15's polling consumes, and the fenced/busy refusals render their concrete
-// message with no bare retry (the open/wait and teardown-retry affordances are
-// later slices').
+// A started operation's record is retained under `operations`; S15's polling
+// reads it by (name, controller-assigned id) and the row renders progress
+// through its terminal state (registry spec 08 §13, deploy-pipeline spec 08b
+// §6/§8/§10). S16 adds the remnant repair affordances on top: `teardownRetry`
+// resumes one named remnant through `evener/host/teardown-retry`, and the
+// escalated `teardownRecover` clears an unresolvable one through
+// `evener/host/teardown-recover` with the audited operator attestation
+// (registry spec 08 §6/§11; fencing spec 08c §8). The orphan fence has no wire
+// method yet (S20's `evener/host/orphan-resolve`): its grounded signals are
+// the `orphan-fenced-busy` refusal and a tracked `orphan-unverified` record,
+// and the surfaces render them as resolve-first.
 
-import type { AppwireClientLike, HostPlan, HostPlanStaleFacts } from "@evener/appwire-client";
+import type {
+  AppwireClientLike,
+  HostPlan,
+  HostPlanStaleFacts,
+  HostTeardownAttestation,
+  OperationProgressEntry,
+  OperationRecord,
+} from "@evener/appwire-client";
 import { friendlyErrorMessage, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -46,6 +59,11 @@ export type HostOpRefusalKind =
   | "remnant-open"
   | "host-busy-operation"
   | "host-busy-transient"
+  | "teardown-unknown-key"
+  | "orphan-fenced-busy"
+  | "invalid-params"
+  | "cursor-invalidated"
+  | "cursor-too-large"
   | "unknown";
 
 export interface HostOpRefusal {
@@ -57,6 +75,9 @@ export interface HostOpRefusal {
   remnantId?: string;
   /** Present exactly on `host-busy-operation` (08b §11: the running record id). */
   operationId?: string;
+  /** Present on `orphan-fenced-busy` (08c §8: the blocking `orphan-unverified`
+   * record id) and on `teardown-unknown-key`'s `remnantId` above. */
+  recordId?: string;
 }
 
 /** stringData reads one string-valued data field off a wire error, or
@@ -73,8 +94,10 @@ function withDetail(headline: string, detail: string): string {
 }
 
 /** HostOpRequestContext names the call a refusal came from, for the copy that
- * differs per call: only deploy/restart carry an operation ID. */
-export type HostOpRequestContext = "plan" | "operation" | "connect";
+ * differs per call: only deploy/restart carry an operation ID, the operations
+ * read reports progress rather than starting work, and the teardown calls are
+ * the remnant repair. */
+export type HostOpRequestContext = "plan" | "operation" | "connect" | "progress" | "teardown";
 
 function timeoutMessage(context: HostOpRequestContext): string {
   switch (context) {
@@ -84,6 +107,10 @@ function timeoutMessage(context: HostOpRequestContext): string {
       return "The hub did not answer before the Connect request timed out; retry.";
     case "operation":
       return "The hub did not answer before the request timed out; retry — a retry repeats the same operation ID.";
+    case "progress":
+      return "The hub did not answer before the operation-progress read timed out; progress will retry.";
+    case "teardown":
+      return "The hub did not answer before the teardown request timed out; retry the repair.";
   }
 }
 
@@ -141,6 +168,41 @@ export function hostOpRefusal(error: unknown, context: HostOpRequestContext = "o
     }
     case "host-busy-transient":
       return { kind: info, message: withDetail("The host is busy right now.", detail) };
+    case "teardown-unknown-key": {
+      const remnantId = stringData(error, "remnantId");
+      const headline =
+        remnantId === undefined
+          ? "The hub does not know this teardown remnant."
+          : `The hub does not know teardown remnant ${remnantId}.`;
+      return { kind: info, message: withDetail(headline, detail), ...(remnantId === undefined ? {} : { remnantId }) };
+    }
+    case "orphan-fenced-busy": {
+      // Fencing spec 08c §8: the refusal on teardown-retry/teardown-recover
+      // names the blocking `orphan-unverified` record plus the
+      // `orphan-resolve` next step — never the generic transient-busy copy,
+      // because the repair call would be silently refused by the fence.
+      const recordId = stringData(error, "recordId") ?? stringData(error, "id");
+      const headline =
+        recordId === undefined
+          ? "An open orphan fence blocks repairing this host; resolve the orphan through evener/host/orphan-resolve first."
+          : `An open orphan fence blocks repairing this host (record ${recordId}); resolve the orphan through evener/host/orphan-resolve first.`;
+      return { kind: info, message: withDetail(headline, detail), ...(recordId === undefined ? {} : { recordId }) };
+    }
+    case "invalidParams":
+      // The recover attestation's validation refusals (shape, operator
+      // mismatch) ride this discriminator; the hub's own sentence names the
+      // blocking check, so render it concretely instead of generically.
+      return { kind: "invalid-params", message: withDetail("The hub refused this request as invalid.", detail) };
+    case "cursor-invalidated":
+      // 08b §8: a compaction removed rows at or before the position this read
+      // resumed from; the client restarts from the first page. The poll never
+      // presents a cursor, so this arm is unreachable with its read shape — it
+      // exists so any occurrence renders concretely instead of generically.
+      return { kind: info, message: withDetail("The operation list was compacted under this read.", detail) };
+    case "cursor-too-large":
+      // 08b §8: the first page's boundary map would overrun the 8 KiB encoded
+      // cap ({capBytes: 8192}), so no cursor was minted.
+      return { kind: info, message: withDetail("The host operation list is too large to page through.", detail) };
     default:
       if (error instanceof RequestTimeoutError) {
         return { kind: "unknown", message: timeoutMessage(context) };
@@ -171,10 +233,22 @@ export function deployRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
     case "host-busy-transient":
     case "unknown":
       return "retry";
+    // Read-side refusals (the operations poll) the deploy path never emits; a
+    // repeat is the safe recovery for the same reason it is for `unknown`.
+    case "cursor-invalidated":
+    case "cursor-too-large":
+      return "retry";
     case "host-detached":
       return "connect";
     case "remnant-open":
     case "host-busy-operation":
+      return "none";
+    // The S16 repair refusals (and the recover attestation's validation
+    // refusal) never arise from deploy; if one ever did, a bare repeat is not
+    // obviously safe, so none is the honest answer.
+    case "teardown-unknown-key":
+    case "orphan-fenced-busy":
+    case "invalid-params":
       return "none";
   }
 }
@@ -227,6 +301,136 @@ export function hostOpRefusalBlocksRetry(kind: HostOpRefusalKind): boolean {
   return kind === "host-busy-operation" || kind === "remnant-open";
 }
 
+/** teardownRetryRefusalAction maps a `teardown-retry` refusal onto its recovery
+ * (08b §6, 08c §8, registry spec 08 §11). A live attempt holding the gate
+ * refuses with the typed transient busy — the gate holder owns the attempt, so
+ * the operator retries later, never silently. An operation-held gate, an
+ * unknown/purged remnant id, an orphan fence, and a validation refusal all
+ * refuse a bare repeat: each names its own next step instead (the fence names
+ * `orphan-resolve`, the unknown key names a re-read). */
+export function teardownRetryRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
+  switch (kind) {
+    case "host-busy-transient":
+      return "retry";
+    case "host-busy-operation":
+    case "teardown-unknown-key":
+    case "orphan-fenced-busy":
+    case "invalid-params":
+      return "none";
+    default:
+      return "retry";
+  }
+}
+
+/** teardownRecoverRefusalAction maps a `teardown-recover` refusal onto its
+ * recovery with the same arms as the retry's (the recover also try-acquires
+ * the gate, so a live attempt is the typed transient busy). */
+export function teardownRecoverRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
+  return teardownRetryRefusalAction(kind);
+}
+
+// --- the remnant repair state (S16) ------------------------------------------
+
+/** TEARDOWN_RECOVER_STATEMENT is the only `statement` value
+ * `evener/host/teardown-recover` accepts (registry spec 08 §11: the audited
+ * operator recovery's attestation). */
+export const TEARDOWN_RECOVER_STATEMENT = "teardown-verified-absent";
+
+/** HostTeardownRetryView projects one `teardown-retry` result arm onto what
+ * the surfaces render: the arm's own outcome discriminator, the remnant, and
+ * the row shape it paired with (`hostKind: "live"` with HostRow, "removed"
+ * with the tombstone RemovedRow). Never an aggregate success: `seam` stays
+ * present exactly on the failure arm, which leaves the remnant open. */
+export interface HostTeardownRetryView {
+  outcome: string;
+  remnantId: string;
+  hostKind: string;
+  hostName: string;
+  hostRemoved: boolean;
+  escalationAgeSec?: number;
+  seam?: string;
+}
+
+/** HostTeardownClearView is the `teardown-recover` response's single
+ * `recovered-cleared` arm: clearedName/clearedAt/hostKind, no live row. */
+export interface HostTeardownClearView {
+  remnantId: string;
+  clearedName: string;
+  clearedAt: string;
+  hostKind: string;
+}
+
+/** HostRemnantRepair is the per-name repair state every remnant surface
+ * renders: the in-flight submission, the concrete refusal, or the arm the hub
+ * answered. */
+export type HostRemnantRepair =
+  | { phase: "retrying"; remnantId: string }
+  | { phase: "recovering"; remnantId: string }
+  | { phase: "refused"; remnantId: string; action: "retry" | "recover"; refusal: HostOpRefusal }
+  | { phase: "retried"; remnantId: string; result: HostTeardownRetryView }
+  | { phase: "cleared"; remnantId: string; result: HostTeardownClearView };
+
+/** OrphanFence is the grounded signal that an `orphan-unverified` record
+ * fences the name: the refusal the hub returned, or the tracked
+ * orphan-unverified operation record. `recordId` is null when the refusal did
+ * not carry one. */
+export interface OrphanFence {
+  recordId: string | null;
+}
+
+/** orphanFenceFor reports whether `remnantId` is orphan-fenced, from the two
+ * signals the landed wire carries: an `orphan-fenced-busy` refusal (fencing
+ * spec 08c §8 — the discriminator the fence emits, pinned ahead of S20's
+ * handler) and a tracked operation record in the `orphan-unverified` state
+ * (08b §10's closed state set, read by S15's poll). The stored refusal fences
+ * only the remnant it was returned for — a later remnant on the same name is
+ * never fenced by it — while the operation record fences the NAME, exactly as
+ * the hub's orphan fence does (08c §8: "scoped to that host's name only").
+ * S20's `evener/host/orphan-resolve` is the way out; until it lands the
+ * surfaces name that next step and never offer a call they cannot make. */
+export function orphanFenceFor(
+  repair: HostRemnantRepair | undefined,
+  operation: HostOperationRef | undefined,
+  remnantId: string,
+): OrphanFence | null {
+  if (repair?.phase === "refused" && repair.refusal.kind === "orphan-fenced-busy" && repair.remnantId === remnantId) {
+    return { recordId: repair.refusal.recordId ?? null };
+  }
+  if (operation !== undefined && operation.state === "orphan-unverified") {
+    return { recordId: operation.id };
+  }
+  return null;
+}
+
+/** retryOutcomeLine renders one retry arm's own outcome: the resolved arms say
+ * what resolved, the failure arm names the seam and the still-open remnant,
+ * and an unrecognized arm shows its raw outcome rather than claiming
+ * success. */
+export function retryOutcomeLine(result: HostTeardownRetryView): string {
+  switch (result.outcome) {
+    case "teardown-complete":
+      return `Teardown completed; remnant ${result.remnantId} is resolved.`;
+    case "already-cleared":
+      return `Remnant ${result.remnantId} was already cleared.`;
+    case "committed-with-teardown-failure":
+      return `Teardown failed again at ${result.seam ?? "the teardown"}; remnant ${result.remnantId} is still open.`;
+    default:
+      return `The hub answered ${result.outcome} for remnant ${result.remnantId}.`;
+  }
+}
+
+/** clearedOutcomeLine renders the recover's `recovered-cleared` arm. */
+export function clearedOutcomeLine(result: HostTeardownClearView): string {
+  return `Recovered: cleared remnant ${result.remnantId} for ${result.clearedName} at ${result.clearedAt}.`;
+}
+
+/** retryArmResolved reports whether a retry arm resolved the remnant (the two
+ * success outcomes), so a surface may offer the next step (re-plan); the
+ * failure arm leaves it open. */
+export function retryArmResolved(result: HostTeardownRetryView): boolean {
+  return result.outcome === "teardown-complete" || result.outcome === "already-cleared";
+}
+
 /** restartRefusalAction maps an `evener/host/restart` refusal onto its
  * recovery: a gone channel Connects and re-seeds the confirmation against the
  * registry's current pair; the fenced/busy arms never bare-retry; everything
@@ -274,18 +478,213 @@ export interface HostRestartAttempt {
   refusal: HostOpRefusal | null;
 }
 
-/** HostOperationRef is one started operation's record: the seed S15's
- * `operations` polling consumes (registry spec 08 §13's progress rendering). */
+/** HostOperationRef is one started operation as the UI tracks it: the
+ * deploy/restart response's seed ({id, clientOperationId, state}, 08b §10)
+ * plus whatever the `operations` poll has read from the record. */
 export interface HostOperationRef {
+  /** The controller-assigned record id: the `id` detail filter the poll reads
+   * by, and the key a replay re-answers under (08b §8, §10). */
   id: string;
+  /** The client operation ID this operation was submitted under. A retry after
+   * a lost response re-submits exactly this ID, and the hub's dedup answers the
+   * existing record — never a fresh operation (08b §6, §10; registry spec 08
+   * §13). */
   clientOperationId: string;
+  /** The record's kind ("deploy"/"restart"): seeded by the call that started
+   * the operation, refreshed from the record. */
+  kind: string;
   state: string;
+  /** The record's host and pinned (generation, incarnation id) pair: the seed
+   * carries what the starting call knew (the plan's generation, the restart's
+   * pair), and the first read replaces them with the record's own. They are
+   * what lets a row refuse to display another incarnation's operation after a
+   * same-name remove/re-add. */
+  host?: string;
+  generation?: number;
+  incarnationId?: string;
+  /** The record's progress entries, newest last (08b §10). Empty until the
+   * first read answers. */
+  progress: OperationProgressEntry[];
+  /** The record's terminal result; absent until a read answers one. The poll
+   * renders a failure's `message` VERBATIM (registry spec 08 §13). */
+  result?: { ok: boolean; message: string };
+  /** S6's tombstone-replay marker. The generated base types do not name it yet
+   * (app_host_ops.go's operationRecordWire leaves `compacted` absent until S6
+   * registers it), so the poll reads it structurally: a replayed record renders
+   * as that operation's past terminal outcome, never a fresh operation. */
+  compacted?: true;
+  /** True once a read answered this record's full body; the deploy/restart
+   * response is only the seed. */
+  fetched?: true;
+  /** The newest read's refusal, when it rejected: progress updates stopped and
+   * the last-known state/progress stay rendered underneath. Cleared by a good
+   * read. */
+  readRefusal?: HostOpRefusal;
+  /** True when a read answered no record for this id (past the tombstone
+   * retention horizon): the outcome cannot be shown, so the loop stops. */
+  gone?: true;
+}
+
+/** Settled states end the read loop (08b §10's closed state set): the three
+ * terminal states. `orphan-unverified` is deliberately NOT settled: it is
+ * durable but resolvable through the fencing paths (S20's `orphan-resolve`
+ * call, or a later boot's local reap), so the loop keeps polling it until the
+ * resolved record reaches a terminal state — treating it as settled would
+ * freeze the resolved record behind a stale state until a page reload. */
+const SETTLED_OPERATION_STATES: ReadonlySet<string> = new Set(["complete", "failed", "interrupted"]);
+
+export function operationStateSettled(state: string): boolean {
+  return SETTLED_OPERATION_STATES.has(state);
+}
+
+/** operationNeedsRead reports whether this ref still owes a `operations` read:
+ * a seed that has never been read (a replayed terminal seed still owes one read
+ * for its retained outcome), or a non-settled state. A gone record owes
+ * nothing — no read can bring its outcome back. */
+export function operationNeedsRead(ref: HostOperationRef): boolean {
+  if (ref.gone === true) return false;
+  if (ref.fetched !== true) return true;
+  return !operationStateSettled(ref.state);
+}
+
+/** operationShownOnHost reports whether a tracked operation still belongs to
+ * the host incarnation the row displays. Generations are strictly monotonic
+ * (registry spec 08 §1), so the comparison is directional:
+ *
+ * - A ref pinned to an OLDER generation than the row's belongs to a previous
+ *   incarnation (a same-name remove/re-add) and is suppressed — the previous
+ *   incarnation's record is not this host's work. Equal generations compare
+ *   further: a differing incarnation id suppresses too.
+ * - A ref pinned to a NEWER generation than the row's is current and the ROW is
+ *   merely stale (the pane's list poll converges it): the operation stays.
+ * - A ref that carries no pair was seeded by the call that just ran on this
+ *   row, so it renders.
+ *
+ * Suppression is render-only: the poll still drives a suppressed ref to its
+ * terminal state (pollOperation never consults this), so no ref stays
+ * non-terminal forever and the store can still retain the record's outcome. */
+export function operationShownOnHost(
+  operation: HostOperationRef,
+  row: { generation: number; incarnationId: string },
+): boolean {
+  if (operation.generation !== undefined && operation.generation < row.generation) return false;
+  if (
+    operation.generation === row.generation &&
+    operation.incarnationId !== undefined &&
+    operation.incarnationId !== row.incarnationId
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** HostOperationView is one operation ref as a host row renders it. */
+export interface HostOperationView {
+  tone: "neutral" | "attention" | "alive" | "danger";
+  /** "Deploying…", "Restart complete", "Deploy failed", ... */
+  label: string;
+  /** The record's own prose in one line: the newest progress entry while the
+   * operation runs, or the terminal result's message — verbatim, never
+   * rewritten into a generic failure (§13). */
+  line: string | null;
+  /** The compacted-tombstone note, separate from `line` so the retained result
+   * stays verbatim. */
+  replay: string | null;
+  /** Why progress updates stopped (a failed or answerless read), or null. */
+  unavailable: string | null;
+}
+
+function operationKindLabel(kind: string): string {
+  switch (kind) {
+    case "deploy":
+      return "Deploy";
+    case "restart":
+      return "Restart";
+    default:
+      return kind === "" ? "Operation" : kind;
+  }
+}
+
+function operationInFlightLabel(kind: string): string {
+  switch (kind) {
+    case "deploy":
+      return "Deploying…";
+    case "restart":
+      return "Restarting…";
+    default:
+      return `${operationKindLabel(kind)} in progress`;
+  }
+}
+
+/** hostOperationView renders one operation ref for its host row: the state
+ * chip, the record's own one-line prose (a failure's 04b message verbatim), the
+ * compacted-replay note, and the visible stopped-progress reason. */
+export function hostOperationView(ref: HostOperationRef): HostOperationView {
+  const kind = operationKindLabel(ref.kind);
+  const lastEntry = ref.progress[ref.progress.length - 1];
+  // A blank progress message is no line, exactly like an empty result message:
+  // never an empty detail span.
+  const latest = lastEntry === undefined || lastEntry.message.trim() === "" ? null : lastEntry.message;
+  // A record with no result (or an empty message) renders the state chip alone
+  // rather than an invented sentence.
+  const outcome = ref.result === undefined || ref.result.message === "" ? null : ref.result.message;
+  let tone: HostOperationView["tone"] = "neutral";
+  let label = `${kind} ${ref.state}`;
+  // A state outside the wire's closed set still shows the record's own prose:
+  // the newest progress entry, falling back to the result message.
+  let line: string | null = latest ?? outcome;
+  switch (ref.state) {
+    case "pending":
+    case "running":
+      tone = "attention";
+      label = operationInFlightLabel(ref.kind);
+      line = latest;
+      break;
+    case "complete":
+      tone = "alive";
+      label = `${kind} complete`;
+      line = outcome;
+      break;
+    case "failed":
+      tone = "danger";
+      label = `${kind} failed`;
+      line = outcome;
+      break;
+    case "interrupted":
+      tone = "danger";
+      label = `${kind} interrupted`;
+      line = outcome;
+      break;
+    case "orphan-unverified":
+      tone = "attention";
+      label = `${kind} orphan-unverified`;
+      line = outcome;
+      break;
+  }
+  return {
+    tone,
+    label,
+    line,
+    replay:
+      ref.compacted === true
+        ? "This record was replayed from a compacted operation; the result shown is its retained terminal outcome."
+        : null,
+    unavailable:
+      ref.readRefusal !== undefined
+        ? `Progress updates stopped: ${ref.readRefusal.message}`
+        : ref.gone === true
+          ? "The hub no longer retains this operation's record, so its outcome cannot be shown."
+          : null,
+  };
 }
 
 interface HostOpsStoreState {
   plans: Record<string, HostPlanPhase>;
   restarts: Record<string, HostRestartAttempt>;
   operations: Record<string, HostOperationRef>;
+  /** The remnant repair state per host name (S16): the teardown-retry or
+   * teardown-recover submission and the arm/refusal it answered. */
+  repairs: Record<string, HostRemnantRepair>;
   /** Opens the confirmation: calls `evener/host/plan` and publishes the arm it
    * answers (§13). A `notice` is only ever set by an automatic re-plan. */
   plan: (name: string, opts?: { notice?: string }) => Promise<void>;
@@ -301,7 +700,33 @@ interface HostOpsStoreState {
    * confirmation against the registry's current pair, never the refused
    * attempt's pair. */
   connectAndRestart: (name: string) => Promise<void>;
+  /** The resolved-remnant continuation: re-reads the registry and re-seeds the
+   * restart confirmation against the pair it answers, under a fresh operation
+   * ID — the refused attempt's pair is never resubmitted. */
+  reSeedRestart: (name: string) => Promise<void>;
   discardRestart: (name: string) => void;
+  /** Reads the tracked operation's record once (08b §10's detail read) and
+   * publishes what it answers: progress, the terminal outcome, or the visible
+   * refusal. The caller owns the cadence; the section's mounted interval drives
+   * this and stops when its target is settled. */
+  pollOperation: (name: string) => Promise<void>;
+  /** Submits `evener/host/teardown-retry` for exactly this remnant (registry
+   * spec 08 §6/§11) and publishes the arm it answers. */
+  teardownRetry: (name: string, remnantId: string) => Promise<void>;
+  /** Submits `evener/host/teardown-recover` with the audited operator
+   * attestation (08 §6/§11) and publishes the `recovered-cleared` result. */
+  teardownRecover: (name: string, remnantId: string, attestation: HostTeardownAttestation) => Promise<void>;
+  /** Drops the name's repair state (a dialog close): a later response for it
+   * publishes nothing. */
+  clearRepair: (name: string) => void;
+  /** Drops a REFUSED repair entry, leaving any in-flight submission
+   * untouched: the fence re-check never cancels the arm a live request is
+   * about to publish. */
+  clearRepairRefusal: (name: string) => void;
+  /** Makes any in-flight read for this name publish nothing (the caller owns
+   * the interval; the section calls this on unmount). It also releases the
+   * name's pending-read entries, so a remount's first tick is not skipped. */
+  stopOperationPoll: (name: string) => void;
   resetForTests: () => void;
 }
 
@@ -314,11 +739,89 @@ const { requireClient } = connectedClientPort("hostOps");
 // publishes nowhere (the guard stores/hosts.ts uses for its list reads).
 const planSequences = new Map<string, number>();
 const restartSequences = new Map<string, number>();
+const operationSequences = new Map<string, number>();
+const repairSequences = new Map<string, number>();
+// The deploy/restart REQUEST tokens issued per host name, bumped when a
+// request is sent (never by a publish, a dialog close, or unmount), plus the
+// newest token that actually PUBLISHED. A response may publish unless a
+// strictly newer request already published: two issued requests are ordered by
+// the published token, not by arrival, and a newer request that never
+// publishes (refused, or still in flight) cannot suppress an older valid
+// response.
+const operationRequestSequences = new Map<string, number>();
+const operationPublishedRequestSeqs = new Map<string, number>();
+// Outstanding operation reads, keyed by host name and the record id the read
+// is for, as per-read tokens (a direct caller and the section's tick can
+// overlap). The tick skips a pending (name, id), so the interval keeps at most
+// one read per operation in flight — and a superseded operation's lingering
+// read never blocks its replacement. A token is released in pollOperation's
+// finally, or wholesale by stopOperationPoll on unmount; a released token can
+// no longer release a newer read's entry.
+const operationReadsPending = new Map<string, Map<string, Set<object>>>();
 function planSequence(name: string): number {
   return planSequences.get(name) ?? 0;
 }
 function restartSequence(name: string): number {
   return restartSequences.get(name) ?? 0;
+}
+function operationSequence(name: string): number {
+  return operationSequences.get(name) ?? 0;
+}
+function repairSequence(name: string): number {
+  return repairSequences.get(name) ?? 0;
+}
+
+function nextOperationRequestSeq(name: string): number {
+  const seq = (operationRequestSequences.get(name) ?? 0) + 1;
+  operationRequestSequences.set(name, seq);
+  return seq;
+}
+
+/** operationRequestPublished answers whether a response bearing `requestSeq`
+ * may still publish: it must not be older than the newest request that
+ * actually published. */
+function operationRequestPublished(name: string, requestSeq: number): boolean {
+  return requestSeq >= (operationPublishedRequestSeqs.get(name) ?? 0);
+}
+
+function markOperationRequestPublished(name: string, requestSeq: number): void {
+  const published = operationPublishedRequestSeqs.get(name) ?? 0;
+  if (requestSeq > published) operationPublishedRequestSeqs.set(name, requestSeq);
+}
+
+/** operationReadPending reports whether a read for this exact operation is
+ * still in flight: the section's tick skips a pending operation instead of
+ * piling another read on top of a slow one. Keyed by the record id, so a
+ * superseded operation's lingering read never stalls its replacement. */
+export function operationReadPending(name: string, id: string): boolean {
+  return (operationReadsPending.get(name)?.get(id)?.size ?? 0) > 0;
+}
+
+function beginOperationRead(name: string, id: string): object {
+  const token = {};
+  const byId = operationReadsPending.get(name) ?? new Map<string, Set<object>>();
+  const tokens = byId.get(id) ?? new Set<object>();
+  tokens.add(token);
+  byId.set(id, tokens);
+  operationReadsPending.set(name, byId);
+  return token;
+}
+
+function endOperationRead(name: string, id: string, token: object): void {
+  const byId = operationReadsPending.get(name);
+  const tokens = byId?.get(id);
+  if (byId === undefined || tokens === undefined) return;
+  tokens.delete(token);
+  if (tokens.size === 0) byId.delete(id);
+  if (byId.size === 0) operationReadsPending.delete(name);
+}
+
+/** releaseOperationReads drops every pending read for the name: unmount
+ * cancels the poll, so its skip entries must not survive into a remount's
+ * first tick and block it for up to the read timeout. The released tokens can
+ * no longer release anything when their reads settle. */
+function releaseOperationReads(name: string): void {
+  operationReadsPending.delete(name);
 }
 
 function planIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
@@ -328,6 +831,13 @@ function planIsCurrent(name: string, sequence: number, client: AppwireClientLike
  * owns name's state, so the older request must publish nothing. */
 function planSequenceSuperseded(name: string, sequence: number): boolean {
   return planSequence(name) !== sequence;
+}
+
+/** operationPollIsCurrent answers whether a poll read may publish: it is still
+ * the newest read issued for the name, and it came through the connection that
+ * is current now (a replaced connection's answer describes the hub that was). */
+function operationPollIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
+  return operationSequence(name) === sequence && connectionStore.getState().client === client;
 }
 
 /** The terminal arm a plan publishes when its connection was replaced while
@@ -362,14 +872,240 @@ function currentPairFor(name: string): HostMutationPair | undefined {
   return { generation: row.generation, incarnationId: row.incarnationId };
 }
 
-function operationRef(result: { id: string; clientOperationId: string; state: string }): HostOperationRef {
-  return { id: result.id, clientOperationId: result.clientOperationId, state: result.state };
+/** operationRef is the seed the deploy/restart response leaves (08b §10: the
+ * response carries only the id, client operation ID, and state): the kind comes
+ * from the call that started the operation, the identity from what that call
+ * knew (the plan's generation, the restart's intended pair), and the poll fills
+ * the body. */
+function operationRef(
+  result: { id: string; clientOperationId: string; state: string },
+  kind: string,
+  identity: { host: string; generation?: number; incarnationId?: string },
+): HostOperationRef {
+  return {
+    id: result.id,
+    clientOperationId: result.clientOperationId,
+    kind,
+    state: result.state,
+    progress: [],
+    host: identity.host,
+    ...(identity.generation === undefined ? {} : { generation: identity.generation }),
+    ...(identity.incarnationId === undefined ? {} : { incarnationId: identity.incarnationId }),
+  };
+}
+
+/** OPERATION_READ_TIMEOUT_MS bounds one `evener/host/operations` read. The call
+ * is a cheap controller-local store read (08b §6: it never dials), so a short
+ * bound surfaces a stalled connection as the visible stopped-progress state
+ * instead of hanging the poll. */
+export const OPERATION_READ_TIMEOUT_MS = 15_000;
+
+/** readOperationRecord reads one operation record by its controller-assigned
+ * id, host-pinned: `{name, id}` is the narrowest exact read 08b §10 offers
+ * (the `id` detail filter resolves the record directly, and `name` pins the
+ * page's window to this host so no cross-host boundary map is minted). */
+async function readOperationRecord(
+  client: AppwireClientLike,
+  name: string,
+  id: string,
+): Promise<OperationRecord | undefined> {
+  const response = await client.request(
+    "evener/host/operations",
+    { name, id },
+    { timeoutMs: OPERATION_READ_TIMEOUT_MS },
+  );
+  return response.operations.find((candidate) => candidate.id === id);
+}
+
+/** recordToOperationRef projects a wire record onto the ref the row renders.
+ * `compacted` is read structurally: the generated base types do not name S6's
+ * tombstone-replay marker yet, and the projection must keep it the moment the
+ * marker lands (a replay renders as the operation's past outcome). */
+function recordToOperationRef(record: OperationRecord): HostOperationRef {
+  const ref: HostOperationRef = {
+    id: record.id,
+    clientOperationId: record.clientOperationId,
+    kind: record.kind,
+    state: record.state,
+    progress: record.progress ?? [],
+    host: record.host,
+    generation: record.generation,
+    incarnationId: record.incarnationId,
+    fetched: true,
+  };
+  if (record.result !== undefined) ref.result = { ok: record.result.ok, message: record.result.message };
+  if ((record as { compacted?: unknown }).compacted === true) ref.compacted = true;
+  return ref;
+}
+
+// OperationSet/OperationGet are the slices of the store's accessors the
+// operation publish helpers take; the store passes its own set/get in.
+type OperationSet = (updater: (previous: HostOpsStoreState) => Partial<HostOpsStoreState>) => void;
+type OperationGet = () => HostOpsStoreState;
+
+/** publishStartedOperation seeds one started operation — but only while no
+ * STRICTLY NEWER deploy/restart request has already PUBLISHED for the name.
+ * `requestSeq` is that request's token from nextOperationRequestSeq (per host
+ * name, bumped at issue): two requests that both publish are ordered by the
+ * published token whatever the arrival order, so the newer response wins; but
+ * a newer request that never publishes — refused, or still in flight — must
+ * not suppress an older valid response, whose operation exists server-side
+ * and whose record must be tracked. A dialog close alone does not bump the
+ * token, so a superseded CONFIRMATION with no newer published request still
+ * publishes (S14's designed case), and neither does unmount (the section's
+ * stopOperationPoll bumps the read sequence, not this one). On a real publish
+ * it supersedes any in-flight read for the name: the previous operation's poll
+ * must not publish onto the record this one just answered. */
+function publishStartedOperation(set: OperationSet, name: string, ref: HostOperationRef, requestSeq: number): void {
+  let published = false;
+  set((previous) => {
+    if (!operationRequestPublished(name, requestSeq)) return previous;
+    published = true;
+    return { operations: { ...previous.operations, [name]: ref } };
+  });
+  if (published) {
+    markOperationRequestPublished(name, requestSeq);
+    operationSequences.set(name, operationSequence(name) + 1);
+  }
+}
+
+/** publishOperationRecord merges one read's record onto the ref the row
+ * renders — only while the same (name, id) is still the tracked one. A first
+ * observation of a settled state nudges the host rows: 08b §6's worker
+ * publishes the verified post-operation facts before marking the record
+ * `complete`, so the row's version signal can be current now instead of
+ * waiting for the pane's own poll. */
+function publishOperationRecord(
+  set: OperationSet,
+  get: OperationGet,
+  name: string,
+  id: string,
+  record: OperationRecord,
+): void {
+  const held = get().operations[name];
+  if (held === undefined || held.id !== id) return;
+  const wasSettled = operationStateSettled(held.state);
+  // A seed (the deploy/restart response) carries no result/progress: its first
+  // full read is a refresh-worthy terminal observation too, so a replayed
+  // (deduplicated) operation does not leave the row on stale facts.
+  const firstBody = held.fetched !== true;
+  set((previous) => {
+    const current = previous.operations[name];
+    if (current === undefined || current.id !== id) return previous;
+    return { operations: { ...previous.operations, [name]: recordToOperationRef(record) } };
+  });
+  if ((!wasSettled || firstBody) && operationStateSettled(record.state)) {
+    // A failed refresh is the background poll's own business (it keeps the
+    // last rows); it must never surface as an unhandled rejection here.
+    void hostsStore
+      .getState()
+      .refresh()
+      .catch(() => undefined);
+  }
+}
+
+/** publishOperationReadFailure records why progress updates stopped, leaving
+ * the last-known state and progress rendered underneath (the loop keeps
+ * retrying: a transient failure never ends polling). */
+function publishOperationReadFailure(set: OperationSet, name: string, id: string, refusal: HostOpRefusal): void {
+  set((previous) => {
+    const current = previous.operations[name];
+    if (current === undefined || current.id !== id) return previous;
+    // A read that is no longer the newest must not strand a stopped-progress
+    // error on a record whose body was already read and settled: nothing would
+    // ever clear it, because a settled record owes no further read.
+    if (current.fetched === true && operationStateSettled(current.state)) return previous;
+    // The same refusal seen again is not a new fact: republishing it every tick
+    // would re-render and re-announce the row's alert every second while the
+    // hub stays away.
+    if (
+      current.readRefusal !== undefined &&
+      current.readRefusal.kind === refusal.kind &&
+      current.readRefusal.message === refusal.message
+    ) {
+      return previous;
+    }
+    return { operations: { ...previous.operations, [name]: { ...current, readRefusal: refusal } } };
+  });
+}
+
+/** markOperationGone records that the hub retains no record for this id: the
+ * outcome cannot be shown now, and no further read can change that, so the
+ * loop stops. */
+function markOperationGone(set: OperationSet, name: string, id: string): void {
+  set((previous) => {
+    const current = previous.operations[name];
+    if (current === undefined || current.id !== id) return previous;
+    return { operations: { ...previous.operations, [name]: { ...current, readRefusal: undefined, gone: true } } };
+  });
+}
+
+/** retryViewOf projects one `teardown-retry` arm (registry spec 08 §11's six
+ * outcome x hostKind arms) onto the view the surfaces render. */
+function retryViewOf(
+  result: {
+    outcome: string;
+    hostKind: string;
+    host: { name: string; removed: boolean };
+    remnantId: string;
+    escalationAgeSec?: number;
+    seam?: string;
+  },
+  fallbackRemnantId: string,
+): HostTeardownRetryView {
+  const view: HostTeardownRetryView = {
+    outcome: result.outcome,
+    remnantId: result.remnantId === "" ? fallbackRemnantId : result.remnantId,
+    hostKind: result.hostKind,
+    hostName: result.host.name,
+    hostRemoved: result.host.removed === true,
+  };
+  if (result.escalationAgeSec !== undefined) view.escalationAgeSec = result.escalationAgeSec;
+  if (result.seam !== undefined) view.seam = result.seam;
+  return view;
+}
+
+/** clearViewOf projects `teardown-recover`'s single `recovered-cleared` arm. */
+function clearViewOf(
+  result: { remnantId: string; clearedName: string; clearedAt: string; hostKind: string },
+  fallbackRemnantId: string,
+): HostTeardownClearView {
+  return {
+    remnantId: result.remnantId === "" ? fallbackRemnantId : result.remnantId,
+    clearedName: result.clearedName,
+    clearedAt: result.clearedAt,
+    hostKind: result.hostKind,
+  };
+}
+
+/** repairConnectionChangedRefusal is the refusal a repair records when its
+ * connection was replaced while the request was out: the response describes
+ * the hub that was, and the arm is never a silent stall. */
+function repairConnectionChangedRefusal(call: "teardown-retry" | "teardown-recover"): HostOpRefusal {
+  return {
+    kind: "unknown",
+    message: `The hub connection changed while the ${call} request was in flight; retry the repair.`,
+  };
+}
+
+function repairRefusalState(remnantId: string, action: "retry" | "recover", refusal: HostOpRefusal): HostRemnantRepair {
+  return { phase: "refused", remnantId, action, refusal };
+}
+
+/** The refusal both repair actions publish when called with no remnant id:
+ * nothing was submitted, and saying so beats a silent no-op. */
+function missingRemnantIdRefusal(action: "retry" | "recover"): HostOpRefusal {
+  return {
+    kind: "unknown",
+    message: `No remnant id is named for this repair; re-read the host list and ${action === "retry" ? "retry" : "recover"} again.`,
+  };
 }
 
 export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
   plans: {},
   restarts: {},
   operations: {},
+  repairs: {},
 
   plan: async (name, opts) => {
     let client: AppwireClientLike;
@@ -475,6 +1211,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         plans: { ...previous.plans, [name]: { ...state, operationId, refusal: null } },
       }));
     }
+    // The request-currency token this response must still match at publish
+    // time (see publishStartedOperation): captured when the request is issued.
+    const requestSeq = nextOperationRequestSeq(name);
+    // The identity this operation is submitted against, captured at ISSUE
+    // time: a remove/re-add while the request is in flight must not tag the
+    // operation with the new incarnation's pair. The row is authoritative for
+    // identity; the plan's generation is the fallback when no row is loaded.
+    // The first read replaces both with the record's own pair.
+    const issuedPair = currentPairFor(name);
     try {
       const result = await client.request(
         "evener/host/deploy",
@@ -487,7 +1232,16 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       // current: a record from a replaced connection describes the hub that
       // was and must not seed this name's polling.
       if (connectionStore.getState().client === client) {
-        set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+        publishStartedOperation(
+          set,
+          name,
+          operationRef(result, "deploy", {
+            host: name,
+            generation: issuedPair?.generation ?? state.plan.generation,
+            ...(issuedPair === undefined ? {} : { incarnationId: issuedPair.incarnationId }),
+          }),
+          requestSeq,
+        );
       }
       if (!planIsCurrent(name, sequence, client)) return;
       set((previous) => {
@@ -593,9 +1347,19 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
       );
     try {
+      const requestSeq = nextOperationRequestSeq(name);
       const result = await send(attempt.pair, operationId);
       if (connectionStore.getState().client === client) {
-        set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+        publishStartedOperation(
+          set,
+          name,
+          operationRef(result, "restart", {
+            host: name,
+            generation: attempt.pair.generation,
+            incarnationId: attempt.pair.incarnationId,
+          }),
+          requestSeq,
+        );
       }
       if (!restartIsCurrent(name, sequence, client)) return;
       set((previous) => {
@@ -671,9 +1435,19 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         return { restarts: { ...previous.restarts, [name]: { ...held, pair: current, operationId: retryId } } };
       });
       try {
+        const requestSeq = nextOperationRequestSeq(name);
         const result = await send(current, retryId);
         if (connectionStore.getState().client === client) {
-          set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+          publishStartedOperation(
+            set,
+            name,
+            operationRef(result, "restart", {
+              host: name,
+              generation: current.generation,
+              incarnationId: current.incarnationId,
+            }),
+            requestSeq,
+          );
         }
         if (!restartIsCurrent(name, sequence, client)) return;
         set((previous) => {
@@ -750,10 +1524,270 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     });
   },
 
+  reSeedRestart: async (name) => {
+    // The continuation a resolved remnant earns on the restart surface: the
+    // pair the refusal was made against may have moved while the repair ran
+    // (and the remnant may have belonged to a remove), so re-read first and
+    // never replay the old pair. reReadForced issues a new read rather than
+    // joining an in-flight poll that predates the resolution.
+    //
+    // Identity captured BEFORE the read: a newer attempt (a re-opened dialog)
+    // or a replaced connection owns the state if either moved while it was
+    // out, and this continuation then publishes nothing.
+    const sequence = restartSequence(name);
+    const client = connectionStore.getState().client;
+    const published = await hostsStore.getState().reReadForced();
+    if (!restartIsCurrent(name, sequence, client)) return;
+    const pair = published ? currentPairFor(name) : undefined;
+    set((previous) => {
+      const current = previous.restarts[name];
+      if (current === undefined || current.phase === "started") return previous;
+      if (pair === undefined) {
+        return {
+          restarts: {
+            ...previous.restarts,
+            [name]: { ...current, phase: "failed", refusal: RESTART_PAIR_UNKNOWN_REFUSAL },
+          },
+        };
+      }
+      return {
+        restarts: {
+          ...previous.restarts,
+          [name]: { phase: "confirm", pair, operationId: createSecureUUID(), refusal: null },
+        },
+      };
+    });
+  },
+
+  pollOperation: async (name) => {
+    const ref = get().operations[name];
+    if (ref === undefined || !operationNeedsRead(ref)) return;
+    let client: AppwireClientLike;
+    try {
+      client = requireClient();
+    } catch (error) {
+      publishOperationReadFailure(set, name, ref.id, hostOpRefusal(error, "progress"));
+      return;
+    }
+    // Per-issue sequence: this read owns the newest position, so any earlier
+    // read (a direct caller's overlap) is dropped whole — its record and its
+    // refusal alike. The tick's own skip keeps the interval at one read per
+    // name, so this never starves a publish.
+    const sequence = operationSequence(name) + 1;
+    operationSequences.set(name, sequence);
+    const readToken = beginOperationRead(name, ref.id);
+    try {
+      try {
+        const record = await readOperationRecord(client, name, ref.id);
+        if (!operationPollIsCurrent(name, sequence, client)) return;
+        if (record === undefined) {
+          markOperationGone(set, name, ref.id);
+          return;
+        }
+        publishOperationRecord(set, get, name, ref.id, record);
+      } catch (error) {
+        if (!operationPollIsCurrent(name, sequence, client)) return;
+        const refusal = hostOpRefusal(error, "progress");
+        if (refusal.kind !== "cursor-invalidated") {
+          publishOperationReadFailure(set, name, ref.id, refusal);
+          return;
+        }
+        // 08b §8: compaction invalidated the position this read resumed from,
+        // and the fix is a fresh first-page read. This poll never presents a
+        // cursor, so the arm cannot arise with its shape; if it ever does, retry
+        // ONCE from scratch rather than surfacing the refusal, and never loop on
+        // the invalidated position.
+        try {
+          const record = await readOperationRecord(client, name, ref.id);
+          if (!operationPollIsCurrent(name, sequence, client)) return;
+          if (record === undefined) {
+            markOperationGone(set, name, ref.id);
+            return;
+          }
+          publishOperationRecord(set, get, name, ref.id, record);
+        } catch (retryError) {
+          if (!operationPollIsCurrent(name, sequence, client)) return;
+          publishOperationReadFailure(set, name, ref.id, hostOpRefusal(retryError, "progress"));
+        }
+      }
+    } finally {
+      endOperationRead(name, ref.id, readToken);
+    }
+  },
+
+  teardownRetry: async (name, remnantId) => {
+    const id = remnantId.trim();
+    if (id === "") {
+      // Nothing to submit and nothing to name: publish the refusal instead of
+      // a silent no-op the operator cannot see. (The dialog is gated on a
+      // non-empty id too; this is the store's own guard.)
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: repairRefusalState(id, "retry", missingRemnantIdRefusal("retry")) },
+      }));
+      return;
+    }
+    let client: AppwireClientLike;
+    try {
+      client = requireClient();
+    } catch (error) {
+      // Attach the refusal only while no repair submission is in flight: an
+      // in-flight request owns the displayed state and publishes its own arm.
+      set((previous) => {
+        const current = previous.repairs[name];
+        if (current?.phase === "retrying" || current?.phase === "recovering") return previous;
+        return {
+          repairs: { ...previous.repairs, [name]: repairRefusalState(id, "retry", hostOpRefusal(error, "teardown")) },
+        };
+      });
+      return;
+    }
+    const sequence = repairSequence(name) + 1;
+    repairSequences.set(name, sequence);
+    set((previous) => ({ repairs: { ...previous.repairs, [name]: { phase: "retrying", remnantId: id } } }));
+    try {
+      const result = await client.request(
+        "evener/host/teardown-retry",
+        { remnantId: id },
+        { timeoutMs: HOST_GATE_TIMEOUT_MS },
+      );
+      // A newer repair request owns the state now: this response publishes
+      // nothing. A REPLACED connection is next: the response describes the hub
+      // that was, so record that instead of silently stalling the panel.
+      if (repairSequence(name) !== sequence) return;
+      if (connectionStore.getState().client !== client) {
+        set((previous) => ({
+          repairs: {
+            ...previous.repairs,
+            [name]: repairRefusalState(id, "retry", repairConnectionChangedRefusal("teardown-retry")),
+          },
+        }));
+        return;
+      }
+      const view = retryViewOf(result, id);
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: { phase: "retried", remnantId: id, result: view } },
+      }));
+      // EVERY accepted arm converges the rows, the failure arm included: a
+      // committed-with-teardown-failure response can still have moved the row
+      // (a tombstone, updated escalation data), and the row-level affordance
+      // must reflect it. reReadForced issues a NEW read rather than joining an
+      // in-flight poll that predates this response; best-effort, like S15's
+      // post-operation refresh.
+      void hostsStore
+        .getState()
+        .reReadForced()
+        .catch(() => undefined);
+    } catch (error) {
+      if (repairSequence(name) !== sequence) return;
+      const refusal =
+        connectionStore.getState().client === client
+          ? hostOpRefusal(error, "teardown")
+          : repairConnectionChangedRefusal("teardown-retry");
+      set((previous) => ({ repairs: { ...previous.repairs, [name]: repairRefusalState(id, "retry", refusal) } }));
+    }
+  },
+
+  teardownRecover: async (name, remnantId, attestation) => {
+    const id = remnantId.trim();
+    if (id === "") {
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: repairRefusalState(id, "recover", missingRemnantIdRefusal("recover")) },
+      }));
+      return;
+    }
+    let client: AppwireClientLike;
+    try {
+      client = requireClient();
+    } catch (error) {
+      set((previous) => {
+        const current = previous.repairs[name];
+        if (current?.phase === "retrying" || current?.phase === "recovering") return previous;
+        return {
+          repairs: { ...previous.repairs, [name]: repairRefusalState(id, "recover", hostOpRefusal(error, "teardown")) },
+        };
+      });
+      return;
+    }
+    const sequence = repairSequence(name) + 1;
+    repairSequences.set(name, sequence);
+    set((previous) => ({ repairs: { ...previous.repairs, [name]: { phase: "recovering", remnantId: id } } }));
+    try {
+      const result = await client.request(
+        "evener/host/teardown-recover",
+        {
+          remnantId: id,
+          attestation: {
+            operator: attestation.operator,
+            statement: attestation.statement,
+            observedAt: attestation.observedAt,
+          },
+        },
+        { timeoutMs: HOST_GATE_TIMEOUT_MS },
+      );
+      if (repairSequence(name) !== sequence) return;
+      if (connectionStore.getState().client !== client) {
+        set((previous) => ({
+          repairs: {
+            ...previous.repairs,
+            [name]: repairRefusalState(id, "recover", repairConnectionChangedRefusal("teardown-recover")),
+          },
+        }));
+        return;
+      }
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: { phase: "cleared", remnantId: id, result: clearViewOf(result, id) } },
+      }));
+      // The cleared remnant changes the row (it disappears from the list):
+      // converge it now rather than waiting for the pane's own poll.
+      void hostsStore
+        .getState()
+        .reReadForced()
+        .catch(() => undefined);
+    } catch (error) {
+      if (repairSequence(name) !== sequence) return;
+      const refusal =
+        connectionStore.getState().client === client
+          ? hostOpRefusal(error, "teardown")
+          : repairConnectionChangedRefusal("teardown-recover");
+      set((previous) => ({ repairs: { ...previous.repairs, [name]: repairRefusalState(id, "recover", refusal) } }));
+    }
+  },
+
+  clearRepair: (name) => {
+    repairSequences.set(name, repairSequence(name) + 1);
+    set((previous) => {
+      const repairs = { ...previous.repairs };
+      delete repairs[name];
+      return { repairs };
+    });
+  },
+
+  clearRepairRefusal: (name) => {
+    // Fence-only clear: a live retry/recover keeps its sequence, so its arm
+    // still publishes when it lands. Only a settled refusal is dropped.
+    set((previous) => {
+      const current = previous.repairs[name];
+      if (current === undefined || current.phase !== "refused") return previous;
+      const repairs = { ...previous.repairs };
+      delete repairs[name];
+      return { repairs };
+    });
+  },
+
+  stopOperationPoll: (name) => {
+    operationSequences.set(name, operationSequence(name) + 1);
+    releaseOperationReads(name);
+  },
+
   resetForTests: () => {
     planSequences.clear();
     restartSequences.clear();
-    set({ plans: {}, restarts: {}, operations: {} });
+    operationSequences.clear();
+    operationRequestSequences.clear();
+    operationPublishedRequestSeqs.clear();
+    repairSequences.clear();
+    operationReadsPending.clear();
+    set({ plans: {}, restarts: {}, operations: {}, repairs: {} });
   },
 }));
 

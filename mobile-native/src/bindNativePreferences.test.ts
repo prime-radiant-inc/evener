@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type {
-	AnyNotification,
-	InitializeResponse,
-} from "@evener/appwire-client";
-import {
-	bindNativePreferences,
-	type PreferencesClient,
-} from "./bindNativePreferences";
+import type { AnyNotification, InitializeResponse } from "@evener/appwire-client";
+import { bindNativePreferences, type PreferencesClient } from "./bindNativePreferences";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
 import type { NativePreferences } from "./nativePreferences";
 

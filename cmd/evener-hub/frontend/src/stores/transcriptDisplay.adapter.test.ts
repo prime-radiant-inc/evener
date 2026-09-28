@@ -197,7 +197,7 @@ describe("transcript display adapter (package store delegation)", () => {
     const malformed = "Hub returned malformed transcript display PATCH response";
     let stopSwapping: (() => void) | undefined;
     const stop = transcriptDisplayStore.subscribe((state) => {
-      if (state.hubError !== malformed || state.drafts.desktop !== undefined) return;
+      if (state.hubErrors.desktop !== malformed || state.drafts.desktop !== undefined) return;
       stopSwapping?.();
       connectionStore.getState().connect(second);
     });
@@ -359,7 +359,7 @@ describe("transcript display adapter (package store delegation)", () => {
     let retry: Promise<unknown> | undefined;
     let retryStarted = false;
     const stop = transcriptDisplayStore.subscribe((state) => {
-      if (state.hubError !== "write failed" || retryStarted) return;
+      if (state.hubErrors.desktop !== "write failed" || retryStarted) return;
       // The in-flight flag flips BEFORE the call: the retry's own start
       // publication runs synchronously inside it, and this subscriber must
       // not fire again for the still-present error during that publication.
@@ -375,7 +375,7 @@ describe("transcript display adapter (package store delegation)", () => {
     // back over the retry's cleared slot.
     expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(preset("full"));
     expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
-    expect(transcriptDisplayStore.getState().hubError).toBe("write failed");
+    expect(transcriptDisplayStore.getState().hubError).toBeNull();
     resolveRetry?.({ layout: "desktop", revision: 2, config: toWireConfig(preset("full")) });
     await retry;
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });

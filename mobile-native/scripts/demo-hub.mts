@@ -7,11 +7,12 @@ import { WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
 	MutationReceipt,
+	NavigationInvalidatedPayload,
 	Thread,
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, navigationCapability, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -97,9 +98,30 @@ export async function createDemoHub(
 			directoryComplete: false,
 			auth: demoFleet !== null,
 		},
-		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
+	// Tells every socket connected at that moment that navigation changed,
+	// as a real hub broadcasts navigation changes to every navigation client.
+	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
+		const notification = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "evener/navigation/invalidated",
+			params: payload,
+		});
+		for (const socket of server.clients)
+			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+	}
+	// Makes the fleet's working row ask its question. Returned for tests to
+	// fire on demand.
+	function askQuestion() {
+		broadcastNavigation(requireFleet().askQuestion());
+	}
+	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
+	// one client's connection.
+	const askTimer =
+		demoFleet && fleetOptions?.askAfterSeconds !== undefined
+			? setTimeout(askQuestion, fleetOptions.askAfterSeconds * 1000)
+			: undefined;
 	function resync(thread: Thread) {
 		for (const [socket, refs] of subscribers)
 			if (refs.has(thread.evener.ref) && socket.readyState === WebSocket.OPEN)
@@ -127,10 +149,13 @@ export async function createDemoHub(
 				const params = request.params ?? {};
 				let result: unknown;
 				let changed: Thread | null = null;
+				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
 				switch (request.method) {
 					case "initialize":
-						result = handshake;
+						result = demoFleet
+							? { ...handshake, navigation: demoFleet.navigationCapability() }
+							: handshake;
 						break;
 					case "ping":
 						result = {};
@@ -394,11 +419,18 @@ export async function createDemoHub(
 					case "evener/plugin/list":
 						result = requireFleet().answerPluginList();
 						break;
+					case "evener/archive/set": {
+						const { response, invalidated } = requireFleet().archive(params);
+						result = response;
+						navigationChange = invalidated;
+						break;
+					}
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
+				if (navigationChange) broadcastNavigation(navigationChange);
 			} catch (error) {
 				socket.send(
 					JSON.stringify({
@@ -417,12 +449,26 @@ export async function createDemoHub(
 	});
 	return {
 		origin: `http://127.0.0.1:${address.port}`,
+		askQuestion,
 		close: () =>
 			new Promise<void>((resolve, reject) => {
+				clearTimeout(askTimer);
 				for (const socket of server.clients) socket.terminate();
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+// EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a
+// typo worth stopping on rather than a demo that silently never changes.
+function askAfterSeconds(value: string | undefined): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const seconds = Number(value);
+	if (!Number.isFinite(seconds) || seconds < 0)
+		throw new Error(
+			`EVENER_DEMO_FLEET_ASK_AFTER must be a number of seconds, got ${JSON.stringify(value)}`,
+		);
+	return seconds;
 }
 
 if (
@@ -435,7 +481,11 @@ if (
 			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
 			: undefined,
 		process.env.EVENER_DEMO_FLEET === "1"
-			? { offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1" }
+			? {
+					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
+					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
+					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+				}
 			: undefined,
 	);
 	console.info(

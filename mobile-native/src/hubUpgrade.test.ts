@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	createHubUpgradeController,
-	type UpgradeCheckpoint,
-	type UpgradeStorage,
-} from "./hubUpgrade";
+import { createHubUpgradeController, type UpgradeCheckpoint, type UpgradeStorage } from "./hubUpgrade";
 
 const response = {
 	release: "v1",
@@ -47,24 +43,13 @@ describe("hub upgrade", () => {
 				checkpoints.set(checkpoint.hubId, checkpoint);
 			},
 			remove: (hubId, attemptId) => {
-				if (checkpoints.get(hubId)?.attemptId === attemptId)
-					checkpoints.delete(hubId);
+				if (checkpoints.get(hubId)?.attemptId === attemptId) checkpoints.delete(hubId);
 			},
 		};
 		const first = fixture();
 		const second = fixture();
-		const firstController = createHubUpgradeController(
-			"hub-a",
-			first.client,
-			storage,
-			() => "first",
-		);
-		const secondController = createHubUpgradeController(
-			"hub-a",
-			second.client,
-			storage,
-			() => "second",
-		);
+		const firstController = createHubUpgradeController("hub-a", first.client, storage, () => "first");
+		const secondController = createHubUpgradeController("hub-a", second.client, storage, () => "second");
 		await firstController.start();
 		await secondController.start();
 		expect(second.client.request).not.toHaveBeenCalled();
@@ -77,12 +62,7 @@ describe("hub upgrade", () => {
 			.mockResolvedValueOnce({
 				hub: { version: "running" },
 			} as never);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "attempt-a",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "attempt-a");
 		await controller.start();
 		expect(controller.getSnapshot()).toMatchObject({
 			kind: "installed",
@@ -94,10 +74,7 @@ describe("hub upgrade", () => {
 		const f = fixture();
 		const request = vi.mocked(f.client.request).getMockImplementation();
 		if (!request) throw new Error("fixture request is missing");
-		vi.mocked(f.client.request).mockImplementation(((
-			method: string,
-			params: unknown,
-		) => {
+		vi.mocked(f.client.request).mockImplementation(((method: string, params: unknown) => {
 			if (method === "evener/upgrade") {
 				expect(f.storage.read("hub-a")).toMatchObject({
 					hubId: "hub-a",
@@ -107,12 +84,7 @@ describe("hub upgrade", () => {
 			}
 			return request(method as never, params as never);
 		}) as ConversationClientLike["request"]);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "attempt-a",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "attempt-a");
 		await controller.start();
 		expect(f.requests).toEqual([
 			{ method: "evener/upgrade", params: { requested: "" } },
@@ -129,12 +101,7 @@ describe("hub upgrade", () => {
 		const f = fixture(() => {
 			throw new Error("disk");
 		});
-		const blocked = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "blocked",
-		);
+		const blocked = createHubUpgradeController("hub-a", f.client, f.storage, () => "blocked");
 		expect(blocked.getSnapshot().kind).toBe("storageUnavailable");
 		await blocked.start();
 		expect(f.client.request).not.toHaveBeenCalled();
@@ -142,12 +109,7 @@ describe("hub upgrade", () => {
 		vi.mocked(writable.storage.write).mockImplementation(() => {
 			throw new Error("full");
 		});
-		const controller = createHubUpgradeController(
-			"hub-a",
-			writable.client,
-			writable.storage,
-			() => "writable",
-		);
+		const controller = createHubUpgradeController("hub-a", writable.client, writable.storage, () => "writable");
 		await controller.start();
 		expect(controller.getSnapshot().kind).toBe("storageUnavailable");
 		expect(writable.client.request).not.toHaveBeenCalled();
@@ -155,12 +117,7 @@ describe("hub upgrade", () => {
 	it("retains uncertainty after lost reply and reads overview without replay", async () => {
 		const f = fixture();
 		vi.mocked(f.client.request).mockRejectedValueOnce(new Error("closed"));
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "attempt-a",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "attempt-a");
 		await controller.start();
 		vi.mocked(f.client.request).mockResolvedValueOnce(overview as never);
 		await controller.reconcileAfterReconnect();
@@ -168,9 +125,10 @@ describe("hub upgrade", () => {
 			kind: "uncertain",
 			overview,
 		});
-		expect(
-			vi.mocked(f.client.request).mock.calls.map(([method]) => method),
-		).toEqual(["evener/upgrade", "evener/settings/overview"]);
+		expect(vi.mocked(f.client.request).mock.calls.map(([method]) => method)).toEqual([
+			"evener/upgrade",
+			"evener/settings/overview",
+		]);
 	});
 	it("restores an installed checkpoint without replaying it", async () => {
 		const f = fixture(() => ({
@@ -180,12 +138,7 @@ describe("hub upgrade", () => {
 			startedAt: 1,
 			response,
 		}));
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "attempt-a",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "attempt-a");
 		expect(controller.getSnapshot()).toEqual({ kind: "installed", response });
 		await controller.start();
 		expect(f.client.request).not.toHaveBeenCalled();
@@ -198,12 +151,7 @@ describe("hub upgrade", () => {
 			startedAt: 1,
 			response,
 		}));
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "error",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "error");
 		const review = await controller.reviewAnotherUpdate();
 		expect(controller.getSnapshot()).toMatchObject({
 			kind: "installed",
@@ -216,20 +164,12 @@ describe("hub upgrade", () => {
 	});
 	it("does not expose server error text", async () => {
 		const f = fixture();
-		vi.mocked(f.client.request).mockRejectedValueOnce(
-			new Error("token=secret"),
-		);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "late",
-		);
+		vi.mocked(f.client.request).mockRejectedValueOnce(new Error("token=secret"));
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "late");
 		await controller.start();
 		expect(controller.getSnapshot()).toEqual({
 			kind: "uncertain",
-			message:
-				"Upgrade outcome is uncertain. Refresh to verify before retrying.",
+			message: "Upgrade outcome is uncertain. Refresh to verify before retrying.",
 		});
 	});
 	it("blocks late readback publication after disposal", async () => {
@@ -239,21 +179,13 @@ describe("hub upgrade", () => {
 		});
 		const f = fixture();
 		const entered = Promise.withResolvers<void>();
-		vi.mocked(f.client.request).mockImplementation((async (
-			method: string,
-			params: unknown,
-		) => {
+		vi.mocked(f.client.request).mockImplementation((async (method: string, params: unknown) => {
 			f.requests.push({ method, params });
 			if (method === "evener/upgrade") return response;
 			entered.resolve();
 			return await pending;
 		}) as never);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "original",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "original");
 		const run = controller.start();
 		await entered.promise;
 		controller.dispose();
@@ -290,12 +222,7 @@ it("retains a late upgrade reply on its original hub after switching away", asyn
 			complete = resolve;
 		});
 	}) as ConversationClientLike["request"]);
-	const controllerA = createHubUpgradeController(
-		"hub-a",
-		a.client,
-		storage,
-		() => "original",
-	);
+	const controllerA = createHubUpgradeController("hub-a", a.client, storage, () => "original");
 	const published = vi.fn();
 	controllerA.subscribe(published);
 	const running = controllerA.start();
@@ -303,12 +230,7 @@ it("retains a late upgrade reply on its original hub after switching away", asyn
 	controllerA.dispose();
 	published.mockClear();
 	const b = fixture();
-	const controllerB = createHubUpgradeController(
-		"hub-b",
-		b.client,
-		storage,
-		() => "other",
-	);
+	const controllerB = createHubUpgradeController("hub-b", b.client, storage, () => "other");
 	complete(response);
 	await running;
 	expect(published).not.toHaveBeenCalled();
@@ -316,12 +238,7 @@ it("retains a late upgrade reply on its original hub after switching away", asyn
 	expect(b.client.request).not.toHaveBeenCalled();
 	expect(checkpoints.has("hub-b")).toBe(false);
 	expect(checkpoints.get("hub-a")?.response).toEqual(response);
-	const restored = createHubUpgradeController(
-		"hub-a",
-		a.client,
-		storage,
-		() => "restored",
-	);
+	const restored = createHubUpgradeController("hub-a", a.client, storage, () => "restored");
 	expect(restored.getSnapshot()).toEqual({ kind: "installed", response });
 	await restored.start();
 	expect(a.client.request).toHaveBeenCalledTimes(1);
@@ -336,12 +253,7 @@ it("an older confirmation cannot authorize a later version review", async () => 
 		startedAt: 1,
 		response,
 	});
-	const controller = createHubUpgradeController(
-		"hub-a",
-		f.client,
-		f.storage,
-		() => "new",
-	);
+	const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "new");
 	const oldReview = await controller.reviewAnotherUpdate();
 	await controller.reconcileAfterReconnect();
 	const currentReview = await controller.reviewAnotherUpdate();
@@ -356,23 +268,11 @@ it("keeps a new attempt when an old response arrives in the same clock tick", as
 	try {
 		const f = fixture();
 		const pending = Promise.withResolvers<typeof response>();
-		vi.mocked(f.client.request).mockImplementationOnce(
-			() => pending.promise as never,
-		);
-		const oldController = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "old",
-		);
+		vi.mocked(f.client.request).mockImplementationOnce(() => pending.promise as never);
+		const oldController = createHubUpgradeController("hub-a", f.client, f.storage, () => "old");
 		const oldRun = oldController.start();
 		oldController.dispose();
-		const current = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "new",
-		);
+		const current = createHubUpgradeController("hub-a", f.client, f.storage, () => "new");
 		const review = await current.reviewAnotherUpdate();
 		current.rearm(review);
 		await current.start();
@@ -399,23 +299,14 @@ it("rejects malformed installation and running identity replies without replay",
 	]) {
 		const f = fixture();
 		vi.mocked(f.client.request).mockResolvedValueOnce(invalid as never);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "attempt",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "attempt");
 		await controller.start();
 		expect(controller.getSnapshot().kind).toBe("uncertain");
 		expect(f.storage.read("hub-a")?.response).toBeUndefined();
 		await controller.start();
 		expect(f.client.request).toHaveBeenCalledTimes(1);
 	}
-	for (const invalid of [
-		{},
-		{ hub: { version: " " } },
-		{ hub: { version: "v1", commit: 4 } },
-	]) {
+	for (const invalid of [{}, { hub: { version: " " } }, { hub: { version: "v1", commit: 4 } }]) {
 		const f = fixture();
 		f.storage.write({
 			hubId: "hub-a",
@@ -425,12 +316,7 @@ it("rejects malformed installation and running identity replies without replay",
 			response,
 		});
 		vi.mocked(f.client.request).mockResolvedValueOnce(invalid as never);
-		const controller = createHubUpgradeController(
-			"hub-a",
-			f.client,
-			f.storage,
-			() => "new",
-		);
+		const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "new");
 		const review = await controller.reviewAnotherUpdate();
 		expect(review).toBeFalsy();
 		controller.rearm(review);
@@ -450,12 +336,7 @@ it("preserves the checkpoint and shows a stable error if clearing storage fails"
 	vi.mocked(f.storage.remove).mockImplementation(() => {
 		throw new Error("secret path");
 	});
-	const controller = createHubUpgradeController(
-		"hub-a",
-		f.client,
-		f.storage,
-		() => "new",
-	);
+	const controller = createHubUpgradeController("hub-a", f.client, f.storage, () => "new");
 	const review = await controller.reviewAnotherUpdate();
 	controller.rearm(review);
 	expect(controller.getSnapshot()).toEqual({

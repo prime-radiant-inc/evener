@@ -26,12 +26,7 @@ function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function conversation(value: unknown): value is { ref: string; title: string } {
-	return (
-		object(value) &&
-		typeof value.ref === "string" &&
-		value.ref.length > 0 &&
-		typeof value.title === "string"
-	);
+	return object(value) && typeof value.ref === "string" && value.ref.length > 0 && typeof value.title === "string";
 }
 function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
 	return (
@@ -53,10 +48,7 @@ function pinned(value: unknown): value is NonNullable<SavedLocation["pinned"]> {
 			typeof value.section.title !== "string")
 	)
 		return false;
-	return (
-		value.manage === undefined ||
-		(value.manage === true && value.section !== undefined)
-	);
+	return value.manage === undefined || (value.manage === true && value.section !== undefined);
 }
 function fork(value: unknown): ForkTarget | null {
 	try {
@@ -65,9 +57,7 @@ function fork(value: unknown): ForkTarget | null {
 		return null;
 	}
 }
-function keybindings(
-	value: unknown,
-): value is NonNullable<SavedLocation["keybindings"]> {
+function keybindings(value: unknown): value is NonNullable<SavedLocation["keybindings"]> {
 	if (!object(value)) return false;
 	return (
 		value.editor === undefined ||
@@ -77,9 +67,7 @@ function keybindings(
 			typeof value.editor.chord === "string")
 	);
 }
-function projects(
-	value: unknown,
-): value is NonNullable<SavedLocation["projects"]> {
+function projects(value: unknown): value is NonNullable<SavedLocation["projects"]> {
 	if (!object(value) || typeof value.archived !== "boolean") return false;
 	const project = value.project;
 	return (
@@ -102,37 +90,20 @@ export class LocationRepository {
 		} catch {
 			return null;
 		}
-		if (
-			!object(value) ||
-			typeof value.hubId !== "string" ||
-			!savedHubIds.includes(value.hubId)
-		)
-			return null;
-		if (value.conversation !== undefined && !conversation(value.conversation))
-			return null;
+		if (!object(value) || typeof value.hubId !== "string" || !savedHubIds.includes(value.hubId)) return null;
+		if (value.conversation !== undefined && !conversation(value.conversation)) return null;
 		if (
 			value.keybindings !== undefined &&
 			(!keybindings(value.keybindings) ||
-				[
-					"conversation",
-					"pinned",
-					"pinAssignment",
-					"fork",
-					"deleteSession",
-					"projects",
-				].some((key) => value[key] !== undefined))
+				["conversation", "pinned", "pinAssignment", "fork", "deleteSession", "projects"].some(
+					(key) => value[key] !== undefined,
+				))
 		)
 			return null;
 		if (
 			value.projects !== undefined &&
 			(!projects(value.projects) ||
-				[
-					"conversation",
-					"pinned",
-					"pinAssignment",
-					"fork",
-					"deleteSession",
-				].some((key) => value[key] !== undefined))
+				["conversation", "pinned", "pinAssignment", "fork", "deleteSession"].some((key) => value[key] !== undefined))
 		)
 			return null;
 		const target = fork(value.fork);
@@ -148,23 +119,15 @@ export class LocationRepository {
 			return null;
 		if (
 			value.fork !== undefined &&
-			(!target ||
-				!conversation(value.conversation) ||
-				value.pinned !== undefined ||
-				value.pinAssignment !== undefined)
+			(!target || !conversation(value.conversation) || value.pinned !== undefined || value.pinAssignment !== undefined)
 		)
 			return null;
 		if (
 			value.pinned !== undefined &&
-			(!pinned(value.pinned) ||
-				value.conversation !== undefined ||
-				value.pinAssignment !== undefined)
+			(!pinned(value.pinned) || value.conversation !== undefined || value.pinAssignment !== undefined)
 		)
 			return null;
-		if (
-			value.pinAssignment !== undefined &&
-			(value.pinAssignment !== true || !conversation(value.conversation))
-		)
+		if (value.pinAssignment !== undefined && (value.pinAssignment !== true || !conversation(value.conversation)))
 			return null;
 		// A reader needs its session and stands alone.
 		if (
@@ -178,9 +141,7 @@ export class LocationRepository {
 			return null;
 		return {
 			hubId: value.hubId,
-			...(keybindings(value.keybindings)
-				? { keybindings: value.keybindings }
-				: {}),
+			...(keybindings(value.keybindings) ? { keybindings: value.keybindings } : {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
@@ -216,9 +177,7 @@ export function routeToSave<Route extends { name: string }>(state: {
 	index: number;
 	routes: readonly Route[];
 }): Route | undefined {
-	return state.routes
-		.slice(0, state.index + 1)
-		.findLast((route) => !isSheetRoute(route.name));
+	return state.routes.slice(0, state.index + 1).findLast((route) => !isSheetRoute(route.name));
 }
 export function locationForRoute(
 	route: { name: string; params?: unknown },
@@ -227,11 +186,8 @@ export function locationForRoute(
 	if (!hubId || route.name === "Hubs") return null;
 	if (route.name === "KeybindingPreferences") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
-		const destination =
-			route.params.editor === undefined ? {} : { editor: route.params.editor };
-		return keybindings(destination)
-			? { hubId, keybindings: destination }
-			: null;
+		const destination = route.params.editor === undefined ? {} : { editor: route.params.editor };
+		return keybindings(destination) ? { hubId, keybindings: destination } : null;
 	}
 	if (route.name === "Projects" || route.name === "Project") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
@@ -265,11 +221,7 @@ export function locationForRoute(
 				}
 			: null;
 	}
-	if (
-		route.name === "PinSections" ||
-		route.name === "PinnedSection" ||
-		route.name === "PinSectionEditor"
-	) {
+	if (route.name === "PinSections" || route.name === "PinnedSection" || route.name === "PinSectionEditor") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
 		if (route.name === "PinSections") return { hubId, pinned: {} };
 		const destination = {
@@ -277,6 +229,12 @@ export function locationForRoute(
 			...(route.name === "PinSectionEditor" ? { manage: true as const } : {}),
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
+	}
+	// A subagent's session reopens as its coordinator's (ruling 21).
+	if (route.name === "Subagent") {
+		if (!object(route.params) || route.params.hubId !== hubId || !object(route.params.coordinator)) return null;
+		const session = { ref: route.params.coordinator.ref, title: route.params.coordinator.title };
+		return conversation(session) ? { hubId, conversation: { ref: session.ref, title: session.title } } : null;
 	}
 	if (route.name === "Reader") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
@@ -287,28 +245,20 @@ export function locationForRoute(
 			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
 			: null;
 	}
+	// A coordinator's Subagents list reopens as its session (ruling 21).
 	if (
 		route.name === "Conversation" ||
+		route.name === "Subagents" ||
 		route.name === "PinAssignment" ||
 		route.name === "SessionDeletion"
 	) {
-		if (
-			!object(route.params) ||
-			route.params.hubId !== hubId ||
-			!conversation(route.params)
-		)
-			return null;
-		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref))
-			return null;
+		if (!object(route.params) || route.params.hubId !== hubId || !conversation(route.params)) return null;
+		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref)) return null;
 		return {
 			hubId,
 			conversation: { ref: route.params.ref, title: route.params.title },
-			...(route.name === "PinAssignment"
-				? { pinAssignment: true as const }
-				: {}),
-			...(route.name === "SessionDeletion"
-				? { deleteSession: true as const }
-				: {}),
+			...(route.name === "PinAssignment" ? { pinAssignment: true as const } : {}),
+			...(route.name === "SessionDeletion" ? { deleteSession: true as const } : {}),
 		};
 	}
 	return { hubId };
@@ -366,8 +316,7 @@ export function restoredStack(location: SavedLocation | null) {
 				title: location.pinned.section.title,
 			};
 			routes.push({ name: "PinnedSection", params });
-			if (location.pinned.manage)
-				routes.push({ name: "PinSectionEditor", params });
+			if (location.pinned.manage) routes.push({ name: "PinSectionEditor", params });
 		}
 	}
 	if (location?.conversation)

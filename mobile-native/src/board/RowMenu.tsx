@@ -127,7 +127,11 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 	return (
 		<Sheet done={{ label: "Close", onPress: () => sheet.finish() }}>
 			<ScrollView contentInsetAdjustmentBehavior="automatic">
-				<RowPreviewCard item={item} hostLabel={host.hostLabel} onPress={() => leaveThen(() => host.openSession(item))} />
+				<RowPreviewCard
+					item={item}
+					hostLabel={host.hostLabel}
+					onPress={() => leaveThen(() => host.openSession(item))}
+				/>
 				{host.actions(item, archived).map((action) => (
 					<Pressable
 						key={action}

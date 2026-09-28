@@ -27,12 +27,17 @@ const CLASS = {
 };
 
 // Error kind -> empty-state copy. The raw endpoint shares the HTML variant's
-// guard/status contract exactly (cmd/evener-hub/doc_serve.go:57-73): 403 for a
-// path that escapes the session cwd, 404 for a missing file or an unknown /
-// non-local session, and a generic error for anything else.
+// guard/status contract exactly (cmd/evener-hub/doc_serve.go): 403 for a path
+// that escapes the session cwd, 404 for a missing file or an unknown session,
+// 501 for a session whose host predates remote document reads
+// (cmd/evener-hub/doc_proxy.go), and a generic error for anything else.
 const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   forbidden: { title: "Access denied", hint: "This path is outside the session's working directory." },
   "not-found": { title: "File not available", hint: "This file was not found in the session's working directory." },
+  "host-unsupported": {
+    title: "Open it on the host",
+    hint: "This session's host runs an older Evener that can't send its files here yet.",
+  },
   error: { title: "Couldn't load file", hint: "The hub returned an unexpected error." },
 };
 

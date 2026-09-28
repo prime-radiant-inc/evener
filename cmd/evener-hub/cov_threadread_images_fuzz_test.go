@@ -192,12 +192,12 @@ func covDocServeSeed(t *testing.T) {
 	liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
 	_, _ = liveWeb.localSessionCWD("live")
 	_, _ = liveWeb.localSessionCWD("missing")
-	_, _ = readDocFile(cwd)
-	_, _ = readDocFile(filepath.Join(cwd, "missing"))
+	_, _ = readDocFile(cwd, cwd)
+	_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
 	if err := os.WriteFile(filepath.Join(cwd, "empty"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = readDocFile(filepath.Join(cwd, "empty"))
+	_, _ = readDocFile(cwd, filepath.Join(cwd, "empty"))
 	large := append(make([]byte, 8193), 0)
 	_ = looksBinaryBytes(large)
 }

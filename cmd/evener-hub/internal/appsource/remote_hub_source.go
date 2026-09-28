@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -600,6 +601,17 @@ func (s *RemoteHubSource) FetchSessionImage(ctx context.Context, params appwire.
 	return out, nil
 }
 
+// FetchSessionDocument reads one document out of the owning host's own session
+// folder, for the controller's /doc/file proxy (S7). Like FetchSessionImage it
+// is attached-only and needs no translation: it carries bytes, not refs.
+func (s *RemoteHubSource) FetchSessionDocument(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+	var out appwire.SessionDocumentResponse
+	if err := s.call(ctx, appwire.MethodEvenerSessionDocument, params, &out); err != nil {
+		return appwire.SessionDocumentResponse{}, err
+	}
+	return out, nil
+}
+
 // ReadSessionActivity reads the host's own live sessions' pulse meters for the
 // controller's evener/activity/read (S5). Refs are rewritten into the host's
 // namespace on the way out and back into the controller's on the way in; a
@@ -1122,13 +1134,7 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 // remotePositionCompare orders two positions the way the paging package does:
 // negative when a is older, zero when equal, positive when newer.
 func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
-	if a.Entry < b.Entry || (a.Entry == b.Entry && a.Item < b.Item) {
-		return -1
-	}
-	if a == b {
-		return 0
-	}
-	return 1
+	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh

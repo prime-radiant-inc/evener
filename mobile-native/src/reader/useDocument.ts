@@ -4,16 +4,11 @@
 // returns to the front. A re-read keeps the shown document until the new one
 // lands, and a re-read that fails keeps it: a failure is transient, while a
 // missing or forbidden file really changed.
-import { filenameOf } from "@evener/appwire-client/docContent";
-import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import { HubProfiles } from "../connection";
-import { nativeDocPort } from "../nativeDocPort";
-import { type LoadedDocument, loadDocument } from "./documentSource";
-
-const hubs = new HubProfiles(SecureStore);
+import type { LoadedDocument } from "./documentSource";
+import { readHubDocument } from "./hubDocument";
 
 export function useDocument(
 	hubId: string,
@@ -30,13 +25,7 @@ export function useDocument(
 		generation.current += 1;
 		const mine = generation.current;
 		void (async () => {
-			let next: LoadedDocument;
-			try {
-				next = await loadDocument(nativeDocPort(origin, await hubs.token(hubId)), sessionRef, path);
-			} catch {
-				// The token couldn't be read: as transient as a failed request.
-				next = { kind: "failed", title: filenameOf(path) };
-			}
+			const next = await readHubDocument(origin, hubId, sessionRef, path);
 			if (mine !== generation.current) return;
 			setDocument((shown) => (next.kind === "failed" && shown !== null ? shown : next));
 		})();

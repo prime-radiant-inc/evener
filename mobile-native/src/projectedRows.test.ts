@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	hydrateThread,
-	makeTranscriptDisplayConfig,
-} from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import type {
 	AskQuestionRef,
 	ContentLevel,
@@ -16,12 +13,7 @@ import type {
 	TurnModel,
 	Turn,
 } from "@evener/appwire-client";
-import {
-	liveAsksFor,
-	projectConversation,
-	projectedRow,
-	projectTimeline,
-} from "./projectedRows";
+import { liveAsksFor, noteFromSteer, projectConversation, projectedRow, projectTimeline } from "./projectedRows";
 import type { MobileTimelineItem } from "./projectedRows";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
@@ -112,10 +104,43 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
-	it("maps an agent message to the assistant row and joins pending deltas", () => {
+	it("maps a human-note steer to a note row, stripping the daemon's prefix (spec 8.8)", () => {
 		const row = projectedRow(
-			itemEntry(item({ type: "agentMessage", text: "hel", pendingText: ["lo", "!"] }), true),
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: Fix causes",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
 		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "Fix causes", turnId: "t1" });
+	});
+
+	it("maps a cleared human-note steer to an empty note row", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: (whiteboard cleared)",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "", turnId: "t1" });
+	});
+
+	it("keeps a user-sourced steer without the human-note kind as a user row", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "steering", text: "steer", source: "user", steeringKind: "interrupted" })),
+		);
+		expect(row).toMatchObject({ kind: "user" });
+	});
+
+	it("maps an agent message to the assistant row and joins pending deltas", () => {
+		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "hel", pendingText: ["lo", "!"] }), true));
 		expect(row).toEqual<MobileTimelineItem>({
 			kind: "assistant",
 			id: "i1",
@@ -315,10 +340,9 @@ describe("projectedRow — item entries", () => {
 	});
 
 	it("maps an answerable ask_user call to a question row", () => {
-		const row = projectedRow(
-			itemEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })),
-			{ asks: asksFor("call-1") },
-		);
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })), {
+			asks: asksFor("call-1"),
+		});
 		expect(row).toEqual<MobileTimelineItem>({
 			kind: "question",
 			id: "i1",
@@ -348,6 +372,20 @@ describe("projectedRow — item entries", () => {
 
 	it("returns null for a ProjectedEntry kind outside the known union", () => {
 		expect(projectedRow({ kind: "futureKind" } as unknown as ProjectedEntry)).toBeNull();
+	});
+});
+
+describe("noteFromSteer (spec 8.8)", () => {
+	it("strips the daemon's prefix", () => {
+		expect(noteFromSteer("human updated their whiteboard: Fix causes")).toBe("Fix causes");
+	});
+
+	it("reads the cleared marker as an empty note", () => {
+		expect(noteFromSteer("human updated their whiteboard: (whiteboard cleared)")).toBe("");
+	});
+
+	it("returns text with no known prefix unchanged", () => {
+		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
 	});
 });
 
@@ -516,10 +554,7 @@ describe("projectedRow — intent entries", () => {
 	// routed through its intent entry keeps everything.
 	it("keeps a failed call's full detail and renders it critical, not summary-only", () => {
 		const row = projectedRow(
-			intentEntry(
-				item({ type: "commandExecution", toolName: "shell", error: "boom", exitCode: 1 }),
-				{ failed: true },
-			),
+			intentEntry(item({ type: "commandExecution", toolName: "shell", error: "boom", exitCode: 1 }), { failed: true }),
 		);
 		expect(row).toMatchObject({
 			kind: "activity",
@@ -554,9 +589,7 @@ describe("projectedRow — intent entries", () => {
 		// The projector sets intent.failed (hasItemFailure at projection time); the
 		// adapter must render a failed activity from that classification rather
 		// than re-deriving from the item alone.
-		const row = projectedRow(
-			intentEntry(item({ type: "commandExecution", toolName: "shell" }), { failed: true }),
-		);
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell" }), { failed: true }));
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
 });
@@ -653,9 +686,7 @@ describe("projectedRow: turn id, origin, and step timing", () => {
 	it("parses a tool's started/completed timestamps into its activity detail", () => {
 		const startedAt = "2024-01-01T00:00:00.000Z";
 		const completedAt = "2024-01-01T00:00:01.500Z";
-		const row = projectedRow(
-			itemEntry(item({ type: "commandExecution", toolName: "shell", startedAt, completedAt })),
-		);
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", startedAt, completedAt })));
 		expect(row).toMatchObject({
 			kind: "activity",
 			detail: { startedAtMs: Date.parse(startedAt), endedAtMs: Date.parse(completedAt) },
@@ -738,9 +769,7 @@ function wireTurn(id: string, items: ThreadItem[], over: Partial<Turn> = {}): Tu
 	return { id, items, itemsView: "default", status: "completed", ...over };
 }
 
-function wireItem(
-	over: Partial<ThreadItem> & { id: string; type: string },
-): ThreadItem {
+function wireItem(over: Partial<ThreadItem> & { id: string; type: string }): ThreadItem {
 	return { turnId: "turn-1", ...over } as ThreadItem;
 }
 
@@ -829,9 +858,7 @@ describe("completed question recaps", () => {
 	});
 
 	it("preserves an authoritative description without adding inferred details", () => {
-		expect(recap({ description: "authored-description" }).detail.description).toBe(
-			"authored-description",
-		);
+		expect(recap({ description: "authored-description" }).detail.description).toBe("authored-description");
 	});
 
 	it("keeps failed questions non-actionable with their question context and error", () => {
@@ -991,9 +1018,21 @@ function differentialThread(): Thread {
 					images: [{ type: "image", name: "cat.png", mediaType: "image/png", url: "http://x/cat.png" }],
 				}),
 				wireItem({ id: "steer-user", turnId: "t1", type: "steering", source: "user", text: "include the diff" }),
-				wireItem({ id: "sys-prompt", turnId: "t1", type: "systemMessage", eventKind: "system_prompt", text: "PROMPT LOADED" }),
+				wireItem({
+					id: "sys-prompt",
+					turnId: "t1",
+					type: "systemMessage",
+					eventKind: "system_prompt",
+					text: "PROMPT LOADED",
+				}),
 				wireItem({ id: "sys-error", turnId: "t1", type: "systemMessage", eventKind: "error", text: "provider hiccup" }),
-				wireItem({ id: "sys-compact", turnId: "t1", type: "systemMessage", eventKind: "compaction", text: "context compacted" }),
+				wireItem({
+					id: "sys-compact",
+					turnId: "t1",
+					type: "systemMessage",
+					eventKind: "compaction",
+					text: "context compacted",
+				}),
 				wireItem({
 					id: "c1",
 					turnId: "t1",
@@ -1005,8 +1044,23 @@ function differentialThread(): Thread {
 					completedAt: 1500,
 					callId: "call-1",
 				}),
-				wireItem({ id: "c2", turnId: "t1", type: "commandExecution", toolName: "grep", description: "grep the results", status: "completed" }),
-				wireItem({ id: "c3", turnId: "t1", type: "commandExecution", toolName: "shell", status: "completed", error: "boom", exitCode: 1 }),
+				wireItem({
+					id: "c2",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "grep",
+					description: "grep the results",
+					status: "completed",
+				}),
+				wireItem({
+					id: "c3",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "shell",
+					status: "completed",
+					error: "boom",
+					exitCode: 1,
+				}),
 				wireItem({ id: "r1", turnId: "t1", type: "reasoning", text: "auditing quietly", status: "completed" }),
 				wireItem({ id: "w1", turnId: "t1", type: "warning", text: "disk almost full", status: "completed" }),
 				wireItem({ id: "unk1", turnId: "t1", type: "telemetryPing", text: "opaque payload" }),
@@ -1023,7 +1077,14 @@ function differentialThread(): Thread {
 			wireTurn(
 				"t2",
 				[
-					wireItem({ id: "c4", turnId: "t2", type: "commandExecution", toolName: "read_file", description: "read config", status: "inProgress" }),
+					wireItem({
+						id: "c4",
+						turnId: "t2",
+						type: "commandExecution",
+						toolName: "read_file",
+						description: "read config",
+						status: "inProgress",
+					}),
 					wireItem({
 						id: "c5",
 						turnId: "t2",

@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, PRs 22 to 25 (S11 and S14) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md`, and PRs 30 to 33 (S6, S15 and S16) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, PRs 22 to 25 (S11 and S14) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md`, PRs 30 to 33 (S6, S15 and S16) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md`, and PRs 34 and 35 (S9 and S7) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s7-s9.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -57,12 +57,14 @@
 | 20-21 | Scoped approvals (S12a daemon grants, S12b wire and hub) | S12 | design | none |
 | 22-23 | Hub notices feed (S11a derived notices, S11b sign-in state) | S11 | full, in the S11-S14 plan | none |
 | 24-25 | Message-text search (S14a index, S14b results) | S14 | full, in the S11-S14 plan | PR 25 needs PR 24 |
-| 26-27 | Remote document and image proxying (S7a host methods, S7b controller proxy) | S7 | design | none |
-| 28 | Document revision identity | S9 | design | none |
+| 26-27 | Remote document and image proxying: renumbered, see PR 35 | S7 | moved | |
+| 28 | Document revision identity: renumbered, see PR 34 | S9 | moved | |
 | 29 | Hub-stored launch recipes | S8 | design | none |
 | 30-31 | Direct subagent stop (S6a daemon method, S6b hub routing and capability) | S6 | full, in the S15-S16-S6 plan | PR 31 needs PR 30 |
 | 32 | A session's sandbox mode and network on the thread read | S15 | full, in the S15-S16-S6 plan | none |
 | 33 | Transcript records for queued delivery and approval decisions | S16 | full, in the S15-S16-S6 plan | none |
+| 34 | A document read names its revision | S9 | full, in the S7-S9 plan | none |
+| 35 | Documents in remote sessions (images already proxy, #2462) | S7 | full, in the S7-S9 plan | PR 34 |
 
 Documents and artifacts named in the final message (the last part of S1) wait for the shared-artifacts work to reach main; no PR is planned for it here and the phone keeps its fallback (no chips).
 
@@ -1421,10 +1423,12 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S7: Remote document and image proxying (PRs 26-27, design level)
+## S7: Remote document and image proxying (PR 35, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s7-s9.md` (PR 35, rulings 7 to 14). It departs from the design below. Images already proxy: #2462 (multi-host component 05) added `evener/session/image` and the controller's image-route proxy, so S7 is documents only, in one PR. The method is `evener/session/document` with `{sessionId, path}`, beside the image method, and both stay off the host admin proxy. A host that predates the method answers 501, which keeps the phone's "Open it on the host" notice.
 
 - **Adds.** Plans, documents and images in a session on another host render on the phone.
-- **Today.** The controller reaches a host through `ssh ... hub attach --stdio`, which carries AppWire messages only (`cmd/evener-hub/internal/sshconn/doc.go:6-14`, `cmd/evener-hub/attach.go:25-35`). `/doc/file` takes `session`, `path` and `format` and refuses a host-qualified ref with a 404 (`doc_serve.go:43-44`, `web.go:349-355`). Remote image URLs are blanked on purpose (`stripRemoteImageRoutes`, `app_rpc.go:220-281`). The web opens a doc pane for a remote session that shows "File not available" (`fileOpenBeside.tsx:55-60`).
+- **Today.** The controller reaches a host through `ssh ... hub attach --stdio`, which carries AppWire messages only (`cmd/evener-hub/internal/sshconn/doc.go:6-14`, `cmd/evener-hub/attach.go:25-35`). `/doc/file` takes `session`, `path` and `format` and refuses a host-qualified ref with a 404 (`doc_serve.go:43-44`, `web.go:349-355`). Remote image URLs are blanked on purpose (`stripRemoteImageRoutes`, `app_rpc.go:220-281`). The web opens a doc pane for a remote session that shows "File not available" (`DocPane.tsx`'s `ERROR_COPY`; `fileOpenBeside.tsx` has no local-only check).
 - **Design.** PR 26: read-only methods on every hub, `evener/doc/read` with params `{ref, path}` returning `{data (base64), mediaType, truncated, totalSize, revision}` (512 KiB cap, the same path confinement as `/doc/file`), and `evener/image/read` with params `{ref, sha}` (images up to 8 MiB, about 11 MB base64, inside the 128 MiB message cap). PR 27: the controller's `/doc/file`, `/doc/image` and `/s/<ref>/images/<sha>` forward a host ref over the attached client; proxy URLs replace the blanking; both methods go on the host proxy allow-list; the web drops its local-only check.
 - **Fallback.** An "Open on the host" notice.
 - **Tests.** Host-side handlers (confinement, cap, truncation), controller forwarding with a scripted remote source, the web's remote doc pane.
@@ -1432,7 +1436,9 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S9: Document revision identity (PR 28, design level)
+## S9: Document revision identity (PR 34, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s7-s9.md` (PR 34, rulings 1 to 6). It departs from the design below. The revision is the sha256 of the whole file (up to 16 MiB), not a weak tag from size, time and the head's hash; the time rides as `X-Doc-Modified-At` in Unix milliseconds, not `Last-Modified`; and `DocFetch` gains no request headers, since `Cache-Control: private, no-cache` lets a browser revalidate on its own.
 
 - **Adds.** "3 changes since you read it yesterday" in the Reader (spec 10.2).
 - **Today.** `/doc/file` sends no `ETag` or `Last-Modified` and ignores `If-None-Match` (`doc_serve.go:38-79`, `:208-219`). `/doc/image` sends a sha256 `ETag` but never answers 304 (`:123-126`). `DocFileContent` has no revision, and `DocFetch` takes only a URL (`appwire-client/typescript/docContent.ts:16-26`, `:66`).

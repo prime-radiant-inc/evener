@@ -9,10 +9,12 @@ import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-nat
 import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
 import { useReduceMotion } from "../reduceMotion";
 import { useColors, useTextScale } from "../ui";
+import { FreshDot } from "../reader/FreshDot";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
 	subagents: "person.2",
+	files: "doc.text",
 	tasks: "checklist",
 	goal: "target",
 	queue: "tray",
@@ -29,18 +31,22 @@ export function SessionHeader({
 	hidden,
 	onChip,
 	notes,
+	find,
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
 	hidden: boolean;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
+	/** The find bar, in the chips' place while find is open (spec 8.7). It
+	 * stays put while the list scrolls from match to match. */
+	find?: ReactNode;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
-	const offset = useSlide(hidden ? -rowHeight : 0);
-	const hasRow = chips.length > 0 || notes != null;
+	const offset = useSlide(hidden && find == null ? -rowHeight : 0);
+	const hasRow = chips.length > 0 || notes != null || find != null;
 	if (status === null && !hasRow) return null;
 	return (
 		// Clipping keeps the slid-away row from drawing over the nav bar, and
@@ -78,7 +84,7 @@ export function SessionHeader({
 					onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
 					style={{ transform: [{ translateY: offset }] }}
 				>
-					{chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null}
+					{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
 					{notes}
 				</Animated.View>
 			) : null}
@@ -160,6 +166,7 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				{chip.failed ? " · " : null}
 				{chip.failed ? <Text style={{ color: palette.dangerInk }}>{chip.failed}</Text> : null}
 			</Text>
+			{chip.dot ? <FreshDot /> : null}
 		</Pressable>
 	);
 }

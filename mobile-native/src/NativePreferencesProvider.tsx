@@ -1,13 +1,6 @@
 import * as Crypto from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
-import {
-	createContext,
-	type ReactNode,
-	useContext,
-	useEffect,
-	useRef,
-	useState,
-} from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import {
 	decodeKeybindingDraftFields,
 	discardStoredKeybindingDraft,
@@ -15,11 +8,7 @@ import {
 	errorText,
 	isReadableKeybindingDraft,
 } from "@evener/appwire-client";
-import type {
-	AppwireClient,
-	DiscardStoredDraftResult,
-	TranscriptDisplayConfigV1,
-} from "@evener/appwire-client";
+import type { AppwireClient, DiscardStoredDraftResult, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
@@ -30,10 +19,7 @@ import {
 	readDraftOutcome,
 	readDraftOutcomeWithValue,
 } from "./nativePreferenceDrafts";
-import type {
-	NativePreferences,
-	NativePreferencesSnapshot,
-} from "./nativePreferences";
+import type { NativePreferences, NativePreferencesSnapshot } from "./nativePreferences";
 import { keybindingsErrorMessage } from "./nativePreferences";
 
 interface Preferences {
@@ -112,19 +98,12 @@ function reconcileRetainedDraftProjection(
 			writeUncertain = fields.writeUncertain;
 			storageUnavailable = false;
 			draftUnreadable = false;
-			conflict =
-				draft !== null &&
-				keybindings.confirmed !== null &&
-				draft.revision !== keybindings.confirmed.revision;
+			conflict = draft !== null && keybindings.confirmed !== null && draft.revision !== keybindings.confirmed.revision;
 			draftError = null;
 			break;
 		}
 	}
-	const error = keybindingsErrorMessage(
-		draftError,
-		keybindings.hubError,
-		keybindings.loadError,
-	);
+	const error = keybindingsErrorMessage(draftError, keybindings.hubError, keybindings.loadError);
 	if (
 		keybindings.draft === draft &&
 		keybindings.writeUncertain === writeUncertain &&
@@ -171,20 +150,12 @@ function retainedNudgeRejectionProjection(
 		keybindings: {
 			...keybindings,
 			draftError: message,
-			error: keybindingsErrorMessage(
-				message,
-				keybindings.hubError,
-				keybindings.loadError,
-			),
+			error: keybindingsErrorMessage(message, keybindings.hubError, keybindings.loadError),
 		},
 	};
 }
 
-export function NativePreferencesProvider({
-	children,
-}: {
-	children: ReactNode;
-}) {
+export function NativePreferencesProvider({ children }: { children: ReactNode }) {
 	const { activeProfile, client, state } = useConnection();
 	const hubId = activeProfile?.id ?? null;
 	const [bound, setBound] = useState<{
@@ -257,20 +228,12 @@ export function NativePreferencesProvider({
 			return snapshot === previous.snapshot ? previous : { ...previous, snapshot };
 		});
 	};
-	const reconcileRetainedDraft = (
-		expectedClient: AppwireClient | undefined,
-		result: DraftReadWithValue,
-	) =>
-		patchRetainedSnapshot(expectedClient, (snapshot) =>
-			reconcileRetainedDraftProjection(snapshot, result),
-		);
+	const reconcileRetainedDraft = (expectedClient: AppwireClient | undefined, result: DraftReadWithValue) =>
+		patchRetainedSnapshot(expectedClient, (snapshot) => reconcileRetainedDraftProjection(snapshot, result));
 	useEffect(() => {
 		if (!hubId || !bound || (bound.client === client && state === "ready")) return;
 		const expectedClient = bound.client;
-		const result = readDraftOutcomeWithValue(
-			nativeKeybindingDrafts(hubId, backend),
-			isReadableKeybindingDraft,
-		);
+		const result = readDraftOutcomeWithValue(nativeKeybindingDrafts(hubId, backend), isReadableKeybindingDraft);
 		reconcileRetainedDraft(expectedClient, result);
 	}, [hubId, client, state, bound?.client]);
 	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | "storageUnavailable" | null => {
@@ -376,8 +339,7 @@ export function NativePreferencesProvider({
 						config:
 							snapshot.transcriptMobile.support === "unsupported"
 								? null
-								: (snapshot.transcriptMobile.confirmed?.config ??
-									(previous?.hubId === hubId ? previous.config : null)),
+								: (snapshot.transcriptMobile.confirmed?.config ?? (previous?.hubId === hubId ? previous.config : null)),
 					}));
 				};
 				unsubscribe = model.subscribe(update);

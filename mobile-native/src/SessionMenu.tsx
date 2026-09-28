@@ -2,12 +2,7 @@ import { Modal, Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, Copy, styles, useColors } from "./ui";
 
-export type SessionDestination =
-	| "session"
-	| "tasks"
-	| "activity"
-	| "pin"
-	| "delete";
+export type SessionDestination = "session" | "tasks" | "notes" | "activity" | "pin" | "delete";
 
 export function SessionMenu({
 	title,
@@ -61,11 +56,7 @@ export function SessionMenu({
 						<Action tone="quiet" onPress={close}>
 							Cancel
 						</Action>
-						{deletionAvailable ? (
-							<Action onPress={() => choose("delete")}>
-								Delete saved session
-							</Action>
-						) : null}
+						{deletionAvailable ? <Action onPress={() => choose("delete")}>Delete saved session</Action> : null}
 					</ScrollView>
 				</SafeAreaView>
 			</View>

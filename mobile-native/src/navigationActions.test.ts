@@ -29,44 +29,45 @@ it("does not call an empty-journal reconciliation complete after another model s
 	release();
 	await read;
 	expect(journal.load()).toBe(other);
-	expect(actions.getSnapshot().uncertain).toBe(true);
+	expect(actions.getSnapshot()).toMatchObject({
+		uncertain: true,
+		recovery: other,
+		error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+	});
 });
-it.each(["acknowledge", "finish"] as const)(
-	"keeps recovery when %s fails after acknowledgement",
-	async (method) => {
-		const journal = journalFixture();
-		const original = journal[method];
-		journal[method] = () => {
-			throw Error("disk unavailable");
-		};
-		let requests = 0;
-		const client = {
-			request: async () => {
-				requests++;
-				return { ok: true, navigation: { generation_id: "g", targets: [] } };
-			},
-		} as unknown as ConversationClientLike;
-		const actions = new NavigationActions(
-			client,
-			async () => {},
-			() => true,
-			async () => {},
-			journal,
-		);
-		await actions.unpin({ sessionRef: "local:s" });
-		expect(journal.load()).not.toBeNull();
-		expect(actions.getSnapshot()).toMatchObject({
-			uncertain: true,
-			storageUnavailable: true,
-		});
-		await actions.unpin({ sessionRef: "local:s" });
-		expect(requests).toBe(1);
-		Object.assign(journal, { [method]: original });
-		await actions.reconcile();
-		expect(journal.load()).toBeNull();
-		expect(requests).toBe(1);
-	},
-);
+it.each(["acknowledge", "finish"] as const)("keeps recovery when %s fails after acknowledgement", async (method) => {
+	const journal = journalFixture();
+	const original = journal[method];
+	journal[method] = () => {
+		throw Error("disk unavailable");
+	};
+	let requests = 0;
+	const client = {
+		request: async () => {
+			requests++;
+			return { ok: true, navigation: { generation_id: "g", targets: [] } };
+		},
+	} as unknown as ConversationClientLike;
+	const actions = new NavigationActions(
+		client,
+		async () => {},
+		() => true,
+		async () => {},
+		journal,
+	);
+	await actions.unpin({ sessionRef: "local:s" });
+	expect(journal.load()).not.toBeNull();
+	expect(actions.getSnapshot()).toMatchObject({
+		uncertain: true,
+		storageUnavailable: true,
+	});
+	await actions.unpin({ sessionRef: "local:s" });
+	expect(requests).toBe(1);
+	Object.assign(journal, { [method]: original });
+	await actions.reconcile();
+	expect(journal.load()).toBeNull();
+	expect(requests).toBe(1);
+});
 
 function journalFixture() {
 	let checkpoint: NavigationActionCheckpoint | null = null;
@@ -333,10 +334,7 @@ describe("navigation organization actions", () => {
 			() => true,
 			async () => {},
 		);
-		const run = actions.archive(
-			{ kind: "project", id: "project-key", workingDir: "/workspace" },
-			true,
-		);
+		const run = actions.archive({ kind: "project", id: "project-key", workingDir: "/workspace" }, true);
 		await actions.favorite("project-key", true);
 		expect(sent).toEqual([
 			{
@@ -495,9 +493,7 @@ describe("navigation organization actions", () => {
 		let current = true;
 		let finishRefresh!: () => void;
 		let markRefreshStarted!: () => void;
-		const refreshStarted = new Promise<void>(
-			(resolve) => (markRefreshStarted = resolve),
-		);
+		const refreshStarted = new Promise<void>((resolve) => (markRefreshStarted = resolve));
 		const client = {
 			request: async () => ({
 				ok: true,
@@ -546,6 +542,8 @@ describe("navigation organization actions", () => {
 		expect(actions.getSnapshot()).toMatchObject({
 			pending: false,
 			uncertain: true,
+			recovery: null,
+			error: "Could not load the current navigation. Refresh before trying again.",
 		});
 	});
 
@@ -631,5 +629,72 @@ describe("navigation organization actions", () => {
 		await run;
 		expect(refreshed).toBe(true);
 		expect(actions.getSnapshot().uncertain).toBe(false);
+	});
+
+	it("words a failed first read as a load failure, not a previous change", async () => {
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				throw new Error("read failed");
+			},
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			recovery: null,
+			error: "Could not load the current navigation. Refresh before trying again.",
+		});
+	});
+
+	it("keeps the previous-change wording when a checkpoint precedes the failed read", async () => {
+		const journal = journalFixture();
+		journal.begin({
+			kind: "assignPin",
+			params: { sessionRef: "local:s", sectionName: "Focus" },
+		});
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				throw new Error("read failed");
+			},
+			journal,
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+		});
+	});
+
+	it("surfaces a checkpoint written while a failing read was in flight", async () => {
+		const journal = journalFixture();
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				// Another screen sharing the journal starts a change mid-read, then
+				// this screen's own read fails.
+				journal.begin({
+					kind: "unpin",
+					params: { sessionRef: "local:new" },
+				});
+				throw new Error("read failed");
+			},
+			journal,
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			recovery: journal.load(),
+			error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+		});
 	});
 });

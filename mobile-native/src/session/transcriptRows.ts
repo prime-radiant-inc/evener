@@ -3,6 +3,8 @@
 //   ran go test (2 failed), edited 3 files"), and a step's images ride with it;
 // - the step in progress, and a live thought, are left to the status tray
 //   (ruling 10);
+// - a question still waiting is left to the ask dock, which is the question
+//   while it is open;
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
 import {
@@ -38,17 +40,31 @@ function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);
 }
 
-export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTimes[], timeZone?: string): TimelineRow[] {
+export function sessionRows(
+	rows: readonly TimelineRow[],
+	turns: readonly TurnTimes[],
+	timeZone?: string,
+): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
+	const marked = new Set<string>();
 	for (const row of rows) {
-		if (inTray(row)) continue;
+		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
 		if (turnId !== undefined && turnId !== lastTurn) {
-			const marker = timeMarker(byId, turnId, lastTurn, timeZone);
-			if (marker) out.push(marker);
+			// One turn can own rows another turn's row sits between: the reducer
+			// seats an overlay notice in the display turn that holds its recorded
+			// item, and the notice keeps its own turn id. When the outer turn
+			// resumes, its start would be compared against the notice's turn (no
+			// times, read as a gap) and a second marker for a turn already marked
+			// would appear. A turn is marked at most once.
+			if (!marked.has(turnId)) {
+				marked.add(turnId);
+				const marker = timeMarker(byId, turnId, lastTurn, timeZone);
+				if (marker) out.push(marker);
+			}
 			// A run never spans a turn change, marked or not: an idle gap too
 			// short for a marker (a goal continuation) still ends the run, or its
 			// duration would cover the gap and it could not be found by turn.
@@ -71,7 +87,9 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 			continue;
 		}
 		if (row.kind === "attachments" && run) {
-			const owner = run.steps.find((candidate) => (candidate.transcriptKey ?? candidate.id) === row.sourceTranscriptKey);
+			const owner = run.steps.find(
+				(candidate) => (candidate.transcriptKey ?? candidate.id) === row.sourceTranscriptKey,
+			);
 			if (owner) {
 				owner.images = [...(owner.images ?? []), ...row.items];
 				continue;
@@ -86,7 +104,9 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 /** The questions an earlier ask_user row shows (QuestionHistory), or
  * undefined when its arguments name none it can read. */
 export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel) : undefined;
+	return row.label === "ask_user"
+		? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel)
+		: undefined;
 }
 
 // A composed answer reply: "[answers]" and then numbered lines like
@@ -96,13 +116,18 @@ const ANSWER_REPLY = /^\[answers\]\n\d+\. \[/;
 /** Drops the "[answers]" message you sent a question, once a question row
  * that shows its questions came before it: that row shows your answer
  * beneath the question (spec 8.2, "Question (history)"). A message that only
- * looks like answers, or follows a question row that can't show itself,
- * stays. */
+ * looks like answers, or whose own question row can't show itself, stays. */
 export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] {
 	let asked = false;
 	return rows.filter((row) => {
 		if (row.kind === "activity" && askRowQuestions(row)) asked = true;
-		return !(asked && row.kind === "user" && ANSWER_REPLY.test(row.text));
+		if (asked && row.kind === "user" && ANSWER_REPLY.test(row.text)) {
+			// The reply now shows beneath its question, so clear the flag: a later
+			// answer needs a question of its own before it too is hidden.
+			asked = false;
+			return false;
+		}
+		return true;
 	});
 }
 
@@ -196,7 +221,8 @@ function dayKey(at: number, timeZone?: string): string {
 // "Yesterday".
 function dayNumber(at: number, timeZone: string | undefined): number {
 	const parts = formattersFor(timeZone).dayKey.formatToParts(at);
-	const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((candidate) => candidate.type === type)?.value);
+	const value = (type: Intl.DateTimeFormatPartTypes) =>
+		Number(parts.find((candidate) => candidate.type === type)?.value);
 	return Date.UTC(value("year"), value("month") - 1, value("day")) / 86_400_000;
 }
 
@@ -211,7 +237,9 @@ function timeMarker(
 	const previous = previousId === undefined ? undefined : byId.get(previousId);
 	const previousEnd = hubTime(previous?.completedAt) ?? hubTime(previous?.startedAt);
 	const show =
-		previousEnd === null || start - previousEnd >= TIME_GAP_MS || dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
+		previousEnd === null ||
+		start - previousEnd >= TIME_GAP_MS ||
+		dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
 	return show ? { kind: "time", id: `time:${turnId}`, turnId, at: start } : null;
 }
 

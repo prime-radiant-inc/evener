@@ -1,15 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-	editPairingInput,
-	importPairing,
-	reviewPairingInput,
-} from "./pairingImport";
+import { editPairingInput, importPairing, reviewPairingInput } from "./pairingImport";
 
 describe("pairing import review", () => {
 	it("previews the origin and keeps the token transient", () => {
-		expect(
-			reviewPairingInput("https://hub.example/auth/secret%23token"),
-		).toEqual({
+		expect(reviewPairingInput("https://hub.example/auth/secret%23token")).toEqual({
 			input: "https://hub.example/auth/secret%23token",
 			preview: { origin: "https://hub.example", token: "secret#token" },
 			error: null,

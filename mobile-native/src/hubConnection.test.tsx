@@ -10,12 +10,7 @@ import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
 import { clientServesHub } from "./connectionIdentity";
-import {
-	type HubConnection,
-	type HubTokenSource,
-	reconnectDelay,
-	useHubConnection,
-} from "./hubConnection";
+import { type HubConnection, type HubTokenSource, reconnectDelay, useHubConnection } from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -106,10 +101,7 @@ function mount(overrides: Partial<HubConnectionInputs> = {}) {
 
 /** Fails `current` with `reason`, after installing a fresh client as the one
  * the hook's next dial gets; returns that client. */
-async function failInto(
-	current: FakeHubClient,
-	reason: TerminalReason = null,
-): Promise<FakeHubClient> {
+async function failInto(current: FakeHubClient, reason: TerminalReason = null): Promise<FakeHubClient> {
 	const next = new FakeHubClient();
 	harness.client = next;
 	await act(async () => {
@@ -342,9 +334,7 @@ it("reports closed, not connecting, when token acquisition fails", async () => {
 });
 
 it("waits at once, then 1, 2, 4, 8 and 16 seconds, then every 30 seconds", () => {
-	expect([0, 1, 2, 3, 4, 5, 6, 12].map(reconnectDelay)).toEqual([
-		0, 1000, 2000, 4000, 8000, 16000, 30000, 30000,
-	]);
+	expect([0, 1, 2, 3, 4, 5, 6, 12].map(reconnectDelay)).toEqual([0, 1000, 2000, 4000, 8000, 16000, 30000, 30000]);
 });
 
 it.each([

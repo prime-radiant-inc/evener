@@ -161,8 +161,7 @@ describe("hub defaults", () => {
     const store = createTranscriptDisplayStore({ client });
     const layouts: string[] = [];
     store.subscribe((state, previous) => {
-      for (const layout of ["desktop", "mobile"] as const)
-        if (state.hub[layout] !== previous.hub[layout]) layouts.push(layout);
+      if (state.changedLayouts !== previous.changedLayouts) layouts.push(...state.changedLayouts);
     });
     store.setSupport("supported");
     store.beginReadyGeneration();
@@ -172,6 +171,74 @@ describe("hub defaults", () => {
       mobile: hubDefault(2, mobileConfig),
     });
     expect(layouts).toEqual(["desktop", "mobile"]);
+  });
+
+  test("a publication names the layouts whose hub entry it changed", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client });
+    const claimed: string[][] = [];
+    const moved: string[] = [];
+    store.subscribe((state, previous) => {
+      for (const layout of ["desktop", "mobile"] as const)
+        if (state.hub[layout] !== previous.hub[layout]) moved.push(layout);
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    // The fact names exactly the layouts whose hub entry really moved; the
+    // support, generation and loading publications that carry no hub change
+    // leave its identity alone.
+    expect(moved).toEqual(["desktop", "mobile"]);
+    expect(claimed).toEqual([["desktop", "mobile"]]);
+
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 5, config: toWireConfig(proposed) },
+    });
+    expect(moved).toEqual(["desktop", "mobile", "mobile"]);
+    expect(claimed).toEqual([["desktop", "mobile"], ["mobile"]]);
+  });
+
+  test("a cleared hub names the layouts it cleared", async () => {
+    const store = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+    const claimed: string[][] = [];
+    store.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.detachHub();
+    expect(store.getState().hub).toEqual({});
+    expect(claimed).toEqual([["desktop", "mobile"]]);
+
+    const resetStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+    const resetClaimed: string[][] = [];
+    resetStore.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) resetClaimed.push([...state.changedLayouts]);
+    });
+    resetStore.reset();
+    expect(resetStore.getState().hub).toEqual({});
+    expect(resetClaimed).toEqual([["desktop", "mobile"]]);
+  });
+
+  test("a publication that moves no hub entry keeps the changed-layouts identity", () => {
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    const claimed: string[][] = [];
+    store.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.reset();
+    expect(store.getState().hub).toEqual({});
+    expect(claimed).toEqual([]);
+  });
+
+  test("a function-form update runs its updater exactly once", () => {
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    let calls = 0;
+    store.setState((state) => {
+      calls += 1;
+      return { hubError: state.hubError };
+    });
+    expect(calls).toBe(1);
   });
 
   test("a GET reply with extra top-level keys still decodes", async () => {
@@ -853,6 +920,30 @@ describe("the direct write", () => {
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
     expect(store.getState().hubErrors.desktop).toBe("boom");
+  });
+
+  test("a layout write failure rides the layout slot, never the store-wide read error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("boom", -32000);
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("boom");
+    expect(store.getState().hubErrors.mobile).toBe("boom");
+    expect(store.getState().hubError).toBeNull();
+  });
+
+  test("a successful write on one layout preserves an outstanding read failure", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(getMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hubError).toBe("hub unreachable");
+    client.on(patchMethod, () => patchAnswer("desktop", hubDefault(4, desktopConfig)));
+    await store.getState().patchHubDefault("desktop", desktopConfig);
+    expect(store.getState().hubError).toBe("hub unreachable");
   });
 
   test("a preview stranded by a support flap clears when the next read confirms the write did not land", async () => {

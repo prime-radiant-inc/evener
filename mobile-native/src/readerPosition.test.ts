@@ -27,10 +27,7 @@ function storageFrom(values: Map<string, string>): SyncStringStorage {
 function storage(): SyncStringStorage {
 	return storageFrom(new Map<string, string>());
 }
-const row = (
-	id: string,
-	position: { entry: number; item: number },
-): TimelineRow => ({
+const row = (id: string, position: { entry: number; item: number }): TimelineRow => ({
 	kind: "assistant",
 	id,
 	transcriptKey: `key-${id}`,
@@ -52,35 +49,21 @@ describe("reader positions", () => {
 		const desired = 4746;
 		const clamped = reachableReaderOffset(desired, 4934, 598);
 		expect(clamped).toBe(4336);
-		expect(
-			shouldApplyExactRestore(measurement, measurement, clamped, clamped),
-		).toBe(false);
+		expect(shouldApplyExactRestore(measurement, measurement, clamped, clamped)).toBe(false);
 		const reachable = reachableReaderOffset(desired, 6120, 598);
 		expect(reachable).toBe(desired);
+		expect(shouldApplyExactRestore(measurement, measurement, clamped, reachable)).toBe(true);
 		expect(
-			shouldApplyExactRestore(measurement, measurement, clamped, reachable),
-		).toBe(true);
-		expect(
-			shouldApplyExactRestore(
-				measurement,
-				measurement,
-				reachable,
-				reachableReaderOffset(desired, 7000, 598),
-			),
+			shouldApplyExactRestore(measurement, measurement, reachable, reachableReaderOffset(desired, 7000, 598)),
 		).toBe(false);
 		expect(reachableReaderOffset(desired, 300, 598)).toBe(0);
 	});
 	it("uses stable transcript identity and pair ordering", () => {
 		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
-		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(
-			-1,
-		);
+		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
-		const rows = [
-			row("a", { entry: 1, item: 1 }),
-			row("b", { entry: 2, item: 1 }),
-		];
+		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 2, item: 1 })];
 		const anchor = captureReaderAnchor(
 			"hub",
 			"session",
@@ -91,14 +74,7 @@ describe("reader positions", () => {
 		);
 		if (!anchor) throw new Error("expected measured anchor");
 		expect(anchor.withinItemOffset).toBe(18);
-		expect(
-			restoreReaderCommand(
-				anchor,
-				rows,
-				[{ key: readerKey(rows[1]), y: 300, height: 80 }],
-				80,
-			),
-		).toEqual({
+		expect(restoreReaderCommand(anchor, rows, [{ key: readerKey(rows[1]), y: 300, height: 80 }], 80)).toEqual({
 			kind: "exact",
 			index: 1,
 			viewOffset: -18,
@@ -111,16 +87,7 @@ describe("reader positions", () => {
 	it("captures turnsSeen when the caller supplies it", () => {
 		const item = row("a", { entry: 1, item: 1 });
 		const measurement = { key: readerKey(item), y: 0, height: 40 };
-		const captured = captureReaderAnchor(
-			"hub",
-			"session",
-			item,
-			12,
-			[measurement],
-			1,
-			undefined,
-			"turn_5",
-		);
+		const captured = captureReaderAnchor("hub", "session", item, 12, [measurement], 1, undefined, "turn_5");
 		expect(captured?.turnsSeen).toBe("turn_5");
 	});
 	it("restores position-matched rows using current geometry after their key changes", () => {
@@ -128,14 +95,7 @@ describe("reader positions", () => {
 		const prior = row("live", position);
 		const current = row("persisted", position);
 		const oldMeasurement = { key: readerKey(prior), y: 300, height: 180 };
-		const anchor = captureReaderAnchor(
-			"hub",
-			"session",
-			prior,
-			420,
-			[oldMeasurement],
-			1,
-		);
+		const anchor = captureReaderAnchor("hub", "session", prior, 420, [oldMeasurement], 1);
 		if (!anchor) throw new Error("expected measured anchor");
 		const rows = [row("earlier", { entry: 1, item: 0 }), current];
 		const measurement = { key: readerKey(current), y: 600, height: 80 };
@@ -152,9 +112,7 @@ describe("reader positions", () => {
 		}
 	});
 	it("advances virtualization before exact restoration and preserves anchor on reflow", () => {
-		const rows = Array.from({ length: 30 }, (_, i) =>
-			row(String(i), { entry: i, item: 1 }),
-		);
+		const rows = Array.from({ length: 30 }, (_, i) => row(String(i), { entry: i, item: 1 }));
 		const anchor = {
 			hubId: "hub",
 			sessionRef: "session",
@@ -168,14 +126,7 @@ describe("reader positions", () => {
 			kind: "approximate",
 			offset: 20 * 80 + 12,
 		});
-		expect(
-			restoreReaderCommand(
-				anchor,
-				rows,
-				[{ key: readerKey(rows[20]), y: 600, height: 120 }],
-				80,
-			),
-		).toEqual({
+		expect(restoreReaderCommand(anchor, rows, [{ key: readerKey(rows[20]), y: 600, height: 120 }], 80)).toEqual({
 			kind: "exact",
 			index: 20,
 			viewOffset: -12,
@@ -190,23 +141,11 @@ describe("reader positions", () => {
 		).toEqual({ kind: "exact", index: 20, viewOffset: -120 });
 		const measurement = { key: readerKey(rows[20]), y: 600, height: 120 };
 		expect(shouldApplyExactRestore(null, measurement, null, 12)).toBe(true);
-		expect(shouldApplyExactRestore(measurement, measurement, 12, 12)).toBe(
-			false,
-		);
-		expect(
-			shouldApplyExactRestore(
-				{ ...measurement, height: 80 },
-				measurement,
-				12,
-				12,
-			),
-		).toBe(true);
+		expect(shouldApplyExactRestore(measurement, measurement, 12, 12)).toBe(false);
+		expect(shouldApplyExactRestore({ ...measurement, height: 80 }, measurement, 12, 12)).toBe(true);
 	});
 	it("requires exact identity or exact protocol position", () => {
-		const rows = [
-			row("a", { entry: 1, item: 1 }),
-			row("b", { entry: 3, item: 1 }),
-		];
+		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 3, item: 1 })];
 		const anchor = {
 			hubId: "hub",
 			sessionRef: "session",
@@ -220,14 +159,7 @@ describe("reader positions", () => {
 	it("recovers an anchor unmounted after a measured text-size restoration", () => {
 		const item = row("marker09", { entry: 9, item: 0 });
 		const measurement = { key: readerKey(item), y: 4827, height: 463 };
-		const anchor = captureReaderAnchor(
-			"hub",
-			"session",
-			item,
-			5159,
-			[measurement],
-			1,
-		);
+		const anchor = captureReaderAnchor("hub", "session", item, 5159, [measurement], 1);
 		if (!anchor) throw new Error("expected anchor");
 		const attempts = new ReaderRestoreAttempts();
 		const missing = restoreReaderCommand(anchor, [item], [], 96);
@@ -241,9 +173,7 @@ describe("reader positions", () => {
 		}
 		expect(attempts.retryUnmeasured()).toBe(false);
 		expect(attempts.begin(measured)).toBe(true);
-		expect(shouldApplyExactRestore(measurement, measurement, 332, 332)).toBe(
-			false,
-		);
+		expect(shouldApplyExactRestore(measurement, measurement, 332, 332)).toBe(false);
 		// Virtualization can remove the measured cell before the next effect.
 		expect(attempts.begin(missing)).toBe(true);
 		expect(attempts.begin(missing)).toBe(false);
@@ -280,9 +210,7 @@ describe("reader positions", () => {
 		expect(attempts.begin(command, 7)).toBe(false);
 		expect(attempts.begin(command, 8)).toBe(true);
 		expect(attempts.begin(command, 8)).toBe(false);
-		expect(attempts.begin({ kind: "exact", index: 4, viewOffset: -2 }, 8)).toBe(
-			true,
-		);
+		expect(attempts.begin({ kind: "exact", index: 4, viewOffset: -2 }, 8)).toBe(true);
 		expect(attempts.begin(command, 0)).toBe(true);
 	});
 	it("restarts the failure budget only after measured progress advances", () => {
@@ -300,21 +228,9 @@ describe("reader positions", () => {
 		expect(attempts.retryUnmeasured(5)).toBe(false);
 	});
 	it("uses row index progress when a virtualization window keeps its size", () => {
-		const rows = [
-			row("a", { entry: 1, item: 0 }),
-			row("b", { entry: 2, item: 0 }),
-			row("c", { entry: 3, item: 0 }),
-		];
-		expect(
-			furthestMeasuredRowBeforeTarget(rows, 2, [
-				{ key: readerKey(rows[0]), y: 0, height: 40 },
-			]),
-		).toBe(0);
-		expect(
-			furthestMeasuredRowBeforeTarget(rows, 2, [
-				{ key: readerKey(rows[1]), y: 40, height: 40 },
-			]),
-		).toBe(1);
+		const rows = [row("a", { entry: 1, item: 0 }), row("b", { entry: 2, item: 0 }), row("c", { entry: 3, item: 0 })];
+		expect(furthestMeasuredRowBeforeTarget(rows, 2, [{ key: readerKey(rows[0]), y: 0, height: 40 }])).toBe(0);
+		expect(furthestMeasuredRowBeforeTarget(rows, 2, [{ key: readerKey(rows[1]), y: 40, height: 40 }])).toBe(1);
 	});
 	it("resolves an exact row or exact protocol position only", () => {
 		const anchor = {
@@ -325,17 +241,8 @@ describe("reader positions", () => {
 			withinItemOffset: 18,
 			touchedAt: 1,
 		};
-		expect(
-			resolveReaderAnchor(anchor, [
-				row("a", { entry: 1, item: 1 }),
-				row("b", { entry: 3, item: 1 }),
-			]),
-		).toBeNull();
-		expect(
-			resolveReaderAnchor({ ...anchor, itemKey: "key-a" }, [
-				row("a", { entry: 1, item: 1 }),
-			]),
-		).toBe(0);
+		expect(resolveReaderAnchor(anchor, [row("a", { entry: 1, item: 1 }), row("b", { entry: 3, item: 1 })])).toBeNull();
+		expect(resolveReaderAnchor({ ...anchor, itemKey: "key-a" }, [row("a", { entry: 1, item: 1 })])).toBe(0);
 		expect(
 			resolveReaderAnchor({ ...anchor, itemPosition: { entry: 3, item: 1 } }, [
 				row("a", { entry: 1, item: 1 }),
@@ -357,8 +264,7 @@ describe("reader positions", () => {
 		repo.save(anchor("b", "two", 2));
 		expect(repo.read("a", "one")?.withinItemOffset).toBe(4);
 		expect(repo.read("b", "two")?.withinItemOffset).toBe(4);
-		for (let i = 0; i < 101; i += 1)
-			repo.save(anchor("bounded", String(i), i + 3));
+		for (let i = 0; i < 101; i += 1) repo.save(anchor("bounded", String(i), i + 3));
 		expect(repo.read("bounded", "0")).toBeNull();
 		expect(repo.read("bounded", "100")).not.toBeNull();
 	});
@@ -380,12 +286,8 @@ describe("reader positions", () => {
 		expect(repo.read("gone", "one")).toBeNull();
 		expect(repo.read("gone", "two")).toBeNull();
 		expect(repo.read("kept", "one")).not.toBeNull();
-		expect(
-			new ReaderPositionRepository(storageFrom(values)).read("gone", "one"),
-		).toBeNull();
-		expect(
-			new ReaderPositionRepository(storageFrom(values)).read("kept", "one"),
-		).not.toBeNull();
+		expect(new ReaderPositionRepository(storageFrom(values)).read("gone", "one")).toBeNull();
+		expect(new ReaderPositionRepository(storageFrom(values)).read("kept", "one")).not.toBeNull();
 	});
 	it("removes a cached anchor left by a failed save and preserves other caches", () => {
 		const values = new Map<string, string>();
@@ -443,9 +345,7 @@ describe("reader positions", () => {
 		};
 		const repo = new ReaderPositionRepository(disk);
 		repo.save(anchor);
-		expect(new ReaderPositionRepository(disk).read("hub", "session")).toEqual(
-			anchor,
-		);
+		expect(new ReaderPositionRepository(disk).read("hub", "session")).toEqual(anchor);
 	});
 	it("keeps anchors when hub removal persistence fails", () => {
 		const disk = storage();
@@ -604,28 +504,14 @@ it("recognizes filtered source members and grouped notices without paging or mut
 		touchedAt: 1,
 	};
 	expect(isReaderAnchorLoaded(anchor, source)).toBe(true);
-	expect(
-		isReaderAnchorLoaded({ ...anchor, itemKey: "details:event" }, source),
-	).toBe(true);
-	expect(
-		isReaderAnchorLoaded(
-			{ ...anchor, itemKey: "old", itemPosition: { entry: 9, item: 2 } },
-			source,
-		),
-	).toBe(true);
-	expect(
-		isReaderAnchorLoaded(
-			{ ...anchor, itemKey: "unloaded", itemPosition: { entry: 9, item: 3 } },
-			source,
-		),
-	).toBe(false);
+	expect(isReaderAnchorLoaded({ ...anchor, itemKey: "details:event" }, source)).toBe(true);
+	expect(isReaderAnchorLoaded({ ...anchor, itemKey: "old", itemPosition: { entry: 9, item: 2 } }, source)).toBe(true);
+	expect(isReaderAnchorLoaded({ ...anchor, itemKey: "unloaded", itemPosition: { entry: 9, item: 3 } }, source)).toBe(
+		false,
+	);
 	expect(source).toEqual(before);
 	expect(resolveReaderAnchor(anchor, [notice])).toBeNull();
-	expect(
-		resolveReaderAnchor(anchor, [
-			{ ...activity, ...activity.members[0], kind: "activity" },
-		]),
-	).toBe(0);
+	expect(resolveReaderAnchor(anchor, [{ ...activity, ...activity.members[0], kind: "activity" }])).toBe(0);
 });
 
 describe("a reading position inside a folded run (Review Focus 4)", () => {
@@ -635,8 +521,26 @@ describe("a reading position inside a folded run (Review Focus 4)", () => {
 		transcriptKey: "key-a",
 		position: { entry: 4, item: 0 },
 		steps: [
-			{ kind: "activity", id: "a", label: "read_file", family: "tool", state: "completed", detail: {}, transcriptKey: "key-a", position: { entry: 4, item: 0 } },
-			{ kind: "activity", id: "b", label: "grep", family: "tool", state: "completed", detail: {}, transcriptKey: "key-b", position: { entry: 4, item: 1 } },
+			{
+				kind: "activity",
+				id: "a",
+				label: "read_file",
+				family: "tool",
+				state: "completed",
+				detail: {},
+				transcriptKey: "key-a",
+				position: { entry: 4, item: 0 },
+			},
+			{
+				kind: "activity",
+				id: "b",
+				label: "grep",
+				family: "tool",
+				state: "completed",
+				detail: {},
+				transcriptKey: "key-b",
+				position: { entry: 4, item: 1 },
+			},
 		],
 	};
 	const rows: TimelineRow[] = [{ kind: "user", id: "u", text: "hi" }, run];
@@ -681,7 +585,10 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
 			{ kind: "assistant", id: "a2", markdown: "two", streaming: false, turnId: "turn_2" },
 		];
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({ kind: "row", index: 4 });
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({
+			kind: "row",
+			index: 4,
+		});
 	});
 	// Your own images follow your message as an attachments row. They are not
 	// the reply, and neither is any other attachments row: a step's images
@@ -699,7 +606,10 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 			},
 			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
 		];
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false)).toEqual({ kind: "row", index: 5 });
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false)).toEqual({
+			kind: "row",
+			index: 5,
+		});
 	});
 	it("opens where you left off when nothing is newer, or the seen turn isn't loaded", () => {
 		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false)).toEqual({ kind: "anchor" });

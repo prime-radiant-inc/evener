@@ -111,17 +111,17 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = run([]string{"run", "--probes-dir", filepath.Join(t.TempDir(), "missing"), "--out", t.TempDir(), "--evener-bin", file})
 
 		_, _ = buildEvener(filepath.Join(file, "child"))
-		_, _ = catalogTools("unknown/model")
-		_, _ = catalogTools("openai/gpt-5.4-mini")
+		_, _ = catalogTools(provider.EmbeddedRegistry(), "unknown/model")
+		_, _ = catalogTools(provider.EmbeddedRegistry(), "openai/gpt-5.4-mini")
 		runnerNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
 			return nil, errors.New("new session")
 		}
-		_, _ = catalogTools("openai/gpt-5.4-mini")
+		_, _ = catalogTools(provider.EmbeddedRegistry(), "openai/gpt-5.4-mini")
 		runnerNewSession = oldNewSession
 		_ = runCatalog([]string{"--model", "openai/gpt-5.4-mini"})
 		_ = runCatalog([]string{"--model", "openai/gpt-5.4-mini", "--json"})
 		_ = runCatalog([]string{"--model", "bad"})
-		_, _ = catalogTools("bad")
+		_, _ = catalogTools(provider.EmbeddedRegistry(), "bad")
 		oldStdout := os.Stdout
 		readOnlyStdout, err := os.Open(os.DevNull)
 		if err != nil {
@@ -134,7 +134,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		tmpFile := filepath.Join(t.TempDir(), "tmp-file")
 		mustWrite(t, tmpFile, "x")
 		t.Setenv("TMPDIR", tmpFile)
-		_, _ = catalogTools("openai/gpt-5.4-mini")
+		_, _ = catalogTools(provider.EmbeddedRegistry(), "openai/gpt-5.4-mini")
 		t.Setenv("TMPDIR", "")
 
 		profile := provider.NewOpenAIProfile("m")

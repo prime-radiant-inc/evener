@@ -7,10 +7,7 @@
 const clientReadyHub = new WeakMap<object, string | undefined>();
 
 /** Records the hub a client object proved ready under. */
-export function recordClientReadyHub(
-	client: object,
-	hubId: string | undefined,
-): void {
+export function recordClientReadyHub(client: object, hubId: string | undefined): void {
 	clientReadyHub.set(client, hubId);
 }
 
@@ -18,9 +15,6 @@ export function recordClientReadyHub(
  * proved ready under a different hub is refused until the connection
  * re-points; an unknown client passes exactly as before — a genuinely new
  * client arrives unknown, and only the re-point distinguishes it. */
-export function clientServesHub(
-	client: object,
-	hubId: string | undefined,
-): boolean {
+export function clientServesHub(client: object, hubId: string | undefined): boolean {
 	return !clientReadyHub.has(client) || clientReadyHub.get(client) === hubId;
 }

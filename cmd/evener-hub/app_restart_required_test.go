@@ -107,6 +107,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 	}{
 		{appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: "high"}},
 		{appwire.MethodEvenerSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{Ref: ref, EscalationID: "escalation", Approve: true}},
+		{appwire.MethodEvenerDelegateStop, appwire.DelegateStopParams{Ref: ref, DelegateID: "dlg_1"}},
 	} {
 		t.Run(request.method, func(t *testing.T) {
 			var response any

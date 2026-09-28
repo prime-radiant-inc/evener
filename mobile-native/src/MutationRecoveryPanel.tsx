@@ -24,10 +24,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import {
-	type NativeMutationRecoveryRuntime,
-	useNativeMutationRecovery,
-} from "./useNativeMutationRecovery";
+import { type NativeMutationRecoveryRuntime, useNativeMutationRecovery } from "./useNativeMutationRecovery";
 import { Action, ErrorMessage } from "./ui";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
@@ -45,18 +42,18 @@ export interface NativeMutationRecoveryRow {
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
 	carriesAttachments: boolean;
-	/** Whether the record-aware fence offers Restore for this row at all,
-	 * independent of the composer. `actions` carries Restore only when the
-	 * converter result also allows it, so a row that offers Restore while its
-	 * actions lack it is offered-but-blocked. */
+	/** Whether the record offers Restore on its own: a rejected, non-interrupt
+	 * record whose text a restore can write and which carries no attachment a
+	 * text-only restore would drop. The projection derives this from the record
+	 * alone, and `actions` carries Restore exactly when it holds, so the two
+	 * always agree. Whether the composer can accept a restore right now is the
+	 * ghost's `canEdit` at render time, not a projection input. */
 	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
 }
 
-function isTextInputItem(
-	item: unknown,
-): item is { type: "text"; text: string } {
+function isTextInputItem(item: unknown): item is { type: "text"; text: string } {
 	return (
 		typeof item === "object" &&
 		item !== null &&
@@ -69,11 +66,7 @@ function isTextInputItem(
 // item whose data lives under `path` or metadata only must still withhold
 // restore, or a text-only restore would silently drop the image.
 function isImageInputItem(item: unknown): item is { type: "image" } {
-	return (
-		typeof item === "object" &&
-		item !== null &&
-		(item as { type?: unknown }).type === "image"
-	);
+	return typeof item === "object" && item !== null && (item as { type?: unknown }).type === "image";
 }
 
 // Whether the rejected mutation carries attachments a text-only restore would
@@ -82,28 +75,23 @@ function isImageInputItem(item: unknown): item is { type: "image" } {
 // carries its attachment metadata on `record.attachments`. A row is
 // non-restorable if either is present, so a text-only restore never silently
 // loses an image.
-export function recordCarriesAttachments(
-	record: MutationRecoveryRecord<MutationAttachmentRef>,
-): boolean {
+export function recordCarriesAttachments(record: MutationRecoveryRecord<MutationAttachmentRef>): boolean {
 	const input = record.payload.input;
-	return (
-		(record.attachments?.length ?? 0) > 0 ||
-		(Array.isArray(input) && input.some(isImageInputItem))
-	);
+	return (record.attachments?.length ?? 0) > 0 || (Array.isArray(input) && input.some(isImageInputItem));
 }
 
 // The text a rejected mutation restores to the composer. `composerText` is the
 // composer's own text with "[image N]" anchors intact; a record written before
 // that field existed falls back to the payload's text items - the same
 // fallback the web recovery draft takes, so no recoverable text is lost.
-export function recoveredComposerText(
-	record: MutationRecoveryRecord<MutationAttachmentRef>,
-): string {
-	if (typeof record.composerText === "string" && record.composerText.length > 0)
-		return record.composerText;
+export function recoveredComposerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string {
+	if (typeof record.composerText === "string" && record.composerText.length > 0) return record.composerText;
 	const input = record.payload.input;
 	if (!Array.isArray(input)) return "";
-	return input.filter(isTextInputItem).map((item) => item.text).join("\n");
+	return input
+		.filter(isTextInputItem)
+		.map((item) => item.text)
+		.join("\n");
 }
 
 // Whether a record can offer a restore at all, independent of the composer: a
@@ -111,12 +99,10 @@ export function recoveredComposerText(
 // carries no attachment a text-only restore would drop. A Stop's interrupt is
 // never restorable - it carries no composer text to replay - so the fence is
 // explicit rather than inferred from the text alone. This is the record-aware
-// half of the fence; the screen owns the other half - whether the composer can
-// accept a restore right now - and passes its result in, so no converter logic
-// lives here.
-export function recordOffersRestore(
-	record: MutationRecoveryRecord<MutationAttachmentRef>,
-): boolean {
+// half of the fence, and now the whole of it: whether the composer can accept a
+// restore right now is the ghost's `canEdit` at render time, not a projection
+// input.
+export function recordOffersRestore(record: MutationRecoveryRecord<MutationAttachmentRef>): boolean {
 	return (
 		record.recoveryKind === "rejected" &&
 		record.method !== "turn/interrupt" &&
@@ -125,15 +111,14 @@ export function recordOffersRestore(
 	);
 }
 
-// The action derivation. Restore cannot be obtained without BOTH an explicit
-// record that passes the record-aware fence AND an explicit converter result:
-// neither has a default, so a caller cannot reach Restore by omission. The
-// discard offer is always present, so a row can never be stuck with no way out.
+// The action derivation. Restore follows the record-aware fence alone: neither
+// the fence nor its absence has a default, so a caller cannot reach Restore by
+// omission. The discard offer is always present, so a row can never be stuck
+// with no way out.
 export function nativeMutationRecoveryActions(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
-	canRestore: boolean,
 ): readonly NativeMutationRecoveryAction[] {
-	if (recordOffersRestore(record) && canRestore) return ["restore", "discard"];
+	if (recordOffersRestore(record)) return ["restore", "discard"];
 	return ["discard"];
 }
 
@@ -150,7 +135,6 @@ function targetRecoveryRecords(
 export function projectNativeMutationRecovery(
 	targetKey: string,
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null,
-	canRestore: (record: MutationRecoveryRecord<MutationAttachmentRef>) => boolean,
 ): NativeMutationRecoveryRow[] {
 	const rows: NativeMutationRecoveryRow[] = [];
 	for (const record of targetRecoveryRecords(targetKey, snapshot)) {
@@ -162,20 +146,17 @@ export function projectNativeMutationRecovery(
 			clientMutationId: record.clientMutationId,
 			intentSequence: record.intentSequence,
 			status: record.recoveryKind,
-			...(record.recoveryReason === undefined
-				? {}
-				: { reason: record.recoveryReason }),
+			...(record.recoveryReason === undefined ? {} : { reason: record.recoveryReason }),
 			text,
 			carriesAttachments,
 			restoreOffered,
 			record,
-			actions: nativeMutationRecoveryActions(record, canRestore(record)),
+			actions: nativeMutationRecoveryActions(record),
 		});
 	}
 	return rows.sort(
 		(left, right) =>
-			left.intentSequence - right.intentSequence ||
-			left.clientMutationId.localeCompare(right.clientMutationId),
+			left.intentSequence - right.intentSequence || left.clientMutationId.localeCompare(right.clientMutationId),
 	);
 }
 
@@ -228,9 +209,7 @@ export function useRecoveryPanel({
 	acquire?: () => NativeMutationRecoveryRuntime;
 }): RecoveryPanelSurface {
 	const targetKey = nativeMutationTargetKey(hubId, targetRef);
-	const [runtime, setRuntime] = useState<NativeMutationRecoveryRuntime | null>(
-		null,
-	);
+	const [runtime, setRuntime] = useState<NativeMutationRecoveryRuntime | null>(null);
 	// The surface's own failure is scoped to the target (and the retry attempt):
 	// a discard that rejects after the screen moved to another target must not
 	// hide the new target's rows. `scope` is derived, so it changes with the
@@ -278,8 +257,7 @@ export function useRecoveryPanel({
 				(discarded) => {
 					if (generation !== discardGeneration.current) return;
 					// A refused no-op (a foreign row) is not a success to act on.
-					if (discarded)
-						setFailure((current) => (current?.scope === scope ? null : current));
+					if (discarded) setFailure((current) => (current?.scope === scope ? null : current));
 				},
 				(error) => {
 					if (generation !== discardGeneration.current) return;
@@ -290,8 +268,7 @@ export function useRecoveryPanel({
 		[projection, scope],
 	);
 
-	const localFailure =
-		failure !== null && failure.scope === scope ? failure.error : null;
+	const localFailure = failure !== null && failure.scope === scope ? failure.error : null;
 	const error = localFailure ?? projection.error;
 	return {
 		targetKey,
@@ -306,13 +283,7 @@ export function useRecoveryPanel({
 /** The recovery surface's own failure: a read, acquisition or discard that
  * failed, with Retry. It sits above the ghosts, never in place of them, so a
  * failed discard can't hide rows that can still be recovered. */
-export function RecoveryFailure({
-	error,
-	onRetry,
-}: {
-	error: unknown;
-	onRetry: () => void;
-}) {
+export function RecoveryFailure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
 	return (
 		<View style={{ alignItems: "flex-start" }}>
 			<ErrorMessage message={recoveryFailureMessage(error)} />
