@@ -139,7 +139,16 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 				record.Host, record.ID, err))
 		}
 	}
-	resolved, err := m.cfg.ops.ResolveOrphan(record.ID, orphanAttestationStore(attestation))
+	stored := orphanAttestationStore(attestation)
+	if stored != nil && sessionOperator(ctx) == "" {
+		// Fail audited, the teardown-recover posture: with no transport principal
+		// the attestation is recorded as given — marked unattributed, never
+		// verified — so the durable record says the operator name was not bound
+		// to an authenticated identity.
+		stored.Unattributed = true
+		m.logf("record %s: an unattributed operator attestation was recorded as given (this build's transport carries no session principal yet)", record.ID)
+	}
+	resolved, err := m.cfg.ops.ResolveOrphan(record.ID, stored)
 	switch {
 	case err == nil:
 	case hostops.RenameLanded(err):
@@ -166,12 +175,24 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 // (nil when none was presented) or the typed validation refusal. custodyRef
 // and unavailable are the record's `boundary-unavailable` reading.
 //
-// The checks are §5's three bindings plus freshness: the claimed operator must
-// equal the session's authenticated identity, recordId must equal the call's
-// id, and — when the record carries the boundary-unavailable entry — boundaryRef
-// must equal that entry's custodyRef. A stale observedAt refuses "with no
-// clearance". An attestation on any other record is accepted-but-unneeded:
-// its boundaryRef is never refused for a reference it cannot match.
+// The checks are §5's bindings plus freshness: when the session carries an
+// authenticated identity, the claimed operator must equal it exactly (a
+// mismatch refuses); recordId must equal the call's id; and — when the record
+// carries the boundary-unavailable entry — boundaryRef must equal that entry's
+// custodyRef. A stale or future-beyond-skew observedAt refuses "with no
+// clearance".
+//
+// When the transport carries no session principal — this build's state, the
+// crash-fencing slices' recorded transport-identity boundary — the attestation
+// is accepted and recorded as given, marked unattributed: the fail-audited
+// posture teardown-recover already ships (validateRecoveryOperator). Refusing
+// here instead would leave a corrupt-custody record with no path back at all
+// (the id-only arm is refused by ErrOrphanAttestationRequired), contradicting
+// §8/§11's "never a host with no path back". An unattributed attestation is
+// never recorded as verified. FOLLOW-UP: when the session-identity transport
+// slice stamps the authenticated principal for every evener/host/* request,
+// this branch disappears and the exact-match refusal covers every attestation;
+// the same slice owns making teardown-recover strict.
 func (m *hubHostManager) validateOrphanAttestation(ctx context.Context, record hostops.Record, presented *appwire.HostOrphanResolveAttestation, custodyRef string, unavailable bool) (*appwire.HostOrphanResolveAttestation, error) {
 	if presented == nil {
 		if unavailable {
@@ -208,29 +229,7 @@ func (m *hubHostManager) validateOrphanAttestation(ctx context.Context, record h
 			record.ID, attestation.ObservedAt, err))
 	}
 	identity := sessionOperator(ctx)
-	if identity == "" {
-		// §5: the claimed operator "must equal the session's authenticated
-		// identity". An empty identity authorizes nothing: an unattributed
-		// attestation is refused outright, so no caller can write an audit record
-		// under a name nothing verified.
-		//
-		// This build's transport carries no per-session principal yet: the
-		// capability token admits the connection but names no operator, and
-		// withSessionOperator has no production setter (the crash-fencing slices'
-		// recorded transport-identity boundary). The refusal is therefore
-		// self-explaining rather than silent: an attested boundary-unavailable
-		// resolve cannot clear until that wiring lands, while the id-only
-		// local-reap resolves are unaffected. FOLLOW-UP: the session-identity
-		// transport slice must stamp the authenticated principal for every
-		// evener/host/* request; the same wiring closes teardown-recover's twin
-		// gap (validateRecoveryOperator currently records an unattributed
-		// attestation as given), and that slice owns making both validators
-		// strict once the principal exists.
-		return nil, appwire.InvalidParams(fmt.Sprintf(
-			"orphan-resolve %s: an attestation requires the session's authenticated identity, and this build's transport carries none yet — attested resolves refuse until the session-identity wiring lands (unattested local-reap resolves are unaffected)",
-			record.ID))
-	}
-	if identity != attestation.Operator {
+	if identity != "" && identity != attestation.Operator {
 		return nil, appwire.InvalidParams(fmt.Sprintf(
 			"orphan-resolve %s: attestation operator %q is not the session's authenticated identity",
 			record.ID, attestation.Operator))

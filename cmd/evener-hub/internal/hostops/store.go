@@ -1330,13 +1330,13 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// are canonical too — never left opaque, or a case variant would be silently
 	// rewritten on the next save.
 	"records[].pendingSpawns[]": keysOf("nonce", "platform", "cgroupId", "pgid", "sessionId", "pid", "startTime"),
-	"records[].attestation":     keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt"),
+	"records[].attestation":     keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
 	"records[].result":          keysOf("ok", "message"),
 	"records[].progress[]":      keysOf("ts", "message"),
 	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "orphanResolved", "attestation", "progress", "result", "createdAt", "updatedAt",
 		"hostRemoved", "compactedAt", "compactedSeq"),
-	"tombstones[].attestation": keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt"),
+	"tombstones[].attestation": keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
 	"tombstones[].result":      keysOf("ok", "message"),
 	"tombstones[].progress[]":  keysOf("ts", "message"),
 	"compactionMarks[]":        keysOf("seq", "hosts"),

@@ -49,6 +49,13 @@ type OrphanResolveAttestation struct {
 	RecordID    string `json:"recordId"`
 	BoundaryRef string `json:"boundaryRef,omitempty"`
 	ObservedAt  string `json:"observedAt"`
+	// Unattributed marks an attestation recorded as given because the transport
+	// carried no session principal to bind the claimed operator to: the durable
+	// record then says the name was not verified against an authenticated
+	// identity, never that it was. With a principal present the handler binds the
+	// operator exactly and this marker stays false. It is controller-side
+	// bookkeeping and never rides §9's wire attestation.
+	Unattributed bool `json:"unattributed,omitempty"`
 }
 
 // ErrOrphanAttestationRequired reports an id-only resolve of a record whose

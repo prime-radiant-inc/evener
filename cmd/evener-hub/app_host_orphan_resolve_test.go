@@ -297,19 +297,11 @@ func TestOrphanResolveAttestationBindings(t *testing.T) {
 	if !strings.Contains(err.Error(), "attestation") {
 		t.Fatalf("id-only refusal = %q, want it to name the required attestation", err)
 	}
-	// An unattributed session authorizes nothing: a present attestation without a
-	// session identity refuses before any clearance.
-	_, err = m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID, Attestation: &good})
-	assertWireCode(t, err, appwire.CodeInvalidParams)
-	if !strings.Contains(err.Error(), "authenticated identity") {
-		t.Fatalf("unattributed refusal = %q, want it to name the missing session identity", err)
-	}
-	if stored, ok := store.Record(record.ID); !ok || stored.State != hostops.StateOrphanUnverified {
-		t.Fatalf("an unattributed attestation cleared the record: %+v (ok %v)", stored, ok)
-	}
-	// Every mismatched binding refuses before any clearance.
+	// Every mismatched binding refuses before any clearance. (The unattributed
+	// posture is pinned separately: recorded as given, never refused.)
 	for name, mutate := range map[string]func(*appwire.HostOrphanResolveAttestation){
 		"operator":    func(a *appwire.HostOrphanResolveAttestation) { a.Operator = "someone-else" },
+		"no operator": func(a *appwire.HostOrphanResolveAttestation) { a.Operator = "" },
 		"recordId":    func(a *appwire.HostOrphanResolveAttestation) { a.RecordID = "00000000000000000042" },
 		"boundaryRef": func(a *appwire.HostOrphanResolveAttestation) { a.BoundaryRef = "/state/other.json" },
 		"stale":       func(a *appwire.HostOrphanResolveAttestation) { a.ObservedAt = "2026-01-01T00:00:00Z" },
@@ -345,32 +337,49 @@ func TestOrphanResolveAttestationBindings(t *testing.T) {
 	}
 }
 
-// TestOrphanResolveMixedUnavailableBoundaryRefuses pins the High finding: a
-// boundary that mixes the custody sentinel with other members must not clear on
-// the attestation alone, because the other members would skip verification.
-// TestOrphanResolveRefusesAnUnattributedAttestation pins H1 directly: a present
-// attestation whose session carries no authenticated identity refuses, whatever
-// the record carries.
-func TestOrphanResolveRefusesAnUnattributedAttestation(t *testing.T) {
+// TestOrphanResolveRecordsAnUnattributedAttestation pins the fail-audited
+// posture required for §8/§11's path back: with no transport principal the
+// attestation clears a boundary-unavailable record, recorded as given and
+// marked unattributed — never verified — and the persisted replay carries the
+// same marker.
+func TestOrphanResolveRecordsAnUnattributedAttestation(t *testing.T) {
 	m, store := newOrphanResolveFixture(t, cleanLeaseVerify())
-	record := quarantinedHubRecord(t, store, "h1")
+	record, err := store.Create(hostops.NewRecord{ClientOperationID: "client-unattributed", Host: "h1", Kind: hostops.KindDeploy, Generation: 7, IncarnationID: "inc-unattributed"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	custodyRef := "/state/operations.json.custody-unattributed"
+	if _, err := store.SetOrphanBoundary(record.ID, json.RawMessage(
+		`[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"`+custodyRef+`"}]`), nil); err != nil {
+		t.Fatalf("SetOrphanBoundary(unavailable): %v", err)
+	}
 	attestation := appwire.HostOrphanResolveAttestation{
-		Operator: "operator-alpha", Statement: "orphan-verified-absent", RecordID: record.ID,
+		Operator: "operator-alpha", Statement: "orphan-verified-absent",
+		RecordID: record.ID, BoundaryRef: custodyRef,
 		ObservedAt: m.nowTime().UTC().Format(time.RFC3339),
 	}
-	_, err := m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID, Attestation: &attestation})
-	assertWireCode(t, err, appwire.CodeInvalidParams)
-	if !strings.Contains(err.Error(), "authenticated identity") {
-		t.Fatalf("unattributed refusal = %q, want it to name the missing session identity", err)
+	resolved, err := m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID, Attestation: &attestation})
+	if err != nil {
+		t.Fatalf("unattributed resolve = %v, want the fail-audited clearance", err)
 	}
-	// L1: the refusal is self-explaining — it names the missing transport
-	// identity and the pending wiring, so an operator never reads it as their own
-	// error or retries it expecting a different answer.
-	if !strings.Contains(err.Error(), "transport carries none yet") || !strings.Contains(err.Error(), "session-identity wiring") {
-		t.Fatalf("unattributed refusal = %q, want it to name the transport gap and the follow-up", err)
+	if !resolved.OrphanResolved || resolved.State != appwire.OperationStateInterrupted {
+		t.Fatalf("response = %+v, want the resolved record", resolved)
 	}
-	if stored, ok := store.Record(record.ID); !ok || stored.State != hostops.StateOrphanUnverified {
-		t.Fatalf("an unattributed attestation cleared the record: %+v (ok %v)", stored, ok)
+	stored, ok := store.Record(record.ID)
+	if !ok || stored.OrphanAttestation == nil {
+		t.Fatalf("stored record = %+v (ok %v), want the persisted attestation", stored, ok)
+	}
+	if !stored.OrphanAttestation.Unattributed || stored.OrphanAttestation.Operator != "operator-alpha" {
+		t.Fatalf("stored attestation = %+v, want it recorded as given and marked unattributed", stored.OrphanAttestation)
+	}
+	// The API replay answers from the persisted resolution, marker included.
+	replayed, err := m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID})
+	if err != nil || !replayed.OrphanResolved {
+		t.Fatalf("handler replay = (%+v, %v), want the persisted resolution", replayed, err)
+	}
+	storeReplay, err := store.ResolveOrphan(record.ID, nil)
+	if err != nil || storeReplay.OrphanAttestation == nil || !storeReplay.OrphanAttestation.Unattributed {
+		t.Fatalf("store replay = (%+v, %v), want the unattributed marker preserved", storeReplay.OrphanAttestation, err)
 	}
 }
 
