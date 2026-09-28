@@ -1266,6 +1266,58 @@ describe("operations polling (S15)", () => {
     expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
   });
 
+  test("a deploy seed keeps the pair captured at issue, not the re-created row's", async () => {
+    const fake = connectFakeClient();
+    let reCreated = false;
+    fake.on("evener/host/list", () => ({
+      hosts: [reCreated ? { ...row("beta"), generation: 9, incarnationId: "inc-9" } : row("beta")],
+    }));
+    await hostsStore.getState().fetch();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const deploy = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+
+    // The host is removed and re-created while the request is in flight: the
+    // operation belongs to the incarnation the request was issued against, so
+    // the seed must pin that pair and stay suppressed on the new row until the
+    // first read reconciles identity.
+    reCreated = true;
+    await hostsStore.getState().reReadForced();
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await deploy;
+
+    const seed = hostOpsStore.getState().operations.beta;
+    if (seed === undefined) throw new Error("unreachable");
+    expect(seed.generation).toBe(3);
+    expect(seed.incarnationId).toBe("inc-3");
+    expect(operationShownOnHost(seed, { generation: 9, incarnationId: "inc-9" })).toBe(false);
+  });
+
+  test("an older request's response arriving first cannot win over the newer request", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const first = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    hostOpsStore.getState().discardPlan("beta");
+    await hostOpsStore.getState().plan("beta");
+    const second = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+
+    // The OLDER response lands first: a newer request is already in flight, so
+    // the older response must not be adopted at all.
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await first;
+    expect(hostOpsStore.getState().operations.beta).toBeUndefined();
+
+    settlements[1]!.resolve({ id: "op-2", clientOperationId: "client-op-2", state: "pending" });
+    await second;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
+  });
+
   test("a lost connection is a visible progress state that a good read clears", async () => {
     const fake = connectFakeClient();
     await startedDeploy(fake, () => ({
