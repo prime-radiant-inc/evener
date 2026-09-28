@@ -145,6 +145,15 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 		expect(swipeableCalls.closes).toBe(2);
 	});
 
+	it("paints the content the color it sits on, so the panel behind never shows through it", () => {
+		const tree = render(
+			<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} backdrop="#123456">
+				<Text>ghost</Text>
+			</SwipeRow>,
+		);
+		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({ backgroundColor: "#123456" });
+	});
+
 	it("keeps the row's own reveal threshold for revealed actions", () => {
 		expect(mount().swipeable.props.rightThreshold).toBeUndefined();
 	});

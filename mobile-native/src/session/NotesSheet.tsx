@@ -373,5 +373,11 @@ function LinkRow({
 			</View>
 		</Pressable>
 	);
-	return writable ? <SwipeRow destructive={{ key: "remove", label: "Remove", run: remove }}>{row}</SwipeRow> : row;
+	return writable ? (
+		<SwipeRow destructive={{ key: "remove", label: "Remove", run: remove }} backdrop={palette.canvas}>
+			{row}
+		</SwipeRow>
+	) : (
+		row
+	);
 }

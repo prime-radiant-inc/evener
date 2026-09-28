@@ -2829,6 +2829,8 @@ export function ConversationScreen({
 				disabled={ghostBusy}
 				canEdit={canEditGhost}
 				editHint={ghostEditHint}
+				// Only one of the two places waitingForAgent shows is mounted.
+				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={
 					<ImageAttachments
 						document={document}

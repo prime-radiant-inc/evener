@@ -1274,6 +1274,17 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 });
 
 describe("queued messages above the composer (spec 8.5)", () => {
+	it("paints a swiped ghost what it sits on: the composer, or the page while the dock takes its place", async () => {
+		const palette = paletteFor("light");
+		const backdrop = (tree: ReactTestRenderer) =>
+			tree.root.findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
+		const composing = (await mount(thread("ref-swipe-composer", "active", false, ["check the logs"]))).tree;
+		expect(backdrop(composing)).toBe(palette.surface);
+		const asking = (await mount(thread("ref-swipe-dock", "awaiting", true, ["check the logs"]))).tree;
+		expect(field(asking)).toBeUndefined();
+		expect(backdrop(asking)).toBe(palette.page);
+	});
+
 	it("steers with a queued message the agent hasn't reached yet", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
 		expect(renderedText(tree)).toContain("check the logs");

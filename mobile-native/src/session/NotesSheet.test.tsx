@@ -399,6 +399,14 @@ describe("links", () => {
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 	});
 
+	it("paints a swiped link the sheet's canvas, since the row itself has no fill", () => {
+		provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
+			backgroundColor: palette.canvas,
+		});
+	});
+
 	it("never removes a link from a swipe that began in the screen's left edge band", async () => {
 		const { requests } = provide(session({ sessionUrls: [web] }));
 		const tree = sheet();

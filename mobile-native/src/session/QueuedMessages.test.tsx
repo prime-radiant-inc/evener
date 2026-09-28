@@ -5,6 +5,7 @@ import { createElement } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { paletteFor } from "../design/tokens";
 import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -76,7 +77,12 @@ const refused: Ghost = {
 
 function mount(
 	ghosts: readonly Ghost[],
-	{ disabled = false, canEdit = true, editHint = null as string | null } = {},
+	{
+		disabled = false,
+		canEdit = true,
+		editHint = null as string | null,
+		backdrop = "surface" as "surface" | "page",
+	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
@@ -86,6 +92,7 @@ function mount(
 			disabled={disabled}
 			canEdit={canEdit}
 			editHint={editHint}
+			backdrop={backdrop}
 			onAction={onAction}
 			onMore={onMore}
 		/>,
@@ -177,6 +184,7 @@ it("shows the images an unconfirmed send carried in its own bubble, and only the
 			disabled={false}
 			canEdit
 			editHint={null}
+			backdrop="surface"
 			draftAttachments={<Image accessibilityLabel="Image 1: proof.png" />}
 			onAction={() => {}}
 			onMore={() => {}}
@@ -318,6 +326,16 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		expect(renderedText(render(swipeables(tree)[0]?.props.renderRightActions()))).toBe("Cancel");
 		swipeLeft(tree);
 		expect(onAction.mock.calls).toEqual([[ghost, "cancel"]]);
+	});
+
+	it("paints a swiped ghost what it sits on, the composer or the page, since the bubble itself is unfilled", () => {
+		const palette = paletteFor("light");
+		for (const backdrop of ["surface", "page"] as const) {
+			const { tree } = mount([queued], { backdrop });
+			expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
+				backgroundColor: palette[backdrop],
+			});
+		}
 	});
 
 	it("never cancels from a swipe that began in the screen's left edge band", () => {

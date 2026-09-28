@@ -23,6 +23,8 @@ const BUTTON_LABELS: Record<GhostAction, string> = {
 // queue says so in full there.
 const MENU_LABELS: Record<GhostAction, string> = { ...BUTTON_LABELS, cancel: "Cancel message" };
 
+export type GhostBackdrop = "surface" | "page" | "canvas";
+
 export interface GhostBubbleProps {
 	ghost: Ghost;
 	/** Another ghost action is running: nothing here fires. */
@@ -35,10 +37,14 @@ export interface GhostBubbleProps {
 	editHint: string | null;
 	/** What the message carried besides its text, such as images. */
 	attachments?: ReactNode;
+	/** What the bubble sits on: the composer's surface, the transcript's
+	 * page, or a sheet's canvas. A swipe paints it under the unfilled
+	 * bubble. */
+	backdrop: GhostBackdrop;
 	onAction(action: GhostAction): void;
 }
 
-export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, onAction }: GhostBubbleProps) {
+export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, backdrop, onAction }: GhostBubbleProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
@@ -161,7 +167,10 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 	// it runs that the message is still the one you swiped.
 	const cancels = !disabled && (ghost.buttons.includes("cancel") || ghost.menu.includes("cancel"));
 	return cancels ? (
-		<SwipeRow destructive={{ key: "cancel", label: BUTTON_LABELS.cancel, run: () => onAction("cancel") }}>
+		<SwipeRow
+			destructive={{ key: "cancel", label: BUTTON_LABELS.cancel, run: () => onAction("cancel") }}
+			backdrop={palette[backdrop]}
+		>
 			{bubble}
 		</SwipeRow>
 	) : (

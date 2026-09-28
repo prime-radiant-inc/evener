@@ -44,6 +44,10 @@ export type SwipeRowProps = {
 	leading?: SwipeAction;
 	/** True from a swipe's first drag until the row is closed again. */
 	onActiveChange?(active: boolean): void;
+	/** The color the row sits on, painted under content that has no fill
+	 * of its own, since the action panels are drawn behind the row as soon
+	 * as it moves. */
+	backdrop?: string;
 	children: ReactNode;
 } & (
 	| {
@@ -76,7 +80,7 @@ export function swipeAccessibility(leading: SwipeAction | undefined, trailing: r
 	};
 }
 
-export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, children }: SwipeRowProps) {
+export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, backdrop, children }: SwipeRowProps) {
 	const { palette } = useColors();
 	const { width } = useWindowDimensions();
 	const swipeable = useRef<SwipeableMethods>(null);
@@ -155,6 +159,7 @@ export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, 
 		>
 			<View
 				testID="swipe-row-content"
+				style={backdrop ? { backgroundColor: backdrop } : undefined}
 				onTouchStart={(event) => {
 					startX.current = event.nativeEvent.pageX;
 				}}
