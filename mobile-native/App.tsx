@@ -209,10 +209,13 @@ function Navigation() {
 					<Stack.Screen
 						name="Conversation"
 						component={ConversationScreen}
-						options={({ route }) => ({
-							title: route.params.title || "Conversation",
-							animationTypeForReplace: replaceAnimation(route.params.slideFrom),
-						})}
+						options={({ route }) => {
+							const animation = replaceAnimation(route.params);
+							return {
+								title: route.params.title || "Conversation",
+								...(animation ? { animationTypeForReplace: animation } : {}),
+							};
+						}}
 					/>
 					<Stack.Screen
 						name="Reader"

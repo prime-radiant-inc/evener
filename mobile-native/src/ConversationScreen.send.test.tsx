@@ -2058,6 +2058,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 				hubId: "hub-1",
 				ref: "local:quiet",
 				title: "Old spike",
+				slideFrom: "right",
 			});
 			expect(navigation.push).not.toHaveBeenCalled();
 			expect(
@@ -2084,6 +2085,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 				ref: "local:quiet",
 				title: "Old spike",
 				openedBy: "next",
+				slideFrom: "right",
 			});
 		});
 

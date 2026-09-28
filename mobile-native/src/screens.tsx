@@ -257,10 +257,16 @@ export type Routes = {
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
-	 * replaces it. slideFrom says the title's swipe opened it as the previous
-	 * session in Live order, so it slides in from the left (spec 6).
-	 * location.ts persists neither. */
-	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next"; slideFrom?: "left" };
+	 * replaces it. slideFrom says the title's swipe opened it as the
+	 * previous ("left") or next ("right") session in Live order, the side it
+	 * slides in from (spec 6). location.ts persists neither. */
+	Conversation: {
+		hubId: string;
+		ref: string;
+		title: string;
+		openedBy?: "next";
+		slideFrom?: "left" | "right";
+	};
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
@@ -849,7 +855,7 @@ export function ConversationScreen({
 			ref: target.ref,
 			title: target.title,
 			...(route.params.openedBy ? { openedBy: route.params.openedBy } : {}),
-			...(direction === -1 ? { slideFrom: "left" as const } : {}),
+			slideFrom: direction === -1 ? "left" : "right",
 		});
 	}
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
