@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -170,5 +172,118 @@ func TestPruneMissingScratchReferencesNoOpOnHealthyManifest(t *testing.T) {
 	}
 	if len(after.References) != 1 || filepath.Clean(after.References[0].Dir) != filepath.Clean(intact.Dir) {
 		t.Fatalf("intact manifest references changed: %+v", after.References)
+	}
+}
+
+// TestPrepareRetainedScratchPrunesToEmpty covers the common single-allocation
+// wedge: the root's only retained directory is gone, so the prune drops every
+// reference and prepareRetainedScratch takes its empty-manifest early return
+// rather than reacquiring a lease. The root then restores on fresh scratch.
+func TestPrepareRetainedScratchPrunesToEmpty(t *testing.T) {
+	workDir := t.TempDir()
+	base := t.TempDir()
+	root, owner := newPruneTestRoot(t)
+	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env is not local: %T", root.env)
+	}
+	if env.SessionScratchDir() == "" {
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, root.stateDir, nil); err != nil {
+			t.Fatalf("mint scratch: %v", err)
+		}
+	}
+	own := env.SessionScratchDir()
+	if own == "" {
+		t.Fatal("root minted no scratch")
+	}
+	gone := pinTestScratch(t, owner, base, workDir)
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
+		[]sandbox.ScratchBinding{{
+			BindingID: "E-gone", OwnerSessionID: owner.RootSessionID, WorkingDir: workDir,
+			Slots: map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: gone.Dir, OwnsLease: true}},
+		}},
+		[]sandbox.ScratchConsumerBinding{{SessionID: "consumer-gone", CurrentBindingID: "E-gone"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gone.Dir); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the session's own scratch too, so every referenced directory is
+	// gone and the manifest empties completely.
+	if err := os.RemoveAll(own); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch wedged on an all-missing manifest: %v", err)
+	}
+	after, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.References) != 0 {
+		t.Fatalf("prune kept references in an all-missing manifest: %+v", after.References)
+	}
+	if root.retainedScratch.Load() != nil {
+		t.Fatal("prepare published a retained pool over an emptied manifest")
+	}
+	if err := root.validateRetainedScratchPresent(); err != nil {
+		t.Fatalf("retirement readiness failed over an emptied manifest: %v", err)
+	}
+}
+
+// TestPruneMissingScratchReferencesSkipsReleasedManifest proves the prune
+// returns a released manifest untouched: a tombstone already authorizes
+// ordinary collection of everything it names, so the prune must not write over
+// it or reanimate a dropped reference.
+func TestPruneMissingScratchReferencesSkipsReleasedManifest(t *testing.T) {
+	workDir := t.TempDir()
+	base := t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "prune-released-root"}
+
+	scratch := pinTestScratch(t, owner, base, workDir)
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
+		[]sandbox.ScratchBinding{{
+			BindingID: "E0", OwnerSessionID: owner.RootSessionID, WorkingDir: workDir,
+			Slots: map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
+		}},
+		[]sandbox.ScratchConsumerBinding{{SessionID: owner.RootSessionID, CurrentBindingID: "E0"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	released, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !released.Released {
+		t.Fatal("fixture did not tombstone the manifest")
+	}
+	// Remove the directory so a prune that ignored the tombstone would drop the
+	// reference.
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	got, written, err := sandbox.PruneMissingScratchReferences(owner)
+	if err != nil {
+		t.Fatalf("PruneMissingScratchReferences: %v", err)
+	}
+	if written {
+		t.Fatal("prune wrote a released manifest")
+	}
+	if !got.Released || got.Revision != released.Revision || len(got.References) != len(released.References) {
+		t.Fatalf("released manifest changed: released=%v rev %d->%d refs %d->%d",
+			got.Released, released.Revision, got.Revision, len(released.References), len(got.References))
 	}
 }
