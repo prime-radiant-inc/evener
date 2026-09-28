@@ -3364,6 +3364,61 @@ test("a merely-resumable stopped local session offers Send and sends turn/start"
   expect(calls[0]?.params).toMatchObject({ ref, input: [{ type: "text", text: "omt" }] });
 });
 
+// RoboRev Medium (round 12): resumeOnlyFoldable is stamped by a snapshot
+// hydration and the thread/status/changed branch keeps ...model, so a stale bit
+// can outlive the shut-down snapshot it described. Once a folded send's own
+// resume (or a reconnect, or an external Stop) moves the session to active,
+// availabilityFor must NOT take the resume-only branch - the hub no longer
+// admits a folded turn/start - and normal routing queues behind the running
+// turn. The stale bit AND the recovery obligation the snapshot armed both clear
+// on the transition; otherwise the fence keeps Send and Queue off.
+test("a stale resumeOnlyFoldable bit on a live status routes like a normal active session", async () => {
+  const user = userEvent.setup();
+  const ref = "local:stale-foldable";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: true },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  fake.on("turn/queue", receipt);
+  fake.on("turn/start", (params) => ({
+    ...receipt(params),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+
+  // The session's own folded resume (or any later frame) moves it to active.
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+  // The stale snapshot bit and the obligation it rode on do not survive.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await user.type(textarea(), "omt");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // Normal active routing: Queue, never a resume-only turn/start.
+  expect(routedCalls(fake)).toEqual(["turn/queue"]);
+});
+
 // A merely-resumable session that also holds delivery-uncertain messages is NOT
 // the clean resume case: the hub's explicit Resume still reconciles those rows
 // (the connection/uncertain-message shape), and the resume-only carve-out must
@@ -3556,10 +3611,11 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
 // daemon's still-active status while the hub overlays resumeRequired beside it
 // (applyThreadResumeRequirement), and the store arms the obligation on that
 // hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
-// absent; isResumeOnlyLocal keys on that bit (plus the uncertain/stop/queued
-// signals, and never on the status), so the merely-resumable carve-out does
-// not apply. The hub still refuses turn/start while the Stop drains, so Send
-// stays disabled.
+// absent, and its status is live (idle), which is not in SHUT_DOWN_STATUSES;
+// isResumeOnlyLocal now keys on the hub bit, the shut-down status, and the
+// uncertain/stop/queued signals, so the merely-resumable carve-out does not
+// apply on either count. The hub still refuses turn/start while the Stop
+// drains, so Send stays disabled.
 test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";

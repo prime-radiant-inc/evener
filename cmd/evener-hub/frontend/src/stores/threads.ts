@@ -40,6 +40,7 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   resolvePendingEscalation,
+  SHUT_DOWN_STATUSES,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -1186,6 +1187,12 @@ interface StopGroup {
   // fence. endStop restores it only when no member of the group reached a
   // daemon.
   previousObligation: symbol | undefined;
+  // The exact symbol this group armed on its 0 -> 1 transition. endStop
+  // restores/deletes the ref's obligation only while the ref still holds THIS
+  // symbol: a concurrent hydration can arm a fresh fence during an aborting
+  // stop's cancellation await, and only a still-owned entry is the group's to
+  // settle. Otherwise the group leaves the newer fence in place.
+  ownObligation: symbol;
   // Whether any member reached client.forceStop, i.e. signalled a daemon. A
   // group that did keeps its armed fence (a later snapshot clears it); one that
   // never did restores previousObligation exactly.
@@ -1205,10 +1212,11 @@ function beginStop(ref: string): void {
     return;
   }
   const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
-  activeStops.set(ref, { count: 1, previousObligation, signalled: false });
+  const ownObligation = Symbol();
+  activeStops.set(ref, { count: 1, previousObligation, ownObligation, signalled: false });
   markStopping(ref, true);
   threadsStore.setState((state) => ({
-    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, ownObligation),
   }));
 }
 
@@ -1217,7 +1225,10 @@ function beginStop(ref: string): void {
 // reached the daemon). On the 1 -> 0 transition restore the pre-group obligation
 // only when no member of the group ever signalled; a group that signalled keeps
 // the fence armed until a later snapshot clears it, and no aborting member
-// writes back its own captured value over an entry a sibling still owns.
+// writes back its own captured value over an entry a sibling still owns. The
+// ownership test is the group's own arming symbol, not merely "no sibling": a
+// hydration can arm a fresh fence during the aborting member's cancellation
+// await, and that newer fence must survive the abort untouched.
 function endStop(ref: string, signalled: boolean): void {
   const group = activeStops.get(ref);
   if (!group) return;
@@ -1228,6 +1239,12 @@ function endStop(ref: string, signalled: boolean): void {
   markStopping(ref, false);
   if (group.signalled) return;
   threadsStore.setState((state) => {
+    // A hydration (publishAndReconcileThreadHydration) can arm a fresh
+    // obligation during this aborting stop's cancellation await. Only a ref
+    // still holding this group's own fence is the group's to restore; a newer
+    // fence is left exactly as the hydration wrote it, rather than overwritten
+    // with a stale captured value or deleted outright.
+    if (state.restartBlockingObligations.get(ref) !== group.ownObligation) return {};
     const restartBlockingObligations = new Map(state.restartBlockingObligations);
     if (group.previousObligation === undefined) restartBlockingObligations.delete(ref);
     else restartBlockingObligations.set(ref, group.previousObligation);
@@ -1960,6 +1977,14 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 //
 //   - the hub bit must be true; an older or non-local snapshot that never
 //     carried it is not this shape.
+//   - the status must still be shut down (SHUT_DOWN_STATUSES: ended, closed,
+//     notLoaded). The bit is stamped by a snapshot hydration and the
+//     thread/status/changed branch keeps ...model, so a bit folded onto a
+//     still-shut-down snapshot can survive a frame that moved the session to
+//     active (the folded send's own resume, a reconnect, an externally
+//     initiated Stop). On a live status the hub would no longer admit the
+//     folded turn/start, and normal routing (turn/queue behind the running
+//     turn) is what the composer must offer instead.
 //   - signals.uncertainMessages must be false: while delivery-uncertain rows
 //     exist the hub's explicit Resume still runs reconciliation, so the send is
 //     not the whole story and the Resume affordance stays.
@@ -1986,12 +2011,13 @@ export interface ResumeOnlySignals {
 
 export function isResumeOnlyLocal(
   ref: string,
-  model: Pick<ThreadModel, "resumeOnlyFoldable">,
+  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status">,
   signals: ResumeOnlySignals = {},
 ): boolean {
   return (
     ref.startsWith("local:") &&
     model.resumeOnlyFoldable === true &&
+    SHUT_DOWN_STATUSES.has(model.status.type) &&
     signals.uncertainMessages !== true &&
     signals.stopInFlight !== true &&
     signals.queuedNonSend !== true
@@ -2715,12 +2741,21 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
+): {
+  next: Map<string, ThreadModel> | null;
+  changedRefs: string[];
+  acceptedRefs: string[];
+  // Refs whose thread/status/changed fold moved them OFF the shut-down set: the
+  // merely-resumable window those refs' snapshots described has ended, so their
+  // recovery obligation is the caller's to clear (see handleNotification).
+  endedResumeOnlyRefs: string[];
+} {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
+  const endedResumeOnlyRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs, acceptedRefs };
+  if (!routed) return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   const accept = (model: ThreadModel): void => {
     acceptedRefs.push(model.ref);
   };
@@ -2730,19 +2765,38 @@ function applyToMap(
       const updated = applyNotification(model, n, now);
       if (updated === model) continue;
       next ??= new Map(map);
-      next.set(model.ref, updated);
+      next.set(model.ref, settleResumeOnlyOffShutdown(model, updated, endedResumeOnlyRefs));
       changedRefs.push(model.ref);
     }
-    return { next, changedRefs, acceptedRefs };
+    return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   }
   accept(routed);
   const updated = applyNotification(routed, n, now);
   if (updated !== routed) {
     next = new Map(map);
-    next.set(routed.ref, updated);
+    next.set(routed.ref, settleResumeOnlyOffShutdown(routed, updated, endedResumeOnlyRefs));
     changedRefs.push(routed.ref);
   }
-  return { next, changedRefs, acceptedRefs };
+  return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+}
+
+// A folded notification that moved a ref OFF the shut-down set ends the
+// merely-resumable shape that ref's snapshot described: the resume the hub bit
+// was stamped for has started, so the snapshot's resumeOnlyFoldable bit must
+// not outlive the status that carried it. The bit is written ONLY by a snapshot
+// hydration (reducer.ts's threadFields), while the thread/status/changed branch
+// keeps ...model, so without this a stale bit rides a live status - the
+// predicate guards on the status too, but the bit itself belongs to the
+// snapshot, not to every later frame. The ref is reported so the caller clears
+// the recovery obligation the same snapshot armed. Only the off-set direction
+// counts: a fold onto the set (or within it) keeps the window, and the reverse
+// transition is a shutdown, not a resume.
+function settleResumeOnlyOffShutdown(previous: ThreadModel, updated: ThreadModel, endedRefs: string[]): ThreadModel {
+  if (!SHUT_DOWN_STATUSES.has(previous.status.type) || SHUT_DOWN_STATUSES.has(updated.status.type)) {
+    return updated;
+  }
+  endedRefs.push(updated.ref);
+  return updated.resumeOnlyFoldable === true ? { ...updated, resumeOnlyFoldable: false } : updated;
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -2816,11 +2870,13 @@ function handleNotification(n: AnyNotification): void {
     next: nextThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
+    endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
   const {
     next: nextWatchedThreads,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
+    endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
@@ -2856,6 +2912,21 @@ function handleNotification(n: AnyNotification): void {
     patch.watchedThreads = nextWatchedThreads;
   }
   threadsStore.setState(patch);
+
+  // A status frame that moved a ref off the shut-down set ends the
+  // merely-resumable window: the recovery obligation the same shut-down
+  // snapshot armed is stale now, and leaving it armed would fence a session the
+  // hub has resumed (stillFenced keeps Send and Queue off until a fresh read
+  // clears it). Clear it here, in the same step the model's stale
+  // resumeOnlyFoldable bit was cleared, so the composer routes normally.
+  if (endedThreadsResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
+    const endedRefs = new Set([...endedThreadsResumeOnly, ...endedWatchedResumeOnly]);
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      for (const ref of endedRefs) restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+  }
 
   if (invalidatedThreadRefs.length > 0 || invalidatedWatchedRefs.length > 0) {
     const client = wiredClient;

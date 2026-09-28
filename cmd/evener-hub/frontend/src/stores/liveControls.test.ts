@@ -119,6 +119,21 @@ test("isResumeOnlyLocal keeps the fence for uncertain, queued, and in-flight-Sto
   expect(uncertain.fencedLocal).toBe(true);
 });
 
+// RoboRev Medium (round 12): resumeOnlyFoldable is written only by a snapshot
+// hydration, and the thread/status/changed branch keeps ...model, so the bit can
+// outlive the shut-down snapshot it described. A folded send's own resume (or a
+// reconnect, or an externally initiated Stop) moves the session to active, where
+// the hub no longer admits a folded turn/start - the predicate must follow the
+// status, not the stale bit, and let normal routing (turn/queue behind the
+// running turn) decide.
+test("isResumeOnlyLocal follows the status, not a stale hub bit", () => {
+  const staleActive = { resumeOnlyFoldable: true, status: { type: "active" } } as const;
+  expect(recoveryFence("local:s", staleActive, false).resumeOnly).toBe(false);
+  // A shut-down status keeps the carve-out exactly as before.
+  const stopped = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
+  expect(recoveryFence("local:s", stopped, false).resumeOnly).toBe(true);
+});
+
 // RoboRev Medium (round 8): a Stop this page started is its OWN fence, not only
 // a blocker of the resume-only carve-out. A stale thread refresh can clear
 // restartBlockingObligations while the forceStop RPC is still draining (the hub

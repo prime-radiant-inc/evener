@@ -11582,6 +11582,43 @@ test("an aborted forceStop cannot clear the obligation a second stop owns", asyn
   expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
 });
 
+// RoboRev Medium (round 12): endStop restored the group's captured obligation
+// on the no-signal 1 -> 0 transition unconditionally, so an aborting stop
+// deleted (or overwrote) a recovery fence a CONCURRENT hydration had armed
+// during its cancellation await. publishAndReconcileThreadHydration arms a fresh
+// Symbol() on any read reporting resumeRequired, and such a read can resolve
+// while the stop is still in that await; the abort then clobbered the newer
+// fence, leaving the client unfenced while the hub still held ResumeRequired.
+// The group now owns the exact symbol it armed and settles the ref's obligation
+// only while the ref still holds it, so the hydration's fence survives.
+test("an aborted forceStop leaves a concurrently armed recovery fence in place", async () => {
+  const ref = "local:abort-hydration";
+  const freshFence = Symbol("hydrated-fence");
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation !== "cancelUnattempted") return;
+      // A hydration arms a fresh obligation while the stop's cancellation write
+      // is still in flight (publishAndReconcileThreadHydration's own setState),
+      // then the write fails and aborts the stop before it signals a daemon.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, freshFence),
+      }));
+      throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("storage unavailable");
+
+  // The aborted stop must not delete the hydration's newer fence.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(freshFence);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
 test("two overlapping aborted forceStops leave the obligation at its pre-group value", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
