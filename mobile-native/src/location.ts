@@ -230,6 +230,12 @@ export function locationForRoute(
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
 	}
+	// A subagent's session reopens as its coordinator's (ruling 21).
+	if (route.name === "Subagent") {
+		if (!object(route.params) || route.params.hubId !== hubId || !object(route.params.coordinator)) return null;
+		const session = { ref: route.params.coordinator.ref, title: route.params.coordinator.title };
+		return conversation(session) ? { hubId, conversation: { ref: session.ref, title: session.title } } : null;
+	}
 	if (route.name === "Reader") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
 		const { sessionRef, path, reviewRef, reviewTitle, updatedAt } = route.params;
