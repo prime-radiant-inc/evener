@@ -205,7 +205,17 @@ export function SwitchRow({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", gap: 12, minHeight: 44, paddingHorizontal: 16, paddingVertical: 8 }}>
+		<View
+			style={{
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 12,
+				minHeight: 44,
+				paddingHorizontal: 16,
+				paddingVertical: 8,
+				opacity: disabled ? 0.4 : 1,
+			}}
+		>
 			{icon ? (
 				<View style={{ width: 22, alignItems: "center" }}>
 					<SymbolView name={icon} tintColor={palette.inkMid} size={17} />
@@ -228,6 +238,8 @@ export function SwitchRow({
 				disabled={disabled}
 				onValueChange={onChange}
 				trackColor={{ false: palette.edgeStrong, true: palette.accent }}
+				// iOS draws the off track from this, not from trackColor.false.
+				ios_backgroundColor={palette.edgeStrong}
 			/>
 		</View>
 	);

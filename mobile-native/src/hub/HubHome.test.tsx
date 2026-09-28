@@ -15,14 +15,14 @@ vi.mock("@react-navigation/native", () => ({
 	StackActions: {
 		replace: (name: string, params: unknown) => ({ type: "REPLACE", payload: { name, params } }),
 	},
-	useFocusEffect: (effect: () => void) => effect(),
 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-const context: HubSheetContextValue = {
+let context: HubSheetContextValue;
+const liveContext: HubSheetContextValue = {
 	hubId: "hub-1",
 	hubName: "Work hub",
 	client: null,
@@ -52,6 +52,7 @@ const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Hub settings"];
 
 beforeEach(() => {
 	status.line = null;
+	context = liveContext;
 });
 
 it("says the hub is connected and lists its pages", () => {
@@ -84,4 +85,11 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 	for (const label of ROWS) expect(disabled(label)).toBe(false);
 	press("Providers");
 	expect(root.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", () => {
+	context = { ...liveContext, ready: false };
+	const { tree } = mount();
+	expect(renderedText(tree)).toContain("Connecting…");
+	expect(renderedText(tree)).not.toContain("Connected");
 });

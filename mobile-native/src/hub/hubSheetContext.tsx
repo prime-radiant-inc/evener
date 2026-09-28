@@ -31,15 +31,19 @@ export function useHubSheet(): HubSheetContextValue {
 }
 
 /** The Hub is always the selected hub's: selecting another hub calls `close`,
- * and removing the selected one (no hub selected) calls `leave`, for the
- * first-run screen. Each fires at most once. */
+ * and no hub selected (the selected one was removed, or none was when it
+ * opened) calls `leave`, for the first-run screen. It acts at most once. */
 export function useClosesOnHubChange(hubId: string, close: () => void, leave: () => void) {
 	const [openedFor] = useState(hubId);
 	const handled = useRef(false);
 	useEffect(() => {
-		if (handled.current || hubId === openedFor) return;
-		handled.current = true;
-		if (hubId === "") leave();
-		else close();
+		if (handled.current) return;
+		if (hubId === "") {
+			handled.current = true;
+			leave();
+		} else if (hubId !== openedFor) {
+			handled.current = true;
+			close();
+		}
 	}, [hubId, openedFor, close, leave]);
 }

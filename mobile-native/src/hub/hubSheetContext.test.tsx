@@ -40,3 +40,9 @@ it("leaves for the first-run screen once when no hub is selected", () => {
 	expect(leave).toHaveBeenCalledTimes(1);
 	expect(close).not.toHaveBeenCalled();
 });
+
+it("leaves at once when it opens with no hub selected", () => {
+	const { close, leave } = mount("");
+	expect(leave).toHaveBeenCalledTimes(1);
+	expect(close).not.toHaveBeenCalled();
+});

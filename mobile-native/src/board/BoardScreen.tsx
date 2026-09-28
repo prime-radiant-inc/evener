@@ -1515,7 +1515,8 @@ function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void })
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`${hubName}, Hub`}
+			accessibilityLabel={hubName}
+			accessibilityHint="Opens the Hub"
 			onPress={onOpen}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a

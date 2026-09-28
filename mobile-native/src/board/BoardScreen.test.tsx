@@ -1584,7 +1584,8 @@ it("puts the hub's name on the left, opening the Hub, and search on the right", 
 	expect(texts(hubButton)).toEqual(["Work hub"]);
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
-	expect(press.props.accessibilityLabel).toBe("Work hub, Hub");
+	expect(press.props.accessibilityLabel).toBe("Work hub");
+	expect(press.props.accessibilityHint).toBe("Opens the Hub");
 	// A long hub name truncates inside the capsule instead of growing it
 	// into Search (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);

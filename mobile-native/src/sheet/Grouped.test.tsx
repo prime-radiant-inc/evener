@@ -85,6 +85,15 @@ describe("a switch row", () => {
 		toggle.props.onValueChange(false);
 		expect(onChange).toHaveBeenCalledWith(false);
 	});
+
+	it("dims while disabled, and gives iOS the off track's color", () => {
+		const tree = render(<SwitchRow label="Network" value={false} disabled onChange={() => {}} />);
+		const toggle = tree.root.findByType("Switch" as never);
+		expect(toggle.props.disabled).toBe(true);
+		// iOS draws the off track from ios_backgroundColor, not trackColor.false.
+		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
+		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
+	});
 });
 
 describe("a segmented control", () => {

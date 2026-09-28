@@ -13,10 +13,10 @@ import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 type InterimScreen = "Providers" | "Plugins" | "TranscriptPreferences" | "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
-	const { hubId } = useHubSheet();
+	const { hubId, ready } = useHubSheet();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = hubStatusLine(useConnectionLine(), null);
+	const line = hubStatusLine(ready, useConnectionLine(), null);
 	// The root stack: the sheet's own route sits on it, so a replace there
 	// closes the sheet and opens the screen in one step.
 	const root = navigation.getParent();
