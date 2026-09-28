@@ -43,8 +43,10 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
 	const offersEdit = ghost.buttons.includes("edit") || ghost.menu.includes("edit");
 	const menu = ghost.menu.filter((action) => !(action === "edit" && editBlocked));
+	// The bubble is a control only while tapping it opens something.
+	const opensMenu = !disabled && menu.length > 0;
 	function openMenu() {
-		if (disabled || menu.length === 0) return;
+		if (!opensMenu) return;
 		const labels = menu.map((action) => MENU_LABELS[action]);
 		const destructive = menu.indexOf("cancel");
 		if (Platform.OS === "ios")
@@ -77,6 +79,9 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 		<View style={{ alignItems: "flex-end", gap: 2 }}>
 			<Pressable
 				accessibilityLabel={`${ghost.text}. ${ghost.caption}`}
+				{...(opensMenu ? { accessibilityRole: "button" as const } : {})}
+				accessibilityState={{ disabled: !opensMenu }}
+				disabled={!opensMenu}
 				onPress={openMenu}
 				style={{
 					alignSelf: "flex-end",

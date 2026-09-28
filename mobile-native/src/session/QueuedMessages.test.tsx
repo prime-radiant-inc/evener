@@ -109,9 +109,32 @@ describe("each ghost says what it is and what you can do", () => {
 		expect(bubble).toBeDefined();
 		for (const label of buttons) expect(pressable(tree, label)).toBeDefined();
 		const offered = tree.root
-			.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button")
+			.findAll(
+				(node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button" && node !== bubble,
+			)
 			.map((node) => node.props.accessibilityLabel);
 		expect(offered).toEqual(buttons);
+	});
+
+	it("exposes the bubble as a button only while it has a menu to open", () => {
+		const bubbleOf = (tree: ReactTestRenderer, ghost: Ghost) => pressable(tree, `${ghost.text}. ${ghost.caption}`);
+		const live = mount([queued]).tree;
+		expect(bubbleOf(live, queued)?.props).toMatchObject({
+			accessibilityRole: "button",
+			accessibilityState: { disabled: false },
+			disabled: false,
+		});
+		// Nothing to open: not a control, so VoiceOver doesn't stop on a dead button.
+		const inert = mount([steering]).tree;
+		expect(bubbleOf(inert, steering)?.props.accessibilityRole).toBeUndefined();
+		expect(bubbleOf(inert, steering)?.props.disabled).toBe(true);
+		// Another action is running.
+		const busy = mount([queued], { disabled: true }).tree;
+		expect(bubbleOf(busy, queued)?.props).toMatchObject({ accessibilityState: { disabled: true }, disabled: true });
+		// Its only menu item is an Edit the composer can't take right now.
+		const blocked = mount([unconfirmed], { canEdit: false, editHint: "Clear it first." }).tree;
+		expect(bubbleOf(blocked, unconfirmed)?.props.accessibilityRole).toBeUndefined();
+		expect(bubbleOf(blocked, unconfirmed)?.props.disabled).toBe(true);
 	});
 
 	it("runs a button's action on the ghost it belongs to", () => {
