@@ -141,17 +141,13 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 // suffix, while the edit value keeps the unset "(default)" placeholder.
 func TestLayerRows_ResolvedDefaultLabels(t *testing.T) {
 	twoHundred := 200
-	tru := true
-	rows := layerRows(appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{MaxRounds: &twoHundred, NoProjectPrompts: &tru})
+	rows := layerRows(appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{MaxRounds: &twoHundred})
 	byField := make(map[string]layerRow, len(rows))
 	for _, row := range rows {
 		byField[row.field] = row
 	}
 	if row := byField["max_rounds"]; row.value != "200 (default)" || row.editValue != "(default)" {
 		t.Errorf("max_rounds = value %q editValue %q, want 200 (default)/(default)", row.value, row.editValue)
-	}
-	if row := byField["no_project_prompts"]; row.value != "true (default)" || row.editValue != "(default)" {
-		t.Errorf("no_project_prompts = value %q editValue %q, want true (default)/(default)", row.value, row.editValue)
 	}
 	if row := byField["max_subagent_depth"]; row.value != "(default)" {
 		t.Errorf("max_subagent_depth (unset everywhere) = %q, want (default)", row.value)

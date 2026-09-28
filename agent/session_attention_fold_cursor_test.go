@@ -64,7 +64,6 @@ func BenchmarkRootDelegateAttentionDelivery(b *testing.B) {
 	root, err := NewSession(benchClient(), provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(b.TempDir()), SessionConfig{
 		MaxSubagentDepth: 1,
 		StateDir:         stateDir,
-		NoProjectPrompts: true,
 	})
 	if err != nil {
 		b.Fatalf("NewSession: %v", err)
@@ -92,7 +91,7 @@ func TestRootDelegateAttentionDeliveryDoesNotRedecodeTranscriptPrefix(t *testing
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	appendBulkHistory(t, root.attachedTranscript(), 256<<10)
 	deliverAndConsumeRootAttention(t, root, "delegate:dlg_prefix/delivery/1")

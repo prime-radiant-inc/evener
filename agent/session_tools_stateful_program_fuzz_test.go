@@ -175,7 +175,6 @@ func stpNewSession(t *testing.T, program []byte) (*Session, *agenttest.DenyEnv) 
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		clock:            agenttest.NewFakeClock(),
 	}
 	cfg.testOnly = testConfig{

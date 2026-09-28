@@ -133,8 +133,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	profile := provider.NewOpenAIProfile("gpt-5.2")
 	environment := execenv.NewLocalExecutionEnvironment(workDir)
 	sess, err := agent.NewSession(client, profile, environment, agent.SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
+		StateDir: stateDir,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

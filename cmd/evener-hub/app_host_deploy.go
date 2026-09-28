@@ -18,11 +18,15 @@ package hub
 //     its verified facts through m.cfg.lastKnownPublish, a seam that is nil in
 //     production today. The worker's success does not depend on it, and the
 //     residual is recorded where the seam is declared.
-//   - restart reattach (S13): the interim shape holds the gate through the
-//     restart and its health verification, releases it at one named point so
-//     the existing manager reconnect can reattach, re-acquires it, and
-//     re-probes. §6's operation-owned `attachUnderGate` is not built here; the
-//     release point names the deviation.
+//   - restart reattach: §6 seam (d) is operation-owned — the worker keeps the
+//     host's gate across the restart's channel drop, reattaches through the
+//     manager's gate-aware `attachUnderGate` primitive (which suppresses
+//     supervisor startup), re-probes over the reattached channel, and hands the
+//     supervisor off under the still-held gate. An initially unattached restart
+//     attach-firsts the same way and names the path in the record. The reattach
+//     tolerates the retryable attach classes within the refresh window — a
+//     restarted host may refuse dials while it comes back up — and fails fast
+//     on terminal causes.
 //   - crash fencing (S17/S18): the fencing epoch is persisted and presented;
 //     the remote write half keeps S3's same-boot subset (hostops/probeepoch.go).
 
@@ -280,7 +284,10 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 			"host %q's registration moved while this operation was being resolved; retry", entry.Name))
 	}
 	client, attached := m.attachedClient(entry)
-	if !attached {
+	if req.kind == hostops.KindDeploy && !attached {
+		// §6's detached-during-deploy rule: deploy must not consume its
+		// single-use token to open a worker that then attach-firsts into an
+		// unvalidated channel.
 		return hostops.Record{}, hostDetachedRefusal(entry.Name)
 	}
 
@@ -491,7 +498,10 @@ func (m *hubHostManager) revalidateUnderGate(entry hostreg.Host, req operationRe
 		return appwire.StaleEntry(appwire.StaleEntryBindingGeneration, fmt.Sprintf(
 			"host %q's registration moved while this operation held its gate; retry", entry.Name))
 	}
-	if _, attached := m.attachedClient(entry); !attached {
+	if _, attached := m.attachedClient(entry); !attached && req.kind == hostops.KindDeploy {
+		// The deploy's detached-during-deploy rule. A restart proceeds without a
+		// channel: §6's attach-first arm attaches the host under this same held
+		// gate.
 		return hostDetachedRefusal(entry.Name)
 	}
 	fingerprint, ok := m.hostTOMLFingerprint(entry.Name)
@@ -709,18 +719,46 @@ func (m *hubHostManager) interruptLeftoverOperations() int {
 //     success the worker could not verify.
 //
 // The worker owns the host's gate from the record's creation to its terminal
-// state (with the restart reattach deviation documented at the release point).
+// state, the restart's reattach included (§6 seam (d): the reattach is
+// operation-owned and runs under the same held gate).
 func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			work.release()
-		}
-	}
-	defer release()
+	defer work.release()
 
 	id := work.record.ID
+	// handoff is the supervisor handoff for the channel a restart left live:
+	// the attach-first attach's, superseded by the post-restart reattach's once
+	// that replacement is published. It is invoked exactly once, always under
+	// the still-held gate — explicitly at terminal verification, or by the
+	// deferred finish below on any earlier exit — so a restart that fails after
+	// an attach-first can never strand an attached channel without a
+	// supervisor.
+	var handoff func() bool
+	handedOff := false
+	handOff := func(when string) bool {
+		if handedOff || handoff == nil {
+			return true
+		}
+		handedOff = true
+		if handoff() {
+			return true
+		}
+		m.logf("operation %s: the host's supervisor could not be started %s; the host may be left without automatic reconnect", id, when)
+		return false
+	}
+	defer func() { handOff("as the operation ended") }()
+	// fail records a terminal failure, first handing the channel a completed
+	// attach left to its supervisor under the still-held gate. A handoff that
+	// cannot start the supervisor is joined into the recorded failure instead
+	// of being masked by it, so an attached-but-unsupervised host is visible in
+	// the record. The deferred finish above stays the backstop for paths that
+	// return without recording a failure (an interrupted shutdown).
+	fail := func(err error) {
+		if !handOff("as the operation failed") {
+			err = errors.Join(err, errors.New("the host's supervisor could not be started, so the host may be attached without automatic reconnect"))
+		}
+		m.failOperation(ctx, id, err)
+	}
+
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
@@ -748,39 +786,62 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// The irreversible steps, each behind a fresh fingerprint check.
 	if work.record.Kind == hostops.KindDeploy {
 		if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		if m.cfg.deployHost == nil {
-			m.failOperation(ctx, id, errors.New("this hub has no deploy step wired, so the operation cannot run"))
+			fail(errors.New("this hub has no deploy step wired, so the operation cannot run"))
 			return
 		}
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
+			fail(hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
 		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
 		if err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		m.recordProgress(id, "the controller's build is installed and verified")
 		if restartFollows {
 			if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
-				m.failOperation(ctx, id, err)
+				fail(err)
 				return
 			}
 			if err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
-				m.failOperation(ctx, id, err)
+				fail(err)
 				return
 			}
 		}
 	} else {
 		if err := m.checkOperationFingerprint(work.entry, work.fingerprint); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
+		}
+		// §6's attach-first arm: a restart with no usable attached channel —
+		// the handler saw none, or the link dropped before this worker ran —
+		// attaches the host under the held gate first, and names the path in
+		// the record. The pre-restart probe then reads the identity of the
+		// process the restart must replace over that channel. The handoff from
+		// this attach is provisional: the reattach below supersedes it when its
+		// replacement publishes, and an earlier exit hands this channel off
+		// through fail() before the failure is recorded — the deferred finish
+		// is the backstop for an exit that records no failure — so a failed
+		// probe or restart cannot strand it.
+		if _, attached := m.attachedClient(work.entry); !attached {
+			h, err := m.attachOperationChannel(ctx, id, work.entry,
+				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
+			if h != nil {
+				// A published channel keeps its handoff even when the call
+				// reports a failure, so it is never left unsupervised.
+				handoff = h
+			}
+			if err != nil {
+				fail(err)
+				return
+			}
 		}
 		// Restart has no pre-operation probe step of its own (no token, no
 		// plan), so the worker takes the "pre-operation probe" value the
@@ -788,17 +849,17 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// presenting the epoch the record was created with.
 		probe, err := m.probeBeforeRestart(ctx, work)
 		if err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		beforeProbe = probe
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
+			fail(hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		if err := m.runRestartStep(ctx, id, work.entry, facts); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		restartFollows = true
@@ -807,41 +868,47 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		return
 	}
 
-	// §6 seam (d) interim (S13 owns the operation-owned reattach): hold the gate
-	// through the restart and its health verification above, then release it at
-	// this one named point so the existing supervisor/reconnect can reattach,
-	// wait for the channel, re-acquire the gate for the refresh probe, and
-	// complete. Re-running the normal attach path while holding the gate would
-	// deadlock on the non-reentrant gate, which is exactly why the spec's
-	// attachUnderGate is the S13 deliverable this slice does not build.
-	var refreshRelease func()
+	// §6 seam (d): the operation-owned reattach. The worker retains the host's
+	// gate across the restart's channel drop and re-runs the attach dialing
+	// closure through the gate-aware primitive, which accepts the already-held
+	// gate and suppresses supervisor startup. The post-operation refresh below
+	// probes the reattached channel, and the handoff that follows it starts the
+	// supervisor under the still-held gate. Re-running the normal attach path
+	// while holding the gate is a deadlock: the gate is non-reentrant.
+	// A retryable attach failure — a host still coming back up — is retried
+	// within the refresh window, and a terminal cause fails fast; see
+	// reattachOperationChannel.
 	if restartFollows {
-		m.recordProgress(id, "restart verified; releasing the host gate so the existing reconnect can reattach (S13 owns the operation-owned reattach)")
-		release()
-		if _, ok := m.awaitOperationReattach(ctx, work.entry); !ok {
-			m.failOperation(ctx, id, errors.New(
-				"the host did not reattach within the refresh window after the restart, so the post-operation probe could not run"))
-			return
+		h, err := m.reattachOperationChannel(ctx, id, work.entry)
+		if h != nil {
+			// A published replacement keeps its handoff even when the call
+			// reports an error, so it is never left unsupervised.
+			handoff = h
 		}
-		if m.interruptIfShuttingDown(ctx, id) {
-			return
-		}
-		releaseAgain, err := m.acquireOperationGate(ctx, work.entry.Name)
 		if err != nil {
-			m.failOperation(ctx, id, fmt.Errorf("re-acquiring the host gate for the post-operation probe failed: %w", err))
+			fail(err)
 			return
 		}
-		refreshRelease = releaseAgain
-		defer refreshRelease()
 	}
 
 	// §6's post-operation refresh: the verified channel-free preflight, then
-	// the running probe over the attached channel, then the verification.
-	if err := m.refreshOperation(ctx, id, work, beforeProbe, restartFollows); err != nil {
-		m.failOperation(ctx, id, err)
-		return
+	// the running probe over the attached (reattached) channel, then the
+	// verification.
+	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, restartFollows)
+	// The suppress-supervisor scope ends at verification: hand the channel back
+	// to a supervisor under the still-held gate, whether or not the refresh
+	// verified the outcome — the operation is over either way, and the host
+	// must keep automatic reconnect after the restart. A failed handoff is
+	// recorded alongside a failed refresh rather than masked by it.
+	var handoffErr error
+	if !handOff("after the restart verification") {
+		handoffErr = errors.New("the host's supervisor could not be started after the restart, so the host is attached without automatic reconnect")
 	}
 	if m.interruptIfShuttingDown(ctx, id) {
+		return
+	}
+	if refreshErr != nil || handoffErr != nil {
+		fail(errors.Join(refreshErr, handoffErr))
 		return
 	}
 	m.recordTerminal(id, hostops.StateComplete, true, "operation complete")
@@ -962,85 +1029,112 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	return nil
 }
 
-// awaitOperationReattach waits (bounded by the manager's own refresh window)
-// for the host's channel to be attached again after a restart released the
-// gate. It is the interim half of §6 seam (d): the existing reconnect owns the
-// reattach, and this waits for it rather than dialing.
-func (m *hubHostManager) awaitOperationReattach(ctx context.Context, entry hostreg.Host) (*appwire.Client, bool) {
-	if m.cfg.attachedFacts == nil || m.cfg.manager == nil {
-		// No manager owns channels here (tests, embedders): the caller's own
-		// reattach seam decides.
-		if m.cfg.awaitReattach != nil {
-			return m.cfg.awaitReattach(ctx, entry)
-		}
-		return nil, true
+// attachOperationChannel runs one §6 operation-owned attach attempt under the
+// caller's held gate: where a channel manager is wired, it records the progress
+// line naming the path (the attach-first arm's entry), then hands the work to
+// the gate-aware primitive, which never re-acquires the non-reentrant gate.
+// The returned handoff starts the channel's supervisor under the same held gate
+// after the post-operation verification.
+func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, entry hostreg.Host, progress string, explicit bool) (func() bool, error) {
+	if m.cfg.attachUnderGate == nil {
+		// No manager owns channels here (tests, embedders): there is nothing to
+		// reattach, so the arm is the no-op success the interim wait had — and
+		// no progress line is recorded, because the record must not claim an
+		// attach that never ran. The post-operation refresh's own attachment
+		// check still decides whether the operation can complete.
+		return func() bool { return true }, nil
 	}
-	if !m.awaitOperationCondition(ctx, func() bool {
-		_, attached := m.attachedClient(entry)
-		return attached
-	}) {
-		return nil, false
-	}
-	client, _ := m.attachedClient(entry)
-	return client, true
+	m.recordProgress(id, progress)
+	return m.attachUnderGateOnce(ctx, id, entry, explicit)
 }
 
-// acquireOperationGate re-acquires the host's gate for the post-operation probe
-// after the restart's reattach window, retrying while the supervisor's own
-// reconnect or another holder briefly owns it, bounded by the refresh window.
-func (m *hubHostManager) acquireOperationGate(ctx context.Context, name string) (func(), error) {
-	var release func()
-	var lastErr error
-	acquired := m.awaitOperationCondition(ctx, func() bool {
-		attempted, err := m.cfg.gate.TryAcquire(name, hostops.Holder{Kind: hostops.HolderOperation})
-		if err != nil {
-			lastErr = err
-			return false
-		}
-		release = attempted
-		return true
-	})
-	if !acquired {
-		if lastErr == nil {
-			lastErr = errors.New("the controller's context ended before the host gate was free")
-		}
-		return nil, lastErr
+// attachUnderGateOnce runs one operation-owned attach attempt through the
+// gate-aware primitive. The record's holder promotion is logged, never fatal
+// (the record is durable and the worker still runs), but the gate-aware
+// primitive requires the gate to carry the operation holder the worker
+// presents, so it is re-asserted before every attempt — a promotion that could
+// not publish must not turn into a failed operation, and a retry must present
+// the same holder the first try did.
+func (m *hubHostManager) attachUnderGateOnce(ctx context.Context, id string, entry hostreg.Host, explicit bool) (func() bool, error) {
+	holder := hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}
+	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
+		return nil, fmt.Errorf("the operation holder could not be published on host %q's gate, so the attach under it cannot run: %w", entry.Name, err)
 	}
-	return release, nil
+	handoff, err := m.cfg.attachUnderGate(ctx, entry, holder, explicit)
+	if err != nil {
+		return nil, fmt.Errorf("the operation-owned attach for host %q failed: %w", entry.Name, err)
+	}
+	// The attach ladder can run an Ensure-triggered deploy, whose recorder
+	// promotes the gate to the inner operation and whose finish restores the
+	// manager holder (finishEnsureDeploy). The returned handoff requires the
+	// gate to carry this operation's holder when it runs, so re-assert it after
+	// the attach: a holder change performed inside the ladder must not make the
+	// handoff refuse and leave the published channel unsupervised.
+	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
+		// The channel is already published; return its handoff alongside the
+		// error so the caller can still invoke it, rather than discarding the
+		// only closure that would start its supervisor.
+		return handoff, fmt.Errorf("the operation holder could not be restored after the attach for host %q: %w", entry.Name, err)
+	}
+	return handoff, nil
 }
 
-// operationPollInterval is how often the worker re-checks a condition that the
-// manager or the supervisor resolves on its own (a reattached channel, a freed
-// gate) while it waits inside the refresh window.
+// operationPollInterval is how often the worker re-runs a bounded operation
+// step whose condition the host may resolve on its own — today the reattach of
+// a restarted host — inside the refresh window. It is the interval the
+// pre-seam-(d) interim wait used.
 const operationPollInterval = 250 * time.Millisecond
 
-// awaitOperationCondition polls check until it reports done, the caller's
-// context ends, or the refresh window expires, and reports whether check ever
-// succeeded. It is the one wait the restart's interim reattach hand-off uses:
-// the existing reconnect owns the reattach, and the worker only waits for it.
-func (m *hubHostManager) awaitOperationCondition(ctx context.Context, check func() bool) bool {
+// refreshWindow bounds the worker's post-restart reattach tolerance. It is the
+// pre-seam-(d) interim's bound, recovered as-is: the probe timeout plus a
+// connect allowance — long enough for a restarted host to accept dials again,
+// short enough that the operation's record still reaches a terminal state
+// either way.
+func (m *hubHostManager) refreshWindow() time.Duration {
+	return 4 * hostProbeTimeoutFor(m.cfg.probeTimeout)
+}
+
+// reattachOperationChannel runs §6 seam (d)'s post-restart reattach with the
+// interim's tolerance for the retryable class restored: under the held gate the
+// dropped channel's supervisor cannot reconnect (the gate is non-reentrant), so
+// a host still coming back up after a reboot can refuse the dial with a
+// retryable transport error, and failing the whole restart on the first one is
+// harsher than the shape seam (d) replaced. Retryable failures are retried
+// within refreshWindow; a terminal cause (sshconn.Terminal's class) fails fast
+// exactly as the attach ladder classes it; an exhausted window reports the
+// honest failure. The progress line is recorded once, before the first
+// attempt — retries must not look like new steps in the record.
+func (m *hubHostManager) reattachOperationChannel(ctx context.Context, id string, entry hostreg.Host) (func() bool, error) {
+	if m.cfg.attachUnderGate == nil {
+		// No manager owns channels here (tests, embedders): the same no-op
+		// success the attach arm is, and no progress line is recorded for an
+		// attach that never ran.
+		return func() bool { return true }, nil
+	}
+	m.recordProgress(id, "restart verified; reattaching the host under the held host gate")
 	deadline := time.Now().Add(m.refreshWindow())
+	var last error
 	for {
-		if check() {
-			return true
+		handoff, err := m.attachUnderGateOnce(ctx, id, entry, false)
+		if err == nil {
+			return handoff, nil
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			return false
+		last = err
+		// A published channel keeps its handoff: the caller must still hand it
+		// off, and a channel that already published is not a dial to retry. A
+		// terminal cause and an ended context are the other no-retry arms.
+		if handoff != nil || sshconn.Terminal(err) || ctx.Err() != nil {
+			return handoff, err
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("the host did not reattach within the refresh window after the restart, so the post-operation probe could not run: %w", last)
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return nil, last
 		case <-time.After(operationPollInterval):
 		}
 	}
-}
-
-// refreshWindow bounds the post-operation reattach wait and the gate
-// re-acquisition. It is the probe timeout plus a connect allowance: the
-// supervisor's reconnect is bounded by its own backoff, and the operation's
-// record must reach a terminal state either way.
-func (m *hubHostManager) refreshWindow() time.Duration {
-	return 4 * hostProbeTimeoutFor(m.cfg.probeTimeout)
 }
 
 // interruptIfShuttingDown reports whether the controller-lifetime context has

@@ -194,7 +194,6 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 			"--dir", workDir,
 			"--state-dir", stateDir,
 			"--run-dir", runDir,
-			"--no-project-prompts",
 		})
 	}()
 

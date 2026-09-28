@@ -3567,9 +3567,9 @@ test("an Advanced-options boolean names the resolved default (On/Off)", async ()
     f.on("evener/launch/schema", () => ({
       options: [
         {
-          field: "no_project_prompts",
-          wireField: "noProjectPrompts",
-          label: "No project prompts",
+          field: "api_log",
+          wireField: "apiLog",
+          label: "Log API requests",
           group: "general",
           kind: "boolean",
           perLaunch: true,
@@ -3577,7 +3577,7 @@ test("an Advanced-options boolean names the resolved default (On/Off)", async ()
       ],
     }));
     f.on("evener/launch/resolve", () => ({
-      effective: { model: "anthropic/claude-sonnet-4-5", noProjectPrompts: true },
+      effective: { model: "anthropic/claude-sonnet-4-5", apiLog: true },
       layers: {},
       provenance: {},
     }));
@@ -3589,7 +3589,7 @@ test("an Advanced-options boolean names the resolved default (On/Off)", async ()
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  const select = screen.getByLabelText("No project prompts") as HTMLSelectElement;
+  const select = screen.getByLabelText("Log API requests") as HTMLSelectElement;
   expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["On (default)", "On", "Off"]);
 });
 

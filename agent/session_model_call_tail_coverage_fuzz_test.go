@@ -250,7 +250,7 @@ func modelCallTailSession(t *testing.T) *Session {
 func modelCallTailSessionWithClient(t *testing.T, client *llm.Client, profile *provider.Profile) *Session {
 	t.Helper()
 	clock := agenttest.NewFakeClock()
-	cfg := SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, ReasoningEffort: "medium", clock: clock}
+	cfg := SessionConfig{StateDir: t.TempDir(), ReasoningEffort: "medium", clock: clock}
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true
 	cfg.testOnly.noSyncJobStore = true
