@@ -855,6 +855,30 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.desktop).toBe("boom");
   });
 
+  test("a layout write failure rides the layout slot, never the store-wide read error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("boom", -32000);
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("boom");
+    expect(store.getState().hubErrors.mobile).toBe("boom");
+    expect(store.getState().hubError).toBeNull();
+  });
+
+  test("a successful write on one layout preserves an outstanding read failure", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(getMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hubError).toBe("hub unreachable");
+    client.on(patchMethod, () => patchAnswer("desktop", hubDefault(4, desktopConfig)));
+    await store.getState().patchHubDefault("desktop", desktopConfig);
+    expect(store.getState().hubError).toBe("hub unreachable");
+  });
+
   test("a preview stranded by a support flap clears when the next read confirms the write did not land", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
