@@ -52,6 +52,8 @@ import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
+import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
+import { SubagentScreen } from "./src/subagents/SubagentScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
@@ -231,6 +233,11 @@ function Navigation() {
 						component={SubagentsScreen}
 						options={{ title: "" }}
 					/>
+					<Stack.Screen
+						name="Subagent"
+						component={SubagentScreen}
+						options={({ route }) => ({ title: route.params.title || "Subagent" })}
+					/>
 					<Stack.Group
 						screenOptions={{
 							contentStyle: { backgroundColor: colors.palette.canvas },
@@ -295,6 +302,11 @@ function Navigation() {
 							name="FilesSheet"
 							component={FilesSheet}
 							options={SHEET_ROUTES.FilesSheet}
+						/>
+						<Stack.Screen
+							name="StopSubagentSheet"
+							component={StopSubagentSheet}
+							options={SHEET_ROUTES.StopSubagentSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

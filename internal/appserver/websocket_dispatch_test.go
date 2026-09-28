@@ -166,38 +166,54 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 	}
 }
 
-// TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests pins why
-// evener/activity/read dispatches concurrently: the hub's read can wait out
-// its per-host budget on a slow attached host, and a phone polls it every ten
-// seconds on the same connection its sends ride, so an ordered request issued
-// behind a parked read must still run and answer.
-func TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests(t *testing.T) {
-	server, httpServer, readStarted, release := parkedMethodServer[appwire.ActivityReadParams](t, appwire.MethodEvenerActivityRead, appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}})
+// requireSlowMethodDoesNotHoldOrderedRequests parks a handler for method,
+// then requires an ordered request issued behind it on the same connection to
+// answer before the parked one is released.
+func requireSlowMethodDoesNotHoldOrderedRequests[P, R any](t *testing.T, method string, params P, reply R) {
+	t.Helper()
+	server, httpServer, started, release := parkedMethodServer[P](t, method, reply)
 	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, nil
 	})
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
-	readDone := make(chan error, 1)
+	slowDone := make(chan error, 1)
 	go func() {
-		var out appwire.ActivityReadResponse
-		readDone <- client.Request(ctx, appwire.MethodEvenerActivityRead, appwire.ActivityReadParams{}, &out)
+		var out R
+		slowDone <- client.Request(ctx, method, params, &out)
 	}()
-	waitFor(t, "the activity read to start", readStarted)
+	waitFor(t, method+" to start", started)
 
 	orderedDone := make(chan error, 1)
 	go func() {
 		orderedDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
 	}()
-	if err := waitFor(t, "an ordered request to answer while the activity read is parked", orderedDone); err != nil {
+	if err := waitFor(t, "an ordered request to answer while "+method+" is parked", orderedDone); err != nil {
 		t.Fatalf("ordered request failed: %v", err)
 	}
 
 	release()
-	if err := waitFor(t, "the activity read to answer once released", readDone); err != nil {
-		t.Fatalf("activity read failed: %v", err)
+	if err := waitFor(t, method+" to answer once released", slowDone); err != nil {
+		t.Fatalf("%s failed: %v", method, err)
 	}
+}
+
+// TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests pins why
+// evener/activity/read dispatches concurrently: the hub's read can wait out
+// its per-host budget on a slow attached host, and a phone polls it every ten
+// seconds on the same connection its sends ride.
+func TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests(t *testing.T) {
+	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerActivityRead, appwire.ActivityReadParams{}, appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}})
+}
+
+// TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests pins why
+// evener/jobs/list dispatches concurrently: for a delegate-heavy session the
+// tree build takes seconds and returns megabytes, and run inline it held
+// every later request on the browser's socket (navigation, unsubscribe, turn
+// lists) behind it.
+func TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests(t *testing.T) {
+	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerJobsList, appwire.JobsListParams{Ref: "local:th_1"}, appwire.JobsListResponse{})
 }
 
 // TestServeWebSocketRejectsRequestsBeforeInitialize pins the initialize
@@ -356,6 +372,10 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// attached host; a phone polls it on the connection its sends ride
 		// (TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests).
 		appwire.MethodEvenerActivityRead: true,
+		// evener/jobs/list builds the whole activity tree, seconds and
+		// megabytes for a delegate-heavy session
+		// (TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests).
+		appwire.MethodEvenerJobsList: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
