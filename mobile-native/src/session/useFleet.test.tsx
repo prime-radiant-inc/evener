@@ -35,6 +35,8 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 	const methods: string[] = [];
 	const toFail = new Set(failOnce);
 	const listeners = new Set<(event: AnyNotification) => void>();
+	// Every subscription a binding makes: a rebind subscribes afresh.
+	let subscriptions = 0;
 	const client: ConversationClientLike = {
 		request: (method, params) => {
 			methods.push(method);
@@ -43,6 +45,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 			return Promise.resolve(answerFleetRead(shape, method, params) as never);
 		},
 		onNotification: (listener) => {
+			subscriptions += 1;
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
@@ -59,7 +62,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 				},
 			} as AnyNotification);
 	};
-	return { client, methods, invalidateNeedsYou, listening: () => listeners.size };
+	return { client, methods, invalidateNeedsYou, listening: () => listeners.size, subscriptions: () => subscriptions };
 }
 
 async function settle() {
@@ -183,6 +186,25 @@ describe("the fleet's lifecycle", () => {
 			invalidateNeedsYou(1);
 			await vi.advanceTimersByTimeAsync(60_000);
 			expect(methods.length).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("leaves a read that failed alone while another screen is in front", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, subscriptions } = hub({ failOnce: ["live", "needs_you"] });
+			const { hook, view } = mount(client);
+			await act(settle);
+			const bound = subscriptions();
+			view.inFront = false;
+			hook.rerender();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+			expect(subscriptions()).toBe(bound);
+			hook.unmount();
 		} finally {
 			vi.useRealTimers();
 		}

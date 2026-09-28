@@ -28,7 +28,7 @@ describe("who else needs you (spec 13.2)", () => {
 		expect(othersNeedingYou(bands, "working").map((r) => r.ref)).toEqual(["failed", "question"]);
 	});
 
-	it("sends Next to the first of them, failures first (ruling 11)", () => {
+	it("sends Next to the head of Needs you from elsewhere, and on to the one after from inside it (ruling 11)", () => {
 		expect(nextSession(bands, "working")?.ref).toBe("failed");
 		expect(nextSession(bands, "failed")?.ref).toBe("question");
 		expect(nextSession(liveBands([working], [], () => false), "working")).toBeNull();

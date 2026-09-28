@@ -10,11 +10,11 @@ export function othersNeedingYou(bands: LiveBands, currentRef: string): Navigati
 	return bands.needsYou.map((item) => item.row).filter((row) => row.ref !== currentRef);
 }
 
-/** Next's destination: the session after this one in Needs you order,
- * wrapping around, so Next walks through everyone who needs you instead of
- * bouncing between the first two; the first of them when this one doesn't
- * need you. Phase 6's alerts put "whichever session alerted you most
- * recently" first (ruling 11). */
+/** Next's destination, in Needs you order (ruling 11). From a session in
+ * Needs you it is the one after it, wrapping around at the end, so Next
+ * walks through everyone who needs you instead of bouncing between two.
+ * From any other session it is the head of that order. Phase 6's alerts put
+ * "whichever session alerted you most recently" at the head. */
 export function nextSession(bands: LiveBands, currentRef: string): NavigationSessionSummary | null {
 	const order = bands.needsYou.map((item) => item.row);
 	const index = order.findIndex((row) => row.ref === currentRef);

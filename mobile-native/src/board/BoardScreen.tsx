@@ -1473,7 +1473,6 @@ function useHubSeenMarks(
 	}, [hubMarks, loadedRows]);
 }
 
-
 function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, revealSearch: () => void) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
