@@ -11,7 +11,7 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, navigationCapability, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -97,9 +97,26 @@ export async function createDemoHub(
 			directoryComplete: false,
 			auth: demoFleet !== null,
 		},
-		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
+	// Makes the fleet's working row ask its question and tells every socket
+	// connected at that moment, as a real hub broadcasts navigation changes
+	// to every navigation client. Returned for tests to fire on demand.
+	function askQuestion() {
+		const notification = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "evener/navigation/invalidated",
+			params: requireFleet().askQuestion(),
+		});
+		for (const socket of server.clients)
+			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+	}
+	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
+	// one client's connection.
+	const askTimer =
+		demoFleet && fleetOptions?.askAfterSeconds !== undefined
+			? setTimeout(askQuestion, fleetOptions.askAfterSeconds * 1000)
+			: undefined;
 	function resync(thread: Thread) {
 		for (const [socket, refs] of subscribers)
 			if (refs.has(thread.evener.ref) && socket.readyState === WebSocket.OPEN)
@@ -130,7 +147,9 @@ export async function createDemoHub(
 				const selected = threads.get(params.ref);
 				switch (request.method) {
 					case "initialize":
-						result = handshake;
+						result = demoFleet
+							? { ...handshake, navigation: demoFleet.navigationCapability() }
+							: handshake;
 						break;
 					case "ping":
 						result = {};
@@ -417,12 +436,26 @@ export async function createDemoHub(
 	});
 	return {
 		origin: `http://127.0.0.1:${address.port}`,
+		askQuestion,
 		close: () =>
 			new Promise<void>((resolve, reject) => {
+				clearTimeout(askTimer);
 				for (const socket of server.clients) socket.terminate();
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+// EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a
+// typo worth stopping on rather than a demo that silently never changes.
+function askAfterSeconds(value: string | undefined): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const seconds = Number(value);
+	if (!Number.isFinite(seconds) || seconds < 0)
+		throw new Error(
+			`EVENER_DEMO_FLEET_ASK_AFTER must be a number of seconds, got ${JSON.stringify(value)}`,
+		);
+	return seconds;
 }
 
 if (
@@ -435,7 +468,11 @@ if (
 			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
 			: undefined,
 		process.env.EVENER_DEMO_FLEET === "1"
-			? { offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1" }
+			? {
+					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
+					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
+					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+				}
 			: undefined,
 	);
 	console.info(

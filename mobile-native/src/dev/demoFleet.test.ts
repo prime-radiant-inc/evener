@@ -510,6 +510,124 @@ describe("demo fleet truncation", () => {
 	});
 });
 
+describe("demo fleet empty option", () => {
+	const fleet = createDemoFleet({ now: STARTUP, empty: true });
+
+	it("reports zero live, needs-you, working and errored counts, with sources unaffected", () => {
+		const manifest = read(fleet, params({ resource: "manifest" }));
+		expect(manifest.sections).toMatchObject({
+			live: { count: 0 },
+			needs_you: { count: 0 },
+			pin_sections: { count: 0 },
+		});
+		expect(manifest.catalogs).toMatchObject({
+			projects: { count: 0 },
+			archived_projects: { count: 0 },
+			test_runs: { count: 0 },
+		});
+		expect(manifest.attentionSummary).toEqual({ needsYou: 0, error: 0, working: 0 });
+		// The header still names a host: sources are untouched by emptiness.
+		expect(manifest.sources).toEqual([
+			{ id: "local", label: "this host", kind: "local", online: true },
+			{ id: "paradise-park", label: "paradise-park", kind: "appwire", online: true },
+		]);
+	});
+
+	it("has no live or needs-you rows", () => {
+		expect(liveRows(fleet)).toHaveLength(0);
+		const needsYou = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
+		expect(needsYou).toHaveLength(0);
+	});
+
+	it("has no pin sections", () => {
+		const catalog = read(fleet, params({ resource: "pin_catalog", limit: 100 }));
+		expect(catalog.pin_sections).toEqual([]);
+	});
+
+	it("has no projects, archived projects or test-run projects in the catalogs", () => {
+		const projects = read(fleet, params({ resource: "catalog", catalog: "projects", limit: 100 }));
+		expect(projects.projects).toEqual([]);
+		const archived = read(fleet, params({ resource: "catalog", catalog: "archived_projects", limit: 100 }));
+		expect(archived.projects).toEqual([]);
+		const testRuns = read(fleet, params({ resource: "catalog", catalog: "test_runs", limit: 100 }));
+		expect(testRuns.projects).toEqual([]);
+	});
+
+	it("finds nothing in search, with or without a query", () => {
+		const withQuery = fleet.answerSearch({ query: "wasm" });
+		expect(withQuery.live).toEqual([]);
+		expect(withQuery.past).toEqual([]);
+		const noQuery = fleet.answerSearch({});
+		expect(noQuery.live).toEqual([]);
+		expect(noQuery.past).toEqual([]);
+	});
+});
+
+describe("demo fleet question after a delay", () => {
+	const askedAt = STARTUP + 30 * 1000;
+	const fleet = () => createDemoFleet({ now: STARTUP, clock: () => askedAt });
+	const needsYouRows = (demo: ReturnType<typeof createDemoFleet>) =>
+		sessionsOf(read(demo, params({ resource: "section", section: "needs_you" })));
+
+	it("keeps s-gateway working until the question is asked", () => {
+		const demo = fleet();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		expect(gateway.state).toBe("active");
+		expect(gateway.ask_pending).toBeUndefined();
+		expect(needsYouRows(demo).map((row) => row.session_id)).not.toContain("s-gateway");
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 4, error: 1, working: 9 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 4 } });
+	});
+
+	it("moves s-gateway into Needs you, shaped like the fleet's own question row, once asked", () => {
+		const demo = fleet();
+		demo.askQuestion();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		const audit = findRow(liveRows(demo), "s-audit");
+		expect(gateway.state).toBe(audit.state);
+		expect(gateway.ask_pending).toBe(true);
+		expect(gateway.updated_at).toBe(new Date(askedAt).toISOString());
+		expect(findRow(needsYouRows(demo), "s-gateway")).toEqual(gateway);
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 5, error: 1, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 5 } });
+		const hit = demo.answerSearch({ query: "gateway" }).live[0];
+		expect(hit).toMatchObject({ id: "s-gateway", state: "awaiting", askPending: true });
+	});
+
+	it("answers at a higher revision after the question, so an invalidated read is not below target", () => {
+		const demo = fleet();
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		const payload = demo.askQuestion();
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(after.etag).not.toBe(before.etag);
+		expect(payload).toEqual({
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 1,
+			targets: [
+				{ kind: "manifest", revision: after.revision },
+				{ kind: "section", section: "live", revision: after.revision },
+				{ kind: "section", section: "needs_you", revision: after.revision },
+				{ kind: "project", projectKey: "evener", revision: after.revision },
+			],
+		});
+	});
+
+	it("advertises the question's sequence in its capability, so a client reconnecting afterwards never sees it move backward", () => {
+		const demo = fleet();
+		expect(demo.navigationCapability()).toEqual({
+			version: 1,
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 0,
+			readVersions: [2],
+		});
+		const payload = demo.askQuestion();
+		expect(demo.navigationCapability().sequence).toBe(payload.sequence);
+	});
+});
+
 describe("demo fleet offline propagation", () => {
 	it("marks an offline-host session's own children offline too, not just the parent row", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
