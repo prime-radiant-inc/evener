@@ -738,24 +738,28 @@ func terminalRecordJSON(id string, stamp uint64) string {
 		`"result":{"ok":true,"message":"done"},"sequence":` + strconv.FormatUint(stamp, 10) + `}`
 }
 
-// TestOpenRefusesDuplicateStampsButAcceptsGaps pins the sequence stamp's
+// TestOpenQuarantinesDuplicateStampsButAcceptsGaps pins the sequence stamp's
 // uniqueness: every terminal transition advances the durable sequence once and
-// stamps the record it moved, so one stamp belongs to exactly one record — while
-// the gaps retention and compaction will leave are legitimate.
-func TestOpenRefusesDuplicateStampsButAcceptsGaps(t *testing.T) {
+// stamps the record it moved, so one stamp belongs to exactly one record. A file
+// violating that is schema-invalid and takes §4's custody-first quarantine —
+// never served as its own state — while the gaps retention and compaction will
+// leave are legitimate and load untouched.
+func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 	duplicate := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 		terminalRecordJSON("00000000000000000001", 1) + `,` + terminalRecordJSON("00000000000000000002", 1) + `]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, duplicate)
-	if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-		t.Fatalf("Open on a store with two records sharing a stamp: err = %v, want ErrStoreCorrupt", err)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a store with two records sharing a stamp: %v", err)
 	}
+	wantQuarantined(t, store, path, duplicate)
 
 	gappy := `{"version":1,"sequence":9,"allocatorHighWaterMark":2,"records":[` +
 		terminalRecordJSON("00000000000000000001", 4) + `,` + terminalRecordJSON("00000000000000000002", 9) + `]}`
 	gapPath := StorePath(t.TempDir())
 	writeRawStore(t, gapPath, 0o600, gappy)
-	store, err := Open(gapPath)
+	store, err = Open(gapPath)
 	if err != nil {
 		t.Fatalf("a store with sequence gaps was refused: %v", err)
 	}

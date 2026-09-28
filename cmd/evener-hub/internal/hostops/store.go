@@ -49,6 +49,16 @@ type storeFaults struct {
 	// the one failure point at which the write has already replaced the store
 	// file, so a test can drive the post-rename path deterministically.
 	syncDir func(afero.Fs, string) error
+	// The quarantine seams below mark the crash windows of §4's custody-first
+	// order, each firing after the named write has landed: afterIntentWrite
+	// between the intent and the custody write, afterCustodyWrite between the
+	// custody write and the corrupt-file rename, afterRename between the rename
+	// and the replacement-store open, and beforeIntentClear between the
+	// replacement write and the intent's removal.
+	afterIntentWrite  func() error
+	afterCustodyWrite func() error
+	afterRename       func() error
+	beforeIntentClear func() error
 }
 
 // postRenameError marks a write failure that followed the rename replacing the
@@ -168,6 +178,12 @@ type storeCell struct {
 	// lets a cached open tell a store that was never written from one whose file
 	// has since disappeared.
 	hasFile atomic.Bool
+	// quarantineEpoch is the durable §4 counter this path's store was opened at:
+	// or validates (§8 compares it before any boundary comparison).
+	quarantineEpoch uint64
+	// quarantine is the operator-visible health signal §4 requires a quarantined
+	// store to boot with, nil when no custody file exists for this path.
+	quarantine *QuarantineSignal
 }
 
 // storeCells holds the process's one cell per store file path. The key is the
@@ -175,6 +191,18 @@ type storeCell struct {
 // filesystem in a process. The afero seam beneath Open serves tests, which drop
 // the cell to model the process restart a fresh load belongs to.
 var storeCells sync.Map
+
+// storeOpenLocks serializes the first open of each canonical store path. The
+// load a first open runs can perform §4's quarantine, so two racing openers of
+// one corrupt file must resolve it once: the loser adopts the winner's cell
+// instead of writing a second set of artifacts and racing the rename.
+var storeOpenLocks sync.Map
+
+// storeOpenLock returns the per-path open lock, creating it on first use.
+func storeOpenLock(key string) *sync.Mutex {
+	lock, _ := storeOpenLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
 
 // Store is a handle on the operation store: one file, one shared cell, one
 // atomic write discipline.
@@ -234,6 +262,13 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 	if err != nil {
 		return nil, err
 	}
+	// One first open per path at a time, across the cell lookup and the whole
+	// load: the load can perform §4's quarantine (intent, custody, epoch, rename
+	// and replacement writes), and a racing opener that arrives second must find
+	// the winner's cell rather than resolve the same corrupt file again.
+	openLock := storeOpenLock(key)
+	openLock.Lock()
+	defer openLock.Unlock()
 	if existing, held := storeCells.Load(key); held {
 		cell := existing.(*storeCell)
 		// A cached cell makes no load, but Open still enforces the path rules a
@@ -249,9 +284,12 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 				// aside by a quarantine. Serving the records it once held would
 				// answer from a store that no longer exists, and the next write
 				// would put them back; the durable store is what the file says,
-				// and there is no file, so this path starts over.
+				// and there is no file, so this path starts over. The per-path
+				// open lock is not reentrant, so the fresh load runs inline below
+				// rather than in a recursive call.
 				storeCells.Delete(key)
-				return openFSWithRetention(fs, path, faults, policy)
+			} else {
+				return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 			}
 		case err != nil:
 			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
@@ -262,18 +300,23 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 			if perm := info.Mode().Perm(); !ownerOnly(perm) {
 				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
+			return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 		}
-		return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 	}
 	fileExists := true
 	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
 		fileExists = false
 	}
-	state, err := loadFS(fs, path)
+	state, epoch, signal, err := resolveStoreFS(fs, path, faults)
 	if err != nil {
 		return nil, err
 	}
-	cell := &storeCell{state: state}
+	if _, err := lstat(fs, path); err == nil {
+		// The quarantine paths write a replacement store at the path, so a file
+		// that was absent before the load can exist after it.
+		fileExists = true
+	}
+	cell := &storeCell{state: state, quarantineEpoch: epoch, quarantine: signal}
 	cell.hasFile.Store(fileExists)
 	// Two racing first opens of one path must adopt one cell, never two.
 	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
@@ -720,8 +763,25 @@ func (f recordFile) record() (Record, error) {
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
-// every other failure is reported, never papered over.
+// every other failure is reported, never papered over. The whole-file checks
+// live in readStoreFS; this adds the store-level invariants.
 func loadFS(fs afero.Fs, path string) (snapshot, error) {
+	state, err := readStoreFS(fs, path)
+	if err != nil {
+		return snapshot{}, err
+	}
+	if err := validateSnapshot(state); err != nil {
+		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
+	}
+	return state, nil
+}
+
+// readStoreFS reads and decodes the store file with every whole-file rule this
+// store applies — the byte-level checks, the strict decode, and the per-record
+// mapping — without the store-level validation. The quarantine path reads the
+// same decode: a corrupt file whose bytes this function refuses cannot yield a
+// custody snapshot, because a region of it was left unparsed or discarded.
+func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
 	// The kind check runs on the path itself (never following a final link) and
 	// before the missing-file case: a dangling symlink reports "missing" to a
@@ -844,9 +904,6 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	for i := range state.Records {
 		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
 		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
-	}
-	if err := validateSnapshot(state); err != nil {
-		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
 	}
 	return state, nil
 }
@@ -1335,10 +1392,12 @@ func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string
 		return canonical, true
 	}
 	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
-		return owned["boundaries[]"], true
+		canonical, ok := owned["boundaries[]"]
+		return canonical, ok
 	}
 	if key, ok := strings.CutPrefix(path, "removedHosts."); ok && key != "" {
-		return owned["removedHosts[]"], true
+		canonical, ok := owned["removedHosts[]"]
+		return canonical, ok
 	}
 	return nil, false
 }

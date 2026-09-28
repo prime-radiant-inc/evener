@@ -12,6 +12,7 @@ import {
   type HostPlan,
   type HostRow,
   type OperationRecord,
+  type RemovedRow,
   RequestTimeoutError,
   WireError,
 } from "@evener/appwire-client";
@@ -19,8 +20,10 @@ import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fake
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
+  clearedOutcomeLine,
   deployRefusalAction,
   type HostOperationRef,
+  type HostRemnantRepair,
   hostOperationView,
   hostOpRefusal,
   hostOpRefusalBlocksRetry,
@@ -29,9 +32,14 @@ import {
   operationReadPending,
   operationShownOnHost,
   operationStateSettled,
+  orphanFenceFor,
   planNoTokenAction,
   planRefusalAction,
   restartRefusalAction,
+  retryOutcomeLine,
+  TEARDOWN_RECOVER_STATEMENT,
+  teardownRecoverRefusalAction,
+  teardownRetryRefusalAction,
 } from "./hostOps";
 import { hostsStore } from "./hosts";
 
@@ -1295,7 +1303,7 @@ describe("operations polling (S15)", () => {
     expect(operationShownOnHost(seed, { generation: 9, incarnationId: "inc-9" })).toBe(false);
   });
 
-  test("an older request's response arriving first cannot win over the newer request", async () => {
+  test("an older valid response publishes while a newer request is still in flight, and the newer replaces it", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
@@ -1307,12 +1315,14 @@ describe("operations polling (S15)", () => {
     const second = hostOpsStore.getState().deploy("beta");
     await vi.waitFor(() => expect(settlements).toHaveLength(2));
 
-    // The OLDER response lands first: a newer request is already in flight, so
-    // the older response must not be adopted at all.
+    // S16 (S15 follow-up): publish ordering keys off the newest request that
+    // actually PUBLISHED, so a newer request still in flight must not suppress
+    // an older valid response — it seeds its operation (S14's designed case).
     settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
     await first;
-    expect(hostOpsStore.getState().operations.beta).toBeUndefined();
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
 
+    // The newer request, once it publishes, still wins.
     settlements[1]!.resolve({ id: "op-2", clientOperationId: "client-op-2", state: "pending" });
     await second;
     expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
@@ -1486,10 +1496,15 @@ describe("operations polling (S15)", () => {
     expect(unavailable).toContain("8192-byte encoded cap");
   });
 
-  test("settled states end the read loop; a terminal seed is still read once for its body", () => {
-    for (const state of ["complete", "failed", "interrupted", "orphan-unverified"]) {
+  test("settled states end the read loop; orphan-unverified keeps owing reads", () => {
+    for (const state of ["complete", "failed", "interrupted"]) {
       expect(operationStateSettled(state)).toBe(true);
     }
+    // S16 (S15 follow-up): `orphan-unverified` is durable but NOT settled — it
+    // resolves through the fencing paths (orphan-resolve / a later boot's
+    // reap), so the read loop must keep polling until a terminal state rather
+    // than freeze the resolved record behind a settled state.
+    expect(operationStateSettled("orphan-unverified")).toBe(false);
     for (const state of ["pending", "running"]) {
       expect(operationStateSettled(state)).toBe(false);
     }
@@ -1506,6 +1521,8 @@ describe("operations polling (S15)", () => {
     expect(operationNeedsRead({ ...seed, fetched: true })).toBe(false);
     expect(operationNeedsRead({ ...seed, fetched: true, gone: true })).toBe(false);
     expect(operationNeedsRead({ ...seed, state: "running" })).toBe(true);
+    // An orphan-unverified body is durable-but-resolvable: it still owes reads.
+    expect(operationNeedsRead({ ...seed, state: "orphan-unverified", fetched: true })).toBe(true);
   });
 
   test("the view names the operation's kind and state, and never invents a message", () => {
@@ -1580,5 +1597,610 @@ describe("operations polling (S15)", () => {
     // snapshot is merely stale (the pane poll converges it): it still renders.
     const newer: HostOperationRef = { ...base, generation: 4, incarnationId: "inc-4", fetched: true };
     expect(operationShownOnHost(newer, { generation: 3, incarnationId: "inc-3" })).toBe(true);
+  });
+
+  // --- S16: the S15 follow-ups, RED-first ---------------------------------------
+
+  test("an orphan-unverified record keeps polling until a terminal state", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    await startedDeploy(fake, () => {
+      reads += 1;
+      if (reads === 1) return { operations: [operationRecord({ state: "orphan-unverified" })] };
+      return {
+        operations: [operationRecord({ state: "interrupted", result: { ok: false, message: "controller shutdown" } })],
+      };
+    });
+
+    await hostOpsStore.getState().pollOperation("beta");
+    let ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.state).toBe("orphan-unverified");
+    // The state is durable but resolvable elsewhere (orphan-resolve / boot reap):
+    // the loop keeps owing a read instead of freezing on it.
+    expect(operationNeedsRead(ref)).toBe(true);
+
+    await hostOpsStore.getState().pollOperation("beta");
+    ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.state).toBe("interrupted");
+    expect(operationNeedsRead(ref)).toBe(false);
+  });
+
+  test("a newer request that never publishes cannot suppress an older valid response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const first = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    hostOpsStore.getState().discardPlan("beta");
+    await hostOpsStore.getState().plan("beta");
+    const second = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+
+    // The newer request is REFUSED (a held gate): it never publishes, so it must
+    // not suppress the older valid response waiting behind it.
+    settlements[1]!.reject(
+      new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" }),
+    );
+    await second;
+    expect(hostOpsStore.getState().operations.beta).toBeUndefined();
+
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await first;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
+  });
+
+  test("stopOperationPoll releases the name's pending reads so a remount is not skipped", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    const settlements = gateSettlements(fake, "evener/host/operations");
+    await hostOpsStore.getState().plan("beta");
+    await hostOpsStore.getState().deploy("beta");
+
+    const hung = hostOpsStore.getState().pollOperation("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    expect(operationReadPending("beta", "op-1")).toBe(true);
+
+    // The section unmounts while the read hangs: the pending entry is released
+    // now, so a remount's first tick is not skipped for up to the read timeout.
+    hostOpsStore.getState().stopOperationPoll("beta");
+    expect(operationReadPending("beta", "op-1")).toBe(false);
+
+    // The hung read settling later publishes nothing and is harmless.
+    settlements[0]!.resolve({ operations: [] });
+    await hung;
+    expect(operationReadPending("beta", "op-1")).toBe(false);
+  });
+
+  test("a stale read settling after the poll stopped cannot release a new read's pending count", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    const settlements = gateSettlements(fake, "evener/host/operations");
+    await hostOpsStore.getState().plan("beta");
+    await hostOpsStore.getState().deploy("beta");
+
+    const stale = hostOpsStore.getState().pollOperation("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    hostOpsStore.getState().stopOperationPoll("beta");
+
+    // A remount reads the same operation again while the stale read still hangs.
+    const fresh = hostOpsStore.getState().pollOperation("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    expect(operationReadPending("beta", "op-1")).toBe(true);
+
+    // The stale read's settle must not release the fresh read's pending count.
+    settlements[0]!.resolve({ operations: [] });
+    await stale;
+    expect(operationReadPending("beta", "op-1")).toBe(true);
+
+    settlements[1]!.resolve({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    });
+    await fresh;
+    expect(operationReadPending("beta", "op-1")).toBe(false);
+  });
+
+  // --- S16: the remnant teardown retry/recover store ----------------------------
+
+  /** removedRow is the tombstone-shaped arm a `hostKind: "removed"` teardown
+   * response carries (registry spec 08 §11's RemovedRow). */
+  function removedRow(name: string): RemovedRow {
+    return {
+      name,
+      origin: "hub.toml",
+      generation: 3,
+      incarnationId: "inc-3",
+      removed: true,
+      attached: false,
+      midEnsure: false,
+    };
+  }
+
+  describe("remnant teardown retry/recover (S16)", () => {
+    test("teardownRetry submits exactly the remnantId and projects the teardown-complete arm", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+      await hostsStore.getState().fetch();
+      fake.on("evener/host/teardown-retry", () => ({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      }));
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      // Registry spec 08 §11: params are exactly {remnantId}.
+      const call = fake.calls.find((candidate) => candidate.method === "evener/host/teardown-retry");
+      expect(call?.params).toEqual({ remnantId: "remnant-7" });
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result).toEqual({
+        outcome: "teardown-complete",
+        remnantId: "remnant-7",
+        hostKind: "live",
+        hostName: "beta",
+        hostRemoved: false,
+      });
+      // A resolved remnant converges the rows without waiting for the pane poll.
+      await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(2));
+    });
+
+    test("a failed arm carries the seam and the still-open remnant, never an aggregate success", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/teardown-retry", () => ({
+        outcome: "committed-with-teardown-failure",
+        hostKind: "removed",
+        host: removedRow("beta"),
+        remnantId: "remnant-7",
+        seam: "remove-host",
+        escalationAgeSec: 7200,
+      }));
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result).toEqual({
+        outcome: "committed-with-teardown-failure",
+        remnantId: "remnant-7",
+        hostKind: "removed",
+        hostName: "beta",
+        hostRemoved: true,
+        seam: "remove-host",
+        escalationAgeSec: 7200,
+      });
+      expect(retryOutcomeLine(repair.result)).toContain("still open");
+      expect(retryOutcomeLine(repair.result)).toContain("remove-host");
+    });
+
+    test("already-cleared renders as the idempotent resolved arm", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/teardown-retry", () => ({
+        outcome: "already-cleared",
+        hostKind: "removed",
+        host: removedRow("beta"),
+        remnantId: "remnant-7",
+      }));
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result.outcome).toBe("already-cleared");
+      expect(retryOutcomeLine(repair.result)).toContain("already cleared");
+    });
+
+    test("a live-attempt busy refusal renders the typed busy, never a silent no-op", async () => {
+      const fake = connectFakeClient();
+      // 08b §6/§11: a live teardown attempt holds the gate, so the retry refuses
+      // with the typed busy error (transient here — the holder is the attempt,
+      // not an operation record) and the operator may retry later.
+      fake.on("evener/host/teardown-retry", () => {
+        throw new WireError('host "beta" is busy: a live teardown attempt owns the remnant', -32014, {
+          evenerErrorInfo: "host-busy-transient",
+        });
+      });
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.action).toBe("retry");
+      expect(repair.refusal.kind).toBe("host-busy-transient");
+      expect(repair.refusal.message).toContain("The host is busy right now.");
+      expect(repair.refusal.message).toContain("a live teardown attempt owns the remnant");
+      expect(teardownRetryRefusalAction(repair.refusal.kind)).toBe("retry");
+    });
+
+    test("teardown-unknown-key names the unknown remnant and never bare-retries it", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/teardown-retry", () => {
+        throw new WireError('teardown remnant "remnant-7" is unknown or purged', -32001, {
+          evenerErrorInfo: "teardown-unknown-key",
+          remnantId: "remnant-7",
+        });
+      });
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.refusal.kind).toBe("teardown-unknown-key");
+      expect(repair.refusal.remnantId).toBe("remnant-7");
+      expect(repair.refusal.message).toContain("remnant-7");
+      // A retry naming an id the hub does not know refuses again: no bare retry.
+      expect(teardownRetryRefusalAction(repair.refusal.kind)).toBe("none");
+    });
+
+    test("an orphan-fenced-busy refusal renders resolve-first, never the generic busy", async () => {
+      const fake = connectFakeClient();
+      // Fencing spec 08c §8: the orphan fence's refusal on teardown-retry names
+      // the blocking orphan-unverified record plus the orphan-resolve next step.
+      fake.on("evener/host/teardown-retry", () => {
+        throw new WireError('host "beta": an orphan-unverified record fences teardown repair', -32013, {
+          evenerErrorInfo: "orphan-fenced-busy",
+          recordId: "rec-9",
+        });
+      });
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.refusal.kind).toBe("orphan-fenced-busy");
+      expect(repair.refusal.recordId).toBe("rec-9");
+      expect(repair.refusal.message).toContain("rec-9");
+      expect(repair.refusal.message).toContain("evener/host/orphan-resolve");
+      expect(repair.refusal.message).not.toContain("The host is busy right now.");
+      expect(teardownRetryRefusalAction(repair.refusal.kind)).toBe("none");
+      // The grounded fence signal the row degrades on.
+      expect(orphanFenceFor(repair, undefined, "remnant-7")).toEqual({ recordId: "rec-9" });
+    });
+
+    test("teardownRecover submits the wire's attestation fields and projects recovered-cleared", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+      await hostsStore.getState().fetch();
+      fake.on("evener/host/teardown-recover", (params) => ({
+        outcome: "recovered-cleared",
+        remnantId: params.remnantId,
+        clearedName: "beta",
+        clearedAt: "2026-09-28T09:30:00Z",
+        hostKind: "live",
+      }));
+
+      await hostOpsStore.getState().teardownRecover("beta", "remnant-7", {
+        operator: "operator-1",
+        statement: TEARDOWN_RECOVER_STATEMENT,
+        observedAt: "2026-09-28T09:29:00Z",
+      });
+
+      const call = fake.calls.find((candidate) => candidate.method === "evener/host/teardown-recover");
+      expect(call?.params).toEqual({
+        remnantId: "remnant-7",
+        attestation: {
+          operator: "operator-1",
+          statement: "teardown-verified-absent",
+          observedAt: "2026-09-28T09:29:00Z",
+        },
+      });
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "cleared") throw new Error("unreachable");
+      expect(repair.result).toEqual({
+        remnantId: "remnant-7",
+        clearedName: "beta",
+        clearedAt: "2026-09-28T09:30:00Z",
+        hostKind: "live",
+      });
+      expect(clearedOutcomeLine(repair.result)).toContain("beta");
+      await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(2));
+    });
+
+    test("a recover refused by an open orphan fence renders resolve-first", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/teardown-recover", () => {
+        throw new WireError('host "beta": an orphan-unverified record fences recovery', -32013, {
+          evenerErrorInfo: "orphan-fenced-busy",
+          recordId: "rec-9",
+        });
+      });
+
+      await hostOpsStore.getState().teardownRecover("beta", "remnant-7", {
+        operator: "operator-1",
+        statement: TEARDOWN_RECOVER_STATEMENT,
+        observedAt: "2026-09-28T09:29:00Z",
+      });
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.action).toBe("recover");
+      expect(repair.refusal.kind).toBe("orphan-fenced-busy");
+      expect(repair.refusal.recordId).toBe("rec-9");
+    });
+
+    test("a response landing after a client replacement publishes the connection-changed refusal", async () => {
+      const fake = connectFakeClient();
+      const settlements = gateSettlements(fake, "evener/host/teardown-retry");
+      const pending = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+
+      const replacement = new FakeClient("ready");
+      connectionStore.getState().connect(replacement);
+      settlements[0]!.resolve({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      });
+      await pending;
+
+      // The response describes the hub that was: it must not publish as the new
+      // connection's repair state, and the arm is never a silent stall.
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.refusal.message).toContain("connection changed");
+    });
+
+    test("a superseded repair response publishes nothing", async () => {
+      const fake = connectFakeClient();
+      const settlements = gateSettlements(fake, "evener/host/teardown-retry");
+      const first = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+      const second = hostOpsStore.getState().teardownRetry("beta", "remnant-8");
+      await vi.waitFor(() => expect(settlements).toHaveLength(2));
+
+      settlements[1]!.resolve({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-8",
+      });
+      await second;
+      settlements[0]!.resolve({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      });
+      await first;
+
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result.remnantId).toBe("remnant-8");
+    });
+
+    test("clearRepair drops the name's repair state", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/teardown-retry", () => ({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      }));
+
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      hostOpsStore.getState().clearRepair("beta");
+      expect(hostOpsStore.getState().repairs.beta).toBeUndefined();
+    });
+
+    test("the repair outcome lines render each arm honestly, never an aggregate success", () => {
+      const base = { remnantId: "remnant-7", hostKind: "live", hostName: "beta", hostRemoved: false };
+      expect(retryOutcomeLine({ ...base, outcome: "teardown-complete" })).toContain("remnant-7");
+      expect(retryOutcomeLine({ ...base, outcome: "already-cleared" })).toContain("already cleared");
+      expect(
+        retryOutcomeLine({
+          ...base,
+          hostKind: "removed",
+          hostRemoved: true,
+          outcome: "committed-with-teardown-failure",
+          seam: "remove-host",
+        }),
+      ).toContain("still open");
+      // An unrecognized future arm renders its raw outcome, never a success claim.
+      expect(retryOutcomeLine({ ...base, outcome: "teardown-deferred" })).toContain("teardown-deferred");
+    });
+
+    test("orphanFenceFor prefers the hub's refusal and otherwise reads the tracked orphan-unverified record", () => {
+      const running: HostOperationRef = {
+        id: "op-7",
+        clientOperationId: "client-op-7",
+        kind: "deploy",
+        state: "running",
+        progress: [],
+      };
+      expect(orphanFenceFor(undefined, undefined, "remnant-7")).toBeNull();
+      expect(orphanFenceFor(undefined, running, "remnant-7")).toBeNull();
+      expect(orphanFenceFor(undefined, { ...running, state: "orphan-unverified" }, "remnant-7")).toEqual({
+        recordId: "op-7",
+      });
+      const fenced: HostRemnantRepair = {
+        phase: "refused",
+        remnantId: "remnant-7",
+        action: "retry",
+        refusal: { kind: "orphan-fenced-busy", message: "fenced", recordId: "rec-9" },
+      };
+      expect(orphanFenceFor(fenced, { ...running, state: "orphan-unverified" }, "remnant-7")).toEqual({
+        recordId: "rec-9",
+      });
+      const busy: HostRemnantRepair = {
+        phase: "refused",
+        remnantId: "remnant-7",
+        action: "retry",
+        refusal: { kind: "host-busy-transient", message: "busy" },
+      };
+      expect(orphanFenceFor(busy, running, "remnant-7")).toBeNull();
+    });
+
+    test("a stored orphan-fenced-busy refusal fences only its own remnant", () => {
+      const fenced: HostRemnantRepair = {
+        phase: "refused",
+        remnantId: "remnant-7",
+        action: "retry",
+        refusal: { kind: "orphan-fenced-busy", message: "fenced", recordId: "rec-9" },
+      };
+      // Its own remnant: fenced by the refusal the hub actually returned.
+      expect(orphanFenceFor(fenced, undefined, "remnant-7")).toEqual({ recordId: "rec-9" });
+      // A DIFFERENT remnant on the name: the old refusal must not fence it.
+      expect(orphanFenceFor(fenced, undefined, "remnant-8")).toBeNull();
+      // The operation record fences the NAME — any remnant on it — because the
+      // orphan fence itself is scoped to the host's name (fencing spec 08c §8).
+      const orphan: HostOperationRef = {
+        id: "op-7",
+        clientOperationId: "client-op-7",
+        kind: "deploy",
+        state: "orphan-unverified",
+        progress: [],
+      };
+      expect(orphanFenceFor(fenced, orphan, "remnant-8")).toEqual({ recordId: "op-7" });
+    });
+
+    test("an empty remnant id publishes a refusal instead of a silent no-op", async () => {
+      const fake = connectFakeClient();
+      await hostOpsStore.getState().teardownRetry("beta", "  ");
+      expect(fake.calls.filter((c) => c.method === "evener/host/teardown-retry")).toHaveLength(0);
+      let repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.action).toBe("retry");
+      expect(repair.refusal.message).toContain("No remnant id");
+
+      await hostOpsStore.getState().teardownRecover("beta", "", {
+        operator: "operator-1",
+        statement: TEARDOWN_RECOVER_STATEMENT,
+        observedAt: "2026-09-28T09:29:00Z",
+      });
+      expect(fake.calls.filter((c) => c.method === "evener/host/teardown-recover")).toHaveLength(0);
+      repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "refused") throw new Error("unreachable");
+      expect(repair.action).toBe("recover");
+      expect(repair.refusal.message).toContain("No remnant id");
+    });
+
+    test("a committed-with-teardown-failure arm still converges the host rows", async () => {
+      const fake = connectFakeClient();
+      let escalation: number | undefined;
+      fake.on("evener/host/list", () => ({
+        hosts: [
+          {
+            ...row("beta"),
+            openRemnantId: "remnant-7",
+            ...(escalation === undefined ? {} : { escalationAgeSec: escalation }),
+          },
+        ],
+      }));
+      await hostsStore.getState().fetch();
+      fake.on("evener/host/teardown-retry", () => ({
+        outcome: "committed-with-teardown-failure",
+        hostKind: "live",
+        host: { ...row("beta"), openRemnantId: "remnant-7" },
+        remnantId: "remnant-7",
+        seam: "update-host",
+      }));
+
+      // The retry ran past the escalation bound, so the hub stamps the row the
+      // next list read answers: the failure arm must converge the rows, or the
+      // row-level recover affordance never appears.
+      escalation = 7200;
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+
+      await vi.waitFor(() => {
+        const load = hostsStore.getState().load;
+        if (load.phase !== "ready") throw new Error("unreachable");
+        expect(load.hosts[0]?.escalationAgeSec).toBe(7200);
+      });
+    });
+
+    test("reSeedRestart re-reads the pair and re-seeds the confirmation under a fresh operation ID", async () => {
+      const fake = connectFakeClient();
+      let generation = 3;
+      fake.on("evener/host/list", () => ({
+        hosts: [{ ...row("beta"), generation, incarnationId: `inc-${generation}` }],
+      }));
+      await hostsStore.getState().fetch();
+      hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+      const before = hostOpsStore.getState().restarts.beta;
+      if (before === undefined) throw new Error("unreachable");
+
+      generation = 9;
+      await hostOpsStore.getState().reSeedRestart("beta");
+
+      const after = hostOpsStore.getState().restarts.beta;
+      if (after === undefined) throw new Error("unreachable");
+      expect(after.phase).toBe("confirm");
+      // The pair the refusal proved stale is never resubmitted: the confirmation
+      // is seeded against the freshly read row, under a fresh operation ID.
+      expect(after.pair).toEqual({ generation: 9, incarnationId: "inc-9" });
+      expect(after.operationId).not.toBe(before.operationId);
+    });
+
+    test("clearRepairRefusal drops a refusal but never cancels an in-flight repair", async () => {
+      const fake = connectFakeClient();
+      // A refused entry is dropped: the fence re-check must be able to clear it.
+      fake.on("evener/host/teardown-retry", () => {
+        throw new WireError("busy", -32014, { evenerErrorInfo: "host-busy-transient" });
+      });
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      expect(hostOpsStore.getState().repairs.beta?.phase).toBe("refused");
+      hostOpsStore.getState().clearRepairRefusal("beta");
+      expect(hostOpsStore.getState().repairs.beta).toBeUndefined();
+
+      // An IN-FLIGHT entry is untouched: clearing it would drop the arm the
+      // live request is about to publish.
+      const settlements = gateSettlements(fake, "evener/host/teardown-retry");
+      const pending = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+      hostOpsStore.getState().clearRepairRefusal("beta");
+      expect(hostOpsStore.getState().repairs.beta?.phase).toBe("retrying");
+      settlements[0]!.resolve({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      });
+      await pending;
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result.outcome).toBe("teardown-complete");
+    });
+
+    test("a re-seed landing after a newer restart attempt publishes nothing", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+      await hostsStore.getState().fetch();
+      hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+
+      // The re-seed's forced read hangs while a NEWER attempt (a re-opened
+      // dialog) supersedes the one the continuation was started for.
+      const settlements = gateSettlements(fake, "evener/host/list");
+      const reseed = hostOpsStore.getState().reSeedRestart("beta");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+      hostOpsStore.getState().beginRestart("beta", { generation: 9, incarnationId: "inc-9" });
+      const newer = hostOpsStore.getState().restarts.beta;
+      if (newer === undefined) throw new Error("unreachable");
+
+      settlements[0]!.resolve({ hosts: [{ ...row("beta"), generation: 3, incarnationId: "inc-3" }] });
+      await reseed;
+
+      // The stale continuation must not overwrite the newer attempt's pair or
+      // operation ID.
+      const after = hostOpsStore.getState().restarts.beta;
+      if (after === undefined) throw new Error("unreachable");
+      expect(after.pair).toEqual(newer.pair);
+      expect(after.operationId).toBe(newer.operationId);
+    });
+
+    test("teardown recovery actions: the transient busy retries; fence and unknown key never bare-retry", () => {
+      expect(teardownRetryRefusalAction("host-busy-transient")).toBe("retry");
+      expect(teardownRetryRefusalAction("host-busy-operation")).toBe("none");
+      expect(teardownRetryRefusalAction("teardown-unknown-key")).toBe("none");
+      expect(teardownRetryRefusalAction("orphan-fenced-busy")).toBe("none");
+      expect(teardownRecoverRefusalAction("host-busy-transient")).toBe("retry");
+      expect(teardownRecoverRefusalAction("orphan-fenced-busy")).toBe("none");
+      expect(teardownRecoverRefusalAction("invalid-params")).toBe("none");
+    });
   });
 });
