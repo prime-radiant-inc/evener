@@ -9,20 +9,12 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/promptpath"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 )
-
-var projectPromptDir = func(env execenv.ExecutionEnvironment, workingDir string) string {
-	gitRoot := execenv.GitRootOrEmpty(env, workingDir)
-	return promptpath.ProjectPromptsDir(gitRoot)
-}
-
-var globalPromptDir = promptpath.GlobalPromptsDir
 
 func renderResourceCapsJSON(cpus float64, memoryMB int64) string {
 	if cpus <= 0 || math.IsNaN(cpus) || math.IsInf(cpus, 0) {
@@ -102,14 +94,6 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	s.emit(events.EventWarning, events.WarningData{Message: warning})
 }
 
-func promptSectionDirExists(dir string) bool {
-	if dir == "" {
-		return false
-	}
-	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
-}
-
 // buildPromptData assembles a promptData from session state for template
 // rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
 // and each append file. env is the ALREADY-RESOLVED execution environment
@@ -128,10 +112,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 
 	data := promptData{
 		NonInteractive:           s.cfg.NonInteractive,
-		Provider:                 s.profile.ID(),
-		Agent:                    agentName,
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		RolePromptOverride:       strings.TrimSpace(s.cfg.spawn.rolePromptOverride),
 		IsSubagent:               s.depth > 0,
 		Surface:                  s.profile.Surface(),
 		WorkingDir:               s.envInfo.WorkingDir,
@@ -173,7 +154,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 
 	// Profile tools (provider-visible wire form, matching what the API receives)
 	profileDefs := s.profileWireToolDefs()
-	data.ProfileTools = toolEntriesFromDefinitions(profileDefs)
 	// Use the same provider-visible tool definitions that are sent to the model.
 	// Prompting with canonical names while the API receives mapped names such as
 	// exec_command/grep_files/find_files is contradictory and confuses tool use.
@@ -181,23 +161,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
-
-	// MCP tools
-	data.MCPTools = toolEntriesFromDefinitions(s.mcpTools)
-
-	// Custom tools (not core, not MCP)
-	mcpNames := make(map[string]bool, len(s.mcpTools))
-	for _, td := range s.mcpTools {
-		mcpNames[td.Name] = true
-	}
-	var customToolDefs []llm.ToolDefinition
-	for _, td := range s.reg.Definitions() {
-		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
-			continue
-		}
-		customToolDefs = append(customToolDefs, td)
-	}
-	data.CustomTools = toolEntriesFromDefinitions(customToolDefs)
 
 	// Delegation capability: a grantable allowance (> 0) unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.

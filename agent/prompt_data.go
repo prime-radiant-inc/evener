@@ -14,10 +14,7 @@ import (
 type promptData struct {
 	// Resolution context
 	NonInteractive           bool
-	Provider                 string // the provider INSTANCE name, e.g. "openai-codex", "work-ant" (session_prompts.go assigns s.profile.ID())
-	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
-	RolePromptOverride       string
 	// IsSubagent is true for a delegate session (depth above zero): delegates
 	// get their own delegation guidance and none of the root-only sections.
 	IsSubagent bool
@@ -66,11 +63,6 @@ type promptData struct {
 	Skills               []skillEntry
 	HasUseSkill          bool
 	ActivatedSkillBodies []string
-
-	// Tools (three tiers)
-	ProfileTools []toolEntry
-	MCPTools     []toolEntry
-	CustomTools  []toolEntry
 
 	// Tool availability for the current role/session
 	CallableToolNames           []string
@@ -125,12 +117,6 @@ func (s skillEntry) CatalogNameOrName() string {
 	return s.Name
 }
 
-// toolEntry is a tool for template rendering.
-type toolEntry struct {
-	Name        string
-	Description string
-}
-
 // agentTaskEntry is a summarized default task in a spawnable agent workflow.
 type agentTaskEntry struct {
 	Title                 string
@@ -144,18 +130,6 @@ type agentEntry struct {
 	Description  string
 	DefaultTools string
 	TaskList     []agentTaskEntry
-}
-
-func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []toolEntry {
-	entries := make([]toolEntry, 0, len(defs))
-	for _, td := range defs {
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		entries = append(entries, toolEntry{Name: td.Name, Description: desc})
-	}
-	return entries
 }
 
 func toolNamesFromDefinitions(defs []llm.ToolDefinition) []string {
