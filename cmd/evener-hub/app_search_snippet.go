@@ -1,7 +1,117 @@
 package hub
 
-import "primeradiant.com/evener/appwire"
+import (
+	"slices"
+	"strings"
+	"unicode"
 
-func searchSnippet(text string, _ []string) []appwire.SearchSnippetPart {
-	return []appwire.SearchSnippetPart{{Text: text}}
+	"primeradiant.com/evener/appwire"
+)
+
+const (
+	// searchSnippetLead is how much of a message a snippet keeps before its
+	// first match, so the match reads in context.
+	searchSnippetLead = 40
+	// searchSnippetRunes bounds a snippet's text, ellipses aside: about two
+	// lines on a phone.
+	searchSnippetRunes = 160
+)
+
+// searchWord is one word of a snippet's line: runes [start, end).
+type searchWord struct {
+	start, end int
+	match      bool
+}
+
+// searchSnippet is text as one line around its first word that a search word
+// prefixes, letter case aside, cut to searchSnippetRunes at word breaks, with
+// every such word marked (S14). Words split as hubcore.SearchTokens splits a
+// search, so the marks fall where the index matched. With no such word the
+// snippet is the message's opening.
+func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
+	line := []rune(appwire.Excerpt(text, len(text)))
+	words := searchWords(line, tokens)
+	first := -1
+	for i, word := range words {
+		if word.match {
+			first = i
+			break
+		}
+	}
+	start := 0
+	if first >= 0 && words[first].start > searchSnippetLead {
+		// Back up searchSnippetLead runes, then forward to a word's start.
+		start = words[first].start - searchSnippetLead
+		for _, word := range words {
+			if word.start >= start {
+				start = word.start
+				break
+			}
+		}
+	}
+	end := min(len(line), start+searchSnippetRunes)
+	if end < len(line) {
+		// End at the last word break before the cut, but never before the
+		// first match's end.
+		for _, word := range slices.Backward(words) {
+			if word.end <= end && (first < 0 || word.end >= words[first].end) {
+				end = word.end
+				break
+			}
+		}
+	}
+	var parts []appwire.SearchSnippetPart
+	add := func(text string, match bool) {
+		if text == "" {
+			return
+		}
+		if n := len(parts); n > 0 && parts[n-1].Match == match {
+			parts[n-1].Text += text
+			return
+		}
+		parts = append(parts, appwire.SearchSnippetPart{Text: text, Match: match})
+	}
+	if start > 0 {
+		add("…", false)
+	}
+	at := start
+	for _, word := range words {
+		if !word.match || word.start < start || word.end > end {
+			continue
+		}
+		add(string(line[at:word.start]), false)
+		add(string(line[word.start:word.end]), true)
+		at = word.end
+	}
+	add(string(line[at:end]), false)
+	if end < len(line) {
+		add("…", false)
+	}
+	return parts
+}
+
+// searchWords splits line into its words, marking each one a token prefixes.
+func searchWords(line []rune, tokens []string) []searchWord {
+	var words []searchWord
+	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
+	for i := 0; i < len(line); {
+		if !isWord(line[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(line) && isWord(line[i]) {
+			i++
+		}
+		lower := strings.ToLower(string(line[start:i]))
+		match := false
+		for _, token := range tokens {
+			if strings.HasPrefix(lower, token) {
+				match = true
+				break
+			}
+		}
+		words = append(words, searchWord{start: start, end: i, match: match})
+	}
+	return words
 }

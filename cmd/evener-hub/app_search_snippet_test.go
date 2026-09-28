@@ -1,0 +1,58 @@
+package hub
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"primeradiant.com/evener/appwire"
+)
+
+func snippetText(parts []appwire.SearchSnippetPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+// A short message is the whole snippet, on one line, with every word a search
+// word prefixes marked, letter case aside.
+func TestSearchSnippetMarksEveryMatchingWord(t *testing.T) {
+	got := searchSnippet("The Settle pass\nraces the settled drain.", []string{"settl", "drain"})
+	want := []appwire.SearchSnippetPart{
+		{Text: "The "}, {Text: "Settle", Match: true}, {Text: " pass races the "},
+		{Text: "settled", Match: true}, {Text: " "}, {Text: "drain", Match: true}, {Text: "."},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snippet = %+v, want %+v", got, want)
+	}
+}
+
+// A long message is cut around its first match: some words before it, the
+// rest up to the bound, both cuts at word breaks and marked with an ellipsis.
+func TestSearchSnippetCutsAroundTheFirstMatch(t *testing.T) {
+	text := strings.Repeat("lead ", 40) + "the settle pass " + strings.Repeat("tail ", 60)
+	got := searchSnippet(text, []string{"settle"})
+	line := snippetText(got)
+	if !strings.HasPrefix(line, "…lead") || !strings.HasSuffix(line, "tail…") {
+		t.Fatalf("snippet %q, want word-aligned cuts on both sides", line)
+	}
+	if n := utf8.RuneCountInString(line); n > searchSnippetRunes+2 {
+		t.Fatalf("snippet is %d runes, want at most %d and two ellipses", n, searchSnippetRunes)
+	}
+	if lead := strings.Index(line, "settle"); lead > searchSnippetLead+2 {
+		t.Fatalf("the match sits %d bytes in, want at most %d runes of lead", lead, searchSnippetLead)
+	}
+}
+
+// With no word to mark (the index matched in a way the words do not show) the
+// snippet is the message's opening.
+func TestSearchSnippetWithoutAMatchIsTheOpening(t *testing.T) {
+	got := searchSnippet(strings.Repeat("word ", 100), []string{"settle"})
+	line := snippetText(got)
+	if len(got) != 1 || got[0].Match || !strings.HasPrefix(line, "word") || !strings.HasSuffix(line, "…") {
+		t.Fatalf("snippet = %+v, want the unmarked opening, cut", got)
+	}
+}
