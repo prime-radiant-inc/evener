@@ -123,6 +123,20 @@ describe("the question dock (spec 8.4)", () => {
 		expect(pressable(tree, "Keep them")?.props.accessibilityHint).toBe("About keep them");
 	});
 
+	it("keys options by where the agent offered them, so a repeated label renders without a duplicate-key report", () => {
+		const errors: string[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+			errors.push(args.map(String).join(" "));
+		});
+		try {
+			const { tree } = mount([question("q1", "Flags", ["Keep them", "Keep them"])]);
+			expect(optionLabels(tree)).toEqual(["Keep them", "Keep them"]);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
+	});
+
 	it("moves to the next question when you choose, and back with Previous question", () => {
 		const { tree } = mount(two);
 		press(tree, "Keep them");

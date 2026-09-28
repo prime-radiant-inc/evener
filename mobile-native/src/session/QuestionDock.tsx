@@ -112,9 +112,11 @@ export function QuestionDock({
 			if (target !== undefined) draft.setActiveIndex(target);
 		}
 	}
-	// The options paired with their bounded copy, recommended first.
+	// The options paired with their bounded copy and where the agent offered
+	// them, recommended first.
 	const options = orderedOptions(
 		question.options.map((option, index) => ({
+			position: index,
 			label: option.label,
 			recommended: option.recommended,
 			shown: display.options[index],
@@ -163,9 +165,9 @@ export function QuestionDock({
 							: "circle";
 					return (
 						<Pressable
-							// Options render in the order the agent offered them, recommended
-							// first; their canonical labels are distinct.
-							key={option.label}
+							// Keyed by where the agent offered the option: labels are the
+							// agent's and can repeat.
+							key={`${question.key}:${option.position}`}
 							accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
 							// The caption and the detail sit inside the row, which VoiceOver
 							// reads by its label alone, so both go into what it reads.
