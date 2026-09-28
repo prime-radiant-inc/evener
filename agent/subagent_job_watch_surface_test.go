@@ -91,6 +91,62 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 	}
 }
 
+// startBackgroundJob runs a background shell in s and returns its job id,
+// stopping it at test cleanup.
+func startBackgroundJob(t *testing.T, s *Session) string {
+	t.Helper()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID: "background-shell", Name: "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+	})
+	if res.IsError {
+		t.Fatalf("background shell: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil || out.JobID == "" {
+		t.Fatalf("background shell output has no job_id: %v (%s)", err, res.Output)
+	}
+	t.Cleanup(func() { _, _ = s.jobManager.stop(out.JobID) })
+	return out.JobID
+}
+
+// assertCannotReachParentJobs asserts that child is refused every job tool
+// against a job owned by another session: a source="parent" watch without the
+// grant, and status/stop on the parent's job id, with job_list not exposing it.
+// Holding the job tools for one's own jobs must not widen access to a parent's.
+func assertCannotReachParentJobs(t *testing.T, child *Session, parentJobID string) {
+	t.Helper()
+	ctx := context.Background()
+	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "watch-parent", Name: "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"parent","events":["communicate"]}`),
+	}); !res.IsError {
+		t.Errorf("child watched a parent without the grant: %s", res.Output)
+	}
+	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "status-parent", Name: "job_status",
+		Arguments: json.RawMessage(`{"target":"` + parentJobID + `"}`),
+	}); !res.IsError {
+		t.Errorf("child read a parent-owned job: %s", res.Output)
+	}
+	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "stop-parent", Name: "job_stop",
+		Arguments: json.RawMessage(`{"target":"` + parentJobID + `","max_wait_ms":0}`),
+	}); !res.IsError {
+		t.Errorf("child stopped a parent-owned job: %s", res.Output)
+	}
+	list := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "list-own", Name: "job_list", Arguments: json.RawMessage(`{}`),
+	})
+	if list.IsError {
+		t.Errorf("child job_list failed: %s", list.Output)
+	} else if strings.Contains(list.Output, parentJobID) {
+		t.Errorf("child job_list exposed a parent-owned job:\n%s", list.Output)
+	}
+}
+
 // TestTypedLeafCannotReachParentJobs is the isolation half of #2645: granting
 // the own-job supervision tools to a typed leaf must not let it watch, read,
 // list, or stop a job it does not own. Each tool authorizes its own target, so
@@ -109,22 +165,7 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 		},
 	}))
 	ctx := context.Background()
-
-	// A job owned by the parent session the leaf must not reach.
-	parentShell := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
-		ID: "parent-shell", Name: "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
-	})
-	if parentShell.IsError {
-		t.Fatalf("parent background shell: %s", parentShell.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal(toolResultJSON(parentShell), &shellOut); err != nil || shellOut.JobID == "" {
-		t.Fatalf("parent shell output has no job_id: %v (%s)", err, parentShell.Output)
-	}
-	t.Cleanup(func() { _, _ = s.jobManager.stop(shellOut.JobID) })
+	parentJobID := startBackgroundJob(t, s)
 
 	s.delegationAllowance = 1 // child grant 0: a leaf
 	prepared, err := s.prepareSubagentRun(ctx, "task", "", "", 0, "explorer", "", nil, nil)
@@ -133,35 +174,6 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 	}
 	defer releasePreparedTreeSlot(prepared)
 	defer prepared.sub.sess.Close()
-	child := prepared.sub.sess
 
-	// A leaf never inherits the parent-watch grant, so source="parent" is refused
-	// even though the leaf now holds job_watch for its own jobs.
-	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
-		ID: "watch-parent", Name: "job_watch",
-		Arguments: json.RawMessage(`{"operation":"create","source":"parent","events":["communicate"]}`),
-	}); !res.IsError {
-		t.Fatalf("typed leaf watched its parent without the grant: %s", res.Output)
-	}
-	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
-		ID: "status-parent", Name: "job_status",
-		Arguments: json.RawMessage(`{"target":"` + shellOut.JobID + `"}`),
-	}); !res.IsError {
-		t.Fatalf("typed leaf read a parent-owned job: %s", res.Output)
-	}
-	if res := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
-		ID: "stop-parent", Name: "job_stop",
-		Arguments: json.RawMessage(`{"target":"` + shellOut.JobID + `","max_wait_ms":0}`),
-	}); !res.IsError {
-		t.Fatalf("typed leaf stopped a parent-owned job: %s", res.Output)
-	}
-	list := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
-		ID: "list", Name: "job_list", Arguments: json.RawMessage(`{}`),
-	})
-	if list.IsError {
-		t.Fatalf("typed leaf job_list failed: %s", list.Output)
-	}
-	if strings.Contains(list.Output, shellOut.JobID) {
-		t.Fatalf("typed leaf job_list exposed a parent-owned job:\n%s", list.Output)
-	}
+	assertCannotReachParentJobs(t, prepared.sub.sess, parentJobID)
 }

@@ -866,6 +866,10 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if grandchild.reg.Get("delegate") != nil {
 		t.Fatal("grandchild with delegation_allowance 0 must not have delegate registered")
 	}
+	// Presence is not isolation: the grandchild holds the job tools for its own
+	// jobs but must not reach its parent's, so the non-inheritance claim stays
+	// behavioral rather than a tool-presence check.
+	assertCannotReachParentJobs(t, grandchild, startBackgroundJob(t, child))
 }
 
 func hasCachedCallableToolDefinition(s *Session, name string) bool {
