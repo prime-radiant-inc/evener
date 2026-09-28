@@ -17,24 +17,28 @@ export type ActivityPresentation = {
 	summary?: string;
 };
 
+// The cumulative breakdown the wire reports beside the derived pair: the
+// thread's own cache-read and total figures. EvenerThread.Usage is not
+// windowed the way turns are, so both are whole-session and carry no scope of
+// their own.
+type CumulativeTokens = Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">;
+
 // The session accounting the transcript footer shows: the conversation's
 // token total (the package's turn-summed sessionTokens derivation, shared
-// with the web details panel), the thread's own cumulative cache/total
-// breakdown, and cost - each undefined/null when the display config hides it
-// or the daemon reported none.
+// with the web details panel, carrying its own scope), the thread's own
+// cumulative cache/total breakdown, and cost - each null when the display
+// config hides it or the daemon reported none.
 //
-// cacheReadTokens/totalTokens are read independently of inputTokens/
-// outputTokens/scope: the wire's EvenerUsage permits a sparse cumulative
+// The derived pair and its scope stay together in `derived`, never flattened
+// into `cumulative`: the wire's EvenerUsage permits a sparse cumulative
 // object (cache or total alone, with no input/output pair at all), and
 // sessionTokens has no per-turn equivalent for them, so they must survive
 // even when sessionTokens falls back to summing turns or returns null
-// outright. They are always whole-session figures (EvenerThread.Usage is not
-// windowed the way turns are), so they carry no scope of their own and must
-// never inherit whatever scope the derived input/output pair got.
+// outright. cacheReadTokens/totalTokens are always whole-session figures, so
+// they must never inherit whatever scope the derived pair got.
 export interface SessionAccounting {
-	usage:
-		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
-		| null;
+	derived: SessionTokens | null;
+	cumulative: CumulativeTokens | null;
 	cost: string | null;
 }
 
@@ -47,21 +51,28 @@ export interface UsageRow {
 // usageRows picks the footer's visible rows and labels each with what it
 // actually counts. Input/Output take the derived pair's own scope (a
 // truncated turn window says so); Cached/Total are always the thread's whole
-// -session cumulative figures, so they always read plainly, independent of
-// whatever scope the derived pair got.
-export function usageRows(usage: SessionAccounting["usage"]): UsageRow[] {
-	if (!usage) return [];
-	const derivedUnit = tokenUnitLabel(usage.scope);
-	const cumulativeUnit = tokenUnitLabel(undefined);
-	const candidates: [UsageRow["label"], number | undefined, string][] = [
-		["Input", usage.inputTokens, derivedUnit],
-		["Output", usage.outputTokens, derivedUnit],
-		["Cached", usage.cacheReadTokens, cumulativeUnit],
-		["Total", usage.totalTokens, cumulativeUnit],
-	];
-	return candidates
-		.filter((row): row is [UsageRow["label"], number, string] => row[1] !== undefined)
-		.map(([label, value, unit]) => ({ label, value, unit }));
+// -session cumulative figures, so they are labelled with the explicit session
+// scope, never whatever scope the derived pair got.
+export function usageRows(
+	accounting: Pick<SessionAccounting, "derived" | "cumulative"> | null,
+): UsageRow[] {
+	if (!accounting) return [];
+	const { derived, cumulative } = accounting;
+	const derivedUnit = tokenUnitLabel(derived?.scope);
+	const cumulativeUnit = tokenUnitLabel("session");
+	const rows: UsageRow[] = [];
+	const add = (
+		label: UsageRow["label"],
+		value: number | undefined,
+		unit: string,
+	): void => {
+		if (value !== undefined) rows.push({ label, value, unit });
+	};
+	add("Input", derived?.inputTokens, derivedUnit);
+	add("Output", derived?.outputTokens, derivedUnit);
+	add("Cached", cumulative?.cacheReadTokens, cumulativeUnit);
+	add("Total", cumulative?.totalTokens, cumulativeUnit);
+	return rows;
 }
 
 export interface NativeTranscriptPresentation {
@@ -184,20 +195,16 @@ function accountingFor(
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
-	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
-	const cacheReadTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.cacheReadTokens) : undefined;
-	const totalTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.totalTokens) : undefined;
-	return {
-		usage:
-			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
-				? {
-						...(tokens ?? {}),
-						...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
-						...(totalTokens !== undefined ? { totalTokens } : {}),
-					}
-				: null,
-		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
-	};
+	const cost = config.advanced.estimatedCost ? (conversation.cost ?? null) : null;
+	if (!config.advanced.tokenCounts) return { derived: null, cumulative: null, cost };
+	const derived = sessionTokens(conversation);
+	const cacheReadTokens = noZero(conversation.usage?.cacheReadTokens);
+	const totalTokens = noZero(conversation.usage?.totalTokens);
+	const cumulative =
+		cacheReadTokens !== undefined || totalTokens !== undefined
+			? { cacheReadTokens, totalTokens }
+			: null;
+	return { derived, cumulative, cost };
 }
 
 export function projectNativeTranscript(
