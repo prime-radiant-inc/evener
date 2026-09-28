@@ -40,6 +40,7 @@ import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
+import { useReduceMotion } from "../reduceMotion";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -60,7 +61,7 @@ import {
 } from "./attention";
 import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
-import { createSearchController, type SearchScope } from "./boardSearch";
+import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BandHeader, FoldChevron } from "./BoardRow";
 import { BoardRows, type RowContext } from "./BoardRows";
@@ -79,6 +80,7 @@ import {
 	type ProjectSection,
 	type ProjectsView,
 	type ProjectTreeItem,
+	projectRevealTarget,
 	projectTreeItems,
 	SECTION_FOLDS,
 } from "./projectTree";
@@ -274,6 +276,7 @@ function Board({
 	const [searching, setSearching] = useState(false);
 	const [scope, setScope] = useState<SearchScope>("all");
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
+	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
 	const recent = recentSearches(hubId);
 	const [recentList, setRecentList] = useState(() => recent.list());
@@ -281,10 +284,13 @@ function Board({
 		setSearchText(text);
 		search.controller.setQuery(text);
 	};
-	const cancelSearch = () => {
+	const leaveSearch = () => {
 		typeSearch("");
 		setSearching(false);
 		searchInput.current?.blur?.();
+	};
+	const cancelSearch = () => {
+		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
 		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: true });
 	};
@@ -305,8 +311,7 @@ function Board({
 	// marked seen the same way. Any other session marks itself seen when its
 	// screen loads (useMarkSeenInFront).
 	const openSearchResult = (result: SearchResult) => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
@@ -315,10 +320,18 @@ function Board({
 		recent.clear();
 		setRecentList(recent.list());
 	};
+	const rememberSearch = () => {
+		recent.add(search.snapshot.query);
+		setRecentList(recent.list());
+	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
 	const offsets = useRef<Record<string, number>>({});
+	// Search's project hit waiting to be scrolled to: the item key while it
+	// waits, and what has laid out since (revealProject).
+	const [revealKey, setRevealKey] = useState<string | null>(null);
+	const reveal = useRef<{ sectionTop: number | null; row: { y: number; height: number } | null } | null>(null);
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
@@ -594,6 +607,36 @@ function Board({
 			}
 		}
 	};
+	// Search's project hit (spec 7.4): unfold the way to the project, then,
+	// once its row and the Projects section have both laid out (in either
+	// order), scroll the row 30% of the way down the viewport, as a list's
+	// scrollToItem with viewPosition 0.3 would. A reveal starts from search,
+	// whose results replace the sections, so leaving search mounts them
+	// afresh and both layouts always arrive, even for a project already
+	// unfolded; the section's offset from before search could be stale.
+	const revealProject = (projectKey: string) => {
+		const { view } = projectSections.projects;
+		const project = view.projects.find((candidate) => candidate.key === projectKey);
+		if (!project) return;
+		const target = projectRevealTarget({ project, pages: view.pages.get(projectKey), sources: hostSources, organizeBy });
+		for (const fold of target.unfold) setFolded(fold, false);
+		reveal.current = { sectionTop: null, row: null };
+		setRevealKey(target.scrollTo);
+	};
+	const finishReveal = () => {
+		const pending = reveal.current;
+		if (!pending?.row || pending.sectionTop === null) return;
+		reveal.current = null;
+		setRevealKey(null);
+		const top = pending.sectionTop + pending.row.y;
+		const y = Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height));
+		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+	};
+	const openProjectResult = (project: NavigationProjectSummary) => {
+		rememberSearch();
+		leaveSearch();
+		revealProject(project.key);
+	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		const actions = projectMenuActions(project, {
 			connected,
@@ -622,7 +665,7 @@ function Board({
 					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
 				</View>
 			);
-		return (
+		const row = (
 			<ProjectTreeRow
 				key={item.key}
 				item={item}
@@ -632,6 +675,20 @@ function Board({
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
 				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
 			/>
+		);
+		if (item.key !== revealKey) return row;
+		return (
+			<View
+				key={item.key}
+				testID="project-reveal"
+				onLayout={(event) => {
+					if (!reveal.current) return;
+					reveal.current.row = event.nativeEvent.layout;
+					finishReveal();
+				}}
+			>
+				{row}
+			</View>
 		);
 	};
 
@@ -705,6 +762,8 @@ function Board({
 							onOpen={openSearchResult}
 							onRecent={typeSearch}
 							onClearRecent={clearRecent}
+						projects={projectResults(projectSections.projects.view.projects, search.snapshot.query)}
+						onOpenProject={openProjectResult}
 						/>
 					) : (
 						<>
@@ -742,6 +801,10 @@ function Board({
 									onLayout={(event) => {
 										measure(section)(event);
 										readVisibleMore();
+									if (section === "projects" && reveal.current) {
+										reveal.current.sectionTop = event.nativeEvent.layout.y;
+										finishReveal();
+									}
 									}}
 									style={{ paddingTop: 10 }}
 								>
