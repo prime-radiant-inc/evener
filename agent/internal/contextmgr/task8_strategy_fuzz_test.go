@@ -115,10 +115,16 @@ func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.
 	strategy := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	// Distillation cadence is measured in completed actions (CORE-09), so drive
 	// a whole number of ten-action micro periods (10..60) with one AfterAction
-	// per completed action. Crossing fifty exercises the macro fold.
+	// per completed action. Crossing fifty exercises the macro fold. Each action
+	// observes one further turn, as the real loop appends work every round: an
+	// unchanged history is distilled once and then correctly not re-distilled.
 	actions := 10 * (1 + int(t8ProgramByte(program, 1)%6))
 	for step := 1; step <= actions; step++ {
-		if err := strategy.AfterAction(ctx, history, client); err != nil {
+		observed := history
+		if step < len(observed) {
+			observed = observed[:step]
+		}
+		if err := strategy.AfterAction(ctx, observed, client); err != nil {
 			t.Fatalf("recursive distill AfterAction step %d: %v", step, err)
 		}
 	}

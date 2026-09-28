@@ -3,6 +3,7 @@ package contextmgr
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -133,8 +134,18 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 		return s.aux.stale()
 	}
 
+	span := s.microSpan(history)
+	included := boundedDistillSpan(span)
+	if len(included) == 0 {
+		// Nothing newer than the mark: consume the cadence without calling the
+		// auxiliary model, so an unchanged history cannot re-distill (and
+		// duplicate) content that is already covered.
+		s.lastMicroAt = s.actions
+		return s.aux.stale()
+	}
+
 	var auxErr error
-	micro, err := s.microSummarize(ctx, s.microSpan(history))
+	micro, err := s.microSummarize(ctx, span)
 	if err != nil {
 		// Surface it and leave the watermark unchanged so the eligible action
 		// retries; the caller warns without failing the turn.
@@ -142,9 +153,11 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	} else {
 		s.microSummaries = append(s.microSummaries, micro)
 		s.lastMicroAt = s.actions
-		if len(history) > 0 {
-			s.microMark = history[len(history)-1].Timestamp
-		}
+		// Advance the mark to the last turn actually included in the prompt. A
+		// capped span keeps the newest turns, so the excess it dropped is older
+		// than this mark and is not re-attempted; recent activity — the "next
+		// steps" the summary depends on — is always covered.
+		s.microMark = included[len(included)-1].Timestamp
 	}
 
 	// Macro-summary every 50 completed actions (when we've accumulated 5
@@ -173,8 +186,13 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 // successful micro-summary. A ten-action cadence spans roughly twenty turns, so
 // distilling only a fixed tail would drop the earlier half of every period. The
 // mark is a turn timestamp rather than a history index, so a marker swap or
-// compaction cannot shift it; when nothing is newer than the mark (a first
-// summary, or a restored strategy), the whole retained history is the span.
+// compaction cannot shift it.
+//
+// A zero mark is deliberately different from "nothing newer": it means nothing
+// has been distilled yet (first summary, or a strategy restored with no mark),
+// so the whole retained history is the span. Once a mark exists, a turn at or
+// before it is already covered, and when no turn is strictly newer the span is
+// empty — never the whole history, which would re-distill covered content.
 func (s *RecursiveDistillStrategy) microSpan(history []schema.Turn) []schema.Turn {
 	if s.microMark.IsZero() {
 		return history
@@ -184,35 +202,74 @@ func (s *RecursiveDistillStrategy) microSpan(history []schema.Turn) []schema.Tur
 			return history[i:]
 		}
 	}
-	return history
+	return nil
 }
 
-// microSummarize distills the supplied turns into 1-2 sentences.
-func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history []schema.Turn) (string, error) {
-	// Bound the assembled prompt so a failure streak, which deliberately keeps
-	// the watermark back and retries against an ever-growing span, cannot inflate
-	// its own retry payload without limit.
-	const maxMicroSummaryChars = 30_000
-
+// renderDistillTurn renders one turn as the line(s) a micro-summary prompt
+// carries: the assistant text, or each tool result, truncated per field.
+func renderDistillTurn(t schema.Turn) string {
 	var b strings.Builder
-	for _, t := range history {
-		switch t.Kind {
-		case schema.TurnAssistant:
-			b.WriteString("Assistant: ")
-			b.WriteString(truncate(t.Message.Text(), 200))
-			b.WriteString("\n")
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 100))
-				}
+	switch t.Kind {
+	case schema.TurnAssistant:
+		b.WriteString("Assistant: ")
+		b.WriteString(truncate(t.Message.Text(), 200))
+		b.WriteString("\n")
+	case schema.TurnTool, schema.TurnToolResults:
+		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+				fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(fmt.Sprint(p.ToolResult.Content), 100))
 			}
 		}
-		if b.Len() >= maxMicroSummaryChars {
-			b.WriteString("\n[... truncated ...]\n")
+	}
+	return b.String()
+}
+
+// maxMicroSummaryChars bounds the micro-summary prompt, matching the budget
+// summarizeWithLLMSteered uses. A failure streak deliberately keeps the
+// watermark back and retries a growing span, so without a bound the retry
+// payload would grow without limit.
+const maxMicroSummaryChars = 80_000
+
+// boundedDistillSpan returns the newest suffix of span whose rendered turns fit
+// the summary budget. It keeps the most recent activity — the "next steps" the
+// summary depends on — drops the oldest turns, and caps each rendered field
+// against the remaining budget so one oversized turn cannot exceed the bound.
+func boundedDistillSpan(span []schema.Turn) []schema.Turn {
+	size, start := 0, len(span)
+	for i, turn := range slices.Backward(span) {
+		length := min(len(renderDistillTurn(turn)), maxMicroSummaryChars)
+		if size+length > maxMicroSummaryChars {
 			break
 		}
+		size += length
+		start = i
+	}
+	if start == len(span) && len(span) > 0 {
+		// The newest turn alone exceeds the budget; keep it rather than nothing.
+		start = len(span) - 1
+	}
+	return span[start:]
+}
+
+// microSummarize distills the supplied turns into 1-2 sentences, bounded to the
+// summary budget from the newest end.
+func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history []schema.Turn) (string, error) {
+	kept := boundedDistillSpan(history)
+
+	var b strings.Builder
+	if dropped := len(history) - len(kept); dropped > 0 {
+		fmt.Fprintf(&b, "[... %d earlier turns dropped to fit the summary budget ...]\n", dropped)
+	}
+	for _, t := range kept {
+		remaining := maxMicroSummaryChars - b.Len()
+		if remaining <= 0 {
+			break
+		}
+		part := renderDistillTurn(t)
+		if len(part) > remaining {
+			part = truncate(part, remaining)
+		}
+		b.WriteString(part)
 	}
 
 	prompt := fmt.Sprintf(`Summarize these coding agent actions as a structured status update (2-4 sentences). Include:

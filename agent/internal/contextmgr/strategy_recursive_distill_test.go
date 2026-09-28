@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
@@ -117,6 +118,16 @@ func TestRecursiveDistillStrategy_AttentionResolutionDoesNotAdvanceCadence(t *te
 	}
 	if got := len(spy.Requests()); got != 1 {
 		t.Fatalf("tenth action did not distill: requests=%d", got)
+	}
+	// With a call-count clock the counts alone no longer prove the strip: assert
+	// directly that the summary prompt carries only visible turns and leaks no
+	// attention-resolution marker.
+	prompt := spy.Requests()[0].Messages[0].Text()
+	if !strings.Contains(prompt, "visible action") {
+		t.Fatalf("summary prompt dropped the visible turn:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "private marker") {
+		t.Fatalf("summary prompt leaked a hidden attention marker:\n%s", prompt)
 	}
 }
 
@@ -553,8 +564,8 @@ func TestRecursiveDistillStrategy_SpanSurvivesCompactionShrink(t *testing.T) {
 
 // TestRecursiveDistillStrategy_MicroSummaryPromptIsBounded pins that a
 // micro-summary failure streak, which deliberately keeps the watermark back and
-// retries against a growing span, cannot inflate its own retry prompt without
-// limit.
+// retries a growing span, cannot inflate its own retry prompt without limit, and
+// that the cap keeps the newest activity while stating what it dropped.
 func TestRecursiveDistillStrategy_MicroSummaryPromptIsBounded(t *testing.T) {
 	adapter := &failingCaptureAdapter{}
 	client := llm.NewClient()
@@ -564,20 +575,115 @@ func TestRecursiveDistillStrategy_MicroSummaryPromptIsBounded(t *testing.T) {
 	s := NewRecursiveDistillStrategy(cm)
 	ctx := context.Background()
 
-	history := make([]schema.Turn, 0, 512)
-	for action := 1; action <= 150; action++ {
+	history := make([]schema.Turn, 0, 1024)
+	for action := 1; action <= 300; action++ {
 		history = append(history,
-			schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("action %d %s", action, strings.Repeat("a", 200)))),
-			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("t%d", action), "shell", fmt.Sprintf("action %d %s", action, strings.Repeat("r", 120)), false)),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("action %03d %s", action, strings.Repeat("a", 200)))),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("t%d", action), "shell", fmt.Sprintf("action %03d %s", action, strings.Repeat("r", 120)), false)),
 		)
 		_ = s.AfterAction(ctx, history, client) // the outage is surfaced; not this test's subject
 	}
 	if len(adapter.reqs) == 0 {
 		t.Fatal("no micro-summary attempts recorded")
 	}
-	for i, req := range adapter.reqs {
-		if got := len(req.Messages[0].Text()); got > 32_000 {
-			t.Fatalf("summary request %d prompt grew unbounded: %d chars", i, got)
+	last := adapter.reqs[len(adapter.reqs)-1].Messages[0].Text()
+	if got := len(last); got > 82_000 {
+		t.Fatalf("summary prompt grew unbounded: %d chars", got)
+	}
+	if !strings.Contains(last, "action 300 ") {
+		t.Fatalf("capped prompt dropped the newest activity")
+	}
+	if strings.Contains(last, "action 001 ") {
+		t.Fatalf("capped prompt should have dropped the oldest activity")
+	}
+	if !strings.Contains(last, "earlier turns dropped") {
+		t.Fatalf("capped prompt does not say what it dropped")
+	}
+}
+
+// TestRecursiveDistillStrategy_NoNewTurnsDoesNotResummarize pins that an empty
+// span (nothing newer than the mark) is consumed without calling the auxiliary
+// model, so an unchanged history cannot re-distill covered content.
+func TestRecursiveDistillStrategy_NoNewTurnsDoesNotResummarize(t *testing.T) {
+	client := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	client.Register(f)
+
+	s := NewRecursiveDistillStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client)))
+	ctx := context.Background()
+	history := recursiveDistillTurns(10)
+
+	for i := range 10 {
+		if err := s.AfterAction(ctx, history, client); err != nil {
+			t.Fatalf("AfterAction %d: %v", i, err)
 		}
+	}
+	if got := len(s.microSummaries); got != 1 {
+		t.Fatalf("micro-summaries = %d, want 1", got)
+	}
+	requests := len(f.Requests())
+
+	// Ten more actions over the unchanged history: nothing is newer than the
+	// mark, so the cadence must consume itself without another summary.
+	for i := range 10 {
+		if err := s.AfterAction(ctx, history, client); err != nil {
+			t.Fatalf("re-observe %d: %v", i, err)
+		}
+	}
+	if got := len(f.Requests()); got != requests {
+		t.Fatalf("unchanged history re-summarized: requests %d -> %d", requests, got)
+	}
+	if got := len(s.microSummaries); got != 1 {
+		t.Fatalf("micro-summaries = %d after re-observing, want 1", got)
+	}
+}
+
+// TestRecursiveDistillStrategy_EqualTimestampsAreCovered pins that a turn whose
+// timestamp equals the mark is treated as already covered: the span is empty
+// rather than re-summarizing the whole history.
+func TestRecursiveDistillStrategy_EqualTimestampsAreCovered(t *testing.T) {
+	client := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	client.Register(f)
+	s := NewRecursiveDistillStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client)))
+	ctx := context.Background()
+
+	at := time.Now().UTC()
+	mk := func(text string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+		turn.Timestamp = at
+		return turn
+	}
+	history := []schema.Turn{mk("one"), mk("two")}
+	s.microMark = at // the mark shares the turns' timestamp
+
+	if got := s.microSpan(history); len(got) != 0 {
+		t.Fatalf("equal-timestamp span = %d turns, want 0", len(got))
+	}
+	s.actions = 9 // next call crosses the ten-action boundary
+	if err := s.AfterAction(ctx, history, client); err != nil {
+		t.Fatalf("AfterAction: %v", err)
+	}
+	if got := len(f.Requests()); got != 0 {
+		t.Fatalf("equal-timestamp turns were re-summarized: requests=%d", got)
+	}
+}
+
+// TestBoundedDistillSpanKeepsNewest pins that the budget keeps the newest turns
+// and drops the oldest, so the mark anchors at a turn the prompt actually holds.
+func TestBoundedDistillSpanKeepsNewest(t *testing.T) {
+	span := make([]schema.Turn, 0, 600)
+	for i := range 600 {
+		span = append(span, schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("turn %03d %s", i, strings.Repeat("x", 200)))))
+	}
+	kept := boundedDistillSpan(span)
+	if len(kept) == 0 || len(kept) >= len(span) {
+		t.Fatalf("bounded span = %d of %d turns, want a non-empty proper suffix", len(kept), len(span))
+	}
+	if !kept[len(kept)-1].Timestamp.Equal(span[len(span)-1].Timestamp) {
+		t.Fatalf("bounded span dropped the newest turn (mark would anchor past the prompt)")
+	}
+	if kept[0].Timestamp.Equal(span[0].Timestamp) {
+		t.Fatalf("bounded span kept the oldest turn")
 	}
 }
