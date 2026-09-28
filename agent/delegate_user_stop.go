@@ -40,7 +40,7 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 	if sub == nil {
 		return appwire.DelegateStopNotRunning, nil
 	}
-	switch err := sub.requestRunCancel(); {
+	switch _, err := sub.requestRunCancel(true); {
 	case errors.Is(err, errSubagentNotRunning), errors.Is(err, errSubagentSettling):
 		return appwire.DelegateStopNotRunning, nil
 	case err != nil:
@@ -77,24 +77,33 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 
 // requestRunCancel cancels the subagent's current run and marks the
 // cancellation as requested, so settlement maps it to a cancelled outcome.
+// asUserStop marks it as S6's direct user stop (StopDelegateRun), so a
+// cancelled run with nothing to report tells its coordinator "Stopped by the
+// user."; cancelAgent's own cancel (unwired in production today) passes
+// false, so it is never misattributed as a direct user stop.
 // It refuses a subagent that is not running, one whose run has passed its
 // last pre-settlement check, and one already stopping, so a repeated stop
-// answers notRunning.
-func (a *subagent) requestRunCancel() error {
+// answers notRunning. On success it returns the admitted run's done channel,
+// captured under the same lock as the check: a caller must wait on this
+// channel rather than reading sub.done separately, which could hand back a
+// different run's channel if the run settles and resumes in between.
+func (a *subagent) requestRunCancel(asUserStop bool) (chan struct{}, error) {
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
-		return errSubagentNotRunning
+		return nil, errSubagentNotRunning
 	}
 	if a.settlementClaimed || a.cancelRequested {
 		a.mu.Unlock()
-		return errSubagentSettling
+		return nil, errSubagentSettling
 	}
 	a.cancelRequested = true
+	a.userStopRequested = asUserStop
 	cancel := a.cancel
+	done := a.done
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	return nil
+	return done, nil
 }

@@ -100,7 +100,8 @@ type subagent struct {
 	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
-	cancelRequested       bool                      // set by requestRunCancel (the user's stop, or cancelAgent), so finalize maps a context.Canceled run to cancelled
+	cancelRequested       bool                      // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
+	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by stableDelegateFinish so only this path reports "Stopped by the user."
 	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
@@ -1668,6 +1669,7 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.runStructuredCaptured = false
 	sub.cancel = cancel
 	sub.cancelRequested = false
+	sub.userStopRequested = false
 	sub.settlementClaimed = false
 	sub.startedAt = startedAt
 	sub.endedAt = nil
@@ -1689,10 +1691,8 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	if err := sub.requestRunCancel(); err != nil {
+	done, err := sub.requestRunCancel(false)
+	if err != nil {
 		return "", fmt.Errorf("agent %s is %w", agentID, err)
 	}
 	select {
@@ -2129,7 +2129,7 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
 	startedAt := a.startedAt
-	stoppedByUser := a.cancelRequested
+	stoppedByUser := a.userStopRequested
 	var descriptor delegatestore.Descriptor
 	if a.stableDescriptor != nil {
 		descriptor = cloneDelegateStartDescriptor(*a.stableDescriptor)

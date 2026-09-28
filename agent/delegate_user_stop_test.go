@@ -30,7 +30,7 @@ func TestUserStopCancelsOnlyTheTargetsRun(t *testing.T) {
 	if found := root.subagentForChild("child-session-b"); found != child {
 		t.Fatalf("subagentForChild found %p, want the nested subagent %p", found, child)
 	}
-	if got := root.subagentForChild("child-session-a").requestRunCancel(); got != nil {
+	if _, got := root.subagentForChild("child-session-a").requestRunCancel(true); got != nil {
 		t.Fatalf("requestRunCancel = %v, want the run stopping", got)
 	}
 	if parentCtx.Err() == nil {
@@ -53,11 +53,11 @@ func TestUserStopCancelsOnlyTheTargetsRun(t *testing.T) {
 // A run that is not running, or is already settling, has nothing to stop.
 func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 	idle := &subagent{id: "idle"}
-	if err := idle.requestRunCancel(); !errors.Is(err, errSubagentNotRunning) {
+	if _, err := idle.requestRunCancel(true); !errors.Is(err, errSubagentNotRunning) {
 		t.Fatalf("idle requestRunCancel = %v, want errSubagentNotRunning", err)
 	}
 	settling := &subagent{id: "settling", running: true, settlementClaimed: true}
-	if err := settling.requestRunCancel(); !errors.Is(err, errSubagentSettling) {
+	if _, err := settling.requestRunCancel(true); !errors.Is(err, errSubagentSettling) {
 		t.Fatalf("settling requestRunCancel = %v, want errSubagentSettling", err)
 	}
 	// A second stop while the first is still unwinding the run finds it
@@ -65,11 +65,71 @@ func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stopping := &subagent{id: "stopping", running: true, cancel: cancel}
-	if err := stopping.requestRunCancel(); err != nil {
+	if _, err := stopping.requestRunCancel(true); err != nil {
 		t.Fatalf("first requestRunCancel = %v", err)
 	}
-	if err := stopping.requestRunCancel(); !errors.Is(err, errSubagentSettling) {
+	if _, err := stopping.requestRunCancel(true); !errors.Is(err, errSubagentSettling) {
 		t.Fatalf("repeated requestRunCancel = %v, want errSubagentSettling", err)
+	}
+}
+
+// requestRunCancel captures the run's own done channel under the same lock
+// as its admission check, so a caller cannot be handed a channel a
+// concurrent run reset invalidates between the check and the wait. Found by
+// RoboRev on this PR: cancelAgent used to read sub.done separately, before
+// this admission check, which can race a settle-and-resume in between.
+func TestRequestRunCancelReturnsTheAdmittedRunsDoneChannelAtomically(t *testing.T) {
+	original := make(chan struct{})
+	sub := &subagent{id: "atomic", running: true, done: original, cancel: func() {}}
+	done, err := sub.requestRunCancel(false)
+	if err != nil {
+		t.Fatalf("requestRunCancel = %v", err)
+	}
+	if done != original {
+		t.Fatal("requestRunCancel returned a different channel than the run it admitted")
+	}
+	// Simulate a concurrent reset for a new run (resetSubagentForRunLocked):
+	// the channel already handed back must stay this run's own, not track
+	// whatever sub.done now holds.
+	sub.mu.Lock()
+	sub.done = make(chan struct{})
+	sub.mu.Unlock()
+	select {
+	case <-done:
+		t.Fatal("the returned channel must not be the reset run's channel")
+	default:
+	}
+}
+
+// A cancellation is credited to the user in the coordinator's packet only
+// when the caller marks it a direct user stop (S6, StopDelegateRun):
+// cancelAgent's own cancel (unwired in production today) leaves the run
+// error's own text, so a future caller of cancelAgent is never misattributed
+// as "Stopped by the user." Found by RoboRev on this PR.
+func TestStableDelegateFinish_OnlyADirectUserStopReadsStoppedByTheUser(t *testing.T) {
+	readPacketMessage := func(t *testing.T, finish delegateFinish) string {
+		t.Helper()
+		var message string
+		if finish.packet == nil || json.Unmarshal(finish.packet.Message, &message) != nil {
+			t.Fatalf("packet = %+v, want a decodable message", finish.packet)
+		}
+		return message
+	}
+
+	notUserStop := &subagent{id: "not-user-stop", sess: newTestSession(t), running: true, done: make(chan struct{}), cancel: func() {}}
+	if _, err := notUserStop.requestRunCancel(false); err != nil {
+		t.Fatalf("requestRunCancel(false) = %v", err)
+	}
+	if got := readPacketMessage(t, notUserStop.stableDelegateFinish("", context.Canceled)); got != context.Canceled.Error() {
+		t.Fatalf("cancelled without a direct user stop = %q, want the run error's own text %q", got, context.Canceled.Error())
+	}
+
+	userStop := &subagent{id: "user-stop", sess: newTestSession(t), running: true, done: make(chan struct{}), cancel: func() {}}
+	if _, err := userStop.requestRunCancel(true); err != nil {
+		t.Fatalf("requestRunCancel(true) = %v", err)
+	}
+	if got := readPacketMessage(t, userStop.stableDelegateFinish("", context.Canceled)); got != delegateUserStopMessage {
+		t.Fatalf("cancelled with a direct user stop = %q, want %q", got, delegateUserStopMessage)
 	}
 }
 
