@@ -24,6 +24,12 @@ expect:
   checks:
     - name: update exists and is under 150 words
       run: "test -f incident/UPDATE.md && test \"$(wc -w < incident/UPDATE.md)\" -lt 150"
+    - name: update has at least 30 words
+      run: "test \"$(wc -w < incident/UPDATE.md)\" -ge 30"
+    - name: update says emails were late
+      run: "grep -qiE 'late|delay' incident/UPDATE.md"
+    - name: update says payment links worked
+      run: "grep -qi 'payment' incident/UPDATE.md"
     - name: no internal host names or staff names
       run: "! grep -qiE 'db-prod|mailer-worker|priya|marcus|replica' incident/UPDATE.md"
 reference: |
