@@ -2,7 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"context"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -15,14 +14,7 @@ import (
 
 func requestSessionDocument(t *testing.T, srv *httptest.Server, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
 	t.Helper()
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	var resp appwire.SessionDocumentResponse
-	err := rpc.Request(context.Background(), appwire.MethodEvenerSessionDocument, params, &resp)
-	return resp, err
+	return requestHubMethod[appwire.SessionDocumentResponse](t, srv, appwire.MethodEvenerSessionDocument, params)
 }
 
 // sessionDocumentServer serves a hub whose one past session works in cwd.
@@ -83,12 +75,7 @@ func TestHubSessionDocumentSendsTheHeadOfALargeFile(t *testing.T) {
 // refused as pathOutsideSession; a session this hub does not have, including
 // one named on another host, and a missing file are resourceNotFound.
 func TestHubSessionDocumentStaysInsideTheSessionFolder(t *testing.T) {
-	// The folder's real path: on macOS t.TempDir sits under /var, a symlink to
-	// /private/var, and an absolute path is compared with the resolved folder.
-	cwd, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	cwd := docTestRoot(t)
 	outside := t.TempDir()
 	writeDocAt(t, filepath.Join(outside, "secret.txt"), []byte("secret"), time.UnixMilli(1_790_000_000_000))
 	writeDocAt(t, filepath.Join(cwd, "notes.txt"), []byte("notes"), time.UnixMilli(1_790_000_000_000))

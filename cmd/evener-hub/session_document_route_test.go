@@ -18,9 +18,9 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// controllerOverHost serves a controller hub with one attached host "h1" whose
-// channel is client.
-func controllerOverHost(t *testing.T, client *appwire.Client) *httptest.Server {
+// controllerOverHost serves a controller hub with config cfg and one attached
+// host "h1" whose channel is client.
+func controllerOverHost(t *testing.T, cfg hubcore.WebConfig, client *appwire.Client) *httptest.Server {
 	t.Helper()
 	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
@@ -28,7 +28,26 @@ func controllerOverHost(t *testing.T, client *appwire.Client) *httptest.Server {
 	source.SetHostClientIfAttached(func(host string) (*appwire.Client, bool) {
 		return client, host == "h1"
 	})
-	srv, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	return controllerOverSource(t, cfg, source)
+}
+
+// controllerOverDetachedHost serves a controller hub whose host "h1" is not
+// attached. The returned count is how many times its connector dialed, which
+// the attached-only proxy routes must leave at zero.
+func controllerOverDetachedHost(t *testing.T) (*httptest.Server, *int) {
+	t.Helper()
+	var dials int
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		dials++
+		return nil, appwire.SessionUnavailable("the attached-only path must never dial")
+	})
+	source.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
+	return controllerOverSource(t, hubcore.WebConfig{}, source), &dials
+}
+
+func controllerOverSource(t *testing.T, cfg hubcore.WebConfig, source *appsource.RemoteHubSource) *httptest.Server {
+	t.Helper()
+	srv, web := newHubRPCTestServerWithWeb(t, cfg)
 	t.Cleanup(srv.Close)
 	web.sources.Add(source)
 	return srv
@@ -42,7 +61,7 @@ func controllerOverScriptedHost(t *testing.T, reply any) (*httptest.Server, func
 	seen := func() []appwire.SessionDocumentParams {
 		return scriptedRemoteHubParams[appwire.SessionDocumentParams](t, calls(), appwire.MethodEvenerSessionDocument)
 	}
-	return controllerOverHost(t, client), seen
+	return controllerOverHost(t, hubcore.WebConfig{}, client), seen
 }
 
 func getRemoteDoc(t *testing.T, srv *httptest.Server, path string, header http.Header) (*http.Response, []byte) {
@@ -69,10 +88,7 @@ func getRemoteDoc(t *testing.T, srv *httptest.Server, path string, header http.H
 // controller answers with the local route's body and headers, revision and
 // modification time included, and revalidates with 304.
 func TestDocFileRouteReadsARemoteSessionThroughItsHost(t *testing.T) {
-	cwd, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	cwd := docTestRoot(t)
 	content := []byte("# Plan\n\nStep one.\n")
 	modified := time.UnixMilli(1_790_000_000_123)
 	writeDocAt(t, filepath.Join(cwd, "plans", "plan.md"), content, modified)
@@ -87,7 +103,7 @@ func TestDocFileRouteReadsARemoteSessionThroughItsHost(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	controller := controllerOverHost(t, client)
+	controller := controllerOverHost(t, hubcore.WebConfig{}, client)
 
 	resp, body := getRemoteDoc(t, controller, "plans%2Fplan.md", nil)
 	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
@@ -213,16 +229,8 @@ func TestDocFileRouteRefusesBeforeAskingTheHost(t *testing.T) {
 		t.Fatalf("no format: status=%d host calls=%d, want 400 and none", resp.StatusCode, len(seen()))
 	}
 
-	var dials int
-	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
-		dials++
-		return nil, appwire.SessionUnavailable("the attached-only path must never dial")
-	})
-	source.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
-	detached, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
-	t.Cleanup(detached.Close)
-	web.sources.Add(source)
-	if resp, _ := getRemoteDoc(t, detached, "notes.txt", nil); resp.StatusCode != http.StatusServiceUnavailable || dials != 0 {
-		t.Fatalf("detached host: status=%d dials=%d, want 503 and no dial", resp.StatusCode, dials)
+	detached, dials := controllerOverDetachedHost(t)
+	if resp, _ := getRemoteDoc(t, detached, "notes.txt", nil); resp.StatusCode != http.StatusServiceUnavailable || *dials != 0 {
+		t.Fatalf("detached host: status=%d dials=%d, want 503 and no dial", resp.StatusCode, *dials)
 	}
 }

@@ -84,7 +84,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	doc, err := readSessionDocument(cwd, rel)
 	if err != nil {
 		// A path that escapes the cwd, or that doesn't resolve, is refused.
 		// 403 for an escape attempt; 404 for a missing file.
@@ -92,12 +92,6 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		http.NotFound(w, r)
-		return
-	}
-
-	doc, err := readDocFile(cwd, abs)
-	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -123,14 +117,10 @@ func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumen
 	if !ok {
 		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("session not found")
 	}
-	abs, err := fspaths.ResolveInRoot(cwd, params.Path)
+	doc, err := readSessionDocument(cwd, params.Path)
 	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
 		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")
 	}
-	if err != nil {
-		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
-	}
-	doc, err := readDocFile(cwd, abs)
 	if err != nil {
 		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 	}
@@ -140,6 +130,18 @@ func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumen
 		Revision:   doc.Revision,
 		ModifiedAt: docModifiedMillis(doc.ModifiedAt),
 	}, nil
+}
+
+// readSessionDocument reads the document rel names inside a session's working
+// directory cwd, for both /doc/file and evener/session/document. It fails with
+// fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
+// any other failure means the document cannot be read.
+func readSessionDocument(cwd, rel string) (docFileRead, error) {
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	if err != nil {
+		return docFileRead{}, err
+	}
+	return readDocFile(cwd, abs)
 }
 
 // handleDocImage serves a validated image file inside a session's working
