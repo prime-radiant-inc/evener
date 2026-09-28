@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { liveAskQuestions } from "./deriveAskQuestions";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import type { ThreadCapabilities } from "./types.gen";
@@ -317,4 +317,35 @@ test("carries options/multiSelect/why/ifUnanswered through onto each question re
       ifUnanswered: "assume no",
     },
   ]);
+});
+
+// --- per-item parse memo (#1709) ------------------------------------------
+
+// The reducer hands an untouched turn back BY REFERENCE (reducer.ts's mapTurn
+// and settleFirstMatchingTurn return a fresh turns ARRAY via .map() every fold,
+// even when only the newest turn changed). So a memo keyed on model.turns can
+// never hit across two notifications, and every delta re-parsed each pending
+// ask_user's argumentsJson on the UI thread. The derivation now memoizes per
+// ITEM reference, which survives a fold that leaves the item untouched, so a
+// delta that only appends/touches the newest turn never re-parses an older ask.
+test("a delta that leaves an earlier ask_user item untouched does not re-parse it", () => {
+  const args = askQuestions([{ header: "MARK-1", question: "q", options: [{ label: "A", detail: "" }] }]);
+  const ask = askItem("i1", "t1", "call_1", { argumentsJSON: args });
+  const firstTurn = turn("t1", [ask]);
+  const before = model([firstTurn, turn("t2", [item("i2", "t2")])]);
+  expect(liveAskQuestions(before).map((q) => q.header)).toEqual(["MARK-1"]);
+
+  const parse = vi.spyOn(JSON, "parse");
+  try {
+    parse.mockClear();
+    // A fold that touched only the newest turn: `turns` is a fresh array and t2
+    // is a fresh turn, but the earlier turn and its ask_user item are the very
+    // same references the previous fold handed back.
+    const after = model([firstTurn, turn("t2", [item("i2b", "t2", { text: "changed" })])]);
+    expect(liveAskQuestions(after).map((q) => q.header)).toEqual(["MARK-1"]);
+    const reparsed = parse.mock.calls.filter((call) => String(call[0]).includes("MARK-1"));
+    expect(reparsed).toHaveLength(0);
+  } finally {
+    parse.mockRestore();
+  }
 });
