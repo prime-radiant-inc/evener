@@ -2748,3 +2748,112 @@ func TestVerifyDyingReferencePin(t *testing.T) {
 		t.Fatal("an unreadable pin must abort the death, not let the reference drop silently")
 	}
 }
+
+// TestScratchRetentionRepairRepinsLostPinSoTheSweepSparesIt proves the repair
+// restores a referenced directory's lost identity pin, so the startup sweep can
+// no longer read the directory collectible and delete one the manifest still
+// references. The control pins the hazard: the same state without the repair is
+// collected.
+func TestScratchRetentionRepairRepinsLostPinSoTheSweepSparesIt(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+
+	kept, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Pin(owner, ScratchReference{Dir: kept.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(kept.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := RepairScratchRetention(owner); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if _, err := readScratchDirectoryPin(kept.Dir); err != nil {
+		t.Fatalf("repair did not re-publish the lost pin: %v", err)
+	}
+	if err := os.Chtimes(kept.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(kept.Dir); err != nil {
+		t.Fatalf("repaired referenced directory was collected: %v", err)
+	}
+
+	lost, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lost.Pin(owner, ScratchReference{Dir: lost.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lost.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(lost.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(lost.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lost.Dir); !os.IsNotExist(err) {
+		t.Fatalf("control: pinless referenced directory should have been collected: %v", err)
+	}
+}
+
+// TestScratchRetentionRepairTreatsACommittedWriteAsSuccess covers the repair's
+// post-rename failure arm: writeScratchRetention can report an error after its
+// rename already committed (the scratchManifestWriteProbe seam models the fsync
+// failure class). The repair must re-read under the lock and treat the advanced
+// revision as its own commit, so a manifest that is already healed is not
+// reported as a failed restore. The predicate differs from
+// ReleaseScratchRetention's tombstone key: here the commit is an unreleased
+// manifest at the new revision.
+func TestScratchRetentionRepairTreatsACommittedWriteAsSuccess(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Pin(owner, ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+	before, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := SetScratchManifestWriteProbeForTesting(func() error { return errors.New("post-rename fsync failed") })
+	defer restore()
+
+	manifest, written, err := RepairScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("a committed repair write was reported as a failure: %v", err)
+	}
+	if !written {
+		t.Fatal("the committed repair write did not report as written")
+	}
+	if len(manifest.References) != 0 {
+		t.Fatalf("the committed repair did not prune the missing reference: %+v", manifest.References)
+	}
+	if manifest.Revision != before.Revision+1 {
+		t.Fatalf("committed manifest revision = %d, want %d", manifest.Revision, before.Revision+1)
+	}
+}

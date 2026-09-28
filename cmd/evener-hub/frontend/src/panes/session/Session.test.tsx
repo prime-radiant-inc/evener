@@ -2965,6 +2965,10 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
     </ClientProvider>,
   );
   expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
+  // The notice tells the operator to stop the older daemon, so the control that
+  // does it must be present: the Refresh button only re-reads and can never
+  // clear an incompatible daemon on its own.
+  expect(screen.getByRole("button", { name: "Force stop…" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
