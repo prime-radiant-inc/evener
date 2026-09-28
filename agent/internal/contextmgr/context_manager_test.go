@@ -2884,15 +2884,13 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTaskWithNotes(t *testing.T) {
-	// The trim must account for a surviving working note so the whole checkpoint
-	// still fits maxChars, not just the conversation section.
-	original := "ORIGINAL TASK: " + strings.Repeat("t", 3000)
+func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {
+	// Working notes carry the lowest priority: when the conversation and notes
+	// together exceed the budget, notes are shed before the original task, which
+	// survives intact.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 300)
 	data := checkpointData{
-		conversation: []checkpointConversationEntry{
-			{Role: "user", Text: original},
-			{Role: "agent", Text: "small follow-up"},
-		},
+		conversation: []checkpointConversationEntry{{Role: "user", Text: original}},
 		workingNotes: []string{
 			"NOTE-A " + strings.Repeat("a", 500),
 			"NOTE-B " + strings.Repeat("b", 500),
@@ -2900,17 +2898,67 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTaskWithNotes(t *testing.T)
 		},
 	}
 
-	const maxChars = 1400
+	const maxChars = 1200
 	cp := formatCheckpoint(data, nil, maxChars)
 
 	if len(cp) > maxChars {
 		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
 	}
-	if !strings.Contains(cp, "ORIGINAL TASK: ") || !strings.Contains(cp, "...") {
-		t.Fatalf("the original task should survive in trimmed form:\n%s", cp)
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the original task should survive intact:\n%s", cp)
 	}
 	if !strings.Contains(cp, "NOTE-C") {
 		t.Fatalf("the newest working note should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE-A") {
+		t.Fatalf("the oldest working note should be shed first:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_SkipsWhitespaceUserEntry(t *testing.T) {
+	// A whitespace-only user turn must not become the pinned original task and
+	// redirect shedding onto the real one.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	chatter := "chatter " + strings.Repeat("c", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: "   "},
+			{Role: "user", Text: original},
+			{Role: "agent", Text: chatter},
+			{Role: "agent", Text: recent},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the real original task must survive a leading whitespace entry:\n%s", cp)
+	}
+	if strings.Contains(cp, chatter) {
+		t.Fatalf("the oldest entry after the original task should be shed:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_DropsOversizedWorkingNote(t *testing.T) {
+	// A lone working note larger than the budget is shed like any other note
+	// rather than allowed to blow the size cap: notes have the lowest priority.
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{{Role: "user", Text: "task"}},
+		workingNotes: []string{"NOTE " + strings.Repeat("n", 3000)},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "task") {
+		t.Fatalf("the conversation should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE ") {
+		t.Fatalf("the oversized lone note should be shed:\n%s", cp)
 	}
 }
 
