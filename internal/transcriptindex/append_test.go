@@ -511,9 +511,14 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			// which would silently drop a field this binary's schema doesn't
 			// declare instead of failing loudly (see the "Known gap" spec
 			// section, cross-version schema skew). currentProjection folds
-			// schemaID into the same "projection" field this case rewrites,
-			// so a schema-unaware binary rejects the mismatch too.
-			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v5:deadbeefdeadbeef"`)
+			// schemaID into the same "projection" field this case rewrites.
+			// The rewritten value is the bare projectionID with no schemaID
+			// suffix at all — what a pre-schema-fold build would have
+			// written and what the old bare "Projection != projectionID"
+			// check alone would have accepted — so this pins that the
+			// schema fold is actually load-bearing here, not merely that
+			// some mismatched string rebuilds.
+			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v5"`)
 		}},
 	}
 	for _, tc := range cases {
