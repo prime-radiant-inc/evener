@@ -17,7 +17,12 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 		Past: []appwire.SearchResult{},
 	}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
-	liveIDs := map[string]struct{}{}
+	// emittedLiveIDs holds running sessions that are returned under Live. A past
+	// index also holds a live session's meta file once it starts, so its past row
+	// is suppressed to avoid listing one session as both live and ended. Only an
+	// emitted row is suppressed: the past matcher searches fields the live filter
+	// does not, and suppressing an unmatched row would make it undiscoverable.
+	emittedLiveIDs := map[string]struct{}{}
 	if cfg.Roster != nil {
 		live := cfg.Roster.List()
 		sortLiveForSearch(live, cfg.Past)
@@ -25,11 +30,11 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 			if le.SessionID == "" {
 				continue
 			}
-			liveIDs[le.SessionID] = struct{}{}
 			title := liveTitle(le.SessionID, le, cfg.Past)
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(title), q) {
 				continue
 			}
+			emittedLiveIDs[le.SessionID] = struct{}{}
 			resp.Live = append(resp.Live, appwire.SearchResult{
 				ID:              le.SessionID,
 				Title:           title,
@@ -43,10 +48,13 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 		}
 	}
 	if cfg.Past != nil {
-		for _, e := range cfg.Past.Search(q, searchPastLimit, 0) {
-			// A live session's meta file is in the past index too; keep it out of
-			// past so search never returns the same session as both live and ended.
-			if _, live := liveIDs[e.Meta.ID]; live {
+		// Over-fetch by the suppressed rows so dropping them cannot leave past
+		// short of its limit while matching ended sessions wait behind them.
+		for _, e := range cfg.Past.Search(q, searchPastLimit+len(emittedLiveIDs), 0) {
+			if len(resp.Past) == searchPastLimit {
+				break
+			}
+			if _, live := emittedLiveIDs[e.Meta.ID]; live {
 				continue
 			}
 			resp.Past = append(resp.Past, appwire.SearchResult{

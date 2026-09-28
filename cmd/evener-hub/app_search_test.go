@@ -80,6 +80,45 @@ func TestHubSearchOmitsLiveSessionFromPast(t *testing.T) {
 	}
 }
 
+// TestHubSearchKeepsLiveSessionMatchingPastFieldsFindable guards the regression
+// a naive live-id suppression would introduce: the past matcher (hubcore.matches)
+// also searches OriginalPrompt and EnvInfo.WorkingDir, which the live filter does
+// not. A running session whose only match is its working directory must stay
+// discoverable, not vanish from both lists. Suppression applies only to rows the
+// live pass actually emitted.
+func TestHubSearchKeepsLiveSessionMatchingPastFieldsFindable(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "projects", "project-x-0123456789")
+	const liveID = "02wMz5TxvLgZ6BB3uYgqz5"
+	if err := schema.SaveSessionMeta(project, schema.SessionMeta{
+		ID:             liveID,
+		UpdatedAt:      time.Now(),
+		Name:           "Unrelated Title",
+		OriginalPrompt: "unrelated original prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive},
+	)
+
+	resp := hubSearch(hubcore.WebConfig{Roster: roster, Past: idx}, appwire.SearchParams{Query: "alpha"})
+	found := 0
+	for _, r := range append(append([]appwire.SearchResult{}, resp.Live...), resp.Past...) {
+		if r.ID == liveID {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("live=%+v past=%+v: session matching on its working dir found %d times, want exactly 1", resp.Live, resp.Past, found)
+	}
+}
+
 // TestHubSearchLiveResultCarriesApprovalPending pins #2567's wire contract: a
 // live session blocked on a sandbox approval surfaces in search the same way
 // it surfaces in navigation, computed from the same LiveEntry.PendingEscalation
