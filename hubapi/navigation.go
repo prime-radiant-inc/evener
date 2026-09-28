@@ -318,7 +318,13 @@ type NavigationSessionSummary struct {
 	// from its daemon and an ended one's from its meta; subagent rows carry
 	// none.
 	LastMessage string `json:"last_message,omitempty"`
-	Dormant     bool   `json:"dormant,omitempty"`
+	// ModelName is the display name of the model the session runs (S17), for
+	// the row's last line when a client shows models on rows: the name the
+	// hub's model/list gives the same model, so a row and the model picker
+	// agree. A live session's is its current model, which follows a switch;
+	// an ended one's is its meta's; subagent rows carry none.
+	ModelName string `json:"model_name,omitempty"`
+	Dormant   bool   `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.
