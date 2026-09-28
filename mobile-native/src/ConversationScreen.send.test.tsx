@@ -30,7 +30,6 @@ vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {
 		...mock,
-		AccessibilityInfo: { announceForAccessibility: vi.fn() },
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
