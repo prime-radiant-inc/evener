@@ -1263,6 +1263,87 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	}
 }
 
+// TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring pins the
+// narrowed skip: an open compensation whose file already carries no intent has
+// passed its commit point, so the staged marker must be finalized this boot
+// (the pinned teardown re-runs) instead of being deferred behind a record the
+// pipeline is about to clear without restoring.
+func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture, _, _ := newPipelineRemovalFixture(t, entry, true)
+	m := fixture.manager(t)
+	var staged HostStagedReceipt
+	m.testOnlyAfterStage = func(name string) {
+		if marker, ok := m.cfg.store.stagedSnapshot()[name]; ok {
+			staged = marker
+		}
+	}
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+		t.Fatalf("Remove(keep): %v", err)
+	}
+	m.testOnlyAfterStage = nil
+	if staged.Key == "" {
+		t.Fatal("the staged marker was not captured")
+	}
+	// The crash state: the commit stands (the purge landed, the commit's
+	// follow-up write cleared the intent), the staged marker is still there (the
+	// crash landed before ClearCompensation/finalizeReceipt), and the record is
+	// open in the hubtoml phase.
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{
+		marker: &pendingHostMarker{Name: "keep", Marker: staged},
+	}); err != nil {
+		t.Fatalf("re-install the staged marker: %v", err)
+	}
+	token := pipelineToken(t, fixture.store, "keep", 2)
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: hubTOMLStashPath(fixture.configPath, "crash-key"), Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
+		t.Fatalf("PurgeCompensated: %v", err)
+	}
+	t.Logf("DEBUG store staged after re-install: %+v", m.cfg.store.stagedSnapshot())
+	cfgDebug, _ := readPipelineConfig(t, fixture.configPath)
+	t.Logf("DEBUG file staged after re-install: %+v", cfgDebug.StagedReceipts)
+	// The boot loads the committed file's live set: the removed host is not
+	// registered, so the recorded teardown is a no-op that succeeds.
+	registry, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	second := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry:   registry,
+		RemoteHostOpsStore:   fixture.store,
+		RemoteHostConfigPath: fixture.configPath,
+	}, fixture.configPath, registry, nil)
+	_ = second
+	if _, open := fixture.store.Compensation("keep"); open {
+		t.Fatal("the compensation did not clear")
+	}
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, carried := cfg.StagedReceipts["keep"]; carried {
+		t.Fatal("the staged marker survived a boot whose compensation cleared without restoring")
+	}
+	found := false
+	for key, receipt := range cfg.MutationReceipts {
+		if strings.Contains(key, "/keep/remove/") {
+			found = true
+			if receipt.Outcome != hostReceiptOutcomeCommitted || !receipt.BootRecovered {
+				t.Fatalf("receipt %q = %+v, want the committed boot-recovered arm", key, receipt)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the boot finalized no receipt for the committed removal")
+	}
+	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "keep"); live {
+		t.Fatal("the commit-passed record's compensation restored the removed host")
+	}
+}
+
 // TestBootCompensationOwnsTheStagedMarker pins H1: a name with an open
 // compensation never has its staged marker finalized as committed. The crash
 // boot's registry carries the host, so an erroneous finalization's pinned

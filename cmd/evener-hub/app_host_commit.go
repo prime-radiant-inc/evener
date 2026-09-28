@@ -553,7 +553,14 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	entries := m.cfg.store.snapshot()
 	claimed := marker
 	claimed.FinalizingToken = mintFinalizingToken()
-	if err := m.persistHosts(entries, entries, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
+	// The name this finalization owns: the write's records for it must win over
+	// the file's older copies. A removal's name is not in the live set, so
+	// without this the preservation rule would ride the file's older receipt
+	// (the staged provisional one) back over the finalized receipt this write
+	// carries — the marker would drop while its finalized outcome, remnant, or
+	// `bootRecovered` marker never rendered.
+	known := ownedEntrySet(entries, name)
+	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
 		m.cfg.mu.Unlock()
 		return nil, err
 	}
@@ -626,10 +633,22 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 		receipt.RemnantID = ""
 	}
 	entries = m.cfg.store.snapshot()
-	if err := m.persistHosts(entries, entries, change); err != nil {
+	if err := m.persistHosts(entries, known, change); err != nil {
 		return nil, err
 	}
 	return &receipt, nil
+}
+
+// ownedEntrySet returns entries plus a name-only placeholder for name, so the
+// writer's ownership rules treat name as this write's to change. Callers pass
+// it as `known` when the write must carry a removed (or otherwise non-live)
+// name's records authoritatively; the placeholder never becomes a live entry —
+// the write's `entries` slice is what renders.
+func ownedEntrySet(entries []hostreg.Host, name string) []hostreg.Host {
+	out := make([]hostreg.Host, 0, len(entries)+1)
+	out = append(out, entries...)
+	out = append(out, hostreg.Host{Name: name})
+	return out
 }
 
 // hostMutationKindForMarker recovers the mutation kind a marker belongs to from

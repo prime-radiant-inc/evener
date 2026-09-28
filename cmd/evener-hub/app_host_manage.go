@@ -1588,15 +1588,20 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		if m.cfg.ops != nil {
 			if _, open := m.cfg.ops.Compensation(name); open {
-				// §9's compensation owns this name's convergence: the commit
-				// crashed mid-flight, and finalizing the marker as committed
-				// here would run its pinned teardown and write a committed
-				// receipt for a commit the compensation is about to undo. The
-				// pipeline below resolves the record; the marker goes with the
-				// restore when the compensation converges (the restored bytes
-				// carry no marker), and stays staged while the record is open.
-				m.logf("boot staged-receipt marker for %q left staged: an open compensation owns its convergence", name)
-				continue
+				// §9's compensation owns this name's convergence only while the
+				// commit path has not passed its commit point, and the file still
+				// carrying a live intent for the name is exactly that state: the
+				// compensation may restore, and finalizing the marker as
+				// committed here would run its pinned teardown and write a
+				// committed receipt for a commit the compensation is about to
+				// undo. An intent already cleared means the commit stands, so the
+				// marker finalizes like any other — never deferred behind a
+				// record the pipeline below is about to clear without restoring.
+				if _, intentLive := fileRecords.PendingStoreSync[name]; intentLive {
+					m.logf("boot staged-receipt marker for %q left staged: an open compensation owns its convergence", name)
+					continue
+				}
+				m.logf("boot staged-receipt marker for %q finalized: its compensation's intent is already cleared, so the commit stands", name)
 			}
 		}
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
