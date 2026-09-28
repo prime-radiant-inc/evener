@@ -110,26 +110,37 @@ function endListRequest(): void {
   hostsStore.setState((previous) => ({ reading: Math.max(0, previous.reading - 1) }));
 }
 
-// The client the last revision was derived from. A REPLACEMENT (both sides
-// non-null and different) is a different hub, so every snapshot read from the
-// old one is invalid: advance the revision. A disconnect or reconnect of the
-// same client is not a replacement - the rows it read still describe it - so
-// they survive, as they always have.
+// The client the last revision was derived from, and the last NON-NULL one seen.
+// A REPLACEMENT - a different client than the last non-null one, whether wired
+// directly or after the store was momentarily cleared - is a different hub, so
+// every snapshot read from the old one is invalid and its registry's publish
+// says nothing about the new one. A disconnect (client -> null) or a reconnect of
+// the SAME client is not a replacement - the rows it read still describe it - so
+// they survive, as they always have; only a different non-null client is one.
 let lastClient = connectionStore.getState().client;
+let lastNonNullClient: AppwireClientLike | null = lastClient;
 connectionStore.subscribe((state) => {
   if (state.client === lastClient) return;
-  const replaced = lastClient !== null && state.client !== null;
   lastClient = state.client;
+  if (state.client === null) return;
+  const replaced = lastNonNullClient !== null && state.client !== lastNonNullClient;
+  lastNonNullClient = state.client;
   if (replaced) {
-    // A different hub: every snapshot read from the old client is invalid, and
-    // the new connection has not published anything yet. Advance the revision
-    // AND clear the published marker, so a listing read under the new connection
-    // is not accepted as verified before its registry has answered (see
-    // stores/credentials.ts's useHostInstances). publishReady lets this
-    // connection's first answer publish - and advance the revision - even when
-    // it is byte-identical to the old connection's, by treating a null
-    // publishedRevision as "nothing published by this connection yet".
-    hostsStore.setState((previous) => ({ revision: previous.revision + 1, publishedRevision: null }));
+    // A different hub whose registry has answered nothing. Advance the revision,
+    // clear the published marker, and reset the load to "loading": the new
+    // connection's registry is unconsulted, so a remote listing is re-read on
+    // this connection alone (the spawn-only path, stores/credentials.ts's
+    // useHostInstances) rather than held on "loading" forever when no surface
+    // re-reads the registry, and no arbitrary hostsStore write can republish the
+    // old rows under the new revision. publishReady lets this connection's first
+    // answer publish - and advance the revision - even when it is byte-identical
+    // to the old connection's, by treating a null publishedRevision as "nothing
+    // published by this connection yet".
+    hostsStore.setState((previous) => ({
+      revision: previous.revision + 1,
+      publishedRevision: null,
+      load: { phase: "loading" },
+    }));
   }
 });
 
@@ -728,6 +739,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     latestGeneration = 0;
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
+    lastNonNullClient = lastClient;
     lastPublished = null;
     set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0, attachEpochs: {} });
   },

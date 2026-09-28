@@ -2817,9 +2817,8 @@ test("a registry read in flight across a client swap cannot publish the old hub'
 
 // A replaced client is a different hub, so the previous connection's published
 // marker must not carry over: a listing read under the new connection before its
-// registry has answered must not be accepted as verified. Without clearing the
-// marker, a re-read stamped off the new connection's revision passes
-// `readPublished` for a registry that has published nothing.
+// registry has answered must not be stamped as read under a published snapshot.
+// On main the marker leaked, so that re-read passed for verified.
 test("a replaced client does not carry the previous connection's published marker", async () => {
   const a = connectFakeClient();
   serveRemoteList(a, REMOTE_LIST);
@@ -2828,52 +2827,49 @@ test("a replaced client does not carry the previous connection's published marke
 
   const { result } = renderHook(() => useHostInstances("buildbox"));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
-  expect(result.current.read).toBe(true);
-  expect(remoteReads(a)).toBe(1);
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").readPublished).toBe(true);
 
-  // A connection-banner retry wires a fresh client in; the new connection's
-  // registry has not answered, so its listing is not verified yet.
+  // A connection-banner retry wires a fresh client in. The new connection's
+  // registry has answered nothing, so the listing is re-read on this connection
+  // alone and is NOT stamped as read under a published snapshot.
   let b!: FakeClient;
   await act(async () => {
     b = connectFakeClient();
   });
   serveRemoteList(b, REMOTE_LIST);
-
-  expect(result.current.read).toBe(false);
-  expect(result.current.instances).toEqual([]);
-  expect(remoteReads(b)).toBe(0);
+  await waitFor(() => expect(remoteReads(b)).toBe(1));
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").readPublished).toBe(false);
 
   // The new connection's registry publishes the SAME registration: it is that
   // connection's first answer, so it advances the revision, and the listing is
-  // re-read and becomes verified.
+  // re-read under a real publish.
   b.on("evener/host/list", () => ({ hosts: [registryRow({ name: "buildbox" })] }));
   await act(async () => {
     await hostsStore.getState().fetch();
   });
-  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  await waitFor(() => expect(hostPartition(hostInstancesStore.getState(), "buildbox").readPublished).toBe(true));
   expect(result.current.read).toBe(true);
-  expect(remoteReads(b)).toBe(1);
 
   // Anti-churn intact: another identical snapshot under the same connection
   // re-reads nothing.
+  const before = remoteReads(b);
   await act(async () => {
     await hostsStore.getState().fetch();
   });
-  expect(remoteReads(b)).toBe(1);
+  expect(remoteReads(b)).toBe(before);
 });
 
 // The new connection's first answer can arrive on a QUIET read (the section's
 // poll calls refresh, which never flips the load to "loading"). A byte-identical
-// snapshot must still publish then, or publishedRevision stays null and every
-// remote listing is held on "loading" forever.
-test("a client swap whose new registry answers on a quiet refresh resumes the listing", async () => {
+// snapshot must still publish then, or publishedRevision stays null and the
+// listing is never stamped as read under this connection's registry.
+test("a client swap whose new registry answers on a quiet refresh publishes and re-reads", async () => {
   const a = connectFakeClient();
   serveRemoteList(a, REMOTE_LIST);
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
 
   const { result } = renderHook(() => useHostInstances("buildbox"));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
-  expect(result.current.read).toBe(true);
 
   // Replace the client; the new connection's registry answers the SAME
   // registration, through refresh alone.
@@ -2887,12 +2883,11 @@ test("a client swap whose new registry answers on a quiet refresh resumes the li
     await hostsStore.getState().refresh();
   });
 
-  // The quiet answer is this connection's first publish, so the revision
-  // advances and the remote listing re-reads and verifies.
+  // The quiet, byte-identical answer is this connection's first publish, so the
+  // revision advances and the listing re-reads under a real publish.
   expect(hostsStore.getState().publishedRevision).not.toBeNull();
-  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  await waitFor(() => expect(hostPartition(hostInstancesStore.getState(), "buildbox").readPublished).toBe(true));
   expect(result.current.read).toBe(true);
-  expect(remoteReads(b)).toBe(1);
 });
 
 // The rule's cost ceiling: an unchanged snapshot advances no revision, so the

@@ -41,6 +41,42 @@ beforeEach(() => {
   hostsStore.getState().resetForTests();
 });
 
+describe("client replacement", () => {
+  test("a different client wired in after the store was cleared clears the published marker", async () => {
+    const a = connectFakeClient();
+    a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+    const revision = hostsStore.getState().revision;
+
+    // The store is cleared (a disconnect), then a DIFFERENT client is wired in.
+    // That is a replacement even though the two clients were never both present:
+    // the new hub's registry has published nothing.
+    connectionStore.setState({ client: null });
+    const b = connectFakeClient();
+    b.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+
+    expect(hostsStore.getState().publishedRevision).toBeNull();
+    expect(hostsStore.getState().load.phase).toBe("loading");
+    expect(hostsStore.getState().revision).toBeGreaterThan(revision);
+  });
+
+  test("a reconnect of the same client does not clear the published marker", async () => {
+    const a = connectFakeClient();
+    a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+    const revision = hostsStore.getState().revision;
+
+    // Same client object, disconnected and wired back: not a replacement, so the
+    // rows it read still describe it and nothing is invalidated.
+    connectionStore.setState({ client: null });
+    connectionStore.getState().connect(a);
+
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+    expect(hostsStore.getState().revision).toBe(revision);
+  });
+});
+
 describe("refresh", () => {
   test("refresh without a connected client does not wedge the in-flight gate", async () => {
     // The quiet refresh swallows the no-client refusal (rows keep their last
