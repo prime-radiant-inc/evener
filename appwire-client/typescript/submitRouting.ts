@@ -148,7 +148,7 @@ export function sessionControls(
   queueDepth: number,
 ): SessionControls {
   const active = isTurnActive(statusType);
-  const parked = isSessionResting(statusType) && queueDepth > 0;
+  const parked = isQueueParked(statusType, queueDepth);
   const controls: SessionControls = {
     stop: active && capabilities.interrupt === true,
     steer: canSteer(statusType, capabilities),
@@ -175,6 +175,14 @@ export function isTurnActive(statusType: string): boolean {
   return statusType === "active";
 }
 
+// A Stop parks the queue: the session rests with messages still queued, which
+// an unparked queue never does (a queue behind a running turn or a pending
+// question is waiting, not parked). The one statement of that rule, for the
+// controls here and for surfaces that show a parked queue.
+export function isQueueParked(statusType: string, queueDepth: number): boolean {
+  return isSessionResting(statusType) && queueDepth > 0;
+}
+
 export function canSteer(statusType: string, capabilities: Partial<Pick<ThreadCapabilities, "steer">>): boolean {
   return isTurnActive(statusType) && capabilities.steer === true;
 }
@@ -185,5 +193,5 @@ export function canDrainQueue(
   queueDepth: number,
 ): boolean {
   if (capabilities.steer !== true) return false;
-  return isTurnActive(statusType) || (isSessionResting(statusType) && queueDepth > 0);
+  return isTurnActive(statusType) || isQueueParked(statusType, queueDepth);
 }
