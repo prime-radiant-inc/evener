@@ -832,3 +832,42 @@ func TestOpenJobOutputFileRefusesSymlinkedBucketRoot(t *testing.T) {
 		t.Fatalf("openJobOutputFile error = %v, want symlinked bucket refusal", err)
 	}
 }
+
+// TestOpenJobOutputFileRefusesSymlinkedProjectsRoot proves the projects-dir
+// anchor is no-followed: a projects directory swapped for a symlink after the
+// locate is refused at the root open (O_NOFOLLOW), not followed. Without the
+// no-follow root open this path would resolve through the symlink and read the
+// attacker tree's output.
+func TestOpenJobOutputFileRefusesSymlinkedProjectsRoot(t *testing.T) {
+	t.Parallel()
+	// The attacker tree lives under a real projects/ dir in a foreign home; the
+	// layout's projects/ dir is a symlink to it.
+	attackerProjects := filepath.Join(t.TempDir(), "projects")
+	attacker := filepath.Join(attackerProjects, localJobCurrentProject)
+	attackerOutput := filepath.Join(attacker, "sessions", "owner", "jobs", "output.log")
+	if err := os.MkdirAll(filepath.Dir(attackerOutput), 0o700); err != nil {
+		t.Fatalf("create attacker output dir: %v", err)
+	}
+	if err := os.WriteFile(attackerOutput, []byte("must not read\n"), 0o600); err != nil {
+		t.Fatalf("write attacker output: %v", err)
+	}
+
+	stateHome := t.TempDir()
+	projectsDir := filepath.Join(stateHome, "evener", "projects")
+	if err := os.MkdirAll(filepath.Dir(projectsDir), 0o700); err != nil {
+		t.Fatalf("create evener dir: %v", err)
+	}
+	if err := os.Symlink(attackerProjects, projectsDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	symlinkedOutput := filepath.Join(projectsDir, localJobCurrentProject,
+		"sessions", "owner", "jobs", "output.log")
+
+	f, err := openJobOutputFile(symlinkedOutput)
+	if f != nil {
+		_ = f.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("openJobOutputFile error = %v, want symlinked projects-root refusal", err)
+	}
+}

@@ -51,10 +51,36 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 		return nil, fmt.Errorf("open %q: empty relative path", path)
 	}
 
-	// Open root as a directory descriptor.
-	rootFd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	// Open root as a directory descriptor. O_NOFOLLOW refuses a root whose own
+	// final component is a symlink, so the walk's anchor cannot itself be a
+	// symlink. Ancestors above the root stay followable by design — O_NOFOLLOW
+	// only guards the final component, so a symlinked state home or runtime
+	// path above the anchor (macOS /var → /private/var, a symlinked $HOME) does
+	// not break reads. Without this, a caller that anchors at an intermediate
+	// directory (for example the projects/ dir) would follow a symlink swapped
+	// there after validation, reopening the intermediate-component TOCTOU this
+	// walk exists to close.
+	//
+	// The open uses O_NOFOLLOW without O_DIRECTORY: O_NOFOLLOW alone reports a
+	// symlink as ELOOP (which the guard below turns into a legible "root is a
+	// symlink" refusal), while O_NOFOLLOW|O_DIRECTORY reports ENOTDIR, which is
+	// ambiguous with a genuine non-directory. O_NONBLOCK keeps a FIFO root from
+	// blocking; the fstat below then confirms a directory either way.
+	rootFd, err := unix.Open(root, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("open %q: root %q is a symlink, refusing to follow it", path, root)
+		}
 		return nil, &os.PathError{Op: "open", Path: root, Err: err}
+	}
+	var rootStat unix.Stat_t
+	if err := unix.Fstat(rootFd, &rootStat); err != nil {
+		_ = unix.Close(rootFd)
+		return nil, &os.PathError{Op: "fstat", Path: root, Err: err}
+	}
+	if rootStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = unix.Close(rootFd)
+		return nil, fmt.Errorf("open %q: root %q is not a directory", path, root)
 	}
 
 	// Walk intermediate components (all but the last) as directories. We open

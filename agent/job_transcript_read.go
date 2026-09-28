@@ -41,8 +41,9 @@ var lstatJobOutputFile = os.Lstat
 // rooting the walk above projects/ only re-walks ancestors the read does not
 // need. Stopping at projects/ keeps the bucket a walked component, so the
 // descriptor walk still refuses a bucket — or a sessions/, session, or jobs
-// directory — swapped for a symlink after the locate, while an ancestor above
-// the anchored root stays followable by design.
+// directory — swapped for a symlink after the locate, and the root open itself
+// refuses a symlinked projects/ (O_NOFOLLOW), while an ancestor above the
+// anchored root stays followable by design.
 func jobOutputOpenRoot(path string) string {
 	candidate := filepath.Dir(filepath.Clean(path))
 	for {
@@ -342,7 +343,8 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
 	// to jobstore. For an in-layout output the descriptor walk is anchored at
-	// the projects directory, so the bucket and the directories below it
+	// the projects directory (its own final component opened with O_NOFOLLOW),
+	// so the projects directory, the bucket, and the directories below it
 	// (sessions/, the session dir, jobs/) replaced by a symlink after
 	// this locator's pre-walk is refused at open time. The frozen path-only read
 	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf

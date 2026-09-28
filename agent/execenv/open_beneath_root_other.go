@@ -13,7 +13,14 @@ import (
 // variant), and the descriptor is fstat'd regular before the caller reads a
 // byte. Intermediate-component symlink protection relies on the pre-walk
 // (symlinkErrorDeep) which is the best available guarantee on this platform.
+// The root's own final component is still refused when it is a symlink, so a
+// caller anchoring at an intermediate directory cannot follow a swapped root.
 func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
+	if root != "" {
+		if info, lerr := os.Lstat(root); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("open %q: root %q is a symlink, refusing to follow it", path, root)
+		}
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

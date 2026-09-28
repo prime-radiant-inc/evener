@@ -56,6 +56,40 @@ func TestOpenRegularBeneathRoot_RefusesSymlinkedIntermediateDir(t *testing.T) {
 	}
 }
 
+// TestOpenRegularBeneathRoot_RefusesSymlinkedRoot asserts the walk's anchor
+// itself is no-followed: the root open carries O_NOFOLLOW, so a root whose own
+// final component is a symlink is refused (ELOOP) rather than followed. This is
+// what lets a caller anchor at an intermediate directory such as projects/
+// without reopening the intermediate-component TOCTOU window. Ancestors above
+// the root stay followable by design; only the root's final component is
+// guarded.
+func TestOpenRegularBeneathRoot_RefusesSymlinkedRoot(t *testing.T) {
+	t.Parallel()
+	realRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realRoot, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realRoot, "sessions", "transcript.jsonl"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The root path itself is a symlink to the real root.
+	symlinkRoot := filepath.Join(t.TempDir(), "root")
+	if err := os.Symlink(realRoot, symlinkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	path := filepath.Join(symlinkRoot, "sessions", "transcript.jsonl")
+
+	f, err := OpenRegularBeneathRoot(path, symlinkRoot)
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("OpenRegularBeneathRoot followed a symlinked root; should refuse")
+	}
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlinked-root refusal, got: %v", err)
+	}
+}
+
 // TestOpenRegularBeneathRoot_RefusesSymlinkedLeaf asserts the leaf-level
 // O_NOFOLLOW guarantee also holds when root is provided.
 func TestOpenRegularBeneathRoot_RefusesSymlinkedLeaf(t *testing.T) {
