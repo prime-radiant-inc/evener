@@ -37,7 +37,9 @@ func extractRunProse(stateDir string) (runProse, error) {
 	}
 	var p runProse
 	err = walkTranscripts(stateDir, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull}, func(tr doctor.TranscriptResult) error {
+		var echoes echoSuppressor
 		for _, turn := range tr.Turns {
+			turnSeq := echoes.observe(turn.Kind, turn.Text)
 			if turn.Kind != string(schema.TurnAssistant) {
 				continue
 			}
@@ -48,8 +50,16 @@ func extractRunProse(stateDir string) (runProse, error) {
 				if !isMessageToUser(call) {
 					continue
 				}
+				// A message that echoes assistant text already shown within
+				// this same logical turn is one evener itself never rendered
+				// a second time; counting it here would inflate the "all"
+				// channel with a repetition the user never saw.
+				msg := shownMessage(call.Arguments)
+				if msg != "" && echoes.echoes(turnSeq, msg) {
+					continue
+				}
 				p.All = append(p.All, resultMessages(call.Arguments)...)
-				if msg := shownMessage(call.Arguments); msg != "" && tr.SessionID == rootID {
+				if msg != "" && tr.SessionID == rootID {
 					p.ToUser = append(p.ToUser, msg)
 				}
 			}
