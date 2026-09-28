@@ -17,11 +17,29 @@ package hostops
 // can never move it before the cursor. The bounds map pins every host in the
 // query at mint, not just the hosts on the page: a host holding no records at
 // all contributes the literal "absent" marker, and every other host its
-// current triple. A continuation whose envelope version is not 2, whose pinned
-// quarantine epoch no longer equals the live one, or whose stored bounds entry
-// no longer matches the host's current boundary is a typed stale-entry re-list
-// refusal — never a mixed page (§8 "Refusals"). A host created after the mint
-// has no stored triple to validate and is skipped on later pages.
+// current boundary triple — the staleness reference a continuation validates
+// by full equality, so a generation OR presence advance between pages refuses
+// (§8 "Refusals"; note `update` advances the generation without advancing the
+// presence epoch, so presence alone would not be enough). A continuation whose
+// envelope version is not 2, whose pinned quarantine epoch no longer equals
+// the live one, whose stored entry no longer matches the host's current
+// boundary, or which names an unknown host is a typed stale-entry re-list
+// refusal — never a mixed page. A host created after the mint has no stored
+// triple to validate and is skipped on later pages.
+//
+// The pair a host-pinned page was actually served under is recovered on the
+// continuation from the row `pos` names: that row was listed by the page, so it
+// carries the listed pair. The continuation pins its window to that pair
+// whether the request repeats it or omits it — "An omitted filter on a later
+// page reads as the pinned-cursor window, never as a fresh unpinned query" — and
+// a repeated pair that is not it is refused. That is how a page under a
+// superseded incarnation stays pageable without the envelope carrying a second
+// triple, while the stored entry still detects every boundary advance. An
+// unfiltered page lists each host's current pair (§10: "generation ... omitted:
+// the current generation"), so the same rule refuses a cursor minted for one
+// pair presented as an unfiltered query; history stays reachable through the
+// host-pinned pair filter and the `id` detail filter. A `pos` row the store no
+// longer holds (S6 compaction's territory) is a stale re-list here.
 //
 // What this file deliberately does not own, and the named seams its read path
 // leaves:
@@ -264,14 +282,55 @@ func EncodeCursor(envelope CursorEnvelope) (string, error) {
 	return cursor, nil
 }
 
+// cursorEnvelopeKeys is the exact key set §8's envelope declares, for the
+// strict decode: a payload with any other key, a key named twice, or a missing
+// key is not an envelope this codec minted.
+var cursorEnvelopeKeys = map[string]map[string]struct{}{
+	"": {
+		"v":               {},
+		"pos":             {},
+		"compactSeq":      {},
+		"bounds":          {},
+		"quarantineEpoch": {},
+	},
+}
+
 // DecodeCursor reads §8's opaque cursor. A payload that is not base64url, not
-// JSON, or not a structurally valid envelope of this codec is
-// ErrInvalidOperationsQuery; an envelope whose version is not 2 is
-// *CursorStaleError — §8's typed re-list refusal, never a best-effort decode.
+// JSON, or not exactly a structurally valid envelope of this codec — over the
+// encoded cap, a key outside the literal, a key named twice, a missing key, a
+// malformed bounds entry or host key — is ErrInvalidOperationsQuery; an
+// envelope whose version is not 2 is *CursorStaleError — §8's typed re-list
+// refusal, never a best-effort decode.
 func DecodeCursor(cursor string) (CursorEnvelope, error) {
+	if len(cursor) > MaxCursorBytes {
+		// The cap is checked before any decode: an over-cap value is no cursor
+		// this codec minted, and decoding an arbitrarily large one first would
+		// be exactly the best-effort path §8 refuses.
+		return CursorEnvelope{}, fmt.Errorf("%w: the cursor is %d bytes, over the %d-byte encoded cap",
+			ErrInvalidOperationsQuery, len(cursor), MaxCursorBytes)
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
 		return CursorEnvelope{}, fmt.Errorf("%w: the cursor is not base64url: %w", ErrInvalidOperationsQuery, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return CursorEnvelope{}, fmt.Errorf("%w: the cursor payload is not the envelope: %w", ErrInvalidOperationsQuery, err)
+	}
+	for key := range fields {
+		if _, ok := cursorEnvelopeKeys[""][key]; !ok {
+			return CursorEnvelope{}, fmt.Errorf("%w: the cursor envelope carries the key %q, which is not one this codec writes",
+				ErrInvalidOperationsQuery, key)
+		}
+	}
+	for key := range cursorEnvelopeKeys[""] {
+		if _, ok := fields[key]; !ok {
+			return CursorEnvelope{}, fmt.Errorf("%w: the cursor envelope carries no %q", ErrInvalidOperationsQuery, key)
+		}
+	}
+	if err := validateKeys(raw, cursorEnvelopeKeys); err != nil {
+		// The walk catches a key named twice, which the map above collapses.
+		return CursorEnvelope{}, fmt.Errorf("%w: the cursor envelope: %w", ErrInvalidOperationsQuery, err)
 	}
 	var decoded cursorEnvelopeJSON
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -285,6 +344,11 @@ func DecodeCursor(cursor string) (CursorEnvelope, error) {
 	}
 	if decoded.Bounds == nil {
 		return CursorEnvelope{}, fmt.Errorf("%w: the cursor carries no bounds map", ErrInvalidOperationsQuery)
+	}
+	for host := range decoded.Bounds {
+		if err := validateBoundaryName(host); err != nil {
+			return CursorEnvelope{}, fmt.Errorf("%w: cursor bounds: %w", ErrInvalidOperationsQuery, err)
+		}
 	}
 	if _, err := parseAllocatorID(decoded.Pos); err != nil {
 		return CursorEnvelope{}, fmt.Errorf("%w: cursor position %q: %w", ErrInvalidOperationsQuery, decoded.Pos, err)
@@ -436,6 +500,16 @@ func validateOperationsQuery(q OperationsQuery) error {
 // readOperationsLocked is ReadOperations' body; the caller holds the store
 // mutex across the whole read, so the page and the cursor it mints describe one
 // record set. live carries the store-wide epoch pair the mint pins.
+//
+// The cursor's bounds entry for a host is the host's CURRENT boundary triple at
+// mint (§8: "its current (generation, incarnation id, presenceEpoch)
+// boundary"), or the "absent" marker when the host held no records. That entry
+// is the staleness reference: a continuation requires full triple equality with
+// the host's current entry, so any generation or presence advance between pages
+// refuses. The pair a host-pinned page was actually served under is not lost,
+// though: the row the cursor's position names — the last row the page listed —
+// carries it, so the continuation recovers the pinned-cursor window from `pos`
+// even when the listed pair is a superseded incarnation.
 func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) (OperationsPage, error) {
 	limit := q.Limit
 	if limit == 0 {
@@ -443,6 +517,14 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	}
 	if limit > MaxOperationsLimit {
 		limit = MaxOperationsLimit
+	}
+
+	// The current entry of every host the store knows, computed once: the
+	// continuation validation and the unfiltered host universe both read it, so
+	// no pass scans the record set per host.
+	current, err := currentCursorBoundsLocked(state)
+	if err != nil {
+		return OperationsPage{}, err
 	}
 
 	// The presented cursor: decode, then the two store-wide checks — the pinned
@@ -469,16 +551,20 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	}
 
 	// §8's bounds validation: every host in the cursor's map must still match
-	// the host's current entry, triple equality included, so a generation or
-	// presence advance between pages rejects the continuation instead of
-	// serving the pinned incarnation past the boundary change.
+	// the host's current entry. A host the store has never seen is a refusal
+	// too: a forged "absent" entry must not be echoed as authoritative, and a
+	// host whose boundary the store no longer holds has changed under the
+	// cursor.
 	if continuing {
 		for host, stored := range window.Bounds {
-			current, err := cursorBoundLocked(state, host)
-			if err != nil {
-				return OperationsPage{}, err
+			currentEntry, known := current[host]
+			if !known {
+				return OperationsPage{}, &CursorStaleError{
+					Reason:  fmt.Sprintf("host %q is not a host this store knows; re-list from the first page", host),
+					Binding: StaleBindingGeneration,
+				}
 			}
-			if current != stored {
+			if currentEntry != stored {
 				return OperationsPage{}, &CursorStaleError{
 					Reason:  fmt.Sprintf("host %q's stored boundary no longer matches its current boundary; re-list from the first page", host),
 					Binding: StaleBindingGeneration,
@@ -489,15 +575,21 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 
 	page := OperationsPage{}
 	var (
-		pinned       = q.Host != ""
-		pageHosts    map[string]bool
-		mintBounds   map[string]CursorBound
-		filterGen    uint64
-		filterInc    string
-		pairFiltered bool
+		pinned         = q.Host != ""
+		pageHosts      = map[string]bool{}
+		windowPairs    = map[string]OperationPair{}
+		pinnedPair     OperationPair
+		havePinnedPair bool
+		mintBounds     map[string]CursorBound
 	)
+	// The `id` detail filter addresses one record directly (§10's "detail
+	// filter ... resolves through it directly"): it is not a window, so the
+	// pair window stands down for it. A named pair is an explicit window and
+	// keeps its filter.
+	detailOnly := q.ID != "" && q.Generation == nil
+
 	if pinned {
-		// A host-pinned continuation must stay inside the window it pinned.
+		pageHosts[q.Host] = true
 		if continuing {
 			if _, ok := window.Bounds[q.Host]; !ok {
 				return OperationsPage{}, &CursorStaleError{
@@ -505,52 +597,100 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 					Binding: StaleBindingGeneration,
 				}
 			}
-		}
-		generation, incarnation, filtered, err := resolvePinnedWindow(state, q, window, continuing)
-		if err != nil {
-			return OperationsPage{}, err
-		}
-		filterGen, filterInc, pairFiltered = generation, incarnation, filtered
-		pageHosts = map[string]bool{q.Host: true}
-		echoGen, echoInc := generation, incarnation
-		if continuing && q.Generation == nil {
-			// An omitted filter on a later page reads as the pinned-cursor
-			// window: the stored entry's pair, never a fresh unpinned query.
-			if stored := window.Bounds[q.Host]; !stored.Absent {
-				echoGen, echoInc = stored.Boundary.Generation, stored.Boundary.IncarnationID
+			// The pinned-cursor window: the pair of the row the cursor resumes
+			// after — the last row the page listed. Never the host's current
+			// pair, so an omitted filter reads as the pinned window (§8).
+			anchor, ok := recordAtLocked(state, window.Position)
+			if !ok {
+				// S6 seam: once compaction exists, a row at or before `pos`
+				// removed since mint is §8's `cursor-invalidated` arm; until
+				// then a missing row is a stale re-list.
+				return OperationsPage{}, &CursorStaleError{
+					Reason:  fmt.Sprintf("the row this cursor resumes after (%s) is not in the store; re-list from the first page", window.Position),
+					Binding: StaleBindingGeneration,
+				}
 			}
+			if anchor.Host != q.Host {
+				return OperationsPage{}, &CursorStaleError{
+					Reason: fmt.Sprintf("the row this cursor resumes after belongs to host %q, not %q; re-list from the first page",
+						anchor.Host, q.Host),
+					Binding: StaleBindingGeneration,
+				}
+			}
+			pinnedPair = OperationPair{Generation: anchor.Generation, IncarnationID: anchor.IncarnationID}
+			havePinnedPair = true
+			if q.Generation != nil && (*q.Generation != pinnedPair.Generation ||
+				(q.IncarnationID != "" && q.IncarnationID != pinnedPair.IncarnationID)) {
+				return OperationsPage{}, &CursorStaleError{
+					Reason: fmt.Sprintf("the cursor pinned host %q at generation %d/%s, not %d/%s; re-list from the first page",
+						q.Host, pinnedPair.Generation, pinnedPair.IncarnationID, *q.Generation, q.IncarnationID),
+					Binding: StaleBindingGeneration,
+				}
+			}
+		} else {
+			pinnedPair, havePinnedPair = resolvePinnedPair(state, q)
 		}
-		page.Generation = &echoGen
-		page.IncarnationID = echoInc
-		// The cursor's bounds still pin the host even though the response
-		// carries the top-level pair instead of a hostBoundaries map.
-		bound, err := cursorBoundLocked(state, q.Host)
-		if err != nil {
-			return OperationsPage{}, err
+		if havePinnedPair && !detailOnly {
+			windowPairs[q.Host] = pinnedPair
 		}
-		mintBounds = map[string]CursorBound{q.Host: bound}
+		// The cursor's bounds pin the host's current entry even though the
+		// response carries the top-level pair instead of a hostBoundaries map.
+		if continuing {
+			mintBounds = window.Bounds
+		} else if entry, ok := current[q.Host]; ok {
+			mintBounds = map[string]CursorBound{q.Host: entry}
+		} else {
+			mintBounds = map[string]CursorBound{q.Host: {Absent: true}}
+		}
 	} else {
 		if continuing {
-			pageHosts = make(map[string]bool, len(window.Bounds))
-			for host := range window.Bounds {
+			for host, stored := range window.Bounds {
 				pageHosts[host] = true
+				if !stored.Absent {
+					windowPairs[host] = OperationPair{
+						Generation:    stored.Boundary.Generation,
+						IncarnationID: stored.Boundary.IncarnationID,
+					}
+				}
 			}
 			page.HostBoundaries = window.Bounds
 			mintBounds = window.Bounds
+			// An unfiltered continuation must be a plain unfiltered window: the
+			// row at the cursor's position carries the pair its host was listed
+			// under, and §8 refuses "a cursor minted for one pair validated
+			// against an unfiltered query". A cursor minted under a host-pinned
+			// window presented without the host name lands here, and that
+			// mismatch is the refusal — never a mixed page.
+			if !detailOnly {
+				anchor, ok := recordAtLocked(state, window.Position)
+				if !ok {
+					return OperationsPage{}, &CursorStaleError{
+						Reason:  fmt.Sprintf("the row this cursor resumes after (%s) is not in the store; re-list from the first page", window.Position),
+						Binding: StaleBindingGeneration,
+					}
+				}
+				stored, known := window.Bounds[anchor.Host]
+				if !known || stored.Absent ||
+					stored.Boundary.Generation != anchor.Generation || stored.Boundary.IncarnationID != anchor.IncarnationID {
+					return OperationsPage{}, &CursorStaleError{
+						Reason:  "this cursor was minted for one pair; pass the host name and pair back to continue it, or re-list from the first page",
+						Binding: StaleBindingGeneration,
+					}
+				}
+			}
 		} else {
-			hosts := operationsHostUniverse(state)
-			pageHosts = make(map[string]bool, len(hosts))
-			bounds := make(map[string]CursorBound, len(hosts))
+			hosts := slices.Sorted(maps.Keys(current))
 			for _, host := range hosts {
 				pageHosts[host] = true
-				bound, err := cursorBoundLocked(state, host)
-				if err != nil {
-					return OperationsPage{}, err
+				if entry := current[host]; !entry.Absent && !detailOnly {
+					windowPairs[host] = OperationPair{
+						Generation:    entry.Boundary.Generation,
+						IncarnationID: entry.Boundary.IncarnationID,
+					}
 				}
-				bounds[host] = bound
 			}
-			page.HostBoundaries = bounds
-			mintBounds = bounds
+			page.HostBoundaries = current
+			mintBounds = current
 		}
 	}
 
@@ -579,13 +719,14 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		if q.ID != "" && record.ID != q.ID {
 			continue
 		}
-		if pairFiltered {
-			if record.Generation != filterGen {
+		if pair, ok := windowPairs[record.Host]; ok {
+			if record.Generation != pair.Generation || record.IncarnationID != pair.IncarnationID {
 				continue
 			}
-			if filterInc != "" && record.IncarnationID != filterInc {
-				continue
-			}
+		} else if !detailOnly {
+			// A host with no pinned pair — the "absent" marker, or a host
+			// outside the window — has no records to list.
+			continue
 		}
 		records = append(records, cloneRecord(record))
 		if len(records) == limit {
@@ -593,6 +734,23 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		}
 	}
 	page.Records = records
+
+	if pinned {
+		// §8: the host-pinned response carries "the effective generation and
+		// incarnationId actually listed". The window pair is that; a detail
+		// lookup that named no pair echoes the row it listed instead.
+		generation, incarnation := uint64(0), ""
+		switch {
+		case havePinnedPair:
+			generation, incarnation = pinnedPair.Generation, pinnedPair.IncarnationID
+		case detailOnly && len(records) == 1:
+			generation, incarnation = records[0].Generation, records[0].IncarnationID
+		case q.Generation != nil:
+			generation, incarnation = *q.Generation, q.IncarnationID
+		}
+		page.Generation = &generation
+		page.IncarnationID = incarnation
+	}
 
 	if len(records) > 0 {
 		// The next cursor pins the same window the page was served under: a
@@ -613,113 +771,80 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	return page, nil
 }
 
-// resolvePinnedWindow answers the effective pair a host-pinned page lists under
-// (§8: "a host-pinned response carries the effective generation and
+// resolvePinnedPair answers the effective pair a host-pinned first page lists
+// under (§8: "a host-pinned response carries the effective generation and
 // incarnationId actually listed"; §10: "generation selects the incarnation
 // after client operation-ID reuse (omitted: the current generation)").
 //
-// A first page resolves from the request: the named pair exactly, a named
-// generation with the boundary's incarnation when that generation is current,
-// or the host's current pair (the mirrored boundary; the newest retained
-// record's pair when the boundary is gone). A continuation resolves against the
-// cursor's stored entry: the request's pair must be the pair the cursor pinned
-// — a cursor minted under one pair never lists the other — and an omitted pair
-// reads as the stored window. pairFiltered is false only when the host has no
-// pair at all to filter by, which is also a host with no records to list.
-//
-// The envelope carries one triple per host, and §8 mints it from the host's
-// current boundary, so a page read under a superseded pair serves that one page
-// and a continuation of it is a stale-entry re-list once the current pair
-// differs: the literal "stored bounds entry no longer matches the host's
-// current boundary" rule, never a mixed page.
-func resolvePinnedWindow(state *snapshot, q OperationsQuery, window CursorEnvelope, continuing bool) (generation uint64, incarnationID string, pairFiltered bool, err error) {
-	if continuing {
-		stored := window.Bounds[q.Host]
-		if q.Generation != nil {
-			if stored.Absent {
-				return 0, "", false, &CursorStaleError{
-					Reason:  fmt.Sprintf("the cursor pinned host %q with no records, so it cannot list the named pair; re-list from the first page", q.Host),
-					Binding: StaleBindingGeneration,
-				}
-			}
-			if stored.Boundary.Generation != *q.Generation {
-				return 0, "", false, &CursorStaleError{
-					Reason: fmt.Sprintf("the cursor pinned host %q at generation %d, not %d; re-list from the first page",
-						q.Host, stored.Boundary.Generation, *q.Generation),
-					Binding: StaleBindingGeneration,
-				}
-			}
-			if q.IncarnationID != "" && stored.Boundary.IncarnationID != q.IncarnationID {
-				return 0, "", false, &CursorStaleError{
-					Reason: fmt.Sprintf("the cursor pinned host %q at incarnation %q, not %q; re-list from the first page",
-						q.Host, stored.Boundary.IncarnationID, q.IncarnationID),
-					Binding: StaleBindingGeneration,
-				}
-			}
-			if q.IncarnationID == "" {
-				return *q.Generation, stored.Boundary.IncarnationID, true, nil
-			}
-			return *q.Generation, q.IncarnationID, true, nil
-		}
-		if stored.Absent {
-			return 0, "", false, nil
-		}
-		return stored.Boundary.Generation, stored.Boundary.IncarnationID, true, nil
-	}
+// The named pair is taken exactly. A named generation resolves to one
+// incarnation — the boundary's when that generation is current, else the
+// newest retained record's for that generation, so a same-generation collision
+// (§12's "colliding same-generation incarnation") is disambiguated by naming
+// both halves — and an omitted pair is the host's current pair, the mirrored
+// boundary. ok is false only when the host has no pair at all, which is also a
+// host with no records to list.
+func resolvePinnedPair(state *snapshot, q OperationsQuery) (OperationPair, bool) {
 	boundary, hasBoundary := state.Boundaries[q.Host]
 	switch {
 	case q.Generation != nil && q.IncarnationID != "":
-		return *q.Generation, q.IncarnationID, true, nil
+		return OperationPair{Generation: *q.Generation, IncarnationID: q.IncarnationID}, true
 	case q.Generation != nil:
 		if hasBoundary && boundary.Generation == *q.Generation {
-			return *q.Generation, boundary.IncarnationID, true, nil
+			return OperationPair{Generation: *q.Generation, IncarnationID: boundary.IncarnationID}, true
 		}
-		return *q.Generation, "", true, nil
+		if record, ok := newestRecordForGeneration(state, q.Host, *q.Generation); ok {
+			return OperationPair{Generation: record.Generation, IncarnationID: record.IncarnationID}, true
+		}
+		return OperationPair{}, false
 	case hasBoundary:
-		return boundary.Generation, boundary.IncarnationID, true, nil
-	default:
-		// No boundary for the name. A host that holds records is refused by
-		// cursorBoundLocked (the read mints its bounds entry in the same pass),
-		// so this is a host with nothing to list and no pair to echo.
-		return 0, "", false, nil
+		return OperationPair{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID}, true
 	}
+	return OperationPair{}, false
 }
 
-// cursorBoundLocked computes one host's bounds entry: the mirrored boundary
-// triple when the host holds records, or the literal "absent" marker when it
-// holds none (§8). A host that holds records but no mirrored boundary is the
-// state no writer of this store produces, refused as ErrMissingHostBoundary
-// rather than minting an entry later pages cannot validate.
-func cursorBoundLocked(state *snapshot, host string) (CursorBound, error) {
-	holdsRecords := false
-	for i := range state.Records {
-		if state.Records[i].Host == host {
-			holdsRecords = true
-			break
+// newestRecordForGeneration returns the newest retained record pinned to host
+// under generation, the incarnation a generation-only filter selects when the
+// generation is not the host's current one.
+func newestRecordForGeneration(state *snapshot, host string, generation uint64) (Record, bool) {
+	for _, record := range slices.Backward(state.Records) {
+		if record.Host == host && record.Generation == generation {
+			return record, true
 		}
 	}
-	if !holdsRecords {
-		return CursorBound{Absent: true}, nil
-	}
-	boundary, ok := state.Boundaries[host]
-	if !ok {
-		return CursorBound{}, fmt.Errorf("%w: host %q", ErrMissingHostBoundary, host)
-	}
-	return CursorBound{Boundary: boundary}, nil
+	return Record{}, false
 }
 
-// operationsHostUniverse is every host the store knows — the hosts holding
-// records plus the mirrored boundary names — in a stable order. This is the
-// unfiltered query's host set: §8 pins every host in the query at cursor
-// creation, and a host the store has never heard of has no stored triple, so
-// its later records are skipped rather than admitted mid-pagination.
-func operationsHostUniverse(state *snapshot) []string {
-	hosts := make(map[string]bool, len(state.Boundaries))
+// recordAtLocked returns the stored record with the controller-assigned id.
+func recordAtLocked(state *snapshot, id string) (Record, bool) {
 	for i := range state.Records {
-		hosts[state.Records[i].Host] = true
+		if state.Records[i].ID == id {
+			return state.Records[i], true
+		}
 	}
+	return Record{}, false
+}
+
+// currentCursorBoundsLocked computes every known host's current bounds entry in
+// one pass: the record-holding hosts get their mirrored boundary triple, and
+// the mirrored-boundary names that hold no records get the "absent" marker. A
+// host that holds records but no mirrored boundary is the state no writer of
+// this store produces, refused as ErrMissingHostBoundary rather than minting or
+// validating an entry the store cannot ground.
+func currentCursorBoundsLocked(state *snapshot) (map[string]CursorBound, error) {
+	bounds := make(map[string]CursorBound, len(state.Boundaries))
 	for name := range state.Boundaries {
-		hosts[name] = true
+		bounds[name] = CursorBound{Absent: true}
 	}
-	return slices.Sorted(maps.Keys(hosts))
+	for i := range state.Records {
+		host := state.Records[i].Host
+		if entry, known := bounds[host]; known && !entry.Absent {
+			continue
+		}
+		boundary, ok := state.Boundaries[host]
+		if !ok {
+			return nil, fmt.Errorf("%w: host %q", ErrMissingHostBoundary, host)
+		}
+		bounds[host] = CursorBound{Boundary: boundary}
+	}
+	return bounds, nil
 }

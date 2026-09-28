@@ -413,6 +413,225 @@ func TestOperationsReadFiltersByOperationIDStateAndDetailID(t *testing.T) {
 	}
 }
 
+// TestOperationsReadPinnedContinuationKeepsTheListedPair pins the High fix: a
+// cursor minted for a superseded pair keeps listing THAT pair when the
+// continuation repeats it or omits it, and never falls back to the host's
+// current pair (§8: "An omitted filter on a later page reads as the
+// pinned-cursor window, never as a fresh unpinned query"; §12: "A cursor minted
+// under one pair never lists the other").
+func TestOperationsReadPinnedContinuationKeepsTheListedPair(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	old1 := cursorTestRecord(t, store, "m4", "op-old-1", 1, "inc-old")
+	old2 := cursorTestRecord(t, store, "m4", "op-old-2", 1, "inc-old")
+	current := cursorTestRecord(t, store, "m4", "op-current", 2, "inc-m4")
+	generation := uint64(1)
+
+	page1, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &generation, IncarnationID: "inc-old", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page1.Records) != 1 || page1.Records[0].ID != old1.ID {
+		t.Fatalf("page 1 ids = %v, want %q", recordIDs(page1.Records), old1.ID)
+	}
+	if page1.Generation == nil || *page1.Generation != 1 || page1.IncarnationID != "inc-old" {
+		t.Fatalf("page 1 pair = %v/%q, want the listed 1/inc-old", page1.Generation, page1.IncarnationID)
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1 carried no nextCursor")
+	}
+
+	// An omitted pair reads as the pinned window: the remaining gen-1 row,
+	// never the host's current gen-2 record.
+	page2, err := store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page1.NextCursor})
+	if err != nil {
+		t.Fatalf("ReadOperations(omitted pair): %v", err)
+	}
+	if len(page2.Records) != 1 || page2.Records[0].ID != old2.ID {
+		t.Fatalf("omitted-pair continuation ids = %v, want only the pinned pair's next row %q",
+			recordIDs(page2.Records), old2.ID)
+	}
+	for _, record := range page2.Records {
+		if record.ID == current.ID {
+			t.Fatalf("the continuation listed the current pair's record %q", current.ID)
+		}
+	}
+	if page2.Generation == nil || *page2.Generation != 1 || page2.IncarnationID != "inc-old" {
+		t.Fatalf("continuation pair = %v/%q, want the pinned 1/inc-old", page2.Generation, page2.IncarnationID)
+	}
+	// The explicitly repeated pair continues the same window.
+	page3, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &generation, IncarnationID: "inc-old", Cursor: page1.NextCursor})
+	if err != nil {
+		t.Fatalf("ReadOperations(repeated pair): %v", err)
+	}
+	if len(page3.Records) != 1 || page3.Records[0].ID != old2.ID {
+		t.Fatalf("repeated-pair continuation ids = %v, want only %q", recordIDs(page3.Records), old2.ID)
+	}
+	// The pinned window is exhausted; the current pair appears only on a fresh
+	// unpinned read.
+	page4, err := store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page2.NextCursor})
+	if err != nil {
+		t.Fatalf("ReadOperations(exhausted): %v", err)
+	}
+	if len(page4.Records) != 0 {
+		t.Fatalf("exhausted window listed %v", recordIDs(page4.Records))
+	}
+	fresh, err := store.ReadOperations(OperationsQuery{Host: "m4"})
+	if err != nil {
+		t.Fatalf("ReadOperations(fresh): %v", err)
+	}
+	if len(fresh.Records) != 1 || fresh.Records[0].ID != current.ID {
+		t.Fatalf("fresh pinned read ids = %v, want the current pair's %q", recordIDs(fresh.Records), current.ID)
+	}
+}
+
+// TestOperationsReadRefusesAnUnnamedHistoricalContinuation pins the Low fix: a
+// cursor minted for one pair presented as an unfiltered query is §8's typed
+// stale-entry re-list refusal — it never becomes a page of the pinned host's
+// other pairs.
+func TestOperationsReadRefusesAnUnnamedHistoricalContinuation(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	cursorTestRecord(t, store, "m4", "op-old-1", 1, "inc-old")
+	cursorTestRecord(t, store, "m4", "op-old-2", 1, "inc-old")
+	cursorTestRecord(t, store, "m4", "op-current", 2, "inc-m4")
+	generation := uint64(1)
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &generation, IncarnationID: "inc-old", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("no cursor to continue with")
+	}
+	_, err = store.ReadOperations(OperationsQuery{Cursor: page.NextCursor})
+	wantCursorStale(t, err)
+}
+
+// TestOperationsReadUnfilteredPagesTheCurrentWindow pins §10's "generation ...
+// omitted: the current generation" for unfiltered pages: each host contributes
+// its current pair's records, and history stays reachable through the
+// host-pinned pair filter and the id detail filter — never through a later page
+// of an unfiltered cursor.
+func TestOperationsReadUnfilteredPagesTheCurrentWindow(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	old := cursorTestRecord(t, store, "m4", "op-old", 1, "inc-old")
+	current := cursorTestRecord(t, store, "m4", "op-current", 2, "inc-m4")
+
+	page, err := store.ReadOperations(OperationsQuery{})
+	if err != nil {
+		t.Fatalf("ReadOperations: %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != current.ID {
+		t.Fatalf("unfiltered page ids = %v, want only the current pair's %q", recordIDs(page.Records), current.ID)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("page carried no nextCursor")
+	}
+	continued, err := store.ReadOperations(OperationsQuery{Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatalf("ReadOperations(continuation): %v", err)
+	}
+	if len(continued.Records) != 0 {
+		t.Fatalf("unfiltered continuation listed %v, want the superseded pair never admitted", recordIDs(continued.Records))
+	}
+	// History stays readable directly.
+	generation := uint64(1)
+	history, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &generation, IncarnationID: "inc-old"})
+	if err != nil || len(history.Records) != 1 || history.Records[0].ID != old.ID {
+		t.Fatalf("pinned history read = %v, %v; want %q", recordIDs(history.Records), err, old.ID)
+	}
+	detail, err := store.ReadOperations(OperationsQuery{ID: old.ID})
+	if err != nil || len(detail.Records) != 1 || detail.Records[0].ID != old.ID {
+		t.Fatalf("detail read = %v, %v; want %q", recordIDs(detail.Records), err, old.ID)
+	}
+}
+
+// TestDecodeCursorRefusesMalformedEnvelopes pins §8's "never a best-effort
+// decode": an over-cap value, a missing key, an unknown key, a key named twice,
+// and a malformed host key are each ErrInvalidOperationsQuery, never a silently
+// zero-filled envelope.
+func TestDecodeCursorRefusesMalformedEnvelopes(t *testing.T) {
+	pos := formatAllocatorID(1)
+	cases := map[string]string{
+		"over the encoded cap": strings.Repeat("A", MaxCursorBytes+1),
+		"a missing key":        rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"bounds":{},"quarantineEpoch":0}`, pos)),
+		"an unknown key":       rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{},"quarantineEpoch":0,"extra":1}`, pos)),
+		"a key named twice":    rawCursor(fmt.Sprintf(`{"v":2,"v":2,"pos":%q,"compactSeq":0,"bounds":{},"quarantineEpoch":0}`, pos)),
+		"an empty host key":    rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{"":"absent"},"quarantineEpoch":0}`, pos)),
+	}
+	for name, cursor := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeCursor(cursor); !errors.Is(err, ErrInvalidOperationsQuery) {
+				t.Fatalf("DecodeCursor(%s) = %v, want ErrInvalidOperationsQuery", name, err)
+			}
+		})
+	}
+	// A structurally valid envelope that is still over the cap, not just a long
+	// string of the wrong alphabet.
+	hosts := make(map[string]any, 400)
+	for i := range 400 {
+		hosts[fmt.Sprintf("host-%03d", i)] = "absent"
+	}
+	body, err := json.Marshal(map[string]any{"v": 2, "pos": pos, "compactSeq": 0, "bounds": hosts, "quarantineEpoch": 0})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if _, err := DecodeCursor(rawCursor(string(body))); !errors.Is(err, ErrInvalidOperationsQuery) {
+		t.Fatalf("DecodeCursor(valid over-cap envelope) = %v, want ErrInvalidOperationsQuery", err)
+	}
+}
+
+// TestOperationsReadRefusesForgedBoundsEntries pins the Medium's third arm: a
+// bounds entry for a host the store has never seen — neither records nor a
+// mirrored boundary — is not accepted as an authoritative "absent" (or as a
+// fabricated triple), and a position naming no stored row is refused too.
+func TestOperationsReadRefusesForgedBoundsEntries(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	cursorTestRecord(t, store, "m4", "op-1", 2, "inc-m4")
+
+	for name, tc := range map[string]struct {
+		envelope CursorEnvelope
+		host     string
+	}{
+		"an absent host the store never saw": {
+			envelope: CursorEnvelope{
+				Version:  2,
+				Position: formatAllocatorID(1),
+				Bounds:   map[string]CursorBound{"ghost": {Absent: true}},
+			},
+		},
+		"a fabricated triple for an unknown host": {
+			envelope: CursorEnvelope{
+				Version:  2,
+				Position: formatAllocatorID(1),
+				Bounds: map[string]CursorBound{"ghost": {Boundary: Boundary{
+					Generation: 9, IncarnationID: "inc-ghost", PresenceEpoch: 9,
+				}}},
+			},
+		},
+		"a position naming no stored row": {
+			envelope: CursorEnvelope{
+				Version:  2,
+				Position: formatAllocatorID(999),
+				Bounds:   map[string]CursorBound{"m4": {Boundary: Boundary{Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3}}},
+			},
+			host: "m4",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cursor, err := EncodeCursor(tc.envelope)
+			if err != nil {
+				t.Fatalf("EncodeCursor: %v", err)
+			}
+			_, err = store.ReadOperations(OperationsQuery{Host: tc.host, Cursor: cursor})
+			wantCursorStale(t, err)
+		})
+	}
+}
+
 // TestOperationsReadRefusesAStaleCursor pins every §8 continuation refusal this
 // slice can reach, each a typed stale-entry re-list: a pinned quarantine epoch
 // that moved, a generation advance, a presence advance, a request pair the
@@ -537,7 +756,8 @@ func TestOperationsReadRefusesAnOverCapFirstPage(t *testing.T) {
 		t.Fatal("a refused read rewrote the store file")
 	}
 	// The cap is on the encoded cursor itself: the same enabled state under the
-	// cap mints normally (the over-cap case above used 250 hosts; one host fits).
+	// cap mints normally (the over-cap case above needed hundreds of hosts; one
+	// host fits).
 	small, _ := openTestStore(t)
 	mirrorCursorBoundary(t, small, "m4", 2, "inc-m4", 3)
 	cursorTestRecord(t, small, "m4", "op-1", 2, "inc-m4")
