@@ -16,10 +16,12 @@ import { expect, test } from "vitest";
 
 const SELF = fileURLToPath(import.meta.url);
 const SRC = dirname(SELF); // cmd/evener-hub/frontend/src
+const SCRIPTS = join(SRC, "..", "scripts"); // cmd/evener-hub/frontend/scripts
 const REPO_ROOT = join(SRC, "..", "..", "..", "..");
 // vite.config.ts's test.include runs the AppWire package's tests under the same
-// setupFiles, so a registration there is as redundant as one in src.
-const ROOTS = [SRC, join(REPO_ROOT, "appwire-client", "typescript")];
+// setupFiles, so a registration there is as redundant as one in src. Vitest also
+// collects the nested scripts/* suites under the same root.
+const ROOTS = [SRC, join(REPO_ROOT, "appwire-client", "typescript"), SCRIPTS];
 // Generated and dependency trees are not test sources: the AppWire package gets
 // a real node_modules when its own install runs for the qualification gate, and
 // descending it would slow the scan and read third-party files.
@@ -40,6 +42,13 @@ function testFilesUnder(dir: string): string[] {
     }
   }
   return files.sort();
+}
+
+// package.json's test script runs `node --test scripts/*.test.mjs`, so those
+// top-level files never load this setup; only the nested scripts suites do.
+function isNodeTestScript(path: string): boolean {
+  const rel = relative(SCRIPTS, path);
+  return !rel.startsWith("..") && !rel.includes("/") && rel.endsWith(".test.mjs");
 }
 
 // An afterEach whose whole callback is the cleanup call, in any spelling: a bare
@@ -64,7 +73,10 @@ function label(path: string): string {
 
 test("no test file registers an afterEach whose only call is cleanup()", () => {
   const offenders = ROOTS.flatMap(testFilesUnder)
-    .filter((path) => path !== SELF && PER_FILE_CLEANUP.test(withoutComments(readFileSync(path, "utf8"))))
+    .filter(
+      (path) =>
+        path !== SELF && !isNodeTestScript(path) && PER_FILE_CLEANUP.test(withoutComments(readFileSync(path, "utf8"))),
+    )
     .map(label);
   expect(offenders).toEqual([]);
 });
