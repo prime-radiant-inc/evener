@@ -228,6 +228,43 @@ func TestSummarizeProseLeavesBlockedRunsOutOfTaskPasses(t *testing.T) {
 	}
 }
 
+// TestSummarizeProseBlockedRunsContributeNothingButBlockedCount: a blocked
+// run counts as Blocked and nothing else, mirroring writeReviewPack's own
+// skip. Earlier tests reused one state dir across passed and blocked
+// repetitions, so they never actually exercised a blocked run whose state
+// dir holds its own readable prose (a harness abort after the model had
+// already said something) — this one gives it a distinct state dir with
+// its own message, so a regression that counts it is visible.
+func TestSummarizeProseBlockedRunsContributeNothingButBlockedCount(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	passedStateDir := filepath.Join(dir, "state-passed")
+	writeProseRun(t, passedStateDir, "Done.")
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 1, Status: "passed", StateDir: passedStateDir})
+
+	blockedStateDir := filepath.Join(dir, "state-blocked")
+	writeProseRun(t, blockedStateDir, "Should never be counted.")
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 2, Status: "blocked_infra", StateDir: blockedStateDir})
+
+	stats, err := summarizeProse([]labeledDir{{Label: "v0", Dir: dir}})
+	if err != nil {
+		t.Fatalf("summarizeProse: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("stats = %+v, want one row", stats)
+	}
+	s := stats[0]
+	if s.Runs != 2 || s.Passed != 1 || s.Blocked != 1 {
+		t.Fatalf("row = %+v, want 2 runs, 1 passed, 1 blocked", s)
+	}
+	if s.Messages != 1 {
+		t.Errorf("Messages = %d, want 1: the blocked run's own message must not count", s.Messages)
+	}
+	if s.ProseErrors != 0 {
+		t.Errorf("ProseErrors = %d, want 0: a blocked run must never be read at all, let alone errored", s.ProseErrors)
+	}
+}
+
 func TestParseLabeledNeedsBothParts(t *testing.T) {
 	t.Parallel()
 	for _, bad := range []string{"", "label", "=dir", "label="} {
@@ -304,6 +341,37 @@ func TestRenderProseTableShowsTheChosenChannel(t *testing.T) {
 		if len(row) < 10 || row[9] != want {
 			t.Errorf("channel %s: row = %q, want em dashes per 1k = %s", channel, row, want)
 		}
+	}
+}
+
+// TestRenderProseTableDividesMessagesByDecidedRunsNotAllRuns: a blocked run
+// produced no message at all (it says nothing about the prompt), so it must
+// not dilute MSGS/RUN. Two versions with the same messages per DECIDED run
+// must show the same MSGS/RUN even when one carries extra blocked runs.
+func TestRenderProseTableDividesMessagesByDecidedRunsNotAllRuns(t *testing.T) {
+	t.Parallel()
+	stats := []proseStats{
+		{Label: "v0", Model: "m", Runs: 2, Blocked: 0, Messages: 4},
+		{Label: "v1", Model: "m", Runs: 3, Blocked: 1, Messages: 4},
+	}
+	var buf bytes.Buffer
+	if err := renderProseTable(&buf, stats, "to_user"); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("output = %q, want a header and 2 rows", buf.String())
+	}
+	var msgsPerRun []string
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 7 {
+			t.Fatalf("row %q has too few fields", line)
+		}
+		msgsPerRun = append(msgsPerRun, fields[6])
+	}
+	if msgsPerRun[0] != "2.0" || msgsPerRun[1] != "2.0" {
+		t.Errorf("MSGS/RUN = %v, want [2.0 2.0]: both have 4 messages over 2 DECIDED runs", msgsPerRun)
 	}
 }
 

@@ -364,6 +364,32 @@ func TestRunRankScoreEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunRankScoreRefusesJSONWithDetail: --detail's output is plain text
+// (renderRankScoreDetail), so combined with --json it would print a JSON
+// document followed by plain text on the same stdout stream, corrupting the
+// JSON for any consumer parsing it.
+func TestRunRankScoreRefusesJSONWithDetail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "key.json")
+	key := []rankKeyEntry{
+		{Set: 1, Packet: "A", Label: "v0", Model: "m1", Probe: "p"},
+		{Set: 1, Packet: "B", Label: "v1", Model: "m1", Probe: "p"},
+	}
+	data, err := json.Marshal(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, keyPath, string(data))
+	reviewsPath := filepath.Join(dir, "r1.jsonl")
+	mustWrite(t, reviewsPath, `{"set":1,"ranking":["B","A"],"writing":{"A":3,"B":5},"why":"A rambles"}`+"\n")
+
+	err = run([]string{"rank-score", "--key", keyPath, "--reviews", reviewsPath, "--json", "--detail"})
+	if err == nil || !strings.Contains(err.Error(), "--json") || !strings.Contains(err.Error(), "--detail") {
+		t.Fatalf("rank-score --json --detail = %v, want a refusal naming both flags", err)
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

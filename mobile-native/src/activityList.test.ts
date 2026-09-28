@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ActivityList, parseActivityTree } from "@evener/appwire-client";
 import type { AnyNotification } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -33,6 +33,13 @@ function tree(revision = 1, ids = ["a"], continuation?: string) {
 		},
 	};
 }
+// Longer than ActivityList's minimum interval between whole-tree fetches.
+const ACTIVITY_REFRESH_WAIT_MS = 2500;
+
+afterEach(() => {
+	vi.useRealTimers();
+});
+
 function boundary() {
 	const requests: unknown[] = [];
 	const handlers = new Set<(n: AnyNotification) => void>();
@@ -140,6 +147,7 @@ it("loads only a currently advertised continuation and summarizes the accumulate
 });
 
 it("coalesces matching invalidations and discards disposed responses", async () => {
+	vi.useFakeTimers();
 	const { list, io, requests, handlers, notify } = boundary();
 	let complete!: (value: { data: unknown }) => void;
 	io.read = () =>
@@ -154,7 +162,9 @@ it("coalesces matching invalidations and discards disposed responses", async () 
 	notify();
 	io.read = async () => ({ data: tree(2, ["b"]) });
 	complete({ data: tree() });
-	await list.refresh();
+	const refreshed = list.refresh();
+	await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_WAIT_MS);
+	await refreshed;
 	expect(requests).toHaveLength(2);
 	expect(list.getSnapshot().tree?.revision).toBe(2);
 	io.read = () =>
@@ -171,10 +181,13 @@ it("coalesces matching invalidations and discards disposed responses", async () 
 });
 
 it("keeps a failed continuation retryable and supersedes it with live root updates", async () => {
+	vi.useFakeTimers();
 	const { list, io, notify } = boundary();
 	io.read = async () => ({ data: tree(1, ["a"], "cursor") });
 	list.start();
-	await list.refresh();
+	const refreshed = list.refresh();
+	await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_WAIT_MS);
+	await refreshed;
 	const branch = list.branches()[0];
 	if (!branch) throw new Error("missing branch");
 	io.read = async () => {
@@ -192,6 +205,7 @@ it("keeps a failed continuation retryable and supersedes it with live root updat
 	notify();
 	io.read = async () => ({ data: tree(3, ["c"]) });
 	complete({ data: tree(2, ["a", "b"]) });
+	await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_WAIT_MS);
 	await pending;
 	expect(list.getSnapshot().tree?.revision).toBe(3);
 	expect(list.getSnapshot().tree?.root.entries).toHaveLength(1);
