@@ -167,7 +167,7 @@ import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
-import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -1692,12 +1692,9 @@ export function ConversationScreen({
 					});
 			if (!completed || !currentBinding()) return;
 			if (isLocalComposerCommand(completed) || completed === "aside") return;
-			if (completed === "shutdown") {
-				store.getState().close();
-				service.close();
-				setSessionOpen(false);
-				leaveScreen(navigation, route.key);
-			} else await store.getState().rehydrate(service, activitySink);
+			// A shut-down session stays open on its history, like the ⋯ menu's
+			// own Shut down (ruling 19): the store's error surfaces a failed read.
+			await store.getState().rehydrate(service, activitySink);
 		} catch (error) {
 			if (!currentBinding()) return;
 			setActionError(
