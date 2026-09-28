@@ -49,6 +49,7 @@ export function TimelineItem({
 	answerFor,
 	errorActionFor,
 	onErrorAction,
+	documentChips,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -71,6 +72,9 @@ export function TimelineItem({
 	/** The one action an error row offers (errorAction), and running it. */
 	errorActionFor?: (row: { id: string; title: string; detail: string; turnId?: string }) => ErrorAction | null;
 	onErrorAction?: (action: ErrorAction) => void;
+	/** The document chips under an agent's message (spec 8.2): the screen
+	 * decides which documents a message names and where a chip opens. */
+	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
@@ -130,7 +134,12 @@ export function TimelineItem({
 			content = <NoteRow text={item.text} />;
 			break;
 		case "assistant":
-			content = <AgentMessage markdown={item.markdown} quote={quote} />;
+			content = (
+				<>
+					<AgentMessage markdown={item.markdown} quote={quote} />
+					{documentChips?.({ id: item.id, markdown: item.markdown, streaming: item.streaming })}
+				</>
+			);
 			break;
 		case "notice":
 			content = isCriticalNotice(item) ? (

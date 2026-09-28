@@ -332,6 +332,7 @@ async function mount(
 	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
 		error: null,
 		disconnect: () => {},
 	};
@@ -1281,4 +1282,62 @@ it("leaves the shared question fixture as the other question tests expect it", (
 	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
 	expect(turn.status).toBe("completed");
 	expect(turn.error).toBeUndefined();
+});
+
+describe("document chips under the agent's messages (spec 8.2)", () => {
+	const PLAN_PATH = "docs/superpowers/plans/settle-race.md";
+	const WROTE_AT = "2026-09-26T11:39:00.000Z";
+
+	function namedAfterWriting(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "write-1",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "write_file",
+						status: "completed",
+						completedAt: WROTE_AT,
+						argumentsJson: JSON.stringify({ file_path: `/home/jesse/git/evener/${PLAN_PATH}`, content: "# Plan" }),
+					},
+					{
+						id: "said-1",
+						turnId: "t1",
+						type: "agentMessage",
+						status: "completed",
+						text: `The plan is in \`${PLAN_PATH}\`.`,
+					},
+				],
+			},
+		];
+		return served;
+	}
+
+	it("puts a chip under a message that names a file the session wrote, and opens it in the Reader", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		vi.mocked(navigation.navigate).mockClear();
+		const { tree } = await mount(namedAfterWriting("ref-chips"));
+		await settle();
+		const chip = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
+		)[0];
+		if (!chip) throw new Error("no document chip");
+		expect(renderedText(tree)).toContain("settle-race.md");
+		act(() => chip.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
+			hubId: "hub-1",
+			sessionRef: "ref-chips",
+			path: PLAN_PATH,
+			reviewRef: "ref-chips",
+			reviewTitle: "Session",
+			updatedAt: WROTE_AT,
+		});
+	});
+
 });

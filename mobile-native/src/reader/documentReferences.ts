@@ -1,0 +1,130 @@
+// The documents a session's transcript names (spec 8.2, ruling 28): a path the
+// agent writes in a message becomes a document chip under that message, and
+// the session's own write of that file gives the chip its age. Files &
+// artifacts lists the same documents, plus the files the session wrote
+// without naming them (spec 10.1).
+import type { TurnModel } from "@evener/appwire-client";
+import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
+import { lexer, type Token, type Tokens } from "marked";
+
+/** A document the session named or wrote. */
+export interface DocumentReference {
+	/** The path inside the session's folder. */
+	path: string;
+	/** When the session last wrote it (a hub time); absent for a file it only named. */
+	updatedAt?: string;
+}
+
+/** The tools that write a whole file or edit one in place, by their
+ * `file_path` argument. apply_patch names its files inside the patch text, so
+ * its writes give no age. */
+const WRITING_TOOLS = new Set(["write_file", "edit_file"]);
+
+// A file name ends in a dot and a short extension: "plan.md", "retirement.go".
+// A directory ("src/") or a bare word ("README") isn't a document.
+const FILE_NAME = /[^/.\s][^/\s]*\.[A-Za-z0-9]{1,10}$/;
+
+/** The file's path inside the session's folder, "./" dropped so two names for
+ * one file agree; undefined outside the folder, where the hub serves nothing. */
+export function documentPath(path: string, cwd: string): string | undefined {
+	const inFolder = cwdRelative(path, cwd)?.replace(/^(?:\.\/)+/, "");
+	return inFolder || undefined;
+}
+
+// What a code span or a link target names, when it names a file: no spaces,
+// no scheme but file://, and a line suffix ("retirement.go:1977") dropped.
+function namedFile(text: string): string | undefined {
+	const value = text.trim();
+	if (value === "" || /\s/.test(value)) return undefined;
+	if (/^file:\/\//i.test(value)) return fileURLToPath(value) || undefined;
+	if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return undefined;
+	const file = value.replace(/:\d+(?::\d+)?$/, "");
+	return FILE_NAME.test(file) ? file : undefined;
+}
+
+// Inline code and link targets, in reading order. A link's text is read too:
+// "[`docs/plan.md`](https://github.com/…/docs/plan.md)" names the local file.
+function visit(tokens: readonly Token[], found: (text: string) => void): void {
+	for (const token of tokens) {
+		if (token.type === "codespan") found((token as Tokens.Codespan).text);
+		if (token.type === "link") found((token as Tokens.Link).href);
+		if (token.type === "list") for (const item of (token as Tokens.List).items) visit(item.tokens, found);
+		else if (token.type === "table") {
+			const table = token as Tokens.Table;
+			for (const cell of [...table.header, ...table.rows.flat()]) visit(cell.tokens, found);
+		} else if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens, found);
+	}
+}
+
+/** The documents one message names, in order, each once: inline code and
+ * link targets that name a file inside the session's folder. A name needs a
+ * directory ("docs/plan.md") unless the session wrote that file, so a passing
+ * "README.md" never becomes a chip for a file that isn't there. Fenced code
+ * is code, not a reference. */
+export function messageDocuments(markdown: string, cwd: string, written: ReadonlyMap<string, string>): string[] {
+	const paths: string[] = [];
+	visit(lexer(markdown), (text) => {
+		const file = namedFile(text);
+		const path = file === undefined ? undefined : documentPath(file, cwd);
+		if (path === undefined || paths.includes(path)) return;
+		if (file?.includes("/") || written.has(path)) paths.push(path);
+	});
+	return paths;
+}
+
+function filePathArgument(argumentsJSON: string | undefined): string | undefined {
+	if (!argumentsJSON) return undefined;
+	try {
+		const args: unknown = JSON.parse(argumentsJSON);
+		const path = typeof args === "object" && args !== null ? (args as Record<string, unknown>).file_path : undefined;
+		return typeof path === "string" ? path : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function later(a: string | undefined, b: string | undefined): string | undefined {
+	if (a === undefined) return b;
+	if (b === undefined) return a;
+	return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
+/** When the session last wrote each file inside its folder: the newest
+ * successful write_file or edit_file, by the call's completion time (or its
+ * turn's, for a call that carries none). */
+export function fileWrites(turns: readonly TurnModel[], cwd: string): Map<string, string> {
+	const writes = new Map<string, string>();
+	for (const turn of turns)
+		for (const item of turn.items) {
+			if (!item.toolName || !WRITING_TOOLS.has(item.toolName) || item.error !== undefined) continue;
+			const file = filePathArgument(item.argumentsJSON);
+			const path = file === undefined ? undefined : documentPath(file, cwd);
+			const at = item.completedAt ?? turn.completedAt;
+			if (path === undefined || at === undefined || !Number.isFinite(Date.parse(at))) continue;
+			writes.set(path, later(writes.get(path), at) ?? at);
+		}
+	return writes;
+}
+
+/** Every document the session named in its messages or wrote, each once, in
+ * the order it first appeared, with its newest write. */
+export function documentReferences(turns: readonly TurnModel[], cwd: string): DocumentReference[] {
+	const writes = fileWrites(turns, cwd);
+	const order: string[] = [];
+	const add = (path: string) => {
+		if (!order.includes(path)) order.push(path);
+	};
+	for (const turn of turns)
+		for (const item of turn.items) {
+			if (item.type === "agentMessage") for (const path of messageDocuments(item.text, cwd, writes)) add(path);
+			else if (item.toolName && WRITING_TOOLS.has(item.toolName) && item.error === undefined) {
+				const file = filePathArgument(item.argumentsJSON);
+				const path = file === undefined ? undefined : documentPath(file, cwd);
+				if (path !== undefined && writes.has(path)) add(path);
+			}
+		}
+	return order.map((path) => {
+		const updatedAt = writes.get(path);
+		return updatedAt === undefined ? { path } : { path, updatedAt };
+	});
+}

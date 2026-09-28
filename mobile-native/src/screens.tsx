@@ -90,6 +90,8 @@ import {
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
+import { MessageDocuments } from "./reader/DocumentChip";
+import { fileWrites } from "./reader/documentReferences";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import {
 	editPairingInput,
@@ -1357,6 +1359,41 @@ export function ConversationScreen({
 		},
 		[document],
 	);
+	// The documents the agent names become chips under its messages (spec
+	// 8.2), aged by the session's own writes. The writes are keyed by their
+	// content, so a publish that changed no write leaves every message's chips
+	// memoized.
+	const documentCwd = conversation?.cwd ?? "";
+	const turns = conversation?.turns;
+	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
+	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
+	const openDocument = useCallback(
+		(path: string, updatedAt: string | undefined) =>
+			navigation.navigate("Reader", {
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+				path,
+				reviewRef: route.params.ref,
+				reviewTitle: route.params.title,
+				...(updatedAt === undefined ? {} : { updatedAt }),
+			}),
+		[navigation, route.params.hubId, route.params.ref, route.params.title],
+	);
+	// A message still streaming shows its chips once it settles.
+	const documentChips = useCallback(
+		(message: { id: string; markdown: string; streaming: boolean }) =>
+			message.streaming ? null : (
+				<MessageDocuments
+					hubId={route.params.hubId}
+					sessionRef={route.params.ref}
+					markdown={message.markdown}
+					cwd={documentCwd}
+					writes={writes}
+					open={openDocument}
+				/>
+			),
+		[route.params.hubId, route.params.ref, documentCwd, writes, openDocument],
+	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.
 	useEffect(() => {
@@ -2525,6 +2562,7 @@ export function ConversationScreen({
 							: null
 					}
 					onErrorAction={runErrorAction}
+					documentChips={documentChips}
 				/>
 			</View>
 		),
