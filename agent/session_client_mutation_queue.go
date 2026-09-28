@@ -1600,12 +1600,18 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 				s.takeOpenPendingExecution(pending.TurnID)
 			}
 		case wasOpen && err == nil:
-			s.takeOpenPendingExecution(pending.TurnID)
+			// Take the marker only once the completion it lets close has
+			// actually landed: taking it first, before the write below runs,
+			// would drop it for good if that write fails, and nothing else
+			// ever completes this turn -- a later restart would then close
+			// it interrupted instead of failed (the same care the "own"
+			// branch above takes with this same marker).
 			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
 			if completeErr != nil {
 				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)
 			}
 			if rec.Recorded {
+				s.takeOpenPendingExecution(pending.TurnID)
 				s.mu.Lock()
 				s.clientMutationAppendedTurn = true // restore re-reads what it appended
 				s.mu.Unlock()

@@ -249,6 +249,74 @@ func TestRecoverClientMutationFailuresKeepsTheMarkerWhenTheRecordFails(t *testin
 	}
 }
 
+// recoverClientMutationFailures's wasOpen branch must not lose the
+// open-pending marker when recordClientMutationFailure itself succeeds but
+// the completion entry it then writes fails: the marker is the only thing
+// that ever lets this turn close, and taking it before the completion
+// actually lands leaves nothing to retry -- a later restart would then close
+// the turn interrupted instead of failed.
+func TestRecoverClientMutationFailuresKeepsTheMarkerWhenTheCompletionWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-marker-loss-completion",
+		Input:            []appwire.InputItem{{Type: "text", Text: "fails, then the process dies"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	failure := errors.New("deterministic pre-append failure")
+	crash := errors.New("simulated crash after both entries are recorded")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+	sess.clientMutationFailureRecoveryFault = func(point string) error {
+		if point == "after_failure" {
+			return crash
+		}
+		return nil
+	}
+	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, false); !errors.Is(err, crash) {
+		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
+	}
+	sess.clientMutationFailureRecoveryFault = nil
+
+	// A restart's closeCrashedExecutions would find the turn open (both
+	// entries recorded, no completion) and pending client work, and mark it
+	// exactly this way.
+	sess.mu.Lock()
+	sess.openPendingExecutions = map[string]bool{started.Turn.ID: true}
+	sess.mu.Unlock()
+
+	// A real restart reopens the transcript through a brand-new process, so
+	// its writer starts with no running execution recorded on it (nothing has
+	// called BeginExecution on that fresh handle yet). This process's writer
+	// still carries the crashed "own" pass's BeginExecution(turn_m1) on its
+	// shared append tail (append_tail.go pins the tail by the file's real
+	// identity across writer handles), so it has to be closed and reopened
+	// -- releasing that tail -- to reach the same idle state a restart would.
+	if err := sess.attachedTranscript().Close(); err != nil {
+		t.Fatal(err)
+	}
+	// This time the client-mutation store commit succeeds -- both entries are
+	// already recorded, so recordClientMutationFailure has nothing left to do
+	// and returns nil, reaching the wasOpen && err == nil case -- but the
+	// completion entry's own write fails.
+	refuseEntries(t, sess, schema.TurnCompletion)
+	if err := sess.recoverClientMutationFailures(false); err == nil {
+		t.Fatal("recovery reported success despite the completion write failing")
+	}
+
+	sess.mu.Lock()
+	stillOpen := sess.openPendingExecutions[started.Turn.ID]
+	sess.mu.Unlock()
+	if !stillOpen {
+		t.Fatal("the open-pending marker was consumed although the completion was never recorded; closeAbandonedExecutions can never close this turn now")
+	}
+}
+
 // A crash can land after a failed client start's USER_INPUT entry is recorded
 // and before its TURN_FAILURE entry is: recordClientMutationFailure's error
 // gates the own branch's completion, so the process dies with the file ending
