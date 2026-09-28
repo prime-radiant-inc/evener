@@ -3954,24 +3954,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // durably before the stop RPC, so a storage failure aborts the stop here
       // with the daemon untouched and the user free to retry.
       await cancelUnattemptedMutations(ref);
+      // Arm the recovery fence BEFORE the stop RPC, not after it settles: the
+      // hub holds Stopping > 0 for the RPC's whole window and refuses even
+      // turn/start there (cmd/evener-hub's sessionActionRecoveryError), so the
+      // store's own admission - currentDispatchClient, enqueueMutationIntent,
+      // and every control surface that reads this obligation - must fence that
+      // window too, not only the restartRequired state the drain leaves behind.
+      // The durable cancellation above has already succeeded, so no path below
+      // can abort the stop with the daemon untouched and strand this armed.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+      }));
       try {
         await requireClient().forceStop(ref);
       } catch (error) {
         // The signal may have succeeded despite failed exit confirmation.
-        // Retain the recovery fence until a fresh snapshot proves it can clear.
-        threadsStore.setState((state) => ({
-          restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-        }));
-        // Reconcile the hub's recovery requirement without delaying this error.
+        // The fence armed above is retained until a fresh snapshot proves it
+        // can clear. Reconcile the hub's recovery requirement without
+        // delaying this error.
         void threadsStore
           .getState()
           .refreshThread(ref)
           .catch(() => {});
         throw error;
       }
-      threadsStore.setState((state) => ({
-        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-      }));
     } finally {
       markStopping(ref, false);
     }

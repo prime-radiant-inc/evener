@@ -10929,6 +10929,38 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
   expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
 });
 
+// RoboRev Medium (PR 2862): the fence a Stop arms was set only AFTER the
+// forceStop RPC settled, so the drain window itself - the hub's Stopping > 0,
+// for which sessionActionRecoveryError refuses even turn/start - was unfenced
+// at the store. A send pressed while the stop RPC was still in flight enqueued
+// and dispatched into the hub's refusal, parking the intent in recovery, which
+// is exactly what the fence above exists to keep from happening. The obligation
+// must be armed when the drain begins, not when it ends; the two tests above
+// seed the obligation directly and so could not see this gap.
+test("a Stop in flight arms the recovery fence for the drain window", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "stop-drain" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:draining";
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  const stop = deferred<void>();
+  const requested = nextHandledRequest(fake, "evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  await requested;
+  // Mid-drain: the hub holds Stopping > 0 and refuses even turn/start, so the
+  // store's own admission must refuse the send here rather than dispatch it.
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  expect(await storage.listOutbox(ref)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  stop.resolve();
+  await pending;
+});
+
 // RoboRev Medium (all three reviewers): the store-wide resume-only predicate
 // must read the delivery-uncertain rows the composer's blockedMutations
 // selector fences on, not merely stopInFlight. A direct caller that bypasses

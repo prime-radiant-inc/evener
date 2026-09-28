@@ -16,10 +16,12 @@ import (
 )
 
 // A session that merely needs resume no longer refuses turn/start: sending a
-// prompt folds the resume into the send (app_relay.go's prepareRelay auto-
-// resumes a not-live session). The carve-out is exactly turn/start and exactly
-// ResumeRequired — a Stop still in flight keeps refusing every action, and so
-// does every action other than turn/start while only the resume is pending.
+// prompt folds the resume into the send, and the admitted turn/start runs that
+// resume explicitly before its retry (app_rpc.go's resumeTurnStartThreadResume,
+// selected by turnStartResumeExplicit). The carve-out is exactly turn/start and
+// exactly ResumeRequired — a Stop still in flight keeps refusing every action,
+// and so does every action other than turn/start while only the resume is
+// pending.
 //
 // These tests drive the refusal at its source: sessionActionRecoveryError, read
 // with the same request-admission context the hub stamps on a real request

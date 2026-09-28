@@ -134,10 +134,14 @@ test("isResumeOnlyLocal is the notLoaded shape with no uncertain messages", () =
   expect(uncertain.fencedLocal).toBe(true);
 });
 
-// The press-time fence is method-aware: turn/start is the one method the hub
-// admits for a merely-resumable session, so a Send press is not refused for
-// that shape; every other action and every other session keeps the fence.
-test("the press fence exempts turn/start only for a merely-resumable local session", async () => {
+// The press fence is method-agnostic, and deliberately so: none of its callers
+// presses the send (the composer's submit runs decideSubmitRoute over
+// availabilityFor, which is where the resume-only carve-out lives - asserted
+// through pressRefusal below), and every verb it does guard - steer, the
+// queue-strip actions, the recovery-fenced built-ins - is one the hub refuses
+// for the obligation's whole window. So a merely-resumable session keeps the
+// fence here.
+test("the press fence keeps a merely-resumable local session fenced", async () => {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   const ref = "local:resume-only";
@@ -157,10 +161,7 @@ test("the press fence exempts turn/start only for a merely-resumable local sessi
   }));
   await threadsStore.getState().ensureThread(ref);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
-  // Send is offered, so its press-time reading agrees and does not refuse.
+  // Send is offered, so its own press-time reading agrees and does not refuse.
   expect(pressRefusal(ref, "send")).toBeUndefined();
-  // turn/start alone is exempt from the press fence; the bare call - every
-  // other action and state - still reads the fence.
-  expect(pressLocalRecoveryFenced(ref, "turn/start")).toBe(false);
   expect(pressLocalRecoveryFenced(ref)).toBe(true);
 });

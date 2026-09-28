@@ -88,12 +88,12 @@ export function recoveryFence(
 // The same fence as a press reads it: the obligation as the store holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press
 // rule - a Stop can arm the fence between the render that offered a control
-// and the press that follows). `method` names the action the press will run:
-// turn/start is the one method the hub admits for a merely-resumable session
-// (isResumeOnlyLocal), so it alone is exempt; a caller that names no method
-// gets the fence for every action and state.
-export function pressLocalRecoveryFenced(ref: string, method?: "turn/start"): boolean {
-  if (!isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))) return false;
-  if (method === "turn/start" && resumeOnlyLocalModel(ref)) return false;
-  return true;
+// and the press that follows). It is deliberately method-agnostic: none of its
+// callers presses the send (the composer's submit runs its own live read,
+// decideSubmitRoute over availabilityFor, which is where the resume-only
+// carve-out belongs), and every verb it does guard - steer, the queue-strip
+// actions, the recovery-fenced built-ins - is one the hub refuses for the
+// obligation's whole window, turn/start's carve-out notwithstanding.
+export function pressLocalRecoveryFenced(ref: string): boolean {
+  return isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref));
 }

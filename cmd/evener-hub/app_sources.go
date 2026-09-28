@@ -314,12 +314,16 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 
 // sessionAdmitsResumeRequired reports whether the request that carries ctx is a
 // turn/start for the same local session. Sending a prompt folds the resume into
-// the send — app_relay.go's prepareRelay auto-resumes a not-live session on
-// turn/start — so a session that only needs a resume is admitted rather than
-// refused with the explicit-resume fence. This is the ONLY carve-out: a Stop in
-// flight (Stopping > 0), a stale admission epoch, the connection fence, and an
-// incompatible daemon (daemonRestartRequiredError) are all still refused, and
-// every action other than turn/start keeps the fence unchanged.
+// the send: the admitted turn/start runs that resume explicitly — app_rpc.go's
+// resumeTurnStartThreadResume, the resume the turn/start handler runs before
+// its retry, which turnStartResumeExplicit selects and which clears the
+// ResumeRequired fence — so a session that only needs a resume is admitted
+// rather than refused with the explicit-resume fence. prepareRelay's automatic
+// resume is NOT this path; it refuses while the obligation stands. This is the
+// ONLY carve-out: a Stop in flight (Stopping > 0), a stale admission epoch, the
+// connection fence, and an incompatible daemon (daemonRestartRequiredError) are
+// all still refused, and every action other than turn/start keeps the fence
+// unchanged.
 func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool {
 	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
 	return ok && admission.admitResumeRequired && admission.sessionID == deletionThreadID(ref, threadID)
