@@ -3,12 +3,15 @@ package sessionlog
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/spf13/afero"
 )
 
 func TestSessionLog_AppendAndRead(t *testing.T) {
@@ -523,6 +526,76 @@ func TestSessionLog_LoadDoesNotModifyFile(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatalf("NewSessionLog modified the log:\n before=%q\n after =%q", before, after)
 	}
+}
+
+// TestSessionLog_PartialWriteErrorForcesSeparator covers a write that fails
+// after committing part of its bytes. A long-lived instance must not let the
+// next append concatenate onto that torn residue: the client saw an error for
+// the first append, and the following (successful) append must still survive a
+// reload.
+func TestSessionLog_PartialWriteErrorForcesSeparator(t *testing.T) {
+	t.Parallel()
+	const path = "/logs/session.jsonl"
+	mem := afero.NewMemMapFs()
+
+	// Seed a complete, newline-terminated record so the file starts well-formed.
+	seed := newSessionLogFaultLog(t, mem, path)
+	if err := seed.Append(SessionLogEntry{Turn: 1, Action: "shell", Summary: "seed", Outcome: "success"}); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+
+	// The first write on this instance commits half its bytes then errors.
+	fs := &partialWriteFS{Fs: mem, err: errors.New("short write"), remaining: 1}
+	log := newSessionLogFaultLog(t, fs, path)
+
+	if err := log.Append(SessionLogEntry{Turn: 2, Action: "shell", Summary: "failed", Outcome: "success"}); err == nil {
+		t.Fatal("expected the partial write to surface an error")
+	}
+
+	survivor := SessionLogEntry{Turn: 3, Action: "shell", Summary: "survivor", Outcome: "success"}
+	if err := log.Append(survivor); err != nil {
+		t.Fatalf("append after partial write: %v", err)
+	}
+
+	reloaded := newSessionLogFaultLog(t, mem, path)
+	entries := reloaded.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("reloaded Len() = %d, want 2 (seed + survivor); entries=%+v", len(entries), entries)
+	}
+	if entries[0].Summary != "seed" || entries[1].Summary != "survivor" {
+		t.Fatalf("reloaded entries = %+v, want seed then survivor", entries)
+	}
+}
+
+// partialWriteFS fails the first `remaining` append writes after committing
+// half of the requested bytes, modelling a short write interrupted mid-record.
+type partialWriteFS struct {
+	afero.Fs
+	err       error
+	remaining int
+}
+
+func (fs *partialWriteFS) OpenFile(path string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(path, flag, perm)
+	if err != nil || fs.remaining <= 0 {
+		return file, err
+	}
+	fs.remaining--
+	return &partialWriteFile{File: file, err: fs.err}, nil
+}
+
+type partialWriteFile struct {
+	afero.File
+	err error
+}
+
+func (f *partialWriteFile) Write(p []byte) (int, error) {
+	half := len(p) / 2
+	n, err := f.File.Write(p[:half])
+	if err != nil {
+		return n, err
+	}
+	return n, f.err
 }
 
 // mustNewSessionLog is a test helper that creates a SessionLog or fails the test.

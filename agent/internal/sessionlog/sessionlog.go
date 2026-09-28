@@ -167,6 +167,11 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 	}
 	record = append(record, data...)
 	record = append(record, '\n')
+	// A failed write may leave a partial record on disk, so assume a torn tail
+	// until this write succeeds: the next append then separates itself from the
+	// residue instead of concatenating onto it. A spurious separator when no
+	// bytes were written is a blank line the loader skips.
+	l.tornTail = true
 	if _, err := f.Write(record); err != nil {
 		return err
 	}
