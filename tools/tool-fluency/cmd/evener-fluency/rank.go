@@ -285,7 +285,7 @@ func readReviewLines(path string) ([]reviewLine, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	var out []reviewLine
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -426,9 +426,9 @@ func scoreReviews(key []rankKeyEntry, reviews []reviewLine) ([]rankScoreRow, err
 // them.
 func renderRankScoreTable(w io.Writer, rows []rankScoreRow) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "LABEL\tMODEL\tMEAN\tFIRST\tLAST\tN")
+	_, _ = fmt.Fprintln(tw, "LABEL\tMODEL\tMEAN\tFIRST\tLAST\tN")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%.2f\t%d\t%d\t%d\n", r.Label, r.Model, r.Mean(), r.FirstCount, r.LastCount, r.N)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%.2f\t%d\t%d\t%d\n", r.Label, r.Model, r.Mean(), r.FirstCount, r.LastCount, r.N)
 	}
 	return tw.Flush()
 }
@@ -455,7 +455,7 @@ func renderRankScoreDetail(w io.Writer, key []rankKeyEntry, reviews []reviewLine
 		for _, id := range rl.Ranking {
 			labels = append(labels, set[id].Label)
 		}
-		fmt.Fprintf(w, "Set %d (model=%s, task=%s): %s\n  why: %s\n", rl.Set, m.Model, m.Probe, strings.Join(labels, " > "), rl.Why)
+		_, _ = fmt.Fprintf(w, "Set %d (model=%s, task=%s): %s\n  why: %s\n", rl.Set, m.Model, m.Probe, strings.Join(labels, " > "), rl.Why)
 	}
 }
 

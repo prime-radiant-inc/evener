@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -50,9 +51,11 @@ func loadVersionManifest(path string) (versionManifest, error) {
 }
 
 // runGit runs a git subcommand against repo and returns its combined output,
-// wrapping a failure with the exact command and output that failed.
-func runGit(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+// wrapping a failure with the exact command and output that failed. ctx comes
+// from the caller, the way the runner's other exec.CommandContext calls do,
+// rather than each git call inventing its own background context.
+func runGit(ctx context.Context, repo string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -63,8 +66,8 @@ func runGit(repo string, args ...string) (string, error) {
 // resolveManifestCommit resolves ref to a commit sha in repo. A ref that does
 // not resolve names both the label and the ref in its error, so a manifest
 // with one bad entry fails loudly instead of silently building the rest.
-func resolveManifestCommit(repo, label, ref string) (string, error) {
-	out, err := runGit(repo, "rev-parse", "--verify", ref+"^{commit}")
+func resolveManifestCommit(ctx context.Context, repo, label, ref string) (string, error) {
+	out, err := runGit(ctx, repo, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("version %q: ref %q does not resolve to a commit in %s: %w", label, ref, repo, err)
 	}
@@ -75,8 +78,8 @@ func resolveManifestCommit(repo, label, ref string) (string, error) {
 // version-manifest build must record exactly which commits it measured, and a
 // dirty working tree makes it ambiguous whether the caller meant a committed
 // ref or their pending edits.
-func checkRepoClean(repo string) error {
-	out, err := runGit(repo, "status", "--porcelain")
+func checkRepoClean(ctx context.Context, repo string) error {
+	out, err := runGit(ctx, repo, "status", "--porcelain")
 	if err != nil {
 		return err
 	}
@@ -99,7 +102,7 @@ func checkRepoClean(repo string) error {
 // each writes its build to its own temp file before renaming it into the
 // shared cache path, so a half-written build can never look like a cache
 // hit; if two calls race, they simply both build and the later rename wins.
-func buildVersionFromManifest(repo, cacheDir, sha, pkg string) (string, error) {
+func buildVersionFromManifest(ctx context.Context, repo, cacheDir, sha, pkg string) (string, error) {
 	destDir := filepath.Join(cacheDir, sha, safeName(pkg))
 	bin := filepath.Join(destDir, "evener")
 	if info, err := os.Stat(bin); err == nil && !info.IsDir() {
@@ -115,11 +118,11 @@ func buildVersionFromManifest(repo, cacheDir, sha, pkg string) (string, error) {
 	}
 	defer func() { _ = os.RemoveAll(holder) }()
 	wt := filepath.Join(holder, "worktree")
-	if _, err := runGit(repo, "worktree", "add", "--detach", "--force", wt, sha); err != nil {
+	if _, err := runGit(ctx, repo, "worktree", "add", "--detach", "--force", wt, sha); err != nil {
 		return "", err
 	}
 	defer func() {
-		_, _ = runGit(repo, "worktree", "remove", "--force", wt)
+		_, _ = runGit(ctx, repo, "worktree", "remove", "--force", wt)
 	}()
 
 	// os.CreateTemp allocates a unique name atomically, so two concurrent
@@ -143,7 +146,7 @@ func buildVersionFromManifest(repo, cacheDir, sha, pkg string) (string, error) {
 	}
 	defer func() { _ = os.Remove(tmpPath) }() // no-op once renamed into bin
 
-	cmd := exec.Command("go", "build", "-o", tmpPath, pkg)
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", tmpPath, pkg)
 	cmd.Dir = wt
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -160,19 +163,19 @@ func buildVersionFromManifest(repo, cacheDir, sha, pkg string) (string, error) {
 // repo, in a deterministic label order, failing loudly on the first dirty
 // repo or unresolved ref rather than building some versions and skipping
 // others silently.
-func versionsFromManifest(repo, cacheDir, pkg string, m versionManifest) ([]matrixVersion, error) {
-	if err := checkRepoClean(repo); err != nil {
+func versionsFromManifest(ctx context.Context, repo, cacheDir, pkg string, m versionManifest) ([]matrixVersion, error) {
+	if err := checkRepoClean(ctx, repo); err != nil {
 		return nil, err
 	}
 	labels := slices.Sorted(maps.Keys(m.Versions))
 	out := make([]matrixVersion, 0, len(labels))
 	for _, label := range labels {
 		ref := m.Versions[label]
-		sha, err := resolveManifestCommit(repo, label, ref)
+		sha, err := resolveManifestCommit(ctx, repo, label, ref)
 		if err != nil {
 			return nil, err
 		}
-		bin, err := buildVersionFromManifest(repo, cacheDir, sha, pkg)
+		bin, err := buildVersionFromManifest(ctx, repo, cacheDir, sha, pkg)
 		if err != nil {
 			return nil, fmt.Errorf("version %q (%s@%s): %w", label, ref, sha, err)
 		}

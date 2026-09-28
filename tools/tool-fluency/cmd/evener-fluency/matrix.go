@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -108,7 +109,7 @@ func runMatrixCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		built, err := versionsFromManifest(*repo, *versionCache, *buildPackage, manifest)
+		built, err := versionsFromManifest(context.Background(), *repo, *versionCache, *buildPackage, manifest)
 		if err != nil {
 			return err
 		}

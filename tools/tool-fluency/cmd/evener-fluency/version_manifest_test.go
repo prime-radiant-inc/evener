@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,13 +79,13 @@ func TestLoadVersionManifestRefusesEmptyOrMalformed(t *testing.T) {
 func TestResolveManifestCommitResolvesRefsAndRefusesMissingOnes(t *testing.T) {
 	t.Parallel()
 	repo, firstSHA, secondSHA := manifestFixtureRepo(t)
-	if got, err := resolveManifestCommit(repo, "v0", "main"); err != nil || got != secondSHA {
+	if got, err := resolveManifestCommit(context.Background(), repo, "v0", "main"); err != nil || got != secondSHA {
 		t.Errorf("resolveManifestCommit(main) = %q, %v; want %q", got, err, secondSHA)
 	}
-	if got, err := resolveManifestCommit(repo, "v1-A", "other"); err != nil || got != firstSHA {
+	if got, err := resolveManifestCommit(context.Background(), repo, "v1-A", "other"); err != nil || got != firstSHA {
 		t.Errorf("resolveManifestCommit(other) = %q, %v; want %q", got, err, firstSHA)
 	}
-	_, err := resolveManifestCommit(repo, "v2", "does-not-exist")
+	_, err := resolveManifestCommit(context.Background(), repo, "v2", "does-not-exist")
 	if err == nil || !strings.Contains(err.Error(), "v2") || !strings.Contains(err.Error(), "does-not-exist") {
 		t.Errorf("resolveManifestCommit(missing) = %v, want a refusal naming the label and ref", err)
 	}
@@ -93,11 +94,11 @@ func TestResolveManifestCommitResolvesRefsAndRefusesMissingOnes(t *testing.T) {
 func TestCheckRepoCleanRefusesUncommittedChanges(t *testing.T) {
 	t.Parallel()
 	repo, _, _ := manifestFixtureRepo(t)
-	if err := checkRepoClean(repo); err != nil {
+	if err := checkRepoClean(context.Background(), repo); err != nil {
 		t.Fatalf("checkRepoClean(clean repo) = %v, want nil", err)
 	}
 	mustWrite(t, filepath.Join(repo, "cmd", "fake", "main.go"), "package main\n\nfunc main() { println(\"dirty\") }\n")
-	err := checkRepoClean(repo)
+	err := checkRepoClean(context.Background(), repo)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted") {
 		t.Fatalf("checkRepoClean(dirty repo) = %v, want a refusal naming uncommitted changes", err)
 	}
@@ -107,7 +108,7 @@ func TestBuildVersionFromManifestBuildsAndCachesByCommit(t *testing.T) {
 	t.Parallel()
 	repo, firstSHA, secondSHA := manifestFixtureRepo(t)
 	cache := t.TempDir()
-	bin, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+	bin, err := buildVersionFromManifest(context.Background(), repo, cache, secondSHA, "./cmd/fake")
 	if err != nil {
 		t.Fatalf("buildVersionFromManifest: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestBuildVersionFromManifestBuildsAndCachesByCommit(t *testing.T) {
 	}
 	// A second build of the same commit reuses the cached binary instead of
 	// rebuilding: its mtime does not move.
-	again, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+	again, err := buildVersionFromManifest(context.Background(), repo, cache, secondSHA, "./cmd/fake")
 	if err != nil {
 		t.Fatalf("buildVersionFromManifest (again): %v", err)
 	}
@@ -132,7 +133,7 @@ func TestBuildVersionFromManifestBuildsAndCachesByCommit(t *testing.T) {
 		t.Errorf("buildVersionFromManifest rebuilt an already-cached commit: %s vs %s", bin, again)
 	}
 	// A different commit gets its own cached binary.
-	otherBin, err := buildVersionFromManifest(repo, cache, firstSHA, "./cmd/fake")
+	otherBin, err := buildVersionFromManifest(context.Background(), repo, cache, firstSHA, "./cmd/fake")
 	if err != nil {
 		t.Fatalf("buildVersionFromManifest (other commit): %v", err)
 	}
@@ -159,11 +160,11 @@ func TestBuildVersionFromManifestCachesSeparatelyPerPackage(t *testing.T) {
 	t.Parallel()
 	repo, _, secondSHA := manifestFixtureRepo(t)
 	cache := t.TempDir()
-	binFake, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+	binFake, err := buildVersionFromManifest(context.Background(), repo, cache, secondSHA, "./cmd/fake")
 	if err != nil {
 		t.Fatalf("buildVersionFromManifest(./cmd/fake): %v", err)
 	}
-	binFake2, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake2")
+	binFake2, err := buildVersionFromManifest(context.Background(), repo, cache, secondSHA, "./cmd/fake2")
 	if err != nil {
 		t.Fatalf("buildVersionFromManifest(./cmd/fake2): %v", err)
 	}
@@ -197,11 +198,11 @@ func TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed(t *test
 	bins := make([]string, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			bins[i], errs[i] = buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+			bins[i], errs[i] = buildVersionFromManifest(context.Background(), repo, cache, secondSHA, "./cmd/fake")
 		}(i)
 	}
 	wg.Wait()
@@ -230,7 +231,7 @@ func TestVersionsFromManifestResolvesAndRefusesADirtyRepo(t *testing.T) {
 	repo, firstSHA, secondSHA := manifestFixtureRepo(t)
 	cache := t.TempDir()
 	m := versionManifest{Versions: map[string]string{"v0": "main", "v1-A": "other"}}
-	versions, err := versionsFromManifest(repo, cache, "./cmd/fake", m)
+	versions, err := versionsFromManifest(context.Background(), repo, cache, "./cmd/fake", m)
 	if err != nil {
 		t.Fatalf("versionsFromManifest: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestVersionsFromManifestResolvesAndRefusesADirtyRepo(t *testing.T) {
 	_ = secondSHA
 
 	mustWrite(t, filepath.Join(repo, "untracked.txt"), "dirty\n")
-	_, err = versionsFromManifest(repo, cache, "./cmd/fake", m)
+	_, err = versionsFromManifest(context.Background(), repo, cache, "./cmd/fake", m)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted") {
 		t.Fatalf("versionsFromManifest(dirty repo) = %v, want a refusal", err)
 	}
