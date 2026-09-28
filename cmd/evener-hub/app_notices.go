@@ -77,11 +77,14 @@ func (n *hubNotices) signInNotices() ([]appwire.HubNotice, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessions := n.liveSessionsByProfile()
+	var sessions map[string]int
 	var notices []appwire.HubNotice
 	for _, provider := range list.Providers {
 		if !provider.NeedsLogin {
 			continue
+		}
+		if sessions == nil {
+			sessions = n.liveSessionsByProfile()
 		}
 		notices = append(notices, appwire.HubNotice{
 			ID:               appwire.NoticeKindSignInRequired + ":" + provider.Provider,
