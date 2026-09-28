@@ -23,6 +23,13 @@ export interface DocFileContent {
   // truncated it (from the X-Doc-Total-Size header). Lets the pane say
   // exactly how much was elided, not just that something was.
   totalBytes?: number;
+  // The version this read served (S9): the sha256 of the whole file, from the
+  // response's ETag. Absent from a hub without S9 and for a file too large to
+  // hash (cmd/evener-hub/doc_serve.go docRevisionMaxBytes), so a caller falls
+  // back to comparing what it was shown.
+  revision?: string;
+  // When the file was last modified, in Unix milliseconds (X-Doc-Modified-At).
+  modifiedAt?: number;
 }
 
 // The server reads at most this many bytes into a doc pane and never streams
@@ -125,7 +132,26 @@ export async function readDocFile(session: string, path: string, port: DocPort):
   const parsedTotal = totalHeader === null ? Number.NaN : Number.parseInt(totalHeader, 10);
   const totalBytes = Number.isFinite(parsedTotal) ? parsedTotal : undefined;
   const text = binary ? "" : new TextDecoder().decode(buf);
-  return { text, binary, mediaType, truncated, sizeBytes, totalBytes };
+  const revision = etagRevision(res.headers.get("ETag"));
+  const modifiedAt = Number(res.headers.get("X-Doc-Modified-At") ?? Number.NaN);
+  return {
+    text,
+    binary,
+    mediaType,
+    truncated,
+    sizeBytes,
+    totalBytes,
+    ...(revision === undefined ? {} : { revision }),
+    ...(Number.isSafeInteger(modifiedAt) && modifiedAt > 0 ? { modifiedAt } : {}),
+  };
+}
+
+// etagRevision reads the revision out of an ETag. The hub sends the whole
+// file's sha256 as a strong tag (cmd/evener-hub/doc_serve.go writeDocFileRaw),
+// so only a quoted 64-character lowercase hex tag names one; a weak tag, or any
+// other, is no information.
+function etagRevision(etag: string | null): string | undefined {
+  return /^"([0-9a-f]{64})"$/.exec(etag?.trim() ?? "")?.[1];
 }
 
 // docImageURL builds the /doc/image href for a session-scoped, cwd-relative

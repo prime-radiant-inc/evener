@@ -158,6 +158,53 @@ describe("readDocFile", () => {
     expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
   });
 
+  test("the revision comes from the ETag and the modification time from X-Doc-Modified-At (S9)", async () => {
+    const port = respondWith(
+      new Response("# Plan", {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          ETag: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"',
+          "X-Doc-Modified-At": "1790000000123",
+        },
+      }),
+    );
+    const doc = await readDocFile("s1", "plan.md", port);
+    expect(doc.revision).toBe("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08");
+    expect(doc.modifiedAt).toBe(1790000000123);
+  });
+
+  test("only a strong sha256 ETag names a revision; any other tag is no information", async () => {
+    // The hub sends the whole file's sha256 as a strong tag. A weak tag, or one
+    // that is not a sha256, could name a version the file does not have, so
+    // the caller falls back to comparing what it was shown.
+    const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    for (const etag of [`W/"${sha}"`, '"abc123"', sha, `"${sha.toUpperCase()}"`]) {
+      const port = respondWith(
+        new Response("x", { headers: { "Content-Type": "text/plain; charset=utf-8", ETag: etag } }),
+      );
+      expect("revision" in (await readDocFile("s1", "x.txt", port))).toBe(false);
+    }
+  });
+
+  test("a hub without S9, or a file past the hash limit, names no revision and no time", async () => {
+    // Absent keys, not empty ones: the phone's fallback keys on absence.
+    const port = respondWith(new Response("x", { headers: headers("text/plain; charset=utf-8") }));
+    const doc = await readDocFile("s1", "x.txt", port);
+    expect("revision" in doc).toBe(false);
+    expect("modifiedAt" in doc).toBe(false);
+  });
+
+  test("a malformed ETag or modification time is no information", async () => {
+    const port = respondWith(
+      new Response("x", {
+        headers: { "Content-Type": "text/plain; charset=utf-8", ETag: '""', "X-Doc-Modified-At": "yesterday" },
+      }),
+    );
+    const doc = await readDocFile("s1", "x.txt", port);
+    expect("revision" in doc).toBe(false);
+    expect("modifiedAt" in doc).toBe(false);
+  });
+
   test("a 403 (path escapes the session cwd) rejects with a forbidden DocFileError", async () => {
     const port = respondWith(new Response("forbidden", { status: 403 }));
     await expect(readDocFile("s1", "../etc/passwd", port)).rejects.toMatchObject({
