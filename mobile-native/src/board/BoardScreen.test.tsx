@@ -997,6 +997,20 @@ it("narrows results to live sessions in the Live scope", async () => {
 	act(() => tree.unmount());
 });
 
+it("lists a live session once when the hub's past results name it too", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// The real hub's past index holds live sessions' records too.
+	connect(id, hub({ ...fleet, searchOnly: [finished] }).client, "ready");
+	const tree = await mount(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	expect(texts(tree)).toContain("SESSIONS · 1");
+	act(() => tree.unmount());
+});
+
 it("holds a scope picked before you type", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
