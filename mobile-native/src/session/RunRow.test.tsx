@@ -151,7 +151,9 @@ describe("a step's evidence", () => {
 		expect(shown(tree.root)).toEqual([]);
 		expect(chevrons(tree.root)).toEqual(["chevron.right"]);
 		act(() => shell.props.onPress());
-		expect(shown(tree.root).map((node) => [node.props.step, node.props.hubId])).toEqual([[withOutput.steps[0], "hub-1"]]);
+		expect(shown(tree.root).map((node) => [node.props.step, node.props.evidence, node.props.hubId])).toEqual([
+			[withOutput.steps[0], [{ kind: "output", text: "ok", lines: 1 }], "hub-1"],
+		]);
 		expect(chevrons(tree.root)).toEqual(["chevron.down"]);
 		act(() => line(tree.root, "shell, go test, done").props.onPress());
 		expect(shown(tree.root)).toEqual([]);
