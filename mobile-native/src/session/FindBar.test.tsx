@@ -1,0 +1,91 @@
+// The find bar (spec 8.7; ruling 29): the field, where you are among the
+// matches, the two step buttons and Done. Only native edges are mocked.
+import type { ComponentProps } from "react";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { paletteFor } from "../design/tokens";
+import { pressable, render, textOf } from "../renderNative.testkit";
+import { FindBar } from "./FindBar";
+
+vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+const palette = paletteFor("light");
+
+function bar(over: Partial<ComponentProps<typeof FindBar>> = {}) {
+	const props = {
+		query: "settle",
+		label: "2 of 3",
+		searchingOlder: false,
+		onQuery: vi.fn(),
+		onStep: vi.fn(),
+		onDone: vi.fn(),
+		...over,
+	};
+	return { props, tree: render(<FindBar {...props} />) };
+}
+
+function field(tree: ReactTestRenderer): ReactTestInstance {
+	return tree.root.find((node) => String(node.type) === "TextInput");
+}
+
+function text(tree: ReactTestRenderer, words: string): ReactTestInstance | undefined {
+	return tree.root.findAll((node) => String(node.type) === "Text" && textOf(node) === words)[0];
+}
+
+describe("the find bar", () => {
+	it("holds a focused field that finds in the session", () => {
+		const { tree } = bar();
+		expect(field(tree).props).toMatchObject({
+			placeholder: "Find in session",
+			accessibilityLabel: "Find in session",
+			autoFocus: true,
+			value: "settle",
+		});
+	});
+
+	it("says where you are among the matches, in tabular ink-mid captions", () => {
+		const { tree } = bar();
+		expect(text(tree, "2 of 3")?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: palette.inkMid,
+			fontVariant: ["tabular-nums"],
+		});
+	});
+
+	it("says so while it searches older messages", () => {
+		const { tree } = bar({ searchingOlder: true });
+		expect(text(tree, "Searching older messages…")).toBeDefined();
+		expect(text(tree, "2 of 3")).toBeUndefined();
+	});
+
+	it("steps to the older and the newer match", () => {
+		const { props, tree } = bar();
+		const older = pressable(tree, "Older match");
+		const newer = pressable(tree, "Newer match");
+		expect(older?.findByType("SymbolView" as never).props.name).toBe("chevron.up");
+		expect(newer?.findByType("SymbolView" as never).props.name).toBe("chevron.down");
+		act(() => older?.props.onPress());
+		act(() => newer?.props.onPress());
+		expect(vi.mocked(props.onStep).mock.calls).toEqual([[-1], [1]]);
+	});
+
+	it("offers no steps with nothing to find", () => {
+		const { tree } = bar({ query: "  ", label: "No matches" });
+		expect(pressable(tree, "Older match")?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(pressable(tree, "Newer match")?.props.accessibilityState).toMatchObject({ disabled: true });
+	});
+
+	it("passes what you type", () => {
+		const { props, tree } = bar();
+		act(() => field(tree).props.onChangeText("flaky"));
+		expect(props.onQuery).toHaveBeenCalledWith("flaky");
+	});
+
+	it("closes with Done", () => {
+		const { props, tree } = bar();
+		act(() => pressable(tree, "Done")?.props.onPress());
+		expect(props.onDone).toHaveBeenCalledTimes(1);
+	});
+});

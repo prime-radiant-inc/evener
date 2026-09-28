@@ -20,6 +20,12 @@ import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { ActionSheetIOS } from "react-native";
+import type {
+	NativeStackHeaderItemMenu,
+	NativeStackHeaderItemMenuAction,
+	NativeStackNavigationOptions,
+} from "@react-navigation/native-stack";
+import { paletteFor } from "./design/tokens";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -261,7 +267,13 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
+function hubClient(
+	served: Thread,
+	failedReads = 0,
+	readLatencyMs = 0,
+	olderCursor?: string,
+	olderTurns: unknown[] = [],
+) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
@@ -290,7 +302,8 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
-			if (method === "thread/turns/list") return { data: [] };
+			// The page before the first read: older turns, and the start of history.
+			if (method === "thread/turns/list") return { data: olderTurns };
 			if (method === "model/list")
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
@@ -338,9 +351,15 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 
 async function mount(
 	served: Thread,
-	{ failedReads = 0, readLatencyMs = 0, settled = true, olderCursor = undefined as string | undefined } = {},
+	{
+		failedReads = 0,
+		readLatencyMs = 0,
+		settled = true,
+		olderCursor = undefined as string | undefined,
+		olderTurns = [] as unknown[],
+	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		error: null,
@@ -685,18 +704,22 @@ it("holds Stop while a queued message is handed to the outbox", async () => {
 });
 
 // Two finished turns, each your message and the agent's reply.
-function twoTurns(ref: string): Thread {
-	const served = thread(ref, "idle");
-	const turn = (id: string) => ({
+/** A settled turn: your ask, then the agent's reply. */
+function askReplyTurn(id: string, ask = `ask ${id}`, reply = `reply ${id}`) {
+	return {
 		id,
 		status: "completed",
 		itemsView: "default",
 		items: [
-			{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: `ask ${id}` },
-			{ id: `a-${id}`, turnId: id, type: "agentMessage", status: "completed", text: `reply ${id}` },
+			{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: ask },
+			{ id: `a-${id}`, turnId: id, type: "agentMessage", status: "completed", text: reply },
 		],
-	});
-	(served as unknown as { turns: unknown[] }).turns = [turn("turn_1"), turn("turn_2")];
+	};
+}
+
+function twoTurns(ref: string): Thread {
+	const served = thread(ref, "idle");
+	(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1"), askReplyTurn("turn_2")];
 	return served;
 }
 
@@ -1497,5 +1520,126 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		act(() => host?.choose("/goal"));
 		await flush();
 		expect(field(tree)?.props.value).toBe("/goal hello");
+	});
+});
+
+describe("Find in session (spec 8.7, ruling 29)", () => {
+	const palette = paletteFor("light");
+
+	function findTurns(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1", "Fix the flaky Settle test", "The race is in settle."),
+			askReplyTurn("turn_2", "Anything else?", "Nothing else."),
+		];
+		return served;
+	}
+
+	/** Chooses an item in the ⋯ menu the screen set last. */
+	function chooseMenu(label: string) {
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
+		const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
+		const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
+		if (!found) throw new Error(`no ${label} in the header menu`);
+		act(() => found.onPress());
+	}
+
+	function findField(tree: ReactTestRenderer) {
+		return tree.root
+			.findAll((node) => String(node.type) === "TextInput")
+			.find((node) => node.props.accessibilityLabel === "Find in session");
+	}
+
+	async function search(tree: ReactTestRenderer, query: string) {
+		const input = findField(tree);
+		if (!input) throw new Error("no find field");
+		act(() => input.props.onChangeText(query));
+		await settle();
+	}
+
+	const findScrolls = () =>
+		flatListCalls
+			.filter((call) => call.method === "scrollToIndex")
+			.map((call) => call.args as { index: number; viewPosition?: number })
+			.filter((args) => args.viewPosition === 0.3)
+			.map((args) => args.index);
+
+	/** The words of the rows washed as the current match: your messages'
+	 * text and the agent's markdown. */
+	const washed = (tree: ReactTestRenderer) =>
+		tree.root
+			.findAll((node) => String(node.type) === "View" && node.props.style?.backgroundColor === palette.accentBg)
+			.map((node) =>
+				node
+					.findAll((child) => String(child.type) === "Text" || String(child.type) === "EnrichedMarkdownText")
+					.map((child) => (String(child.type) === "Text" ? textOf(child) : String(child.props.markdown)))
+					.join(" "),
+			);
+
+	it("puts the find bar where the chips were, and Done brings them back", async () => {
+		const { tree } = await mount(findTurns("ref-find-open"));
+		expect(findField(tree)).toBeUndefined();
+		chooseMenu("Find in session");
+		await settle();
+		expect(findField(tree)?.props.autoFocus).toBe(true);
+		act(() => pressable(tree, "Done")?.props.onPress());
+		await settle();
+		expect(findField(tree)).toBeUndefined();
+	});
+
+	it("shows the newest match first, then steps older and newer, washing the current row", async () => {
+		const { tree } = await mount(findTurns("ref-find-step"));
+		chooseMenu("Find in session");
+		flatListCalls.length = 0;
+		await search(tree, "settle");
+		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
+		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findScrolls()).toEqual([1]);
+		expect(washed(tree).join(" ")).toContain("The race is in settle.");
+		await press(tree, "Older match");
+		expect(renderedText(tree)).toContain("1 of 2");
+		expect(findScrolls()).toEqual([1, 0]);
+		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
+		await press(tree, "Newer match");
+		expect(renderedText(tree)).toContain("2 of 2");
+		act(() => pressable(tree, "Done")?.props.onPress());
+		await settle();
+		expect(washed(tree)).toEqual([]);
+	});
+
+	it("says so when nothing matches", async () => {
+		const { tree } = await mount(findTurns("ref-find-none"));
+		chooseMenu("Find in session");
+		await search(tree, "nowhere");
+		expect(renderedText(tree)).toContain("No matches");
+	});
+
+	it("reaches back through older history for an older match", async () => {
+		const { tree, hub } = await mount(findTurns("ref-find-older"), {
+			olderCursor: "cursor-1",
+			olderTurns: [askReplyTurn("turn_0", "Is settle flaky?", "Sometimes.")],
+		});
+		chooseMenu("Find in session");
+		await search(tree, "settle");
+		expect(renderedText(tree)).toContain("2 of 2");
+		await press(tree, "Older match");
+		await press(tree, "Older match");
+		expect(hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor)).toEqual([
+			"cursor-1",
+		]);
+		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
+		expect(renderedText(tree)).toContain("1 of 3");
+	});
+
+	it("says there are no older matches once history ends", async () => {
+		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
+		chooseMenu("Find in session");
+		await search(tree, "settle");
+		await press(tree, "Older match");
+		await press(tree, "Older match");
+		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+		expect(renderedText(tree)).toContain("No older matches");
+		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 	});
 });

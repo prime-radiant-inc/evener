@@ -12,7 +12,7 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
+	| { kind: "find" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
@@ -55,6 +55,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	};
 	const entries: Entry[] = [
 		levels,
+		item("Find in session", "find"),
 		...(input.hasSubagents ? [item("Subagents", "subagents")] : []),
 		...(input.connected ? [item("Tasks", "tasks")] : []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),

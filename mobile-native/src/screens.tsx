@@ -145,6 +145,8 @@ import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
+import { FindBar } from "./session/FindBar";
+import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import {
 	configForLevel,
 	currentLevel,
@@ -190,6 +192,16 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
+
+/** Find in session while it's open: what you typed, the current match's
+ * reader key, whether older history is being searched, and whether that
+ * search reached the start of history with nothing older. */
+interface FindState {
+	query: string;
+	key: string | null;
+	seeking: boolean;
+	exhausted: boolean;
+}
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -576,6 +588,9 @@ export function ConversationScreen({
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+	// Find in session (ruling 29), open while non-null. The current match is
+	// remembered by its row's reader key, since older pages prepend rows.
+	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
@@ -1221,6 +1236,9 @@ export function ConversationScreen({
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
+			case "find":
+				setFind({ query: "", key: null, seeking: false, exhausted: false });
+				return;
 			case "subagents":
 			case "tasks":
 			case "notes":
@@ -1471,6 +1489,75 @@ export function ConversationScreen({
 				// Keep failed page attempts guarded until a binding or route reset.
 			});
 	}
+	const findQuery = find?.query ?? "";
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery),
+		[timelineRows, findQuery],
+	);
+	const findKey = find?.key ?? null;
+	const findIndex =
+		findKey === null
+			? null
+			: timelineRows.findIndex((row) => readerKey(row) === findKey);
+	const findCurrent = findIndex === null || findIndex < 0 ? null : findIndex;
+	function stepFind(direction: 1 | -1) {
+		if (!find) return;
+		const next = stepMatch(findHits, findCurrent, direction);
+		if (next !== null)
+			setFind({
+				...find,
+				key: readerKey(timelineRows[next]),
+				seeking: false,
+				exhausted: false,
+			});
+		// Nothing older is loaded: look in older history.
+		else if (direction === -1)
+			setFind({ ...find, seeking: true, exhausted: false });
+	}
+	// While seeking, find the newest match older than the current one (or
+	// the newest of all), loading one older page at a time until a match
+	// appears or history ends.
+	useEffect(() => {
+		if (!find?.seeking) return;
+		const next = stepMatch(findHits, findCurrent, -1);
+		if (next !== null) {
+			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
+			return;
+		}
+		if (snapshot.loadingOlder) return;
+		const cursor = snapshot.olderCursor;
+		if (!cursor) {
+			// Stepped past the oldest match: say so. With none at all, the
+			// label already reads "No matches".
+			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
+			return;
+		}
+		// Offline, or this page already failed: stop, and the next step asks again.
+		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
+			setFind({ ...find, seeking: false });
+			return;
+		}
+		loadOlderPage();
+	});
+	// The current match comes into view, 30% down the list.
+	const findScroll = useRef<"jump" | "retry" | null>(null);
+	function scrollToFindMatch(index: number, attempt: "jump" | "retry") {
+		readerLatest.current = false;
+		readerHeader.current = false;
+		// The reading position follows the jump, so nothing pulls the list back.
+		captureSuppressed.current = false;
+		findScroll.current = attempt;
+		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
+		findScroll.current = null;
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
+	useEffect(() => {
+		if (findCurrent !== null) scrollToFindMatch(findCurrent, "jump");
+	}, [findKey]);
+	// Leaving the screen closes find.
+	useEffect(() => {
+		if (!focused) setFind(null);
+	}, [focused]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -2599,8 +2686,8 @@ export function ConversationScreen({
 
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the
-	// composer's selection, the reader keying, a sheet opening), so it does not
-	// rebuild every visible transcript cell for them.
+	// reader keying, a sheet opening), so it does not rebuild every visible
+	// transcript cell for them.
 	const renderItem = useCallback(
 		({ item, index }: { item: TimelineRow; index: number }) => (
 			<View
@@ -2608,35 +2695,51 @@ export function ConversationScreen({
 					paddingBottom: timelineGap(item, timelineRows[index + 1]),
 				}}
 			>
-				<TimelineItem
-					item={item}
-					hubId={route.params.hubId}
-					sessionRef={route.params.ref}
-					activityPresentation={presentation.activityPresentation.get(item.id)}
-					expandByDefault={presentation.expandByDefault}
-					showDuration={presentation.showDuration}
-					fork={
-						snapshot.conversation?.capabilities?.forkFromTurn
-							? forkMessage
+				<View
+					style={
+						findKey !== null && readerKey(item) === findKey
+							? {
+									// The current match (ruling 29): blue means selected.
+									backgroundColor: colors.palette.accentBg,
+									borderRadius: 12,
+									marginHorizontal: -8,
+									paddingHorizontal: 8,
+								}
 							: undefined
 					}
-					forkDisabled={!connected || !focused || snapshot.status !== "open"}
-					quote={quote}
-					live={item.id === liveRun}
-					delegates={conversation?.delegates}
-					openSubagent={openSubagent}
-					answerFor={answerFor}
-					errorActionFor={(row) =>
-						conversation
-							? // Retry shows only when a press would send.
-								errorAction(row, conversation, liveSendKind() !== null)
-							: null
-					}
-					onErrorAction={runErrorAction}
-				/>
+				>
+					<TimelineItem
+						item={item}
+						hubId={route.params.hubId}
+						sessionRef={route.params.ref}
+						activityPresentation={presentation.activityPresentation.get(item.id)}
+						expandByDefault={presentation.expandByDefault}
+						showDuration={presentation.showDuration}
+						fork={
+							snapshot.conversation?.capabilities?.forkFromTurn
+								? forkMessage
+								: undefined
+						}
+						forkDisabled={!connected || !focused || snapshot.status !== "open"}
+						quote={quote}
+						live={item.id === liveRun}
+						delegates={conversation?.delegates}
+						openSubagent={openSubagent}
+						answerFor={answerFor}
+						errorActionFor={(row) =>
+							conversation
+								? // Retry shows only when a press would send.
+									errorAction(row, conversation, liveSendKind() !== null)
+								: null
+						}
+						onErrorAction={runErrorAction}
+					/>
+				</View>
 			</View>
 		),
 		[
+			findKey,
+			colors.palette.accentBg,
 			timelineRows,
 			route.params.hubId,
 			route.params.ref,
@@ -2803,6 +2906,19 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
+								// A match beyond the rendered rows: move near it, so it
+								// renders, then try once more.
+								if (findScroll.current === "jump") {
+									timeline.current?.scrollToOffset({
+										offset: index * Math.max(1, averageItemLength),
+										animated: false,
+									});
+									requestAnimationFrame(() =>
+										scrollToFindMatch(index, "retry"),
+									);
+									return;
+								}
+								if (findScroll.current === "retry") return;
 								const anchor = readerAnchor.current;
 								const targetIndex = anchor
 									? resolveReaderAnchor(anchor, timelineRows)
@@ -2891,6 +3007,34 @@ export function ConversationScreen({
 							<SessionHeader
 								status={connectionText}
 								chips={chips}
+								find={
+									find ? (
+										<FindBar
+											query={find.query}
+											label={
+												find.exhausted
+													? "No older matches"
+													: find.query.trim()
+														? matchLabel(findHits, findCurrent)
+														: ""
+											}
+											searchingOlder={find.seeking}
+											onQuery={(query) =>
+												setFind({
+													query,
+													key: null,
+													seeking: query.trim() !== "",
+													exhausted: false,
+												})
+											}
+											onStep={stepFind}
+											onDone={() => {
+												Keyboard.dismiss();
+												setFind(null);
+											}}
+										/>
+									) : undefined
+								}
 								hidden={headerHiding.hidden}
 								onChip={openChip}
 								notes={
