@@ -1497,9 +1497,9 @@ export function ConversationScreen({
 	const findKey = find?.key ?? null;
 	const findIndex =
 		findKey === null
-			? null
+			? -1
 			: timelineRows.findIndex((row) => readerKey(row) === findKey);
-	const findCurrent = findIndex === null || findIndex < 0 ? null : findIndex;
+	const findCurrent = findIndex < 0 ? null : findIndex;
 	function stepFind(direction: 1 | -1) {
 		if (!find) return;
 		const next = stepMatch(findHits, findCurrent, direction);
