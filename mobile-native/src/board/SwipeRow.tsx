@@ -87,6 +87,9 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 			<Text style={{ color: palette.page, fontSize: 13, fontWeight: "600" }}>{action.label}</Text>
 		</Pressable>
 	);
+	const panel = (actions: readonly SwipeAction[]) => () => (
+		<View style={{ flexDirection: "row" }}>{actions.map((action) => button(action))}</View>
+	);
 	return (
 		<ReanimatedSwipeable
 			ref={swipeable}
@@ -94,12 +97,8 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 			// gesture keeps drags that begin there (spec 7.3).
 			hitSlop={{ left: -EDGE_ZONE_PT }}
 			leftThreshold={width / 2}
-			renderLeftActions={leading ? () => <View style={{ flexDirection: "row" }}>{button(leading)}</View> : undefined}
-			renderRightActions={
-				trailing.length > 0
-					? () => <View style={{ flexDirection: "row" }}>{trailing.map((action) => button(action))}</View>
-					: undefined
-			}
+			renderLeftActions={leading ? panel([leading]) : undefined}
+			renderRightActions={trailing.length > 0 ? panel(trailing) : undefined}
 			onSwipeableOpenStartDrag={() => onActiveChange?.(true)}
 			onSwipeableWillOpen={() => {
 				if (startsInEdgeZone(startX.current)) close();
