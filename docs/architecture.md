@@ -207,12 +207,18 @@ the window failed, today's tiered escalation otherwise. Underneath it,
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
 name, unparseable arguments, a schema violation, blocking middleware, or the
-argument-size guard — never reaches the ledger. The ledger carries **two triggers, both keyed on tool name + a hash of the raw
-argument bytes**. The **failure trigger** counts consecutive failures sharing an error
-class: the second appends a nudge to the result, and the third is **not executed at
+argument-size guard — never reaches the ledger. The ledger carries **two triggers,
+keyed differently**. The **failure trigger** counts consecutive failures sharing an
+error class, keyed on tool name + a hash of a **normalized** view of the arguments:
+the top-level `intent` free text and the shell tool's presentation-only `description`
+are dropped, and JSON key order, whitespace, and number spellings are canonicalized,
+so a call that changes only those is the same failing operation — while arguments
+that are not a single well-formed JSON value fall back to the raw bytes. Its second
+failure appends a nudge to the result, and the third is **not executed at
 all** — the call is refused before the tool is looked up. The **repetition trigger**
-counts consecutive byte-identical result bodies regardless of error status, and only
-ever nudges, from the second onward; a tool observing mutable state may yet return
+counts consecutive byte-identical result bodies regardless of error status, keyed on
+tool name + a hash of the raw argument bytes, and only ever nudges, from the second
+onward; a tool observing mutable state may yet return
 something new, and refusing `communicate` would take away the session's only exit
 door. Repetition catches what error flags miss: a plugin that reports its failures with
 `is_error: false` and the failure as plain body text still trips it, so evener needs no
