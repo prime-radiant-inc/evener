@@ -1,0 +1,31 @@
+// What floats 10pt above the transcript's end, which sits on the tray, the
+// composer or the dock: a toast, then Next at the trailing edge, then
+// "↓ 3 new". They share one column so none can cover another, and each is
+// left out while it has nothing to show, so what does show keeps its 10pt.
+import type { ReactNode } from "react";
+import { View } from "react-native";
+
+export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
+	return (
+		<View
+			pointerEvents="box-none"
+			style={{ position: "absolute", left: 0, right: 0, bottom: 10, flexDirection: "column", gap: 8 }}
+		>
+			{toast ? (
+				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
+					{toast}
+				</View>
+			) : null}
+			{next ? (
+				<View pointerEvents="box-none" style={{ alignItems: "flex-end", paddingHorizontal: 16 }}>
+					{next}
+				</View>
+			) : null}
+			{pill ? (
+				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
+					{pill}
+				</View>
+			) : null}
+		</View>
+	);
+}
