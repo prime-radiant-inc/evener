@@ -537,17 +537,6 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		return Record{}, fmt.Errorf("%w: orphan-unverified record %q resolves only to %q",
 			ErrInvalidTransition, id, StateInterrupted)
 	}
-	// §3 keeps a record whose spawn intent is still open fenced: its boundary
-	// may still hold the orphan, and "never clean, never `interrupted`" is the
-	// rule for a record the reap has not verified. A worker that wants to
-	// finish must drop each intent first — its own clean reap once the child
-	// exited — so a completion can never be recorded before the boundary it
-	// owns is accounted for. ResolveReapedSpawn clears the intents in the same
-	// write as the resolve, which is why it does not come through here.
-	if to.Terminal() && len(record.PendingSpawns) > 0 {
-		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q; drop them (Store.ClearSpawnIntents) or resolve the record (Store.ResolveReapedSpawn) first",
-			ErrInvalidTransition, id, len(record.PendingSpawns), to)
-	}
 	identity := identityOf(record)
 	if change != nil {
 		change(&record)
@@ -559,6 +548,20 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		// that changes host, kind, pinned pair or id would corrupt the dedup
 		// scope §4 keys on, and the sequence stamp is what race scans compare.
 		return Record{}, fmt.Errorf("%w: the change rewrote record %q's immutable fields", ErrInvalidRecord, id)
+	}
+	// §3 keeps a record whose spawn intent is still open fenced: its boundary
+	// may still hold the orphan, and "never clean, never `interrupted`" is the
+	// rule for a record the reap has not verified. A worker that wants to
+	// finish must drop each intent first — its own clean reap once the child
+	// exited — so a completion can never be recorded before the boundary it
+	// owns is accounted for. ResolveReapedSpawn clears the intents in the same
+	// write as the resolve, which is why it does not come through here. The
+	// check runs on the POST-change record: a callback that appends an intent
+	// must be caught too, or a terminal record could carry one and become
+	// invisible to the fence.
+	if to.Terminal() && len(record.PendingSpawns) > 0 {
+		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q; drop them (Store.ClearSpawnIntents) or resolve the record (Store.ResolveReapedSpawn) first",
+			ErrInvalidTransition, id, len(record.PendingSpawns), to)
 	}
 	record.State = to
 	record.UpdatedAt = nowUTC()

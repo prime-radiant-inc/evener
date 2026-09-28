@@ -53,6 +53,7 @@ type fakeBoundary struct {
 	notEnforcing bool
 	killed       []int
 	closed       bool
+	closeCalls   int
 }
 
 func (f *fakeBoundary) Enforcing() bool { return !f.notEnforcing }
@@ -101,6 +102,7 @@ func (f *fakeBoundary) Await(wait time.Duration, clean func([]execenv.BoundaryMe
 
 func (f *fakeBoundary) Close() error {
 	f.closed = true
+	f.closeCalls++
 	return f.closeErr
 }
 
@@ -249,7 +251,7 @@ func TestReapVerifiedMemberIsKilledAndClears(t *testing.T) {
 	}
 	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "42"}}}
 	var opened []execenv.BoundaryIdentity
-	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened), Observe: func(pid int) (string, error) { return "", execenv.ErrBoundaryMemberGone }})
 	if err != nil {
 		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
 	}
@@ -279,7 +281,7 @@ func TestReapMismatchedStartTokenReadsClean(t *testing.T) {
 	}
 	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "99"}}}
 	var opened []execenv.BoundaryIdentity
-	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened), Observe: func(pid int) (string, error) { return "", execenv.ErrBoundaryMemberGone }})
 	if err != nil {
 		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
 	}
@@ -305,7 +307,7 @@ func TestReapSignalRaceReadsClean(t *testing.T) {
 		signalErr: execenv.ErrBoundaryIdentityChanged,
 	}
 	var opened []execenv.BoundaryIdentity
-	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened), Observe: func(pid int) (string, error) { return "", execenv.ErrBoundaryMemberGone }})
 	if err != nil {
 		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
 	}
@@ -333,7 +335,7 @@ func TestReapUnrecognizedMemberMarksOrphanAndKeepsIntent(t *testing.T) {
 	}
 	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 200, StartToken: "7"}}}
 	var opened []execenv.BoundaryIdentity
-	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened), Observe: func(pid int) (string, error) { return "", execenv.ErrBoundaryMemberGone }})
 	if err != nil {
 		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
 	}
@@ -846,13 +848,12 @@ func TestReapPermanentCloseFailureFailsFast(t *testing.T) {
 		t.Fatalf("ArmSpawnIntent: %v", err)
 	}
 	handle := &fakeBoundary{closeErr: errors.New("operation not permitted")}
-	start := time.Now()
 	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Wait: 10 * time.Second, Open: openOnce(handle, nil)})
 	if err == nil {
 		t.Fatal("a permanent teardown failure produced no diagnostic")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("a permanent teardown failure took %s; want it reported at once", elapsed)
+	if handle.closeCalls != 1 {
+		t.Fatalf("a permanent teardown failure closed the boundary %d time(s); want exactly one attempt", handle.closeCalls)
 	}
 	if dropped != 0 {
 		t.Fatalf("reap dropped %d; want the intent kept", dropped)
@@ -873,6 +874,9 @@ func TestReapCloseFailureIsUnsettled(t *testing.T) {
 	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Wait: 50 * time.Millisecond, Open: openOnce(handle, &opened)})
 	if err == nil || !strings.Contains(err.Error(), record.ID) {
 		t.Fatalf("reap error = %v, want one naming the record whose boundary did not tear down", err)
+	}
+	if handle.closeCalls < 2 {
+		t.Fatalf("a busy teardown was closed %d time(s); want it retried within the bound", handle.closeCalls)
 	}
 	if dropped != 0 {
 		t.Fatalf("reap dropped %d; want the intent kept over an un-torn boundary", dropped)

@@ -358,6 +358,28 @@ func TestSetOrphanBoundaryRefusesAnEmptyBoundary(t *testing.T) {
 	}
 }
 
+// TestTransitionRejectsATerminalStateWhenTheChangeAddsAnIntent pins the guard's
+// placement: the open-intent rule must be checked on the record the callback
+// produced, not only before the callback ran, or a terminal transition could
+// commit a record carrying an intent — invisible to the orphan fence.
+func TestTransitionRejectsATerminalStateWhenTheChangeAddsAnIntent(t *testing.T) {
+	store, _ := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+		r.PendingSpawns = []SpawnIntent{linuxIntent("n1")}
+	}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Transition whose change adds an intent = %v, want ErrInvalidTransition", err)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State == StateComplete || len(stored.PendingSpawns) != 0 {
+		t.Fatalf("the refused transition changed the record: %q/%+v", stored.State, stored.PendingSpawns)
+	}
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
+		t.Fatalf("the ordinary terminal transition after the refusal: %v", err)
+	}
+}
+
 // TestResolveReapedSpawnClearsIntentsInOneWrite pins §5's atomic resolution:
 // the `orphan-unverified`→`interrupted` transition, the boundary clear and the
 // intent drop land in one write, and a resolve that would leave an intent
