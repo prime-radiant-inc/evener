@@ -178,6 +178,26 @@ func TestExtractRecordedResponse_ResponsesSSE_MultipleArgumentsDonePreserveCallR
 	assertRawArgsByIndex(t, responseToolCallArguments(resp), want)
 }
 
+func TestExtractRecordedResponse_ResponsesSSE_DeltaOnlyRawArguments(t *testing.T) {
+	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
+	want := append([]byte(fragments[0]), []byte(fragments[1])...)
+	resp, err := ExtractRecordedResponse(rawDeltaOnlySSE("delta", fragments...), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), [][]byte{want})
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_ArgumentsFieldDeltaPreservesRawBytes(t *testing.T) {
+	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
+	want := append([]byte(fragments[0]), []byte(fragments[1])...)
+	resp, err := ExtractRecordedResponse(rawDeltaOnlySSE("arguments", fragments...), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), [][]byte{want})
+}
+
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
 func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
 	if _, err := ExtractRecordedResponse([]byte("   "), "gpt-5.2"); err == nil {
