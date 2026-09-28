@@ -41,7 +41,9 @@ describe("the overrides the sheet owns", () => {
 	});
 
 	it("replaces the owned fields and keeps everything else", () => {
-		expect(withOwnedOverrides({ sandbox: "restricted", maxRounds: 5, env: { A: "1" } }, { sandbox: "read-only" })).toEqual({
+		expect(
+			withOwnedOverrides({ sandbox: "restricted", maxRounds: 5, env: { A: "1" } }, { sandbox: "read-only" }),
+		).toEqual({
 			sandbox: "read-only",
 			env: { A: "1" },
 		});
@@ -63,8 +65,14 @@ describe("comparing setups", () => {
 		["plugins", { overrides: { enabledPlugins: ["superpowers"], sandbox: "workspace-write" } }],
 		["default plugins", { overrides: { sandbox: "workspace-write" } }],
 		["access", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "read-only" } }],
-		["network", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", sandboxNet: false } }],
-		["turn limit", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", maxRounds: 100 } }],
+		[
+			"network",
+			{ overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", sandboxNet: false } },
+		],
+		[
+			"turn limit",
+			{ overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", maxRounds: 100 } },
+		],
 	];
 	it.each(differences)("tells a different %s apart", (_name, over) => {
 		expect(sameSetup(setup(), setup(over))).toBe(false);

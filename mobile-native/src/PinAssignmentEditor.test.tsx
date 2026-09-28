@@ -5,19 +5,12 @@
 // mount the real editor through the native testkit and read its rendered text.
 import { createElement } from "react";
 import { expect, it, vi } from "vitest";
-import {
-	PinAssignmentEditor,
-	type PinAssignmentEditorProps,
-} from "./PinAssignmentEditor";
+import { PinAssignmentEditor, type PinAssignmentEditorProps } from "./PinAssignmentEditor";
 import { render, renderedText } from "./renderNative.testkit";
 
-vi.mock("react-native", async () =>
-	(await import("./renderNative.testkit")).nativeModuleMock(),
-);
+vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
-function props(
-	overrides: Partial<PinAssignmentEditorProps> = {},
-): PinAssignmentEditorProps {
+function props(overrides: Partial<PinAssignmentEditorProps> = {}): PinAssignmentEditorProps {
 	return {
 		title: "Pin session",
 		hubName: "Hub",
@@ -43,27 +36,13 @@ function props(
 }
 
 it("blames the failed load, not a previous change, when there is no checkpoint", () => {
-	const tree = render(
-		createElement(
-			PinAssignmentEditor,
-			props({ uncertain: true, previousChange: false }),
-		),
-	);
+	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: false })));
 	const text = renderedText(tree);
-	expect(text).toContain(
-		"Refresh to reload this session's pins before editing.",
-	);
+	expect(text).toContain("Refresh to reload this session's pins before editing.");
 	expect(text).not.toContain("previous pin change");
 });
 
 it("keeps the previous-change wording when a checkpoint is present", () => {
-	const tree = render(
-		createElement(
-			PinAssignmentEditor,
-			props({ uncertain: true, previousChange: true }),
-		),
-	);
-	expect(renderedText(tree)).toContain(
-		"Refresh to confirm the previous pin change before editing it.",
-	);
+	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: true })));
+	expect(renderedText(tree)).toContain("Refresh to confirm the previous pin change before editing it.");
 });

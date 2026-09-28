@@ -62,7 +62,13 @@ const cases: Array<{
 		expected: "Offline",
 	},
 	{ name: "closed 1s", state: "closed", downSince: secondsAgo(1), lastLiveAt: secondsAgo(1), expected: null },
-	{ name: "closed 2s", state: "closed", downSince: secondsAgo(2), lastLiveAt: secondsAgo(2), expected: "Reconnecting…" },
+	{
+		name: "closed 2s",
+		state: "closed",
+		downSince: secondsAgo(2),
+		lastLiveAt: secondsAgo(2),
+		expected: "Reconnecting…",
+	},
 	{
 		name: "closed 31s",
 		state: "closed",
@@ -86,7 +92,14 @@ const cases: Array<{
 		lastLiveAt: null,
 		expected: "Update needed",
 	},
-	{ name: "fatal while ready", state: "ready", fatal: true, downSince: null, lastLiveAt: NOW, expected: "Update needed" },
+	{
+		name: "fatal while ready",
+		state: "ready",
+		fatal: true,
+		downSince: null,
+		lastLiveAt: NOW,
+		expected: "Update needed",
+	},
 ];
 
 it.each(cases)("$name → $expected", ({ state, fatal = false, downSince, lastLiveAt, expected }) => {

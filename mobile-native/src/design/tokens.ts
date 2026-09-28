@@ -78,7 +78,9 @@ function fromOklab([L, a, b]: Triple): string {
 	return `#${linear
 		.map((v) => {
 			const c = v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
-			return Math.max(0, Math.min(255, Math.round(c * 255))).toString(16).padStart(2, "0");
+			return Math.max(0, Math.min(255, Math.round(c * 255)))
+				.toString(16)
+				.padStart(2, "0");
 		})
 		.join("")
 		.toUpperCase()}`;
@@ -93,7 +95,18 @@ export function mix(hue: string, base: string, amount: number): string {
 	return fromOklab([0, 1, 2].map((i) => h[i] * amount + b[i] * (1 - amount)) as Triple);
 }
 
-type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "aliveEdge" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
+type Core = Omit<
+	Palette,
+	| "attentionBg"
+	| "attentionEdge"
+	| "aliveBg"
+	| "aliveEdge"
+	| "dangerBg"
+	| "dangerEdge"
+	| "accentBg"
+	| "accentEdge"
+	| "bubble"
+>;
 
 function withTints(core: Core): Palette {
 	const bg = (hue: string) => mix(hue, core.surface, 0.15);

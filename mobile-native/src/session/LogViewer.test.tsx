@@ -35,7 +35,9 @@ describe("the full log", () => {
 	it("closes with Done", () => {
 		const onClose = vi.fn();
 		const tree = render(<LogViewer title="t" text={text} onClose={onClose} />);
-		tree.root.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0].props.onPress();
+		tree.root
+			.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0]
+			.props.onPress();
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 });

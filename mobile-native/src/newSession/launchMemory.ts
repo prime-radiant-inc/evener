@@ -27,7 +27,9 @@ export const HISTORY_LIMIT = 50;
 export const RECIPE_NAME_LIMIT = 40;
 
 function record(value: unknown): Record<string, unknown> | null {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
 }
 
 /** A stored setup this build can read, or null. Unknown override fields are
@@ -46,7 +48,8 @@ function toSetup(value: unknown): LaunchSetup | null {
 	)
 		return null;
 	const plugins = overrides.enabledPlugins;
-	if (plugins !== undefined && !(Array.isArray(plugins) && plugins.every((name) => typeof name === "string"))) return null;
+	if (plugins !== undefined && !(Array.isArray(plugins) && plugins.every((name) => typeof name === "string")))
+		return null;
 	for (const [field, kind] of [
 		["sandbox", "string"],
 		["sandboxNet", "boolean"],
@@ -134,7 +137,9 @@ export class LaunchMemory {
 		const existing = this.recipeList.find((recipe) => recipe.name.toLowerCase() === trimmed.toLowerCase());
 		const saved: Recipe = existing ? { ...existing, setup } : { id: this.createId(), name: trimmed, setup };
 		this.writeRecipes(
-			existing ? this.recipeList.map((recipe) => (recipe.id === saved.id ? saved : recipe)) : [...this.recipeList, saved],
+			existing
+				? this.recipeList.map((recipe) => (recipe.id === saved.id ? saved : recipe))
+				: [...this.recipeList, saved],
 		);
 		return saved;
 	}
@@ -160,9 +165,7 @@ export class LaunchMemory {
 	/** Remembers a start (ruling 16): it replaces older starts for the same
 	 * host and project, and the oldest fall off past the limit. */
 	recordStart(setup: LaunchSetup, at: number): void {
-		const others = this.historyList.filter(
-			(entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd,
-		);
+		const others = this.historyList.filter((entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd);
 		this.writeHistory([{ setup, at }, ...others].slice(0, HISTORY_LIMIT));
 	}
 

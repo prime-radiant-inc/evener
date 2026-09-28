@@ -73,11 +73,7 @@ export function useProvideSheetHost<Host>(hosts: SheetHosts<Host>, key: string, 
 
 /** A sheet's host, or undefined once its screen is gone. Then the sheet
  * leaves (`finish`), since nothing is left for it to act on. */
-export function useSheetHost<Host>(
-	hosts: SheetHosts<Host>,
-	key: string,
-	sheet: { finish(): void },
-): Host | undefined {
+export function useSheetHost<Host>(hosts: SheetHosts<Host>, key: string, sheet: { finish(): void }): Host | undefined {
 	const host = useSyncExternalStore(hosts.subscribe, () => hosts.get(key));
 	useEffect(() => {
 		if (host === undefined) sheet.finish();

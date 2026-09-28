@@ -165,7 +165,9 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 	});
 
 	it("leaves out a command the session can't run", async () => {
-		provide({ session: session({ goal: false, compact: true, forkFromTurn: false, changeModel: false, clear: false }) });
+		provide({
+			session: session({ goal: false, compact: true, forkFromTurn: false, changeModel: false, clear: false }),
+		});
 		const tree = await sheet();
 		expect(listed(tree).slice(0, 4)).toEqual(["Commands", "Compact context", "Tasks", "Effort"]);
 	});
@@ -223,16 +225,7 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 	it("lists the commands alone while the hub is away", async () => {
 		provide();
 		const tree = await sheet(null);
-		expect(listed(tree)).toEqual([
-			"Commands",
-			"Goal",
-			"Compact context",
-			"Aside",
-			"Tasks",
-			"Model",
-			"Effort",
-			"Clear",
-		]);
+		expect(listed(tree)).toEqual(["Commands", "Goal", "Compact context", "Aside", "Tasks", "Model", "Effort", "Clear"]);
 	});
 
 	it("closes, then hands the chosen invocation to the session", async () => {

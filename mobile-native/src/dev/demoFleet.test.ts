@@ -10,6 +10,7 @@ import {
 	NAVIGATION_SECTION_LIMIT,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
+import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 
@@ -144,7 +145,9 @@ describe("demo fleet live and needs-you sections", () => {
 
 	it("holds exactly the 4 needs-you rows: the failure, the question, the approval and the restart", () => {
 		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
-		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-audit", "s-mirror", "s-namer", "s-retry"].map(demoSessionId).sort());
+		expect(rows.map((row) => row.session_id).sort()).toEqual(
+			["s-audit", "s-mirror", "s-namer", "s-retry"].map(demoSessionId).sort(),
+		);
 		// Approval rows keep state "active"; the phone infers approval from
 		// showing up here, per the task's own background note.
 		expect(findRow(rows, "s-mirror").state).toBe("active");
@@ -268,18 +271,28 @@ describe("demo fleet location", () => {
 		// A location resource holds exactly one entity: the row itself, with no
 		// descendant tree (cmd/evener-hub's projectShallow summary).
 		const session = location.session as NavigationSessionSummary;
-		expect(session).toMatchObject({ ref: refOf("local", "s-jobdisp"), session_id: demoSessionId("s-jobdisp"), host_id: "local" });
+		expect(session).toMatchObject({
+			ref: refOf("local", "s-jobdisp"),
+			session_id: demoSessionId("s-jobdisp"),
+			host_id: "local",
+		});
 		expect(session.children).toEqual([]);
 	});
 
 	it("reports a remote row's own host-prefixed ref and project", () => {
 		const location = read(fleet, params({ resource: "location", ref: refOf("paradise-park", "s-wasm") }));
-		expect(location).toMatchObject({ ref: refOf("paradise-park", "s-wasm"), project_key: "c-to-wasm", tier: "current" });
+		expect(location).toMatchObject({
+			ref: refOf("paradise-park", "s-wasm"),
+			project_key: "c-to-wasm",
+			tier: "current",
+		});
 		expect((location.session as NavigationSessionSummary).host_id).toBe("paradise-park");
 	});
 
 	it("reports an archived row's tier as archived, the fact the Board's archive check compares", () => {
-		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-gocache") }))).toMatchObject({ tier: "archived" });
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-gocache") }))).toMatchObject({
+			tier: "archived",
+		});
 	});
 
 	it("drops the capped-children count from the shallow summary, as projectShallow does", () => {
@@ -294,7 +307,9 @@ describe("demo fleet location", () => {
 
 	it("reports an older row as recent, matching the project tier split", () => {
 		// s-roster: ago 1d, not archived -- the same boundary tierRows uses.
-		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-roster") }))).toMatchObject({ tier: "recent" });
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-roster") }))).toMatchObject({
+			tier: "recent",
+		});
 	});
 
 	it("reports a test-run session under the tier project_page actually serves it", () => {
@@ -306,7 +321,9 @@ describe("demo fleet location", () => {
 	});
 
 	it("leaves pin_section_id off a row that sits in no pin section", () => {
-		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-audit") }))).not.toHaveProperty("pin_section_id");
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-audit") }))).not.toHaveProperty(
+			"pin_section_id",
+		);
 	});
 
 	it("rejects a ref the fleet doesn't hold, like the hub's own not-found error", () => {
@@ -342,12 +359,18 @@ describe("demo fleet catalogs and projects", () => {
 	it("groups the three test-run sessions under the synthetic hub-test-env project", () => {
 		const catalog = read(fleet, params({ resource: "catalog", catalog: "test_runs", limit: 100 }));
 		expect(catalog.projects).toEqual([expect.objectContaining({ key: "hub-test-env", session_count: 3 })]);
-		const page = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "hub-test-env", tier: "current" })));
-		expect(page.map((row) => row.session_id).sort()).toEqual(["s-test1", "s-test2", "s-test3"].map(demoSessionId).sort());
+		const page = sessionsOf(
+			read(fleet, params({ resource: "project_page", projectKey: "hub-test-env", tier: "current" })),
+		);
+		expect(page.map((row) => row.session_id).sort()).toEqual(
+			["s-test1", "s-test2", "s-test3"].map(demoSessionId).sort(),
+		);
 	});
 
 	it("splits a project's sessions into today (current) and older (recent) tiers", () => {
-		const current = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" })));
+		const current = sessionsOf(
+			read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" })),
+		);
 		const recent = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "recent" })));
 		expect(current.map((row) => row.session_id)).toContain(demoSessionId("s-retry")); // ago 2m: today
 		expect(recent.map((row) => row.session_id)).toContain(demoSessionId("s-roster")); // ago 1d: recent
@@ -473,7 +496,11 @@ describe("demo fleet generation", () => {
 	it("advertises the same generation id every response actually carries", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const key = navigationParamsToResourceKey(params({ resource: "manifest" }));
-		const decoded = decodeNavigationResponse(key, undefined, fleet.answerNavigationRead(params({ resource: "manifest" })));
+		const decoded = decodeNavigationResponse(
+			key,
+			undefined,
+			fleet.answerNavigationRead(params({ resource: "manifest" })),
+		);
 		if (decoded.status !== "snapshot") throw new Error(`expected a snapshot, got ${decoded.status}`);
 		expect(decoded.version.generationId).toBe(DEMO_FLEET_GENERATION);
 	});
@@ -492,7 +519,9 @@ describe("demo fleet paging", () => {
 		const third = read(fleet, params({ resource: "section", section: "live", offset: 14, limit: 7 }));
 		expect(sessionsOf(third)).toHaveLength(6);
 		expect(third.remaining).toBe(0);
-		const seen = new Set([...sessionsOf(first), ...sessionsOf(second), ...sessionsOf(third)].map((row) => row.session_id));
+		const seen = new Set(
+			[...sessionsOf(first), ...sessionsOf(second), ...sessionsOf(third)].map((row) => row.session_id),
+		);
 		expect(seen.size).toBe(20);
 	});
 
@@ -517,9 +546,13 @@ describe("demo fleet paging", () => {
 			if (guard > 20) throw new Error("archived paging never reached the end");
 			// 50 is the real protocol's own maximum for a section-shaped page
 			// (NAVIGATION_SECTION_LIMIT); the hub rejects a request over it.
-			const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }));
+			const page = read(
+				fleet,
+				params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }),
+			);
 			const rows = sessionsOf(page);
-			if (rows.length === 0) throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
+			if (rows.length === 0)
+				throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
 			for (const row of rows) seen.add(row.session_id);
 			remaining = page.remaining as number;
 			offset += rows.length;
@@ -532,22 +565,30 @@ describe("demo fleet paging", () => {
 	// the demo fleet's own page() must match, not silently coerce.
 	it("rejects a limit over the section maximum, like the hub's own validation", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT + 1 })),
+			fleet.answerNavigationRead(
+				params({ resource: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT + 1 }),
+			),
 		).toThrow(/limit/i);
 	});
 
 	it("rejects a limit over the catalog maximum, like the hub's own validation", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "catalog", catalog: "projects", offset: 0, limit: NAVIGATION_CATALOG_LIMIT + 1 })),
+			fleet.answerNavigationRead(
+				params({ resource: "catalog", catalog: "projects", offset: 0, limit: NAVIGATION_CATALOG_LIMIT + 1 }),
+			),
 		).toThrow(/limit/i);
 	});
 
 	it("rejects a limit of zero, like the hub's own validation", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 })),
+		).toThrow(/limit/i);
 	});
 
 	it("rejects a negative offset, like the hub's own validation", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	// The wire protocol's offset/limit are uint32 fields, so a fractional or
@@ -557,19 +598,27 @@ describe("demo fleet paging", () => {
 	// silently truncating to a partial page or reporting a NaN remaining
 	// count.
 	it("rejects a fractional offset", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 1.5, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 1.5, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a NaN offset", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: Number.NaN, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: Number.NaN, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a fractional limit", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 7.5 }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 7.5 })),
+		).toThrow(/limit/i);
 	});
 
 	it("rejects a NaN limit", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.NaN }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.NaN })),
+		).toThrow(/limit/i);
 	});
 
 	// An integer can still be too big for the wire: its offset/limit fields are
@@ -577,12 +626,16 @@ describe("demo fleet paging", () => {
 	// trustworthy either. page() must reject both instead of paging with a
 	// value the real hub's wire type could never carry.
 	it("rejects an offset past the wire's uint32 range", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 2 ** 32, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 2 ** 32, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a limit past what a safe integer can carry", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.MAX_SAFE_INTEGER + 2 })),
+			fleet.answerNavigationRead(
+				params({ resource: "section", section: "live", offset: 0, limit: Number.MAX_SAFE_INTEGER + 2 }),
+			),
 		).toThrow(/limit/i);
 	});
 });
@@ -736,5 +789,147 @@ describe("demo fleet offline propagation", () => {
 		const pr2138 = findRow(liveRows(fleet), "s-pr2138"); // local/magic-kingdom
 		expect(pr2138.children.length).toBeGreaterThan(0);
 		expect(pr2138.children.every((child) => child.offline === undefined)).toBe(true);
+	});
+});
+
+describe("demo fleet archive", () => {
+	const fleet = () => createDemoFleet({ now: STARTUP });
+	const tierOf = (demo: ReturnType<typeof createDemoFleet>, ref: string) =>
+		read(demo, params({ resource: "location", ref })).tier;
+	// Every resource the archive changes, at the fleet's one new revision,
+	// and the loaded project pages, as the real hub's session archive names
+	// them (cmd/evener-hub/app_archive.go, navigation_service.go's
+	// commitTargetsLocked).
+	const archiveTargets = (revision: number, projectKey: string) => [
+		{ kind: "manifest", revision },
+		{ kind: "section", section: "live", revision },
+		{ kind: "section", section: "needs_you", revision },
+		{ kind: "catalog", catalog: "projects", revision },
+		{ kind: "catalog", catalog: "archived_projects", revision },
+		{ kind: "project", projectKey, revision },
+		{ kind: "all_loaded_projects" },
+	];
+
+	it("offers Archive on every Live row: a local row by its session id, another host's by its ref", () => {
+		for (const row of liveRows(fleet())) {
+			expect(archiveTarget(row)).toEqual({ kind: "session", id: row.host_id === "local" ? row.session_id : row.ref });
+		}
+	});
+
+	it("takes an archived session out of Live and answers with the receipt and invalidation a real hub sends", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		const { response, invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(liveRows(demo)).toHaveLength(19);
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+		const targets = archiveTargets(after.revision, "deslop");
+		expect(response).toEqual({ ok: true, navigation: { generation_id: DEMO_FLEET_GENERATION, targets } });
+		expect(invalidated).toEqual({ generationId: DEMO_FLEET_GENERATION, sequence: 1, targets });
+		expect(demo.navigationCapability().sequence).toBe(1);
+	});
+
+	it("brings an unarchived session back to Live as it was, where it was", () => {
+		const demo = fleet();
+		const order = liveRows(demo).map((row) => row.session_id);
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const { invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: false });
+		expect(findRow(liveRows(demo), "s-deslop")).toEqual(deslop);
+		expect(liveRows(demo).map((row) => row.session_id)).toEqual(order);
+		expect(tierOf(demo, deslop.ref)).toBe("current");
+		expect(invalidated.sequence).toBe(2);
+	});
+
+	it("archives another host's session by its ref, and a local one by its local: ref", () => {
+		const demo = fleet();
+		const retry = findRow(liveRows(demo), "s-retry");
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: retry.ref, archived: true });
+		demo.archive({ kind: "session", id: deslop.ref, archived: true });
+		expect(tierOf(demo, retry.ref)).toBe("archived");
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+	});
+
+	it("keeps an archive when the working row later asks its question", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		demo.askQuestion();
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
+	});
+
+	it("keeps an archived session in its own project's Archived tier, where its location sends a reveal", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
+		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
+		const tier = sessionsOf(read(demo, params({ resource: "project_page", projectKey: "deslop", tier: "archived" })));
+		expect(tier.map((row) => row.session_id)).toEqual([deslop.session_id]);
+	});
+
+	it("moves a project whose every session is archived into Archived projects, and back on unarchive", () => {
+		const demo = fleet();
+		const keys = (catalog: string) =>
+			(read(demo, params({ resource: "catalog", catalog, limit: 100 })).projects as { key: string }[]).map(
+				(project) => project.key,
+			);
+		const projectsBefore = keys("projects");
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: true });
+		expect(keys("projects")).not.toContain("deslop");
+		expect(read(demo, params({ resource: "catalog", catalog: "archived_projects", limit: 100 })).projects).toEqual([
+			expect.objectContaining({ key: "evener", session_count: 271 }),
+			expect.objectContaining({ key: "deslop", session_count: 1 }),
+		]);
+		expect(read(demo, params({ resource: "manifest" })).catalogs).toMatchObject({
+			projects: { count: projectsBefore.length - 1 },
+			archived_projects: { count: 2 },
+		});
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: false });
+		expect(keys("projects")).toEqual(projectsBefore);
+		expect(keys("archived_projects")).toEqual(["evener"]);
+	});
+
+	it("keeps an archived pinned session in its pin section", () => {
+		const demo = fleet();
+		const pinCatalog = () => read(demo, params({ resource: "pin_catalog", limit: 100 })).pin_sections;
+		const research = () =>
+			sessionsOf(read(demo, params({ resource: "pin_section", sectionId: "research" }))).map((row) => row.session_id);
+		const catalogBefore = pinCatalog();
+		const researchBefore = research();
+		const pinSectionsBefore = (read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown })
+			.pin_sections;
+		demo.archive({ kind: "session", id: demoSessionId("s-diff"), archived: true });
+		expect(research()).toContain(demoSessionId("s-diff"));
+		expect(research()).toEqual(researchBefore);
+		expect(pinCatalog()).toEqual(catalogBefore);
+		expect((read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown }).pin_sections).toEqual(
+			pinSectionsBefore,
+		);
+	});
+
+	it("stops counting an archived working or failed row in the manifest's summary", () => {
+		const demo = fleet();
+		demo.archive({ kind: "session", id: demoSessionId("s-gateway"), archived: true });
+		demo.archive({ kind: "session", id: findRow(liveRows(demo), "s-retry").ref, archived: true });
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 3, error: 0, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 18 }, needs_you: { count: 3 } });
+	});
+
+	it("refuses a project archive and a session it doesn't hold, changing nothing", () => {
+		const demo = fleet();
+		expect(() => demo.archive({ kind: "project", id: "deslop", archived: true })).toThrow(
+			"The demo fleet archives sessions only",
+		);
+		expect(() => demo.archive({ kind: "session", id: "0000000000000000000000", archived: true })).toThrow(
+			"Unknown demonstration session: 0000000000000000000000",
+		);
+		expect(demo.navigationCapability().sequence).toBe(0);
 	});
 });

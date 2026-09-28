@@ -20,15 +20,7 @@ export interface StatusTrayProps {
 	onJumpToLive(): void;
 }
 
-export function StatusTray({
-	line,
-	perMinute,
-	connected,
-	canStop,
-	stopping,
-	onStop,
-	onJumpToLive,
-}: StatusTrayProps) {
+export function StatusTray({ line, perMinute, connected, canStop, stopping, onStop, onJumpToLive }: StatusTrayProps) {
 	const { palette } = useColors();
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
@@ -46,10 +38,7 @@ export function StatusTray({
 				onPress={onJumpToLive}
 				style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36 }}
 			>
-				<PulseMeter
-					perMinute={perMinute}
-					tone={!connected ? "gray" : line.attention ? "attention" : "alive"}
-				/>
+				<PulseMeter perMinute={perMinute} tone={!connected ? "gray" : line.attention ? "attention" : "alive"} />
 				<Text
 					allowFontScaling={Platform.OS !== "ios"}
 					numberOfLines={1}

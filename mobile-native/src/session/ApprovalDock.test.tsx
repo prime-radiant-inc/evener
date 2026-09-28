@@ -88,9 +88,13 @@ describe("the approval dock (spec 8.4)", () => {
 	});
 
 	it("says how many more approvals wait behind this one", () => {
-		const one = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={1} />);
+		const one = render(
+			<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={1} />,
+		);
 		expect(renderedText(one)).toContain("1 more waiting");
-		const three = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={3} />);
+		const three = render(
+			<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={3} />,
+		);
 		expect(renderedText(three)).toContain("3 more waiting");
 		const alone = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} />);
 		expect(renderedText(alone)).not.toContain("waiting");

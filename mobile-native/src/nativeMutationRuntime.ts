@@ -1,10 +1,6 @@
 import { openDatabaseSync } from "expo-sqlite";
 import * as Crypto from "expo-crypto";
-import type {
-	AppwireClientLike,
-	MutationReceipt,
-	ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { AppwireClientLike, MutationReceipt, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
@@ -26,9 +22,7 @@ import type {
 	ConversationMutationRequest,
 	ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
-import {
-	MutationOutboxSQLite,
-} from "./mutationOutboxStorage";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import type { SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
@@ -67,10 +61,7 @@ function nativeRandomSource(): SecureRandomSource {
 	return { randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues };
 }
 
-function methodFor(
-	kind: ConversationMutationKind,
-	expectedQueueRevision: number | undefined,
-): string {
+function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number | undefined): string {
 	if (kind === "send") return "turn/start";
 	if (kind === "queue") return "turn/queue";
 	if (kind === "interrupt") return "turn/interrupt";
@@ -84,8 +75,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		expectedInstanceId: request.instanceId,
 	};
 	if (request.kind !== "interrupt") payload.input = request.input;
-	if (method === "turn/drainAsSteer")
-		payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
@@ -93,10 +83,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		method,
 		payload,
 		attachments: [],
-		optimisticDisplay:
-			request.kind === "interrupt"
-				? { method }
-				: { method, input: request.input },
+		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input: request.input },
 	};
 }
 
@@ -115,9 +102,7 @@ export interface NativeMutationPersistenceRead {
 	read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
 }
 
-export class NativeMutationRuntime
-	implements ConversationMutationSubmitter, NativeMutationPersistenceRead
-{
+export class NativeMutationRuntime implements ConversationMutationSubmitter, NativeMutationPersistenceRead {
 	readonly storage: NativeStorage;
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
@@ -254,11 +239,7 @@ export class NativeMutationRuntime
 		return () => this.#storageListeners.delete(listener);
 	}
 
-	registerTarget(
-		hubId: string,
-		targetRef: string,
-		client: AppwireClientLike | null,
-	): () => void {
+	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void {
 		const key = nativeMutationTargetKey(hubId, targetRef);
 		const current = this.#targets.get(key);
 		// A null client is a state transition, not an owner identity. Only the
@@ -492,8 +473,7 @@ function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
 	return new NativeMutationRuntime(database as unknown as SqliteSync, {
-		setInterval: (callback, milliseconds) =>
-			globalThis.setInterval(callback, milliseconds) as unknown as number,
+		setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds) as unknown as number,
 		clearInterval: (intervalId) =>
 			globalThis.clearInterval(intervalId as unknown as ReturnType<typeof globalThis.setInterval>),
 	});

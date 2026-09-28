@@ -26,9 +26,7 @@ const unreadable: NativePreferencesSnapshot["transcriptMobile"] = {
 	draftUnreadable: true,
 };
 
-const readableDraft: NonNullable<
-	NativePreferencesSnapshot["transcriptMobile"]["draft"]
-> = {
+const readableDraft: NonNullable<NativePreferencesSnapshot["transcriptMobile"]["draft"]> = {
 	revision: 4,
 	config: {
 		version: 1,
@@ -44,10 +42,7 @@ const readableDraft: NonNullable<
 	},
 };
 
-function editor(
-	state: NativePreferencesSnapshot["transcriptMobile"],
-	discard: () => void,
-) {
+function editor(state: NativePreferencesSnapshot["transcriptMobile"], discard: () => void) {
 	return render(
 		<TranscriptPreferencesEditor
 			hubName="Work hub"
@@ -77,16 +72,11 @@ it("offers a discard action for an unreadable transcript draft record", async ()
 });
 
 it("does not offer the unreadable-record discard when the record is absent", () => {
-	const tree = editor(
-		{ ...unreadable, draftUnreadable: false, storageUnavailable: false, error: null },
-		() => {},
-	);
+	const tree = editor({ ...unreadable, draftUnreadable: false, storageUnavailable: false, error: null }, () => {});
 	expect(
 		tree.root
 			.findAllByProps({ accessibilityRole: "button" })
-			.some(
-				(node) => node.props.accessibilityLabel === "Discard unreadable draft",
-			),
+			.some((node) => node.props.accessibilityLabel === "Discard unreadable draft"),
 	).toBe(false);
 });
 
@@ -104,9 +94,7 @@ it("does not offer the unreadable-record discard when a readable draft is presen
 	expect(
 		tree.root
 			.findAllByProps({ accessibilityRole: "button" })
-			.some(
-				(node) => node.props.accessibilityLabel === "Discard unreadable draft",
-			),
+			.some((node) => node.props.accessibilityLabel === "Discard unreadable draft"),
 	).toBe(false);
 });
 

@@ -33,7 +33,13 @@ const tree: ActivityTree = {
 const rows = flattenSubagents(tree);
 const shape = (items: ReturnType<typeof subagentListItems>) =>
 	items.map((item) =>
-		item.kind === "row" ? item.row.title : item.kind === "section" ? `${item.state}:${item.count}` : item.kind === "doneFold" ? `fold:${item.count}:${item.open}` : `missing:${item.title}`,
+		item.kind === "row"
+			? item.row.title
+			: item.kind === "section"
+				? `${item.state}:${item.count}`
+				: item.kind === "doneFold"
+					? `fold:${item.count}:${item.open}`
+					: `missing:${item.title}`,
 	);
 
 describe("the list's items", () => {
@@ -49,10 +55,9 @@ describe("the list's items", () => {
 	});
 
 	it("opens done in place, and shows a filtered state as its own section", () => {
-		expect(shape(subagentListItems(rows, { filter: "all", query: "", doneOpen: true, missing: [] })).slice(-2)).toEqual([
-			"fold:1:true",
-			"Tests pass",
-		]);
+		expect(shape(subagentListItems(rows, { filter: "all", query: "", doneOpen: true, missing: [] })).slice(-2)).toEqual(
+			["fold:1:true", "Tests pass"],
+		);
 		expect(shape(subagentListItems(rows, { filter: "done", query: "", doneOpen: false, missing: [] }))).toEqual([
 			"done:1",
 			"Tests pass",
@@ -61,8 +66,16 @@ describe("the list's items", () => {
 
 	it("counts what the search matches, drops empty sections, and ends with what couldn't be listed", () => {
 		expect(
-			shape(subagentListItems(rows, { filter: "all", query: "RACE", doneOpen: false, missing: ["Get PR 2138 Test Clean"] })),
-		).toEqual(["failed:1", "Fix race in tree settle", "running:1", "Run linux -race", "missing:Get PR 2138 Test Clean"]);
+			shape(
+				subagentListItems(rows, { filter: "all", query: "RACE", doneOpen: false, missing: ["Get PR 2138 Test Clean"] }),
+			),
+		).toEqual([
+			"failed:1",
+			"Fix race in tree settle",
+			"running:1",
+			"Run linux -race",
+			"missing:Get PR 2138 Test Clean",
+		]);
 	});
 
 	it("keys each item stably", () => {
@@ -82,7 +95,12 @@ describe("the list's items", () => {
 
 describe("what couldn't be listed", () => {
 	it("says so once per title, however many branches share it", () => {
-		const items = subagentListItems([], { filter: "all", query: "", doneOpen: false, missing: ["Run tests", "Run tests"] });
+		const items = subagentListItems([], {
+			filter: "all",
+			query: "",
+			doneOpen: false,
+			missing: ["Run tests", "Run tests"],
+		});
 		expect(items).toEqual([{ kind: "missing", title: "Run tests" }]);
 	});
 });

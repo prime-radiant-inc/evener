@@ -288,9 +288,7 @@ test("the runtime feeds the shared projection fence through its scoped read cont
 	const refresh = await fence.refresh(runtime, targetKey);
 	if (!refresh) throw new Error("the scoped refresh must produce a snapshot");
 	expect([...refresh.apply()]).toEqual([targetKey]);
-	expect(refresh.snapshot.outbox).toMatchObject([
-		{ clientMutationId: "mutation-1", targetRef: targetKey },
-	]);
+	expect(refresh.snapshot.outbox).toMatchObject([{ clientMutationId: "mutation-1", targetRef: targetKey }]);
 	expect(refresh.snapshot.optimistic).toEqual([]);
 	expect(refresh.snapshot.recovery).toEqual([]);
 
@@ -328,9 +326,9 @@ test("an attempted non-authoritative read notifies the storage projection after 
 	await runtime.storage.markAttempted("mutation-1");
 	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 
-	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe(
-		"reconciled",
-	);
+	await expect(
+		runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false })),
+	).resolves.toBe("reconciled");
 	expect(changes).toEqual([[targetKey], [targetKey]]);
 	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
 	unsubscribe();
@@ -358,7 +356,9 @@ test("a stale lease still notifies after its non-authoritative blocking write co
 	};
 	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 
-	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe("stale");
+	await expect(
+		runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false })),
+	).resolves.toBe("stale");
 	expect(changes).toEqual([[targetKey], [targetKey]]);
 	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
 	unsubscribe();
@@ -401,10 +401,7 @@ test("a non-authoritative read blocks attempted work without blocking later targ
 	await runtime.submit({ ...request("send"), hubId: "hub-a", targetRef: "ref-a" });
 	await runtime.storage.markAttempted("mutation-1");
 	const firstLease = runtime.beginAuthoritativeRead("hub-a", "ref-a", firstClient);
-	await runtime.reconcileAuthoritativeRead(
-		firstLease!,
-		readResponse("ref-a", { authoritative: false }),
-	);
+	await runtime.reconcileAuthoritativeRead(firstLease!, readResponse("ref-a", { authoritative: false }));
 
 	await runtime.submit({ ...request("send"), hubId: "hub-b", targetRef: "ref-b" });
 	const secondLease = runtime.beginAuthoritativeRead("hub-b", "ref-b", secondClient);
@@ -466,10 +463,7 @@ test("resume-required reads hold even never-attempted work until a later valid r
 	await runtime.submit(request("send"));
 
 	const firstLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
-	await runtime.reconcileAuthoritativeRead(
-		firstLease!,
-		readResponse("ref-1", { resumeRequired: true }),
-	);
+	await runtime.reconcileAuthoritativeRead(firstLease!, readResponse("ref-1", { resumeRequired: true }));
 	expect(client.calls).toHaveLength(0);
 
 	const secondLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
@@ -491,10 +485,7 @@ test("restart-required reads hold even never-attempted work until a later valid 
 	// resumeRequired flag riding along, so only the status branch can hold.
 	const firstLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	expect(
-		await runtime.reconcileAuthoritativeRead(
-			firstLease!,
-			readResponse("ref-1", { status: "restartRequired" }),
-		),
+		await runtime.reconcileAuthoritativeRead(firstLease!, readResponse("ref-1", { status: "restartRequired" })),
 	).toBe("blocked");
 	expect(client.calls).toHaveLength(0);
 
@@ -786,10 +777,7 @@ test("confirmed identities settle before absent blocked identities are restored"
 	}
 
 	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
-	await runtime.reconcileAuthoritativeRead(
-		lease!,
-		readResponse("ref-1", { ids: ["mutation-1"] }),
-	);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { ids: ["mutation-1"] }));
 
 	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
 	expect(client.calls[0]?.params).toMatchObject({ clientMutationId: "mutation-2" });
@@ -834,11 +822,7 @@ test("cleanup of an old registration cannot remove a replacement for the same ta
 	const firstClient = new FakeClient("connecting");
 	const replacementClient = new FakeClient("connecting");
 	const unregisterFirst = runtime.registerTarget("hub-1", "ref-1", firstClient);
-	const unregisterReplacement = runtime.registerTarget(
-		"hub-1",
-		"ref-1",
-		replacementClient,
-	);
+	const unregisterReplacement = runtime.registerTarget("hub-1", "ref-1", replacementClient);
 	runtime.registerTarget("hub-1", "ref-1", null);
 	unregisterFirst();
 

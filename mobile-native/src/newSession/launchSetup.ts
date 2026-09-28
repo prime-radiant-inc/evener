@@ -172,7 +172,11 @@ const FULL_ACCESS: AccessLevel = { mode: "off", label: "Full access", detail: "N
  * sandbox option). */
 export const ACCESS_LEVELS: readonly AccessLevel[] = [
 	FULL_ACCESS,
-	{ mode: "workspace-write", label: "Workspace write", detail: "Writes only in the project; reads anywhere but secrets" },
+	{
+		mode: "workspace-write",
+		label: "Workspace write",
+		detail: "Writes only in the project; reads anywhere but secrets",
+	},
 	{ mode: "read-only", label: "Read-only", detail: "Writes nothing; reads anywhere but secrets" },
 	{ mode: "restricted", label: "Restricted", detail: "Reads and writes only in the project" },
 ];

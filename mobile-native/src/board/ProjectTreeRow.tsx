@@ -133,11 +133,17 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 				item.folded,
 				44,
 				item.count === null ? "Archived" : `Archived, ${plural(item.count, "session")}`,
-				text(item.count === null ? "Archived" : `Archived · ${item.count}`, { fontSize: 15 * scale, color: palette.inkMid }, true),
+				text(
+					item.count === null ? "Archived" : `Archived · ${item.count}`,
+					{ fontSize: 15 * scale, color: palette.inkMid },
+					true,
+				),
 			);
 		case "tier":
 			return (
-				<View style={{ minHeight: 32, paddingLeft: projectIndent(item.depth), paddingRight: 16, justifyContent: "center" }}>
+				<View
+					style={{ minHeight: 32, paddingLeft: projectIndent(item.depth), paddingRight: 16, justifyContent: "center" }}
+				>
 					{text(item.label, { fontSize: 13 * scale, fontWeight: "600", color: palette.inkMid })}
 				</View>
 			);
@@ -172,7 +178,9 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 			);
 		case "failed":
 			return (
-				<View style={{ minHeight: 44, paddingLeft: projectIndent(item.depth), paddingRight: 16, justifyContent: "center" }}>
+				<View
+					style={{ minHeight: 44, paddingLeft: projectIndent(item.depth), paddingRight: 16, justifyContent: "center" }}
+				>
 					{text("Couldn't load these sessions.", { fontSize: 13 * scale, color: palette.inkMid })}
 				</View>
 			);

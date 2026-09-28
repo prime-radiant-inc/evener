@@ -1,57 +1,47 @@
-import type {
-  InstanceCreateParams,
-  InstanceEditParams,
-  ProviderDescriptor,
-} from "@evener/appwire-client";
+import type { InstanceCreateParams, InstanceEditParams, ProviderDescriptor } from "@evener/appwire-client";
 export interface ProviderDraft {
-  name: string;
-  base: string;
-  baseUrl: string;
-  vars: Record<string, string>;
-  apiKeyEnv: string;
-  credentialHeader: string;
+	name: string;
+	base: string;
+	baseUrl: string;
+	vars: Record<string, string>;
+	apiKeyEnv: string;
+	credentialHeader: string;
 }
-export function createProviderParams(
-  draft: ProviderDraft,
-  providers: ProviderDescriptor[],
-): InstanceCreateParams {
-  const provider = providers.find((item) => item.id === draft.base);
-  if (!provider) throw new Error("Select an available base provider.");
-  const name = draft.name.trim();
-  if (!name) throw new Error("Name is required.");
-  const credentialHeader = draft.credentialHeader.trim();
-  if (credentialHeader && !credentialHeader.includes("$"))
-    throw new Error(
-      "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
-    );
-  const entries = Object.keys(provider.vars ?? {})
-    .map((key) => [key, draft.vars[key]?.trim() ?? ""] as const)
-    .filter(([, value]) => value);
-  return {
-    name,
-    base: provider.id,
-    baseUrl: draft.baseUrl.trim(),
-    vars: entries.length ? Object.fromEntries(entries) : undefined,
-    apiKeyEnv: draft.apiKeyEnv.trim() || undefined,
-    credentialHeader: credentialHeader || undefined,
-  };
+export function createProviderParams(draft: ProviderDraft, providers: ProviderDescriptor[]): InstanceCreateParams {
+	const provider = providers.find((item) => item.id === draft.base);
+	if (!provider) throw new Error("Select an available base provider.");
+	const name = draft.name.trim();
+	if (!name) throw new Error("Name is required.");
+	const credentialHeader = draft.credentialHeader.trim();
+	if (credentialHeader && !credentialHeader.includes("$"))
+		throw new Error("Credential header must reference a $VARIABLE or run a $(command), never a literal secret.");
+	const entries = Object.keys(provider.vars ?? {})
+		.map((key) => [key, draft.vars[key]?.trim() ?? ""] as const)
+		.filter(([, value]) => value);
+	return {
+		name,
+		base: provider.id,
+		baseUrl: draft.baseUrl.trim(),
+		vars: entries.length ? Object.fromEntries(entries) : undefined,
+		apiKeyEnv: draft.apiKeyEnv.trim() || undefined,
+		credentialHeader: credentialHeader || undefined,
+	};
 }
 export function editProviderParams(
-  instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
-  value: string,
+	instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
+	value: string,
 ): InstanceEditParams {
-  const baseUrl = value.trim();
-  const params: InstanceEditParams =
-    baseUrl === (instance.baseUrl || "")
-      ? { name: instance.name }
-      : baseUrl
-        ? { name: instance.name, baseUrl }
-        : { name: instance.name, clearBaseUrl: true };
-  // The endpoint the row resolved to when this editor was opened travels with
-  // the save as the assertion the hub checks: a name another client has
-  // re-pointed since must not have its replacement edited. A row the hub could
-  // not fingerprint asserts nothing.
-  if (instance.endpointFingerprint)
-    params.expectedEndpointFingerprint = instance.endpointFingerprint;
-  return params;
+	const baseUrl = value.trim();
+	const params: InstanceEditParams =
+		baseUrl === (instance.baseUrl || "")
+			? { name: instance.name }
+			: baseUrl
+				? { name: instance.name, baseUrl }
+				: { name: instance.name, clearBaseUrl: true };
+	// The endpoint the row resolved to when this editor was opened travels with
+	// the save as the assertion the hub checks: a name another client has
+	// re-pointed since must not have its replacement edited. A row the hub could
+	// not fingerprint asserts nothing.
+	if (instance.endpointFingerprint) params.expectedEndpointFingerprint = instance.endpointFingerprint;
+	return params;
 }

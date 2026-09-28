@@ -6,7 +6,7 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import { pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -19,6 +19,9 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );
 
 beforeEach(() => {
@@ -72,7 +75,12 @@ const refused: Ghost = {
 	menu: [],
 	origin: {
 		kind: "recovery",
-		row: { clientMutationId: "cmid-9", status: "rejected", text: "recover this message", actions: ["restore", "discard"] },
+		row: {
+			clientMutationId: "cmid-9",
+			status: "rejected",
+			text: "recover this message",
+			actions: ["restore", "discard"],
+		},
 	},
 };
 
@@ -191,10 +199,14 @@ it("shows the images an unconfirmed send carried in its own bubble, and only the
 			onMore={() => {}}
 		/>,
 	);
-	const images = tree.root.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png");
+	const images = tree.root.findAll(
+		(node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png",
+	);
 	expect(images).toHaveLength(1);
 	const bubble = pressable(tree, `${unconfirmed.text}. ${unconfirmed.caption}`);
-	expect(bubble?.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png")).toHaveLength(1);
+	expect(
+		bubble?.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png"),
+	).toHaveLength(1);
 });
 
 describe("tapping a ghost", () => {
@@ -312,12 +324,7 @@ it("renders nothing when nothing is waiting", () => {
 
 describe("swiping a ghost left (spec 8.5)", () => {
 	const swipeables = (tree: ReactTestRenderer) => tree.root.findAllByType("ReanimatedSwipeable" as never);
-	function swipeLeft(tree: ReactTestRenderer, pageX = 200) {
-		const [swipeable] = swipeables(tree);
-		if (!swipeable) throw new Error("no swipeable ghost");
-		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
-		act(() => swipeable.props.onSwipeableOpen("left"));
-	}
+	const swipeLeft = (tree: ReactTestRenderer, pageX = 200) => swipeRowFully(swipeables(tree)[0], "left", { pageX });
 
 	it.each([
 		["queued", queued],

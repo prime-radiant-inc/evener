@@ -164,6 +164,8 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 		opts.BuildBinary = writeStageBinary
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, opts)
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, errDeployUnstamped) {

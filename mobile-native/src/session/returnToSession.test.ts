@@ -25,7 +25,13 @@ it("goes back to a subagent's own screen under a document", () => {
 			{ name: "Subagent", params: { hubId: "hub-1", ref: "local:fix", title: "Fix race" } },
 			{
 				name: "Reader",
-				params: { hubId: "hub-1", sessionRef: "local:fix", path: "plan.md", reviewRef: "local:fix", reviewTitle: "Fix race" },
+				params: {
+					hubId: "hub-1",
+					sessionRef: "local:fix",
+					path: "plan.md",
+					reviewRef: "local:fix",
+					reviewTitle: "Fix race",
+				},
 			},
 		],
 	};
@@ -38,5 +44,9 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 	returnToSession(navigation, { hubId: "hub-1", ref: "local:coord", title: "Coordinator" });
 	expect(navigation.pop).toHaveBeenCalledWith(2);
 	returnToSession(navigation, { hubId: "hub-1", ref: "local:other", title: "Other" });
-	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", { hubId: "hub-1", ref: "local:other", title: "Other" });
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: "hub-1",
+		ref: "local:other",
+		title: "Other",
+	});
 });

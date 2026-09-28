@@ -25,16 +25,8 @@ vi.mock("./ConnectionProvider", () => ({ useConnection: () => ({}) }));
 
 it("the wall's Reconnect action fires the connection's own retry", () => {
 	const retry = vi.fn();
-	const tree = render(
-		<ConnectionWall
-			hubName="Work hub"
-			purpose="manage plugins"
-			onReconnect={retry}
-		/>,
-	);
-	expect(renderedText(tree)).toContain(
-		"Connect to Work hub to manage plugins.",
-	);
+	const tree = render(<ConnectionWall hubName="Work hub" purpose="manage plugins" onReconnect={retry} />);
+	expect(renderedText(tree)).toContain("Connect to Work hub to manage plugins.");
 	const reconnect = tree.root.findByProps({ accessibilityLabel: "Reconnect" });
 	act(() => {
 		reconnect.props.onPress();
@@ -61,7 +53,5 @@ it("a fatal wall names the reason its retry cannot clear yet", () => {
 	expect(renderedText(tree)).toContain(
 		"This app and hub need compatible versions. Update them together, then reconnect.",
 	);
-	expect(
-		tree.root.findAllByProps({ accessibilityLabel: "Reconnect" }),
-	).toHaveLength(1);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(1);
 });

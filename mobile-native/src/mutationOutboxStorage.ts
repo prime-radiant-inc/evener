@@ -60,7 +60,11 @@ export interface MutationOutboxSQLiteOptions {
 // state (submitting/blockedUnknown -> outbox, accepted -> optimistic,
 // rejected/orphaned -> recovery), so no separate state machine duplicates
 // what the table membership already says.
-export const TABLES = { outbox: "mutation_outbox", optimistic: "mutation_optimistic", recovery: "mutation_recovery" } as const;
+export const TABLES = {
+	outbox: "mutation_outbox",
+	optimistic: "mutation_optimistic",
+	recovery: "mutation_recovery",
+} as const;
 
 const COLUMNS = [
 	"client_mutation_id",
@@ -209,8 +213,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// write - left the ref's durable stop epoch past the click-time
 			// capture. The row commits born-"canceled": never dispatched,
 			// released only by an explicit Retry.
-			const canceledByBarrier =
-				barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
+			const canceledByBarrier = barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
 			// Allocate and persist the next sequence in one write so a reentrant
 			// enqueue cannot reuse a value read before another allocation.
 			const intentSequence = this.allocateSequence(intent.targetRef);
@@ -366,12 +369,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 					version: source.version,
 					clientMutationId: source.clientMutationId,
 					originClientId: source.originClientId,
-						// The enqueue-time instance rides the outbox ->
-						// optimistic transition like provenance does: dropping it
-						// would leave the accepted record identifying itself by
-						// threadId alone, exactly the pre-instance shape a
-						// replacement that retains the thread id is invisible to.
-						instanceId: source.instanceId,
+					// The enqueue-time instance rides the outbox ->
+					// optimistic transition like provenance does: dropping it
+					// would leave the accepted record identifying itself by
+					// threadId alone, exactly the pre-instance shape a
+					// replacement that retains the thread id is invisible to.
+					instanceId: source.instanceId,
 					targetRef: source.targetRef,
 					threadId: source.threadId,
 					method: source.method,
@@ -561,7 +564,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		}
 	}
 
-	protected insertNew(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
+	protected insertNew(
+		table: string,
+		record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>,
+	): void {
 		this.db.runSync(insertSQL(table), ...this.insertValues(record));
 	}
 
@@ -571,7 +577,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// full-row replace the oracle's `put` gives on a colliding key. Refreshing
 	// only state/attempted would leave a stale payload/display/recovery
 	// reason behind from whatever the row held before.
-	protected replace(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
+	protected replace(
+		table: string,
+		record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>,
+	): void {
 		this.db.runSync(replaceSQL(table), ...this.insertValues(record));
 	}
 

@@ -18,10 +18,7 @@ import {
 	workingActivity,
 } from "./attention";
 
-const row = (
-	ref: string,
-	over: Partial<NavigationSessionSummary> = {},
-): NavigationSessionSummary => ({
+const row = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
 	ref,
 	host_id: "local",
 	session_id: ref,
@@ -211,7 +208,10 @@ describe("Live bands (spec 7.1)", () => {
 	});
 
 	it("keeps the hub's order for Working when isStuck is omitted, same as before S5", () => {
-		const live = [row("work-a", { state: "active", updated_at: at(1) }), row("work-b", { state: "active", updated_at: at(2) })];
+		const live = [
+			row("work-a", { state: "active", updated_at: at(1) }),
+			row("work-b", { state: "active", updated_at: at(2) }),
+		];
 		expect(liveBands(live, [], () => false).working.map((item) => item.row.ref)).toEqual(["work-a", "work-b"]);
 	});
 
@@ -276,9 +276,12 @@ describe("Live bands (spec 7.1)", () => {
 describe("the Live summary line", () => {
 	it("shows only when at least two bands have sessions", () => {
 		expect(liveSummary(liveBands([row("a", { state: "active" })], [], never))).toBeNull();
-		expect(
-			liveSummary(liveBands([row("a", { state: "active" }), row("b", { state: "errored" })], [], never)),
-		).toEqual({ needsYou: 1, finished: 0, working: 1, idle: 0 });
+		expect(liveSummary(liveBands([row("a", { state: "active" }), row("b", { state: "errored" })], [], never))).toEqual({
+			needsYou: 1,
+			finished: 0,
+			working: 1,
+			idle: 0,
+		});
 	});
 
 	it("says each count the spec's way", () => {

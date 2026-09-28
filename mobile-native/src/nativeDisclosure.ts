@@ -10,9 +10,7 @@ export const nativeDisclosureStore = createDisclosureStore();
 
 /** Reactive: re-renders the caller when this id's open state changes. */
 export function useDisclosureOpen(id: string, fallback: boolean): boolean {
-	return useStore(nativeDisclosureStore, (s) =>
-		isDisclosureOpenIn(s, id, fallback),
-	);
+	return useStore(nativeDisclosureStore, (s) => isDisclosureOpenIn(s, id, fallback));
 }
 
 export const toggleDisclosure = nativeDisclosureStore.toggle;

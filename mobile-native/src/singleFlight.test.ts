@@ -5,9 +5,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve));
 
 it("coalesces requests made during a run into one trailing run", async () => {
 	const runs: (() => void)[] = [];
-	const flight = singleFlight(
-		() => new Promise<void>((resolve) => runs.push(resolve)),
-	);
+	const flight = singleFlight(() => new Promise<void>((resolve) => runs.push(resolve)));
 	flight.request();
 	flight.request();
 	flight.request();

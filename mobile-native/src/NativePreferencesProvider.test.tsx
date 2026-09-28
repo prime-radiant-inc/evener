@@ -1,19 +1,11 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	AnyNotification,
-	AppwireClient,
-	InitializeResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { DRAFT_RESTORE_FAILED_MESSAGE } from "@evener/appwire-client";
-import {
-	NativePreferencesProvider,
-	useNativePreferences,
-} from "./NativePreferencesProvider";
+import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-	true;
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -125,8 +117,7 @@ function mountProvider() {
 		current = useNativePreferences();
 		return null;
 	}
-	const app = () =>
-		createElement(NativePreferencesProvider, null, createElement(Probe));
+	const app = () => createElement(NativePreferencesProvider, null, createElement(Probe));
 	let tree!: ReactTestRenderer;
 	act(() => {
 		tree = create(app());
@@ -320,12 +311,8 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			draftUnreadable: false,
 			storageUnavailable: false,
 		});
-		expect(mounted.current.snapshot?.keybindings.draftError).toBe(
-			"Hub keybindings settings are unavailable.",
-		);
-		expect(mounted.current.snapshot?.keybindings.error).toBe(
-			"Hub keybindings settings are unavailable.",
-		);
+		expect(mounted.current.snapshot?.keybindings.draftError).toBe("Hub keybindings settings are unavailable.");
+		expect(mounted.current.snapshot?.keybindings.error).toBe("Hub keybindings settings are unavailable.");
 		mounted.unmount();
 	});
 

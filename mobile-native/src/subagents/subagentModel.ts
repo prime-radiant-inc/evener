@@ -247,7 +247,11 @@ export interface SubagentLastLine {
  * modelProvider can carry a "provider/" prefix a delegate's resolved model
  * doesn't. */
 export function sameModel(a: string, b: string): boolean {
-	const part = (value: string) => value.slice(value.lastIndexOf("/") + 1).trim().toLowerCase();
+	const part = (value: string) =>
+		value
+			.slice(value.lastIndexOf("/") + 1)
+			.trim()
+			.toLowerCase();
 	return part(a) === part(b);
 }
 

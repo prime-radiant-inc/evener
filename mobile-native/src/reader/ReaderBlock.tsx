@@ -183,7 +183,9 @@ export const ReaderBlock = memo(function ReaderBlock({
 		...(changed ? { borderLeftWidth: 3, borderLeftColor: palette.accent, paddingLeft: 12 } : {}),
 		...(selected ? { backgroundColor: palette.accentBg } : {}),
 	};
-	const body = <BlockBody block={block} selecting={selecting} onSelection={onSelection} accessibility={accessibility} />;
+	const body = (
+		<BlockBody block={block} selecting={selecting} onSelection={onSelection} accessibility={accessibility} />
+	);
 	if (menu.length === 0) return <View style={style}>{body}</View>;
 	return (
 		// The words stay VoiceOver's element, with the menu as its actions;
@@ -199,9 +201,7 @@ export const ReaderBlock = memo(function ReaderBlock({
 			style={style}
 		>
 			{body}
-			{commentCount > 0 ? (
-				<CommentMarker count={commentCount} onPress={() => onAction?.("comments", block)} />
-			) : null}
+			{commentCount > 0 ? <CommentMarker count={commentCount} onPress={() => onAction?.("comments", block)} /> : null}
 		</Pressable>
 	);
 });

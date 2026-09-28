@@ -65,9 +65,7 @@ describe("the tray's line (spec 8.3)", () => {
 			status: "inProgress",
 			startedAt: ago(5_000),
 		});
-		expect(trayLine(session({ turns: [turn([reading])] }), NOW)?.text).toBe(
-			"Reading agent/retirement_test.go · 5s",
-		);
+		expect(trayLine(session({ turns: [turn([reading])] }), NOW)?.text).toBe("Reading agent/retirement_test.go · 5s");
 	});
 
 	it("says Thinking with a token estimate and no clock", () => {
@@ -139,8 +137,7 @@ describe("the tray's line (spec 8.3)", () => {
 			receivedAt: NOW,
 		};
 		const reply = item({ type: "agentMessage", status: "inProgress" });
-		const withRetry = (lastFrameAt: number) =>
-			session({ modelRetry: retry, turns: [turn([reply])], lastFrameAt });
+		const withRetry = (lastFrameAt: number) => session({ modelRetry: retry, turns: [turn([reply])], lastFrameAt });
 		expect(trayLine(withRetry(NOW - 5_000), NOW)?.text).toBe("Writing…");
 		expect(trayLine(withRetry(NOW - 25_000), NOW)?.text).toBe("Retrying · rate limited · attempt 1 of 4");
 	});
