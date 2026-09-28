@@ -99,7 +99,7 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
 ## Sharp edges
 
 - **A tool row starts COLLAPSED, and the gallery only exists while it is
-  expanded.** Nothing about carrying images auto-expands a row. A failed shell
+  expanded.** Nothing about a shell result carrying images auto-expands its row. A failed shell
   call is no exception: no tool auto-opens on failure, so a command that exits
   nonzero is collapsed exactly like one that succeeds. Expand the row before
   reading a thumb off it.
