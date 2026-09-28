@@ -96,7 +96,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
 16. **`launchOverrides` holds only the sheets' own settings:** `enabledPlugins`, `sandbox`, `sandboxNet`, `contextStrategy`, `maxSubagentDepth`, `maxRounds`. Anything else is refused, so a recipe can never carry an env var (a credential), a system prompt file or an MCP server unseen on the sheet.
 17. **A recipe records "new worktree" as a yes or no, never a branch name** (`newWorktree`), since each launch needs a new branch; the sheet asks for the name when that recipe is used (question 5).
 18. **Whole-list replace against a revision.** Add, edit, rename, reorder and delete are each a new list sent with the revision the client read. A stale revision is `CodeConflict` with the current list, so a client reapplies its one change instead of overwriting another device's. An unchanged list keeps its revision and announces nothing. At most 100 recipes; ids `[A-Za-z0-9_-]{1,64}`, minted by the client and unique; names trimmed, 1 to 40 characters, unique ignoring case (the phone's rules); every other text, including the overrides' sandbox, context strategy and each plugin name, at most 4096 bytes of valid UTF-8; at most 256 enabled plugins. The shape is all the hub checks: whether a host, model or plugin still exists is thread/start's question when the recipe is used.
-19. **Decoding is strict.** A field a newer client adds is refused rather than dropped, so a save never silently loses part of a recipe. A saved file this hub cannot read (bad JSON, a newer version, an unknown field) leaves an empty list with `loadError` and refuses every set, so it is never overwritten.
+19. **Decoding is strict.** A field a newer client adds is refused rather than dropped, so a save never silently loses part of a recipe. A saved file this hub cannot read (blank, bad JSON, a newer version, an unknown field) leaves an empty list with `loadError` and refuses every set, so it is never overwritten.
 20. **One file writer.** The keybindings and transcript-display stores carry identical atomic-write, read and strict-decode code; PR 39 moves it into `hubcore/state_file.go` and the new store uses it too, rather than adding a third copy. `cloneLaunchConfigLayer` moves from `appsource` to `appwire.CloneLaunchConfigLayer` for the same reason. The deletion and recovery stores keep their own writers (issue filed with this plan).
 21. **"Same as last time" stays on each device** (question 6), and the server plan's idea of deriving it from session metas is not built.
 
@@ -1907,7 +1907,7 @@ Title "feat(hub): start a session in a new worktree branch from thread/start (S1
 - Produces (Task 39.3 uses them):
   - `type stateFileFaults struct { BeforeRename, AfterRename func() error }`
   - `func writeStateFileAtomic(fs afero.Fs, path string, data []byte, what string, faults stateFileFaults) (renamed bool, err error)`
-  - `func readStateFile(fs afero.Fs, path, what string) ([]byte, error)` (nil data: no state)
+  - `func readStateFile(fs afero.Fs, path, what string) (data []byte, found bool, err error)` (found false: no file)
   - `func decodeStateFileStrict(data []byte, v any, what string) error`
 
 This is a move, not a behavior change: every error message stays byte-identical ("create keybindings state directory: …" is now "create %s directory" with `what` = "keybindings state"). The two stores' existing tests pin it: pre- and post-rename failure, temp-file cleanup, read faults, strict decoding and trailing data (`keybindings_store_test.go`, `keybindings_store_write_test.go`, `transcript_display_store_test.go`, and the RPC tests in `cmd/evener-hub`).
@@ -2006,21 +2006,19 @@ func writeStateFileAtomic(fs afero.Fs, path string, data []byte, what string, fa
 	return true, nil
 }
 
-// readStateFile reads the hub state file at path. A missing or blank file holds
-// no state and reads as nil with no error. what names the file in errors
-// ("keybindings state").
-func readStateFile(fs afero.Fs, path, what string) ([]byte, error) {
-	data, err := afero.ReadFile(fs, path)
+// readStateFile reads the hub state file at path. found is false, with no
+// error, when there is no file; a file that exists comes back as it is, blank
+// or not, so each store decides what a blank file means. what names the file
+// in errors ("keybindings state").
+func readStateFile(fs afero.Fs, path, what string) (data []byte, found bool, err error) {
+	data, err = afero.ReadFile(fs, path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", what, err)
+		return nil, false, fmt.Errorf("read %s: %w", what, err)
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil, nil
-	}
-	return data, nil
+	return data, true, nil
 }
 
 // decodeStateFileStrict decodes data as exactly one JSON value into v,
@@ -2050,9 +2048,13 @@ In `keybindings_store.go`:
 - In `loadKeybindingsSnapshotFS`, the read (from `data, err := afero.ReadFile(fs, keybindingsStatePath(stateRoot))` through the blank-file check) becomes
 
   ```go
-	data, err := readStateFile(fs, keybindingsStatePath(stateRoot), "keybindings state")
-	if err != nil || data == nil {
+	data, found, err := readStateFile(fs, keybindingsStatePath(stateRoot), "keybindings state")
+	if err != nil {
 		return empty, err
+	}
+	// A missing or blank file is the shipped defaults.
+	if !found || len(bytes.TrimSpace(data)) == 0 {
+		return empty, nil
 	}
   ```
 
@@ -2068,7 +2070,7 @@ In `keybindings_store.go`:
   ```go
 	return writeStateFileAtomic(fs, keybindingsStatePath(stateRoot), data, "keybindings state", faults)
   ```
-- Drop the now-unused `io` and `os` imports.
+- Drop the now-unused `io` and `os` imports (`bytes` stays).
 
 Make the same three edits in `transcript_display_store.go` with `transcriptDisplayStatePath` and `"transcript display state"`, and `type transcriptDisplayStoreFaults = stateFileFaults`.
 
@@ -2714,6 +2716,8 @@ func TestLaunchRecipeStoreRenameFailures(t *testing.T) {
 // set and says why, rather than overwriting what it could not read.
 func TestLaunchRecipeStoreKeepsAnUnreadableFile(t *testing.T) {
 	for name, content := range map[string]string{
+		"blank":            "",
+		"only whitespace":  " \n",
 		"not JSON":         `{"version":1,`,
 		"an unknown field": `{"version":1,"revision":2,"recipes":[],"extra":true}`,
 		"a newer version":  `{"version":2,"revision":2,"recipes":[]}`,
@@ -2962,8 +2966,10 @@ func loadLaunchRecipesSnapshotFS(fs afero.Fs, stateRoot string) (launchRecipesSn
 	if stateRoot == "" {
 		return empty, nil
 	}
-	data, err := readStateFile(fs, launchRecipesStatePath(stateRoot), launchRecipesStateWhat)
-	if err != nil || data == nil {
+	// Only a missing file is an empty list. A blank one is a list this hub
+	// cannot read, like any other damage, so it is kept, never overwritten.
+	data, found, err := readStateFile(fs, launchRecipesStatePath(stateRoot), launchRecipesStateWhat)
+	if err != nil || !found {
 		return empty, err
 	}
 	var state launchRecipesSnapshot
