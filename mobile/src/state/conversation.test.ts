@@ -4247,6 +4247,11 @@ describe("ConversationStore", () => {
         (row: MobileTimelineItem) => (row.kind === "user" ? [row.text] : []),
       ],
       [
+        "note",
+        { kind: "note", id: "r", text: oversized },
+        (row: MobileTimelineItem) => (row.kind === "note" ? [row.text] : []),
+      ],
+      [
         "assistant",
         { kind: "assistant", id: "r", markdown: oversized, streaming: false },
         (row: MobileTimelineItem) => (row.kind === "assistant" ? [row.markdown] : []),

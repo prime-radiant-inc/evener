@@ -216,7 +216,7 @@ no router (reserved).
 ## Notifications (server → client)
 
 Pushed to subscribed connections; no `id`. The web client maps these in
-`cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`).
+`cmd/serf-hub/assets/appwire.js` (`eventsFromNotification`).
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|

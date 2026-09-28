@@ -1,9 +1,6 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import {
-	type AccessibilityActionEvent,
-	ActionSheetIOS,
-	Alert,
 	Modal,
 	Platform,
 	Pressable,
@@ -13,6 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { copyText } from "./clipboard";
+import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
@@ -127,6 +125,9 @@ export function TimelineItem({
 					quote={quote}
 				/>
 			);
+			break;
+		case "note":
+			content = <NoteRow text={item.text} />;
 			break;
 		case "assistant":
 			content = <AgentMessage markdown={item.markdown} quote={quote} />;
@@ -256,48 +257,6 @@ export function TimelineItem({
 	);
 }
 
-/** One item of a message's touch-and-hold menu, which VoiceOver also offers
- * as an action on the message. */
-interface MenuItem {
-	name: string;
-	label: string;
-	run: () => void;
-}
-
-function showMenu(items: readonly MenuItem[], preview: string) {
-	if (Platform.OS === "ios") {
-		ActionSheetIOS.showActionSheetWithOptions(
-			{
-				options: [...items.map((item) => item.label), "Cancel"],
-				cancelButtonIndex: items.length,
-			},
-			(index) => items[index]?.run(),
-		);
-		return;
-	}
-	// Android's alert holds at most three buttons, so it dismisses by a tap
-	// outside rather than spending one on Cancel.
-	Alert.alert(
-		"Message",
-		preview,
-		items.map((item) => ({ text: item.label, onPress: item.run })),
-		{ cancelable: true },
-	);
-}
-
-/** A message's first 120 characters on one line, for the Android menu. */
-function menuPreview(text: string): string {
-	return text.replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-function menuAccessibility(items: readonly MenuItem[]) {
-	return {
-		accessibilityActions: items.map(({ name, label }) => ({ name, label })),
-		onAccessibilityAction: (event: AccessibilityActionEvent) =>
-			items.find((item) => item.name === event.nativeEvent.actionName)?.run(),
-	};
-}
-
 function YourMessage({
 	item,
 	fork,
@@ -354,6 +313,25 @@ function YourMessage({
 					Steered in mid-turn
 				</Text>
 			) : null}
+		</View>
+	);
+}
+
+// A shared-notes update (spec 8.2, 8.8): a 2pt left rule like a subagent row,
+// a quiet caption, and the note itself in the serif prose used for your
+// messages. An emptied note reads only the caption.
+function NoteRow({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
+			>
+				{text ? "You updated your note" : "You cleared your note"}
+			</Text>
+			{text ? <Copy variant="yourMessage">{text}</Copy> : null}
 		</View>
 	);
 }

@@ -507,3 +507,71 @@ func TestHubSearchLiveArchivedFallsBackToThePastEntrysProjectWhenRosterCarriesNo
 		t.Fatalf("live = %+v, want the session marked archived", resp.Live)
 	}
 }
+
+// A state-dir basename names a project only when it is a well-formed project
+// ID. The navigation tree skips a past entry whose basename fails
+// identifier.ValidateProjectID when it builds its project candidates
+// (web_api_tree.go), so search's ended-session archived lookup must skip the
+// same malformed ID rather than applying a project decision the tree would
+// never see — the two paths must agree on what counts as a valid project ID
+// for the same session data (#2775).
+func TestPastSearchResultSkipsAMalformedStateDirProjectID(t *testing.T) {
+	now := time.Now()
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, UpdatedAt: now},
+		StateDir: filepath.Join(t.TempDir(), "stray-dir"),
+	}
+	// A decision keyed by the malformed basename, as a stray store row could
+	// be. The tree never builds a candidate from this basename, so search must
+	// not apply its project decision either.
+	decisions := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: filepath.Base(entry.StateDir)}: true,
+	}
+	if got := pastSearchResult(entry, decisions, now); got.Archived {
+		t.Fatalf("Archived = true for state-dir basename %q, want false: a basename that is not a valid project ID must skip the project decision, as the navigation tree does", filepath.Base(entry.StateDir))
+	}
+}
+
+// The same rule for the live fallback: the roster carries no project, so a
+// live result falls back to its past entry's state directory. An empty state
+// dir has basename "." — not a well-formed project ID — and the tree skips
+// such a basename, so the live archived lookup must skip a project decision
+// keyed by it too (#2775).
+func TestLiveSearchResultSkipsAMalformedStateDirProjectID(t *testing.T) {
+	now := time.Now()
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SeedForTest leaves StateDir blank: filepath.Base("") is ".".
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{ID: sessionID, UpdatedAt: now}})
+	decisions := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: filepath.Base("")}: true,
+	}
+	le := hubcore.LiveEntry{PID: 1, SessionID: sessionID, Status: appwire.ThreadStatusIdle}
+	if got := liveSearchResult(hubcore.WebConfig{Past: past}, le, decisions, now); got.Archived {
+		t.Fatalf("Archived = true for an empty state dir (basename %q), want false: a basename that is not a valid project ID must skip the project decision, as the navigation tree does", filepath.Base(""))
+	}
+}
+
+// stateDirProjectID is the one derivation the navigation tree and search
+// share: it accepts a well-formed project-ID basename and rejects anything
+// else, so both paths agree on which sessions carry a project decision
+// (#2775).
+func TestStateDirProjectIDValidatesTheBasename(t *testing.T) {
+	valid := filepath.Base(hubtest.ProjectDir(t, filepath.Join(t.TempDir(), "projects"), "alpha"))
+	if id, ok := stateDirProjectID(filepath.Join("projects", valid)); !ok || id != valid {
+		t.Fatalf("stateDirProjectID(%q) = %q, %t, want %q, true", valid, id, ok, valid)
+	}
+	for _, bad := range []string{"/projects/stray-dir", "", ".", "/projects/no-suffix"} {
+		if id, ok := stateDirProjectID(bad); ok {
+			t.Errorf("stateDirProjectID(%q) = %q, true, want ok=false", bad, id)
+		}
+	}
+}

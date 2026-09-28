@@ -321,7 +321,7 @@ Additive only; no changes to existing methods or params.
   session state; `status.Model` refreshed synchronously on switch (fixes G2).
 - New persisted marker turn kind in `agent/schema` + its
   `apptranscript.ProjectTurn` and live-projector cases (N5).
-- Clients: `cmd/evener-hub/assets/appwire.js` `eventsFromNotification` maps the
+- Clients: `cmd/serf-hub/assets/appwire.js` `eventsFromNotification` maps the
   new notifications; `cmd/evener-tui` `applyHubNotification` likewise.
 
 ## Failure modes

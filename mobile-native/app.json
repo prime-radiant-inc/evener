@@ -71,7 +71,8 @@
           "imageWidth": 120,
           "resizeMode": "contain"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "scheme": "evener-native"
   }
