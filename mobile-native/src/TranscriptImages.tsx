@@ -1,5 +1,5 @@
 import * as SecureStore from "expo-secure-store";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	FlatList,
@@ -90,6 +90,14 @@ export function TranscriptImages({
 	const { width } = useWindowDimensions();
 	// The page the viewer shows, or null while it's closed.
 	const [page, setPage] = useState<number | null>(null);
+	const pager = useRef<FlatList<AttachmentRef>>(null);
+	// VoiceOver moves between images with a swipe up or down on the viewer
+	// (the adjustable actions), as well as by paging.
+	function turnTo(next: number) {
+		if (next < 0 || next >= images.length) return;
+		setPage(next);
+		pager.current?.scrollToIndex({ index: next, animated: true });
+	}
 	return (
 		<>
 			<ScrollView
@@ -140,6 +148,18 @@ export function TranscriptImages({
 								<Action onPress={() => setPage(null)}>Done</Action>
 							</View>
 							<FlatList
+								ref={pager}
+								accessible
+								accessibilityRole="adjustable"
+								accessibilityLabel="Images"
+								accessibilityValue={{ text: `Image ${page + 1} of ${images.length}` }}
+								accessibilityActions={[
+									{ name: "increment", label: "Next image" },
+									{ name: "decrement", label: "Previous image" },
+								]}
+								onAccessibilityAction={(event) =>
+									turnTo(page + (event.nativeEvent.actionName === "increment" ? 1 : -1))
+								}
 								data={images}
 								keyExtractor={(image) => image.id}
 								horizontal
