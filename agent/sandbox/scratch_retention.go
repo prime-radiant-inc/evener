@@ -886,10 +886,7 @@ func leaseOwningBindingOfKind(manifest ScratchManifest, canonicalDir, kind strin
 func consumersNamingScratchBinding(consumers []ScratchConsumerBinding, bindingID string) []ScratchConsumerBinding {
 	var named []ScratchConsumerBinding
 	for _, consumer := range consumers {
-		if consumer.CurrentBindingID == bindingID ||
-			consumer.ParentSharedBindingID == bindingID ||
-			consumer.WorktreeRestoreBindingID == bindingID ||
-			slices.Contains(consumer.AbandonedBindingIDs, bindingID) {
+		if consumerNamesBinding(consumer, bindingID) {
 			named = append(named, consumer)
 		}
 	}
@@ -1827,6 +1824,12 @@ func ScratchRetentionNeedsRepair(manifest ScratchManifest) bool {
 		if _, ok := named[binding.BindingID]; ok {
 			continue
 		}
+		// A binding with no owner session cannot be attributed: the repair
+		// leaves it for the reader to keep refusing, so the repair would write
+		// nothing for it and this predicate must not report one.
+		if binding.OwnerSessionID == "" {
+			continue
+		}
 		for _, slot := range binding.Slots {
 			if slot.OwnsLease {
 				return true
@@ -1836,40 +1839,36 @@ func ScratchRetentionNeedsRepair(manifest ScratchManifest) bool {
 	return false
 }
 
-// consumerNamedBindingIDs is the set of binding ids any consumer role names —
-// current, parent-shared, worktree-restore, or abandoned. It mirrors exactly
-// the roles validateRetainedScratchGraph counts when it requires every
-// lease-owning binding to be referenced.
+// consumerRoleIDs is every binding id role consumer names — current,
+// parent-shared, worktree-restore, and abandoned. The roles are spelled once,
+// here, so a future role field added to ScratchConsumerBinding cannot be counted
+// by one reader of the fence and missed by another.
+func consumerRoleIDs(consumer ScratchConsumerBinding) []string {
+	roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
+	return append(roles, consumer.AbandonedBindingIDs...)
+}
+
+// consumerNamesBinding reports whether any role of consumer names bindingID.
+func consumerNamesBinding(consumer ScratchConsumerBinding, bindingID string) bool {
+	if bindingID == "" {
+		return false
+	}
+	return slices.Contains(consumerRoleIDs(consumer), bindingID)
+}
+
+// consumerNamedBindingIDs is the set of binding ids any consumer role names. It
+// mirrors exactly the roles validateRetainedScratchGraph counts when it requires
+// every lease-owning binding to be referenced.
 func consumerNamedBindingIDs(consumers []ScratchConsumerBinding) map[string]struct{} {
 	named := make(map[string]struct{}, len(consumers))
 	for _, consumer := range consumers {
-		for _, id := range []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID} {
-			if id != "" {
-				named[id] = struct{}{}
-			}
-		}
-		for _, id := range consumer.AbandonedBindingIDs {
+		for _, id := range consumerRoleIDs(consumer) {
 			if id != "" {
 				named[id] = struct{}{}
 			}
 		}
 	}
 	return named
-}
-
-// consumerNamesBinding reports whether any role of consumer — current,
-// parent-shared, worktree-restore, or abandoned — names bindingID. It is the
-// single-row form of consumerNamedBindingIDs.
-func consumerNamesBinding(consumer ScratchConsumerBinding, bindingID string) bool {
-	if bindingID == "" {
-		return false
-	}
-	if consumer.CurrentBindingID == bindingID ||
-		consumer.ParentSharedBindingID == bindingID ||
-		consumer.WorktreeRestoreBindingID == bindingID {
-		return true
-	}
-	return slices.Contains(consumer.AbandonedBindingIDs, bindingID)
 }
 
 // repairScratchRetentionLocked is the repair's read-modify-write. The caller
@@ -1980,9 +1979,6 @@ func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, er
 			consumer.CurrentBindingID = binding.BindingID
 			named[binding.BindingID] = struct{}{}
 			changed = true
-			continue
-		}
-		if consumerNamesBinding(*consumer, binding.BindingID) {
 			continue
 		}
 		consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, binding.BindingID)
