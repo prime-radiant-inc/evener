@@ -544,6 +544,52 @@ func TestReapUnverifiableBoundaryPathKeepsTheIntent(t *testing.T) {
 	}
 }
 
+// TestReapKeepsFencedWhenThePersistedBoundaryHasNoEntries pins the empty-boundary
+// fail-closed rule: a local orphan-unverified record with an empty persisted
+// boundary and no intent has nothing to verify, so the pass must never resolve
+// it to interrupted on no evidence.
+func TestReapKeepsFencedWhenThePersistedBoundaryHasNoEntries(t *testing.T) {
+	store := openLegacyEmptyBoundaryStore(t)
+	handle := &fakeBoundary{}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err == nil {
+		t.Fatal("an entry-less boundary produced no diagnostic")
+	}
+	if dropped != 0 || len(opened) != 0 {
+		t.Fatalf("reap = %d dropped, opened %d; want it left fenced", dropped, len(opened))
+	}
+	stored, _ := store.Record("00000000000000000001")
+	if stored.State != hostops.StateOrphanUnverified {
+		t.Fatalf("the record's state = %q, want it still fenced", stored.State)
+	}
+}
+
+// openLegacyEmptyBoundaryStore writes a store file carrying a local
+// orphan-unverified record whose persisted boundary array is empty — a shape the
+// API now refuses to write, but a hand-edited or pre-guard file can carry — and
+// opens it.
+func openLegacyEmptyBoundaryStore(t *testing.T) *hostops.Store {
+	t.Helper()
+	dir := t.TempDir()
+	path := hostops.StorePath(dir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir store dir: %v", err)
+	}
+	const body = `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy",` +
+		`"state":"orphan-unverified","generation":7,"incarnationId":"inc-h1","orphanBoundary":[],` +
+		`"createdAt":"2026-09-28T00:00:00Z","updatedAt":"2026-09-28T00:00:00Z","hostRemoved":false}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	store, err := hostops.Open(path)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	return store
+}
+
 // TestReapResolvesACustodyImportedOrphanWithNoIntents pins M1: a local
 // `orphan-unverified` record whose intent set is gone (a custody import, or an
 // intent-cleared write) is still retried every boot. It must be resolved from

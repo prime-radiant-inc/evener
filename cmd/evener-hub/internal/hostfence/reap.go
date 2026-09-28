@@ -112,6 +112,13 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
 			continue
 		}
+		if len(groups) == 0 {
+			// A local orphan-unverified record with no intent and no boundary
+			// entry has nothing to verify: resolving it would clear a fence on no
+			// evidence, so it stays fenced and is reported.
+			diagnostics = append(diagnostics, fmt.Errorf("record %s carries no boundary entries to verify, so it stays fenced", record.ID))
+			continue
+		}
 		var cleanNonces []string
 		var failing []hostops.SpawnIntent
 		groupFailed := false

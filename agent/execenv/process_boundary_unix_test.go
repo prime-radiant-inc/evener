@@ -224,9 +224,10 @@ func TestBoundaryOpenReportsAGoneBoundary(t *testing.T) {
 	if err := requireCgroup2(cgroup2Mount); err != nil {
 		t.Skipf("no cgroup2 mount: %v", err)
 	}
-	// A direct child of the verified mount: the parent exists and verifies, so
-	// the missing child is a genuinely removed boundary.
-	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()))
+	// A direct child of the verified mount carrying the controller's name: the
+	// parent exists and verifies, so the missing child is a genuinely removed
+	// boundary.
+	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-boundary-missing-%d", os.Getpid()))
 	_, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir})
 	if !errors.Is(err, ErrBoundaryGone) {
 		t.Fatalf("OpenBoundary(missing dir) = %v, want ErrBoundaryGone", err)
@@ -240,9 +241,44 @@ func TestBoundaryOpenRefusesAMissingParent(t *testing.T) {
 	if err := requireCgroup2(cgroup2Mount); err != nil {
 		t.Skipf("no cgroup2 mount: %v", err)
 	}
-	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()), "child")
+	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-boundary-missing-%d", os.Getpid()), "evener-boundary-child")
 	if _, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir}); !errors.Is(err, ErrBoundaryUnavailable) {
 		t.Fatalf("OpenBoundary(child of a missing parent) = %v, want ErrBoundaryUnavailable", err)
+	}
+}
+
+// TestBoundaryOpenRefusesAForeignOrTraversingPath pins provenance and path
+// safety: a path this controller did not create, or one that escapes through
+// `..`, is unverifiable and must never be enumerated, signaled or removed.
+func TestBoundaryOpenRefusesAForeignOrTraversingPath(t *testing.T) {
+	if err := requireCgroup2(cgroup2Mount); err != nil {
+		t.Skipf("no cgroup2 mount: %v", err)
+	}
+	paths := []string{
+		filepath.Join(cgroup2Mount, "system.slice"),
+		cgroup2Mount + "/../cgroup/evener-boundary-escape",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			if _, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: path}); !errors.Is(err, ErrBoundaryUnavailable) {
+				t.Fatalf("OpenBoundary(%s) = %v, want ErrBoundaryUnavailable", path, err)
+			}
+		})
+	}
+}
+
+// TestBoundaryMembersFailClosedWhenTheSubtreeIsPopulated pins the descendant
+// rule: cgroup v2 permits processes in descendant cgroups, so an empty direct
+// cgroup.procs with cgroup.events reporting a populated subtree must never
+// enumerate as clean.
+func TestBoundaryMembersFailClosedWhenTheSubtreeIsPopulated(t *testing.T) {
+	boundary := fakeBoundary(t)
+	setMembers(t, boundary)
+	if err := os.WriteFile(filepath.Join(boundary.Identity().CgroupID, "cgroup.events"), []byte("populated 1\nfrozen 0\n"), 0o644); err != nil {
+		t.Fatalf("write cgroup.events: %v", err)
+	}
+	if _, err := boundary.Members(); !errors.Is(err, ErrBoundaryUnavailable) {
+		t.Fatalf("Members(populated subtree) = %v, want ErrBoundaryUnavailable", err)
 	}
 }
 

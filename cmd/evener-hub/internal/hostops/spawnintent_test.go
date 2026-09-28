@@ -333,6 +333,31 @@ func TestTransitionRefusesTerminalizationWithOpenIntents(t *testing.T) {
 	}
 }
 
+// TestSetOrphanBoundaryRefusesAnEmptyBoundary pins the fail-closed rule: a mark
+// with no entry would read as "verified empty" to the reap, so no zero-entry
+// form — `[]`, `[ ]`, null, or malformed bytes — may be persisted.
+func TestSetOrphanBoundaryRefusesAnEmptyBoundary(t *testing.T) {
+	cases := map[string][]byte{
+		"empty array":      []byte(`[]`),
+		"whitespace array": []byte(`[ ]`),
+		"null":             []byte(`null`),
+		"malformed":        []byte(`{`),
+	}
+	for name, boundary := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, _ := openTestStore(t)
+			record := createTestRecord(t, store, "h1")
+			if _, err := store.SetOrphanBoundary(record.ID, boundary, nil); !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("SetOrphanBoundary(%s) = %v, want ErrInvalidRecord", name, err)
+			}
+			stored, _ := store.Record(record.ID)
+			if stored.State == StateOrphanUnverified {
+				t.Fatal("a refused empty boundary still marked the record")
+			}
+		})
+	}
+}
+
 // TestResolveReapedSpawnClearsIntentsInOneWrite pins §5's atomic resolution:
 // the `orphan-unverified`→`interrupted` transition, the boundary clear and the
 // intent drop land in one write, and a resolve that would leave an intent

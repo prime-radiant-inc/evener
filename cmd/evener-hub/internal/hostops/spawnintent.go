@@ -19,7 +19,6 @@ package hostops
 // lives in agent/execenv.
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -438,8 +437,13 @@ func (s *Store) SetOrphanBoundary(recordID string, boundary json.RawMessage, dro
 	if slices.Contains(dropNonces, "") {
 		return Record{}, fmt.Errorf("%w: a set names an intent's nonce", ErrInvalidSpawnIntent)
 	}
-	trimmed := bytes.TrimSpace(boundary)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[]")) || bytes.Equal(trimmed, []byte("null")) {
+	// The boundary is parsed, not string-matched: `[ ]`, null and any other
+	// zero-entry form all unmarshal to an empty array, and an empty boundary
+	// must never be written here — a mark with no entry reads as "verified
+	// empty" to the reap, which is the opposite of the fail-closed disposition
+	// this write exists to record.
+	var entries []json.RawMessage
+	if err := json.Unmarshal(boundary, &entries); err != nil || len(entries) == 0 {
 		return Record{}, fmt.Errorf("%w: an orphan boundary is never empty here", ErrInvalidRecord)
 	}
 	s.cell.mu.Lock()

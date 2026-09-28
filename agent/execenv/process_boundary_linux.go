@@ -22,6 +22,12 @@ import (
 // mount root.
 const cgroup2Mount = "/sys/fs/cgroup"
 
+// boundaryDirPrefix is the controller-created boundary directory's name prefix.
+// It is the provenance a reopened path must carry: only a directory this
+// package created is a boundary whose members may be enumerated, signaled or
+// removed.
+const boundaryDirPrefix = "evener-boundary-"
+
 // createBoundary pre-creates the Linux cgroup boundary.
 //
 // With an explicit root the root must be a cgroup2 directory and creation
@@ -63,7 +69,7 @@ func createBoundary(root string) (*Boundary, error) {
 // starts empty — a boundary is only ever populated by its own spawns — and is
 // removed again if it cannot be opened.
 func createLinuxCgroup(parent string) (*Boundary, error) {
-	dir, err := os.MkdirTemp(parent, "evener-boundary-")
+	dir, err := os.MkdirTemp(parent, boundaryDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create a cgroup under %s: %w", ErrBoundaryUnavailable, parent, err)
 	}
@@ -114,6 +120,17 @@ func ownCgroupDir() (string, error) {
 func openBoundary(id BoundaryIdentity) (*Boundary, error) {
 	if id.Platform != BoundaryPlatformLinux {
 		return nil, fmt.Errorf("%w: platform %q is not the linux arm", ErrBoundaryUnavailable, id.Platform)
+	}
+	// A persisted path is data, not authority: it must be the clean, absolute
+	// name of a directory this controller created before anything is
+	// enumerated, signaled or removed through it. A `..` escape, a relative
+	// path, or a name outside the boundary prefix is unverifiable, never a
+	// boundary this pass may act on.
+	if id.CgroupID != filepath.Clean(id.CgroupID) || !filepath.IsAbs(id.CgroupID) {
+		return nil, fmt.Errorf("%w: %s is not a clean absolute boundary path", ErrBoundaryUnavailable, id.CgroupID)
+	}
+	if !strings.HasPrefix(filepath.Base(id.CgroupID), boundaryDirPrefix) {
+		return nil, fmt.Errorf("%w: %s does not carry the controller's boundary name", ErrBoundaryUnavailable, id.CgroupID)
 	}
 	if err := verifyCgroup2Parent(filepath.Dir(id.CgroupID)); err != nil {
 		return nil, err
@@ -234,7 +251,40 @@ func linuxCgroupMembers(dir string) ([]BoundaryMember, error) {
 		members = append(members, BoundaryMember{PID: pid, StartToken: token})
 	}
 	slices.SortFunc(members, func(a, b BoundaryMember) int { return a.PID - b.PID })
+	if len(members) == 0 {
+		// cgroup v2 allows processes in descendant cgroups, so an empty direct
+		// cgroup.procs is not proof the boundary subtree is empty. cgroup.events'
+		// `populated` covers the subtree; when it says populated while direct
+		// membership is empty, the enumeration cannot claim clean.
+		populated, err := linuxCgroupSubtreePopulated(dir)
+		if err != nil {
+			return nil, err
+		}
+		if populated {
+			return nil, fmt.Errorf("%w: the boundary subtree of %s is populated but its direct membership is empty", ErrBoundaryUnavailable, dir)
+		}
+	}
 	return members, nil
+}
+
+// linuxCgroupSubtreePopulated reads cgroup.events' `populated` flag, which the
+// kernel sets while any process is in the cgroup or its descendants. A boundary
+// without the file (a test directory standing in for a cgroup) reports false;
+// a file that cannot be read is fail-closed.
+func linuxCgroupSubtreePopulated(dir string) (bool, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "cgroup.events"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: read %s/cgroup.events: %w", ErrBoundaryUnavailable, dir, err)
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if field, value, ok := strings.Cut(line, " "); ok && field == "populated" {
+			return strings.TrimSpace(value) == "1", nil
+		}
+	}
+	return false, nil
 }
 
 // observeLinuxStartToken reads a process's kernel-owned start token:
@@ -310,6 +360,11 @@ func signalLinuxMember(pid int, startToken string) error {
 // remove a populated cgroup, so a failure here is a boundary that is not proven
 // dead and is reported, never swallowed.
 func linuxCgroupRelease(dir string) error {
+	if !strings.HasPrefix(filepath.Base(filepath.Clean(dir)), boundaryDirPrefix) {
+		// Never remove a directory this package did not create, whatever a
+		// hand-edited store claims.
+		return fmt.Errorf("%w: %s is not a controller-created boundary", ErrBoundaryUnavailable, dir)
+	}
 	if err := os.Remove(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
