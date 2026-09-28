@@ -50,15 +50,19 @@ func extractRunProse(stateDir string) (runProse, error) {
 				if !isMessageToUser(call) {
 					continue
 				}
+				msg := shownMessage(call.Arguments)
 				// A message that echoes assistant text already shown within
 				// this same logical turn is one evener itself never rendered
-				// a second time; counting it here would inflate the "all"
-				// channel with a repetition the user never saw.
-				msg := shownMessage(call.Arguments)
-				if msg != "" && echoes.echoes(turnSeq, msg) {
-					continue
+				// a second time; counting it in "all" would inflate that
+				// channel with a repetition the user never saw ("all"
+				// already has the assistant text). It still counts once in
+				// "to_user": this call is what actually delivered the
+				// turn's message (the all-messages-go-through-the-result-
+				// tool contract), even when its text matches what bare
+				// assistant text already showed a moment earlier.
+				if msg == "" || !echoes.echoes(turnSeq, msg) {
+					p.All = append(p.All, resultMessages(call.Arguments)...)
 				}
-				p.All = append(p.All, resultMessages(call.Arguments)...)
 				if msg != "" && tr.SessionID == rootID {
 					p.ToUser = append(p.ToUser, msg)
 				}

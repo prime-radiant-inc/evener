@@ -45,7 +45,12 @@ type echoSuppressor struct {
 
 // continuesOpenLogicalTurn mirrors logical_turn.go's continuesLogicalTurn:
 // these turn kinds extend the currently open logical turn rather than
-// starting a new one.
+// starting a new one. Known gap: TurnGrouper.Place also reopens a STEERING
+// turn's OWN owning turn when it differs from the one currently open
+// (kind == TurnSteering && owner != ""); doctor.TurnSummary carries no
+// OwningTurnID at all, so this always treats STEERING as continuing
+// whatever is open. Latent for a fluency run's single-goal session (see the
+// file doc comment); fixing it needs a new field on TurnSummary.
 func continuesOpenLogicalTurn(kind string) bool {
 	switch schema.TurnKind(kind) {
 	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering:

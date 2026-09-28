@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 	"primeradiant.com/evener/agent"
@@ -1567,11 +1568,18 @@ func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, str
 }
 
 // lastBytes keeps the end of s, where a failing command says why it failed.
+// The cut point advances forward, never landing inside a multi-byte UTF-8
+// rune (keeping at most n bytes, never more), the same rune-boundary
+// technique agent/doctor.Truncate uses when it cuts from the front.
 func lastBytes(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "..." + s[len(s)-n:]
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "..." + s[cut:]
 }
 
 // classifyProbeError decides whether a probe command failure reflects the

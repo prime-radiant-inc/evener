@@ -86,6 +86,12 @@ func writeEchoFixtureRun(t *testing.T, text string, gap bool) (packet string, pr
 // The suppressed call must still say the text above was delivered: a blind
 // reader who only sees an empty turn where the communicate call was cannot
 // tell the report was sent at all (issue found after 2df0f9eac6 landed).
+// The suppressed call must also still count once in "to_user": the
+// communicate call is what actually delivered the turn (the
+// all-messages-go-through-the-result-tool contract), so to_user's message
+// count, median words, and per-1k rates must not drop to zero for exactly
+// the behavior those metrics exist to measure (issue found after
+// 09ee7c01f0 landed).
 func TestSameLogicalTurnEchoIsSuppressed(t *testing.T) {
 	t.Parallel()
 	const text = "Fixed the off-by-one bug in Sum(). Tests pass now."
@@ -99,6 +105,9 @@ func TestSameLogicalTurnEchoIsSuppressed(t *testing.T) {
 	}
 	if got := countExact(prose.All, text); got != 1 {
 		t.Errorf("prose.All has the text %d times, want 1 (the echo must not double count): %+v", got, prose.All)
+	}
+	if got := countExact(prose.ToUser, text); got != 1 {
+		t.Errorf("prose.ToUser has the text %d times, want 1 (the echoed call still delivered the turn): %+v", got, prose.ToUser)
 	}
 }
 
