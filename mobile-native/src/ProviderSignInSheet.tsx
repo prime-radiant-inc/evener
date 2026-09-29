@@ -178,7 +178,10 @@ export function ProviderSignInSheet({
 						/>
 						{/* The hub drops a device flow after hubAuthFlowTTL, 15 minutes
 						    (app_auth.go); the provider's code expires in about that time. */}
-						<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, ...scaledType(uiType.footnote, scale) }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ color: palette.inkMid, ...scaledType(uiType.footnote, scale) }}
+						>
 							The code expires in 15 minutes.
 						</Text>
 					</Section>
