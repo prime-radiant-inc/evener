@@ -156,7 +156,7 @@ it("reports a superseded instance write as unconfirmed, not as success", async (
 	});
 	write.resolve(listing);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("could not be confirmed");
+	expect(renderedText(tree)).toContain("didn't confirm the change");
 });
 
 it("refuses a credential save for a destination the hub cannot fingerprint", async () => {
@@ -177,10 +177,10 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
 		.find((node) => node.props.accessibilityLabel === "API key");
 	if (!input) throw new Error("no API key input");
 	act(() => input.props.onChangeText("fixture-key"));
-	pressLabel(tree, "Save key");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
-	expect(renderedText(tree)).toContain("credential was not saved");
+	expect(renderedText(tree)).toContain("so nothing was saved");
 });
 
 it("refuses a credential-JSON save for a destination the hub cannot fingerprint", async () => {
@@ -200,9 +200,9 @@ it("refuses a credential-JSON save for a destination the hub cannot fingerprint"
 		.find((node) => node.props.accessibilityLabel === "Google credential JSON");
 	if (!input) throw new Error("no credential JSON input");
 	act(() => input.props.onChangeText("{}"));
-	pressLabel(tree, "Save credential JSON");
+	pressLabel(tree, "Save");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("credential was not saved");
+	expect(renderedText(tree)).toContain("so nothing was saved");
 	expect(scripted.methods).not.toContain("evener/auth/credentialJson/set");
 });
 
@@ -221,8 +221,8 @@ it("does not report a destination change for a conflict on a non-asserting write
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Make default");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("changed to a different endpoint");
-	expect(renderedText(tree)).toContain("could not be confirmed");
+	expect(renderedText(tree)).not.toContain("now points somewhere else");
+	expect(renderedText(tree)).toContain("didn't confirm the change");
 });
 
 it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
@@ -242,7 +242,7 @@ it("refuses endpoint-sensitive destructive actions without a fingerprint, with a
 		// Not silently greyed out: pressing says why it cannot proceed.
 		pressLabel(tree, label);
 		await act(async () => {});
-		expect(renderedText(tree)).toContain("action was not run");
+		expect(renderedText(tree)).toContain("so nothing was changed");
 		// The guard returns before the confirmation, so no write can go out.
 		expect(alerts.alert).not.toHaveBeenCalled();
 		expect(scripted.methods).not.toContain("evener/instance/remove");
@@ -290,7 +290,7 @@ it("clears the credential editor when another instance is selected", async () =>
 	// The alpha draft must not carry over to beta.
 	pressRow(tree, "beta");
 	await act(async () => {});
-	expect(pressables(tree).find((node) => node.props.accessibilityLabel === "Save key")).toBeUndefined();
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "API key")).toHaveLength(0);
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 });
 
@@ -403,7 +403,7 @@ it("re-anchors the credential editor when the endpoint moves under it", async ()
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(300);
 	});
-	expect(pressables(tree).find((node) => node.props.accessibilityLabel === "Save key")).toBeUndefined();
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "API key")).toHaveLength(0);
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 });
 
@@ -439,9 +439,9 @@ it("names a changed endpoint and re-reads when a credential save is refused", as
 	if (!input) throw new Error("no API key input");
 	act(() => input.props.onChangeText("fixture-key"));
 	const listsBefore = lists;
-	pressLabel(tree, "Save key");
+	pressLabel(tree, "Save");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("changed to a different endpoint");
+	expect(renderedText(tree)).toContain("now points somewhere else");
 	expect(lists).toBeGreaterThan(listsBefore);
 });
 

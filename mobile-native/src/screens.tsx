@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
+import { navBarGlassOptions, useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -353,6 +354,17 @@ export function ConversationScreen({
 	// remembered by its row's reader key, since older pages prepend rows.
 	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
+	// Where the device has Liquid Glass, the nav bar is the system's glass
+	// over the transcript (spec 16.3): the screen starts under it, and the
+	// header's own glass spans the bar and the rows under it.
+	const navGlass = useSystemGlass();
+	const underNavBar = navGlass ? headerHeight : 0;
+	// Before paint, so a session never opens with an opaque bar that turns to
+	// glass; Reduce Transparency's last known value (accessibilitySettings)
+	// is there on the first render of every screen after the first.
+	useLayoutEffect(() => {
+		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
+	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's
@@ -948,16 +960,26 @@ export function ConversationScreen({
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
-	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	// The block's measured height, and whether it was measured on the glass,
+	// where it includes the nav bar's room.
+	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
+	// The block's rows (the connection line, the chips, the note): its height
+	// less the bar's room it measured with.
+	const headerRows = Math.max(0, sessionHeader.height - (sessionHeader.onGlass ? headerHeight : 0));
+	// What the list's top keeps clear: the bar where the screen runs under it,
+	// and the rows.
+	const reservedTop = underNavBar + headerRows;
 	const listOffset = useRef(0);
-	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes), the
+	const reservedRows = useRef(0);
+	// When the rows grow or shrink (the connection line comes or goes), the
 	// list's top padding moves by the same amount; scrolling the list by it
 	// too keeps every row where it was on screen. At the top the list stays
-	// at the top, and the rows make room for the block.
+	// at the top, and the rows make room. The bar turning glass or opaque
+	// asks for no scroll: it moves the list's frame by the bar's height as
+	// the padding moves by the same, so the rows stay where they are.
 	useLayoutEffect(() => {
-		const change = sessionHeaderHeight - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = sessionHeaderHeight;
+		const change = headerRows - reservedRows.current;
+		reservedRows.current = headerRows;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -966,7 +988,7 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [sessionHeaderHeight]);
+	}, [headerRows]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
@@ -2640,7 +2662,7 @@ export function ConversationScreen({
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
+				keyboardVerticalOffset={headerHeight - underNavBar}
 			>
 				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
@@ -2659,9 +2681,13 @@ export function ConversationScreen({
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							data={timelineRows}
-							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to show or hide its fold control.
-							extraData={liveRun}
+							// Cells re-render only for a new renderItem or new rows, and
+							// renderItem changes with everything a row reads (the live run
+							// included): a screen render that changes nothing a row reads
+							// (the bottom bar re-laying out as the keyboard folds the queue)
+							// leaves them alone, where FlatList otherwise rebuilds its
+							// renderer, and so every visible cell, on every render (#3247).
+							strictMode
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
 							// A row keeps its reader key when history records it, so the
@@ -2679,7 +2705,7 @@ export function ConversationScreen({
 								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
 								justifyContent: "flex-end",
 								padding: 16,
-								paddingTop: 16 + sessionHeaderHeight,
+								paddingTop: 16 + reservedTop,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
 							}}
 							contentInset={listUnderBar.contentInset}
@@ -2841,9 +2867,10 @@ export function ConversationScreen({
 						<View
 							pointerEvents="box-none"
 							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
+							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 						>
 							<SessionHeader
+								glassTop={navGlass ? headerHeight : undefined}
 								status={connectionText}
 								chips={chips}
 								find={
@@ -2861,6 +2888,7 @@ export function ConversationScreen({
 												Keyboard.dismiss();
 												setFind(null);
 											}}
+											onGlass={navGlass}
 										/>
 									) : undefined
 								}
@@ -2870,6 +2898,7 @@ export function ConversationScreen({
 								notes={
 									notesPreview ? (
 										<NotesBar
+											onGlass={navGlass}
 											preview={notesPreview}
 											onPress={() => {
 												Keyboard.dismiss();
@@ -2978,7 +3007,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerShown}
+									composerUp={composerKeyboard}
 								/>
 							) : null}
 						</View>

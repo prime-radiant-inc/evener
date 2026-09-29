@@ -309,3 +309,33 @@ it("re-renders no transcript row when the keyboard comes up or goes down", async
 	await settle();
 	expect(rows.renders).toBe(0);
 });
+
+// With a message queued, the fold as the keyboard rises changes the bottom
+// bar's height, and the bar's re-layout re-renders the screen. That render
+// changes nothing a transcript row reads, so no row re-renders: the list
+// hands its cells a stable renderer (strictMode), and they re-render only
+// for a new renderItem, new rows, or the extraData they read (#3247).
+it("re-renders no transcript row when the bottom bar re-lays out as the keyboard folds the queue", async () => {
+	const served = twoTurns("ref-memo-queued");
+	(served as unknown as { evener: { queue: unknown } }).evener.queue = {
+		revision: 1,
+		depth: 1,
+		preview: ["check the logs"],
+		texts: ["check the logs"],
+		ids: ["queue_1"],
+	};
+	const { tree } = await mount(served);
+	const bar = () =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
+	await settle();
+	rows.renders = 0;
+	act(() => keyboard.show());
+	// The fold shrinks the bar, which reports its new height.
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 560, width: 390, height: 200 } } }));
+	await settle();
+	act(() => keyboard.hide());
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
+	await settle();
+	expect(rows.renders).toBe(0);
+});

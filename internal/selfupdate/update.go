@@ -119,7 +119,7 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	}
 	binDir := envvars.FirstNonEmpty(opts.BinDir, filepath.Join(prefix, "bin"))
 	shareBinDir := envvars.FirstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "evener", "bin"))
-	repoURL := strings.TrimRight(envvars.FirstNonEmpty(opts.RepoURL, defaultRepoURL), "/")
+	repoURL := resolveRepoURL(opts.RepoURL)
 	url := releaseURL(repoURL, target.Release, asset)
 	client := opts.HTTPClient
 	if client == nil {
@@ -280,7 +280,17 @@ func InstallDirsFromExecutable(exe string) (prefix, binDir, shareBinDir string) 
 	return "", "", ""
 }
 
+// resolveRepoURL picks the repository release downloads resolve against:
+// the caller's override, else the product default.
+func resolveRepoURL(override string) string {
+	return envvars.FirstNonEmpty(override, defaultRepoURL)
+}
+
+// releaseURL builds the download URL for one release asset. repoURL may
+// carry a trailing slash; every release-download call site goes through
+// here, so the slash trim lives here too.
 func releaseURL(repoURL, release, asset string) string {
+	repoURL = strings.TrimRight(repoURL, "/")
 	if release == "latest" {
 		return repoURL + "/releases/latest/download/" + asset
 	}

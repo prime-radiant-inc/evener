@@ -9,29 +9,17 @@
 // The fill is the system's Liquid Glass (spec 16.3) where the device has it
 // (iOS 26 and later), and the opaque page color elsewhere and while Reduce
 // Transparency is on.
-import { GlassView, isGlassEffectAPIAvailable } from "expo-glass-effect";
+import { GlassView } from "expo-glass-effect";
 import type { ReactNode } from "react";
 import { type LayoutChangeEvent, type StyleProp, View, type ViewStyle } from "react-native";
 import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useReduceTransparency } from "../accessibilitySettings";
 import { useColors } from "../ui";
+import { systemGlassAvailable, useSystemGlass } from "./systemGlass";
 
 const AnimatedGlassView = Animated.createAnimatedComponent(GlassView);
 const AnimatedView = Animated.createAnimatedComponent(View);
-
-/** Whether the device has the Liquid Glass API. expo-glass-effect reads its
- * native module once per process and checks the API itself (iOS 26 betas
- * lacked it); reading the module throws only for a binary built without it,
- * which gets the opaque fill. */
-function systemGlassAvailable(): boolean {
-	try {
-		return isGlassEffectAPIAvailable();
-	} catch {
-		return false;
-	}
-}
 
 export function BarFrame({
 	children,
@@ -52,11 +40,12 @@ export function BarFrame({
 	// How far the keyboard has risen, 0 to 1, on every frame of its move.
 	const { progress } = useReanimatedKeyboardAnimation();
 	const indicatorRoom = useAnimatedStyle(() => ({ paddingBottom: bottom * (1 - progress.value) }));
-	const reduceTransparency = useReduceTransparency();
-	// Glass waits for Reduce Transparency to be known to be off, so a reader
-	// with it on never sees a flash of glass.
+	// Asked apart on purpose: whether the device has the glass picks the host
+	// view and never changes while the app runs; whether the bar wears it now
+	// also waits on Reduce Transparency and only switches the effect (see the
+	// host below).
 	const hasGlass = systemGlassAvailable();
-	const glass = hasGlass && reduceTransparency === false;
+	const glass = useSystemGlass();
 	// The screen's layout goes first, so it can't undo what the frame owns:
 	// the home indicator's room, the hairline and the fill.
 	const frame: StyleProp<ViewStyle> = [
