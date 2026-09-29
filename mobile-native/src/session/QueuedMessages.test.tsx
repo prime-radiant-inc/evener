@@ -6,7 +6,7 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -220,10 +220,16 @@ describe("tapping a ghost", () => {
 		expect(options.options).toEqual(["Edit", "Cancel message", "Cancel"]);
 		expect(options.cancelButtonIndex).toBe(2);
 		expect(options.destructiveButtonIndex).toBe(1);
+		playedHaptics.length = 0;
 		pick(0);
 		expect(onAction).toHaveBeenCalledWith(queued, "edit");
 		pick(2);
 		expect(onAction).toHaveBeenCalledTimes(1);
+		expect(playedHaptics).toEqual([]);
+		// Spec 16.6: rigid on the destructive choice.
+		pick(1);
+		expect(onAction).toHaveBeenLastCalledWith(queued, "cancel");
+		expect(playedHaptics).toEqual(["impact:rigid"]);
 	});
 
 	it("asks with a short title on Android, and the message itself beneath it", async () => {

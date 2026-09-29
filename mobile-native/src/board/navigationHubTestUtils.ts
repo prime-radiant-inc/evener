@@ -1,0 +1,125 @@
+// The scripted hub the Board's navigation reads meet (boardData.ts), shared
+// by the suites that drive a board controller: each request waits until the
+// test answers it, by reader, in the order asked.
+import type {
+	AnyNotification,
+	AuthStatusResponse,
+	NavigationInvalidationTarget,
+	NavigationReadParams,
+	NavigationReadResponse,
+} from "@evener/appwire-client";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+
+export function boundary() {
+	const requests: Array<{
+		method: string;
+		params: NavigationReadParams;
+		resolve: (value: NavigationReadResponse) => void;
+		reject: (error: Error) => void;
+		answered: boolean;
+	}> = [];
+	const listeners = new Set<(event: AnyNotification) => void>();
+	const client: ConversationClientLike = {
+		request: (method, params) =>
+			new Promise((resolve, reject) => {
+				requests.push({
+					method,
+					params: params as NavigationReadParams,
+					resolve,
+					reject,
+					answered: false,
+				});
+			}),
+		onNotification: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	};
+	return { client, requests, listeners };
+}
+export type Hub = ReturnType<typeof boundary>;
+export function response(params: NavigationReadParams, data: unknown, revision = 1) {
+	return wireV2(
+		{
+			...params,
+			representationVersion: 2,
+			offset: params.offset ?? 0,
+			limit: params.limit ?? 50,
+		},
+		data,
+		`etag-${params.offset ?? 0}-${revision}`,
+		revision,
+		"generation-test",
+	);
+}
+export const session = (ref: string) => ({
+	ref,
+	host_id: "local",
+	session_id: ref,
+	title: ref,
+	project: "p",
+	state: "idle",
+	kind: "session",
+	live: true,
+	children: [],
+});
+export const sessions = (prefix: string, count: number, from = 0) =>
+	Array.from({ length: count }, (_, index) => session(`${prefix}${from + index}`));
+export const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Each category's reads are a reader of their own, named by its id. */
+export type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}` | "auth" | "plugins";
+export const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
+	method === "evener/auth/list"
+		? "auth"
+		: method === "evener/plugin/list"
+			? "plugins"
+			: params.resource === "section"
+				? (params.section as Reader)
+				: params.resource === "pin_section"
+					? `pin_section:${params.sectionId}`
+					: (params.resource as Reader);
+/** The oldest unanswered request for one reader. */
+export function next(hub: Hub, reader: Reader) {
+	const request = hub.requests.find((candidate) => !candidate.answered && readerOf(candidate) === reader);
+	if (!request) throw new Error(`no pending ${reader} request`);
+	request.answered = true;
+	return request;
+}
+export function answer(hub: Hub, reader: Reader, data: unknown, revision = 1) {
+	const request = next(hub, reader);
+	request.resolve(response(request.params, data, revision));
+	return request;
+}
+export function fail(hub: Hub, reader: Reader, message: string) {
+	next(hub, reader).reject(new Error(message));
+}
+export const requestsFor = (hub: Hub, reader: Reader) => hub.requests.filter((request) => readerOf(request) === reader);
+export function invalidate(
+	hub: Hub,
+	sequence: number,
+	targets: NavigationInvalidationTarget[],
+	generationId = "generation-test",
+) {
+	for (const listener of hub.listeners)
+		listener({
+			method: "evener/navigation/invalidated",
+			params: { generationId, sequence, targets },
+		});
+}
+export const expired = (provider: string): AuthStatusResponse => ({
+	provider,
+	supported: true,
+	signedIn: false,
+	activeSource: "oauth",
+	hasStoredOAuth: true,
+	needsLogin: true,
+});
+export function answerAuth(hub: Hub, providers: AuthStatusResponse[]) {
+	next(hub, "auth").resolve({ providers } as never);
+}
+export function authUpdated(hub: Hub, provider?: string) {
+	for (const listener of hub.listeners)
+		listener({ method: "evener/auth/updated", params: provider ? { provider } : {} } as AnyNotification);
+}
