@@ -35,7 +35,7 @@ import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
-import { AccessibilityInfo, ActionSheetIOS } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -316,6 +316,7 @@ const catalogHub = { fails: false };
 afterEach(() => {
 	catalogHub.fails = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	keyboard.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -660,6 +661,20 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
 		);
 		expect(list?.props.keyboardDismissMode).toBe("interactive");
+	});
+
+	it("lets a drag lower the keyboard on Android, which has no interactive dismissal", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-question-drag-android", "awaiting", true));
+			const [list] = tree.root.findAll(
+				(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+			);
+			expect(list?.props.keyboardDismissMode).toBe("on-drag");
+		} finally {
+			platform.OS = "ios";
+		}
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {

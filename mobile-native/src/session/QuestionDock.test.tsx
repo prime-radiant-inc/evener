@@ -264,7 +264,7 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		act(() => keyboard.show());
 		return mounted;
 	}
-	afterEach(() => act(() => keyboard.hide()));
+	afterEach(() => keyboard.reset());
 
 	it("shows only the header and the scrolling question, with no options or answer controls", () => {
 		const { tree } = typing();

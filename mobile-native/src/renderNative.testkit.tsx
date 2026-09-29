@@ -52,6 +52,12 @@ export const keyboard = (() => {
 		listening(event: string) {
 			return listeners.get(event)?.size ?? 0;
 		},
+		/** Lowers the keyboard and forgets every listener, so a mount a test
+		 * left behind can't carry keyboard state into the next test. */
+		reset() {
+			visible = false;
+			listeners.clear();
+		},
 		/** Sends one Keyboard event on its own, as a platform would. */
 		emit,
 		addListener(event: string, listener: () => void) {
