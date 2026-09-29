@@ -68,12 +68,9 @@ async function main() {
   try {
     const viteDeadline = createStartupDeadline();
     try {
-      await waitForHttp(
-        `http://127.0.0.1:${vitePort}/mermaidguard.html`,
-        "vite dev server",
-        guard.getViteLaunchError,
-        { signal: viteDeadline.signal },
-      );
+      await waitForHttp(`http://127.0.0.1:${vitePort}/mermaidguard.html`, "vite dev server", guard.getViteLaunchError, {
+        signal: viteDeadline.signal,
+      });
     } catch (error) {
       throw new Error(describeBrowserStartupFailure({ error, subsystem: "vite", viteStderr: guard.getViteError() }));
     } finally {
@@ -117,7 +114,9 @@ async function main() {
         );
       }
       if (result.externalAttempts.length > 0) {
-        failures.push(`hostile diagram issued ${result.externalAttempts.length} external fetch attempt(s): ${result.externalAttempts.join(", ")}`);
+        failures.push(
+          `hostile diagram issued ${result.externalAttempts.length} external fetch attempt(s): ${result.externalAttempts.join(", ")}`,
+        );
       }
       if (result.anchors !== 0) {
         failures.push(`found ${result.anchors} anchor(s) inside a diagram - the sanitizer let a link through`);

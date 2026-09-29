@@ -14,14 +14,31 @@ globalThis.SVGElement = window.SVGElement;
 globalThis.Node = window.Node;
 globalThis.HTMLElement = window.HTMLElement;
 globalThis.getComputedStyle = window.getComputedStyle.bind(window);
-globalThis.CSSStyleSheet = window.CSSStyleSheet ?? class CSSStyleSheet { replaceSync() {} replace() {} insertRule() {} };
+globalThis.CSSStyleSheet =
+  window.CSSStyleSheet ??
+  class CSSStyleSheet {
+    replaceSync() {}
+    replace() {}
+    insertRule() {}
+  };
 window.CSSStyleSheet = globalThis.CSSStyleSheet;
 if (!("adoptedStyleSheets" in window.document)) window.document.adoptedStyleSheets = [];
 window.SVGElement.prototype.getBBox = () => ({ x: 0, y: 0, width: 50, height: 20 });
 window.SVGElement.prototype.getComputedTextLength = () => 50;
-window.SVGElement.prototype.getScreenCTM = function () {
-  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0, inverse() { return this; }, multiply() { return this; } };
-};
+window.SVGElement.prototype.getScreenCTM = () => ({
+  a: 1,
+  b: 0,
+  c: 0,
+  d: 1,
+  e: 0,
+  f: 0,
+  inverse() {
+    return this;
+  },
+  multiply() {
+    return this;
+  },
+});
 window.SVGElement.prototype.getPointAtLength = () => ({ x: 0, y: 0 });
 
 const file = process.argv[2];
