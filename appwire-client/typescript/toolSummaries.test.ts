@@ -98,6 +98,14 @@ test("counts a transcript's turns and a search's finds in their own number", () 
     });
   expect(read({ turns_total: 5, turns_rendered: 5 })).toBe("Read transcript abc · all 5 turns");
   expect(read({ turns_total: 5, turns_rendered: 2 })).toBe("Read transcript abc · 2 of 5 turns");
+  // The registry's repetition nudge after the envelope doesn't hide it.
+  expect(
+    toolStepSummary({
+      toolName: "read_transcript",
+      argumentsJSON: JSON.stringify({ transcript_ref: "local:abc" }),
+      output: `${JSON.stringify({ transcript_ref: "local:abc", content: "x", meta: { turns_total: 5, turns_rendered: 5 } })}\n\nYou have now made this same call and received the identical result 2 times in a row.`,
+    }),
+  ).toBe("Read transcript abc · all 5 turns");
   const found = (args: Record<string, unknown>, output: string) =>
     toolStepSummary({ toolName: "find_session_transcripts", argumentsJSON: JSON.stringify(args), output });
   expect(found({ query: "x" }, "…\n\n3 matches (scope: current_project)")).toBe(

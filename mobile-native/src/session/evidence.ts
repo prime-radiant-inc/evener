@@ -19,6 +19,7 @@ import {
 	skillContext,
 	str,
 	toolFamily,
+	turns,
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
@@ -134,12 +135,9 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			if (envelope?.content === undefined) return rawOutput(text);
 			const evidence = rawOutput(envelope.content.replace(/\n+$/, ""));
 			const elided = envelope.elidedTurns ?? 0;
-			if (elided > 0)
-				evidence.push({
-					kind: "note",
-					text: `${elided} ${elided === 1 ? "turn" : "turns"} left out by the read's budget`,
-				});
-			return evidence;
+			if (elided > 0) evidence.push({ kind: "note", text: `${turns(elided)} left out by the read's budget` });
+			// An empty read with nothing left out: what the tool printed.
+			return evidence.length > 0 ? evidence : rawOutput(text);
 		}
 		case "worktree":
 			// What the operation says it did, not the JSON around it.

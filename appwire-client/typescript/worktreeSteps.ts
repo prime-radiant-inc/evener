@@ -11,23 +11,11 @@
 // because nothing was torn down to discard.
 
 import type { ItemModel } from "./model";
-import { parseArgs, parseJSONObject, str } from "./toolCallText";
-import { outputTails } from "./toolEvidence";
+import { parseArgs, str } from "./toolCallText";
+import { toolJSONResult } from "./toolEvidence";
 
 /** The parts of a manage_worktree step its words read. */
 export type WorktreeStep = Pick<ItemModel, "argumentsJSON" | "output">;
-
-// The operation's result: the tool's own JSON, before any intervention the
-// registry appended after a blank line (a repetition nudge follows a repeated
-// exit's result, for one).
-function worktreeResult(output: string | undefined): Record<string, unknown> | undefined {
-  if (!output) return undefined;
-  for (const tail of outputTails(output)) {
-    const result = parseJSONObject(tail);
-    if (result) return result;
-  }
-  return undefined;
-}
 
 // Only force_dirty earns the phrase. A plain `force` overrides merge-safety
 // gating (an unmerged branch, an unmanaged sidecar) and explicitly "does NOT
@@ -62,7 +50,7 @@ function countOf(result: Record<string, unknown> | undefined, key: string): numb
 export function worktreeSummary(item: WorktreeStep): string {
   const args = parseArgs(item.argumentsJSON);
   const { operation, forceDirty } = parseWorktreeCallArgs(item.argumentsJSON);
-  const result = worktreeResult(item.output);
+  const result = toolJSONResult(item.output);
   const status = result ? str(result, "status") : undefined;
   // `name` is the handle for create/remove/switch; `path` is switch's other
   // accepted form (the schema takes exactly one of the two).
@@ -115,7 +103,7 @@ export function worktreeSummary(item: WorktreeStep): string {
 /** What the operation says it did, in its own words (its result's
  * `message`); undefined for output that isn't the tool's JSON. */
 export function worktreeMessage(output: string | undefined): string | undefined {
-  const result = worktreeResult(output);
+  const result = toolJSONResult(output);
   return result ? str(result, "message") : undefined;
 }
 
