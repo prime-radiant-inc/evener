@@ -30,10 +30,13 @@ interface HostsStoreState {
   revision: number;
   /**
    * The revision at which the registry last SUCCESSFULLY published a snapshot, or
-   * null while it never has. `revision` alone cannot tell "no snapshot has been
-   * published" from "a snapshot was published at revision 0", and a remote
-   * listing read in the first state must not pass for verified once the registry
-   * has been consulted and failed (see stores/credentials.ts's useHostInstances).
+   * null while the CURRENT connection never has. `revision` alone cannot tell "no
+   * snapshot has been published" from "a snapshot was published at revision 0", and
+   * a remote listing read in the first state must not pass for verified once the
+   * registry has been consulted and failed (see stores/credentials.ts's
+   * useHostInstances). A client replacement resets it to null: the previous
+   * connection's publish says nothing about the new one, which has published
+   * nothing yet.
    */
   publishedRevision: number | null;
   /**
@@ -107,17 +110,42 @@ function endListRequest(): void {
   hostsStore.setState((previous) => ({ reading: Math.max(0, previous.reading - 1) }));
 }
 
-// The client the last revision was derived from. A REPLACEMENT (both sides
-// non-null and different) is a different hub, so every snapshot read from the
-// old one is invalid: advance the revision. A disconnect or reconnect of the
-// same client is not a replacement - the rows it read still describe it - so
-// they survive, as they always have.
+// The client the last revision was derived from, and the last NON-NULL one seen.
+// A REPLACEMENT - a different client than the last non-null one, whether wired
+// directly or after the store was momentarily cleared - is a different hub, so
+// every snapshot read from the old one is invalid and its registry's publish
+// says nothing about the new one. A disconnect (client -> null) or a reconnect of
+// the SAME client is not a replacement - the rows it read still describe it - so
+// they survive, as they always have; only a different non-null client is one.
 let lastClient = connectionStore.getState().client;
+let lastNonNullClient: AppwireClientLike | null = lastClient;
 connectionStore.subscribe((state) => {
   if (state.client === lastClient) return;
-  const replaced = lastClient !== null && state.client !== null;
   lastClient = state.client;
-  if (replaced) hostsStore.setState((previous) => ({ revision: previous.revision + 1 }));
+  if (state.client === null) return;
+  const replaced = lastNonNullClient !== null && state.client !== lastNonNullClient;
+  lastNonNullClient = state.client;
+  if (replaced) {
+    // A different hub whose registry has answered nothing. Drop the old
+    // connection's quiet-read slot: a refresh after the swap must issue its OWN
+    // request rather than join a promise whose response the client fence below
+    // will discard. The outstanding `reading` count is left intact - the old
+    // connection's in-flight reads decrement it themselves when they settle, so
+    // it never collides with a read this connection starts. Advance the
+    // revision, clear the published marker, and reset the load to "loading": the
+    // new connection's registry is unconsulted, so a remote listing is re-read
+    // on this connection alone (the spawn-only path, stores/credentials.ts's
+    // useHostInstances) instead of being held. publishReady lets this
+    // connection's first answer publish - and advance the revision - even when
+    // byte-identical to the old connection's, by treating a null
+    // publishedRevision as "nothing published by this connection yet".
+    refreshInflight = null;
+    hostsStore.setState((previous) => ({
+      revision: previous.revision + 1,
+      publishedRevision: null,
+      load: { phase: "loading" },
+    }));
+  }
 });
 
 // latestGeneration increments with every list request fetch, refresh, and
@@ -331,9 +359,13 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
 // share. A response is discarded only when a NEWER response already
 // published; the accepted decision still advances the published marker so an
 // older in-flight response can never publish after it. When the currently
-// published rows are already exactly the ones this response carries, the
-// setState is skipped: the 2s poll would otherwise swap in a fresh array
-// every tick and force a re-render of an unchanged section. It answers
+// published rows are already exactly the ones this response carries AND a
+// snapshot has been published for this connection, the setState is skipped: the
+// 2s poll would otherwise swap in a fresh array every tick and force a
+// re-render of an unchanged section. The published check is what lets the NEW
+// connection's first answer publish - and advance the revision the caches key
+// on - even when a quiet read (refresh, which never flips the load to
+// "loading") carries rows byte-identical to the replaced connection's. It answers
 // whether THIS generation was accepted (true when it publishes or accepts the
 // equal snapshot, false on either discard) — forcedReRead reports that answer
 // to its caller, and the shared marker cannot stand in for it: a mutation's
@@ -352,15 +384,28 @@ function publishReady(generation: number, client: AppwireClientLike, hosts: Host
   }
   latestPublishedGeneration = generation;
   const load = hostsStore.getState().load;
+  // No snapshot has been published for the CURRENT connection yet: a fresh
+  // session, or a client replacement. This answer is that connection's first, so
+  // the memo is dropped and it publishes - advancing the revision the caches key
+  // on - even when it carries rows byte-identical to the replaced connection's.
+  // Without this a quiet read (refresh, which never flips the load to "loading")
+  // would take the equal-snapshot short-circuit, publish nothing, and leave
+  // publishedRevision null, holding every remote listing on "loading" forever
+  // (useHostInstances' shouldRead requires a published marker once the registry
+  // has been consulted).
+  const firstPublishForConnection = hostsStore.getState().publishedRevision === null;
   if (
+    !firstPublishForConnection &&
     load.phase === "ready" &&
     load.hosts.length === hosts.length &&
     load.hosts.every((row, i) => hostRowEqual(row, hosts[i]))
   ) {
-    // The same answer again: publish nothing and advance nothing, so nothing
-    // derived from the registry re-reads on the poll cadence.
+    // The same answer again, with a snapshot already published for this
+    // connection: publish nothing and advance nothing, so nothing derived from
+    // the registry re-reads on the poll cadence.
     return true;
   }
+  if (firstPublishForConnection) lastPublished = null;
   hostsStore.setState({ load: { phase: "ready", hosts } });
   return true;
 }
@@ -698,6 +743,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     latestGeneration = 0;
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
+    lastNonNullClient = lastClient;
     lastPublished = null;
     set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0, attachEpochs: {} });
   },

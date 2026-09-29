@@ -162,6 +162,13 @@ describe("apply", () => {
     );
   });
 
+  test("sends nothing for an update this hub can't install itself", async () => {
+    const hub = await checked({ ...WAITING, applicable: false, buildChannel: "dev" });
+    await hub.controller.apply();
+    expect(hub.controller.getState().applyError).toBe("This hub is a development build, so it can't update itself");
+    expect(hub.pending.some((request) => request.method === "evener/update/apply")).toBe(false);
+  });
+
   test("refuses a result from another channel", async () => {
     const hub = scripted();
     hub.controller.setChannel("release");
