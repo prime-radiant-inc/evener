@@ -46,6 +46,10 @@ export interface ProviderSurface {
 	clearStoredKey(provider: string, expectedEndpointFingerprint?: string): Promise<AuthStatusResponse>;
 	logout(provider: string, expectedEndpointFingerprint?: string): Promise<AuthLogoutResponse>;
 	testCredentials(provider: string, expectedEndpointFingerprint?: string): Promise<void>;
+	/** Turns one of a provider's models on or off: a configuration write. */
+	setModelDisabled(name: string, model: string, disabled: boolean): Promise<void>;
+	/** Asks the provider for its current models: a read, outside the write gate. */
+	checkModels(name: string): Promise<void>;
 }
 
 /** The screen's one-write gate. It is owned above the Providers list - by the
@@ -312,5 +316,8 @@ export function useProviderSurface(store: CredentialInstancesStore): ProviderSur
 		logout: (provider: string, expectedEndpointFingerprint?: string) =>
 			mutate(() => store.getState().logout(provider, expectedEndpointFingerprint), false),
 		testCredentials,
+		setModelDisabled: (name: string, model: string, disabled: boolean) =>
+			mutate(() => store.getState().setModelDisabled({ name, model, disabled }), true),
+		checkModels: (name: string) => store.getState().refreshModels(name),
 	};
 }
