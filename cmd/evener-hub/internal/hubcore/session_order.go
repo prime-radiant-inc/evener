@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -87,6 +88,32 @@ func sessionMetaOrderTitle(m schema.SessionMeta) string {
 
 func sessionMetaLess(a, b schema.SessionMeta) bool {
 	return SessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
+}
+
+// sortSessionMetas orders metas by sessionMetaLess, building each meta's order
+// key once because building it allocates a truncated title.
+func sortSessionMetas(metas []schema.SessionMeta) {
+	if len(metas) < 2 {
+		return
+	}
+	keys := make([]SessionOrderKey, len(metas))
+	for i, m := range metas {
+		keys[i] = sessionMetaOrderKey(m)
+	}
+	sort.Stable(keyedSessionMetas{metas: metas, keys: keys})
+}
+
+// keyedSessionMetas sorts metas and their precomputed order keys in step.
+type keyedSessionMetas struct {
+	metas []schema.SessionMeta
+	keys  []SessionOrderKey
+}
+
+func (k keyedSessionMetas) Len() int           { return len(k.metas) }
+func (k keyedSessionMetas) Less(i, j int) bool { return SessionOrderLess(k.keys[i], k.keys[j]) }
+func (k keyedSessionMetas) Swap(i, j int) {
+	k.metas[i], k.metas[j] = k.metas[j], k.metas[i]
+	k.keys[i], k.keys[j] = k.keys[j], k.keys[i]
 }
 
 func AppwireThreadLess(a, b appwire.Thread) bool {
