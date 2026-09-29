@@ -1220,7 +1220,7 @@ describe("following the live end (spec 8.2)", () => {
 						turnId: "turn_2",
 						roundId: id,
 						streamId: id,
-						item: { id: key, type: "agentMessage", text: `streamed ${id}`, status: "inProgress" },
+						item: { id: key, type: "agentMessage", roundId: id, text: `streamed ${id}`, status: "inProgress" },
 					},
 				},
 			} as unknown as AnyNotification),
@@ -1250,6 +1250,67 @@ describe("following the live end (spec 8.2)", () => {
 		tree.root.findAll((node) =>
 			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
 		)[0];
+
+	it("keeps a streamed reply's row, and doesn't count it as new, once history records it", async () => {
+		// Recorded items carry their transcript positions, as a hub's do, so
+		// the recorded reply lands after them.
+		const served = working("ref-follow-recorded");
+		const at = (turnId: string, entry: number) => ({
+			turnId,
+			status: "completed",
+			transcriptKey: `${turnId}:${entry}:0`,
+			position: { entry, item: 0 },
+		});
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{ id: "u-turn_1", type: "userMessage", text: "ask turn_1", ...at("turn_1", 0) },
+					{ id: "a-turn_1", type: "agentMessage", text: "reply turn_1", ...at("turn_1", 1) },
+				],
+			},
+			{
+				id: "turn_2",
+				status: "inProgress",
+				itemsView: "default",
+				items: [{ id: "u-turn_2", type: "userMessage", text: "ask turn_2", ...at("turn_2", 2) }],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		stream(hub, served, "s1");
+		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
+		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
+		drag(tree, 100);
+		act(() =>
+			hub.notify({
+				method: "history/updated",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					...READ_HISTORY_IDENTITY,
+					items: [
+						{
+							id: "item_assistant_3_0",
+							turnId: "turn_2",
+							type: "agentMessage",
+							roundId: "s1",
+							transcriptKey: "turn_2:3:0",
+							position: { entry: 3, item: 0 },
+							status: "completed",
+							text: "streamed s1",
+						},
+					],
+				},
+			} as unknown as AnyNotification),
+		);
+		const rows = list(tree).props.data as { id: string }[];
+		expect(rows.map((row) => row.id)).toContain("item_assistant_3_0");
+		expect(rows.map((row) => row.id)).not.toContain("stream:s1:agentMessage");
+		expect(keyOf(rows.at(-1))).toBe(streamed);
+		expect(pill(tree)).toBeUndefined();
+	});
 
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");

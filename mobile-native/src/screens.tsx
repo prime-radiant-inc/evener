@@ -2589,7 +2589,9 @@ export function ConversationScreen({
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
-							keyExtractor={(item) => item.id}
+							// A row keeps its reader key when history records it, so the
+							// list keeps its cell (a streamed reply's wire id changes).
+							keyExtractor={readerKey}
 							renderItem={renderItem}
 							// The end keeps a fixed room for what floats over it (spec 8.3),
 							// so Next never sits on the last line and nothing coming or

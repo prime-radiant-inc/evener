@@ -74,6 +74,16 @@ describe("reader positions", () => {
 	});
 	it("uses stable transcript identity and pair ordering", () => {
 		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
+		// A reply's round key outlasts its stream's wire id and its recording.
+		const reply: TimelineRow = {
+			kind: "assistant",
+			id: "wire",
+			transcriptKey: "key-wire",
+			roundKey: "round:r1:agentMessage",
+			markdown: "",
+			streaming: false,
+		};
+		expect(readerKey(reply)).toBe("round:r1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
