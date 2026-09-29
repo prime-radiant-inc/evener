@@ -307,12 +307,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		const visit = (entries: unknown[]) => {
 			for (const entry of entries as {
 				kind: string;
-				delegate?: { childRef: string; runStartedAt: string };
-				entries?: unknown[];
+				delegate?: { childRef: string; runStartedAt: string; child?: { entries: unknown[] } };
 			}[]) {
-				if (entry.kind === "delegate" && entry.delegate)
+				if (entry.kind === "delegate" && entry.delegate) {
 					started.set(entry.delegate.childRef, entry.delegate.runStartedAt);
-				if (entry.entries) visit(entry.entries);
+					if (entry.delegate.child) visit(entry.delegate.child.entries);
+				}
 			}
 		};
 		visit(tree.root.entries);
@@ -327,6 +327,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		// Get PR 2138 Test Clean's running subagents, each in all three places.
 		const compared = running.filter((thread) => started.has(thread.evener.ref));
 		expect(compared.length).toBeGreaterThan(20);
+		// Nested ones too, such as the subagents a subagent started.
+		expect(compared.some((thread) => thread.evener.parentRef !== threadOf("s-pr2138").evener.ref)).toBe(true);
 		expect(transcript.size).toBeGreaterThan(0);
 		for (const thread of compared) {
 			const listed = started.get(thread.evener.ref);

@@ -867,11 +867,10 @@ export function ConversationScreen({
 	// A subagent's screen times its run as its Subagents row does, from the
 	// row its panel reads (one number per subagent everywhere).
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const runMs = useCallback((now: number) => (subagentRow ? timeInState(subagentRow, now) : null), [subagentRow]);
 	// How tall the toast, Next and "↓ new" stand over the transcript's end.
 	const [floatingHeight, setFloatingHeight] = useState(0);
-	const stateLine = conversation
-		? sessionStateLine(conversation, Date.now(), subagentRow ? timeInState(subagentRow, Date.now()) : null)
-		: null;
+	const stateLine = conversation ? sessionStateLine(conversation, Date.now(), runMs(Date.now())) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
@@ -1878,6 +1877,7 @@ export function ConversationScreen({
 						controls,
 						hostLabel,
 						modelLabel,
+						runMs,
 						ready,
 						editGoal: () => goalActionsRef.current.editGoal(),
 						clearGoal: () => goalActionsRef.current.clearGoal(),
@@ -1885,7 +1885,7 @@ export function ConversationScreen({
 						toast: toaster.show,
 					}
 				: undefined,
-		[conversation, controls, hostLabel, modelLabel, ready, toaster.show],
+		[conversation, controls, hostLabel, modelLabel, runMs, ready, toaster.show],
 	);
 	useProvideSheetHost(sessionInfoHosts, sheetKey(route.params.hubId, route.params.ref), sessionInfoHost);
 	// The model sheet's host (ruling 37).

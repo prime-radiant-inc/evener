@@ -29,8 +29,9 @@ import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
-import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
+import { compactDuration } from "./session/format";
 import { AccessibilityInfo, ActionSheetIOS } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
@@ -2517,6 +2518,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
 		expect(renderedText(title)).toContain("Working · 4m");
 		expect(renderedText(title)).not.toContain("Working · 2m");
+		// Session info times it the same way.
+		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
+		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
 	});
 
 	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {

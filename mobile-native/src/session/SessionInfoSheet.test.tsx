@@ -117,6 +117,7 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 		controls: controls as unknown as SessionControls,
 		hostLabel: (id) => (id === "local" ? "Work hub" : id),
 		modelLabel: "Claude Sonnet 5 · High",
+		runMs: () => null,
 		ready: true,
 		editGoal: vi.fn(() => void calls.push("editGoal")),
 		clearGoal: vi.fn(() => void calls.push("clearGoal")),
@@ -524,6 +525,20 @@ describe("actions", () => {
 			expect(pressable(sheet(), "Shut down")).toBeUndefined();
 		},
 	);
+
+	it("times a subagent by its run, as the nav bar and its row do", () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run four.
+		provide(
+			conversation({
+				status: { type: "active", activeFlags: [] } as MobileConversation["status"],
+				activeTurnStartedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+			}),
+			{ runMs: () => 4 * 60_000 },
+		);
+		const text = renderedText(sheet());
+		expect(text).toContain("Working · 4m");
+		expect(text).not.toContain("Working · 2m");
+	});
 
 	it("draws Shut down and Delete as destructive", () => {
 		provide(conversation({ capabilities: { ...NONE, shutdown: true } }));
