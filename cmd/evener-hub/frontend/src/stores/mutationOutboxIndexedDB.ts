@@ -164,6 +164,10 @@ export class MutationOutboxIndexedDB {
   #recoveryPromise: Promise<IDBDatabase> | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
+  // Bumped by close(). An open (or a recovery reopen) that lands after a close
+  // must not install its connection; request-time and recovery-time captures of
+  // this counter are what detect it.
+  #generation = 0;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
@@ -180,6 +184,7 @@ export class MutationOutboxIndexedDB {
   }
 
   close(): void {
+    this.#generation += 1;
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
@@ -787,6 +792,7 @@ export class MutationOutboxIndexedDB {
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
+      const generation = this.#generation;
       let abandoned = false;
       const fail = (error: unknown) => {
         abandoned = true;
@@ -828,7 +834,7 @@ export class MutationOutboxIndexedDB {
         () => {
           clearTimeout(timer);
           const database = request.result;
-          if (abandoned || this.#databasePromise !== opening) {
+          if (abandoned || this.#databasePromise !== opening || this.#generation !== generation) {
             database.close();
             reject(new Error("Mutation outbox connection was closed"));
             return;
@@ -953,6 +959,12 @@ export class MutationOutboxIndexedDB {
   // The single gate every transaction passes. A first open timeout hands off to
   // #runOpenRecovery below, deduped so concurrent callers share one ladder.
   async #openWithRecovery(): Promise<IDBDatabase> {
+    // Join an in-flight recovery BEFORE opening: during the probe/delete window
+    // #database/#databasePromise are already cleared, so a fresh open here would
+    // install a connection the recovery's reset or latch then closes, leaving
+    // this caller with a closed connection. The recovery owns the connection
+    // until it settles.
+    if (this.#recoveryPromise) return await this.#recoveryPromise;
     try {
       return await this.#open();
     } catch (error) {
@@ -960,26 +972,32 @@ export class MutationOutboxIndexedDB {
       // not treat as a wedge. Only a timeout can be the coordinator stalling.
       if (!(error instanceof MutationStorageTimeoutError)) throw error;
     }
-    // Every concurrent caller that timed out shares ONE recovery. Without this
-    // gate each would run its own: the reset clears #databasePromise and waits
-    // on the delete, so caller A can reopen first and then caller B's reset
-    // clears that and opens its own connection, whose arrival closes A's
-    // recovered one ("Mutation outbox connection was closed"). Sharing the
-    // promise means the ladder runs once and every caller awaits its result.
-    if (!this.#recoveryPromise) {
-      const recovery = this.#runOpenRecovery();
-      this.#recoveryPromise = recovery;
-      const clear = () => {
-        if (this.#recoveryPromise === recovery) this.#recoveryPromise = undefined;
-      };
-      recovery.then(clear, clear);
-    }
-    return await this.#recoveryPromise;
+    return await this.#startRecovery();
+  }
+
+  // Starts the one recovery, or joins the one already running. The promise is
+  // assigned synchronously before #runOpenRecovery's first await, so a caller
+  // that arrives during the probe/delete window joins instead of opening beside
+  // it. Cleared when it settles.
+  #startRecovery(): Promise<IDBDatabase> {
+    if (this.#recoveryPromise) return this.#recoveryPromise;
+    const recovery = this.#runOpenRecovery();
+    this.#recoveryPromise = recovery;
+    const clear = () => {
+      if (this.#recoveryPromise === recovery) this.#recoveryPromise = undefined;
+    };
+    recovery.then(clear, clear);
+    return recovery;
   }
 
   // The retry/reset ladder, kept out of #open so a failed reset cannot recurse
   // into itself or split the wedged-latch invariant.
   async #runOpenRecovery(): Promise<IDBDatabase> {
+    // Anchor the close guard at the recovery's start: a close() during the
+    // probe/delete window happens before the reopen request exists, so a
+    // request-time capture alone would let the reopen install on a closed
+    // adapter. Comparing to this start-time generation closes that connection.
+    const generation = this.#generation;
     // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
     // watchdog and answer on the very next request. Retry once BEFORE touching
     // durable state, because the reset below deletes the database and would lose
@@ -1002,11 +1020,20 @@ export class MutationOutboxIndexedDB {
       this.#wedge();
       throw new MutationStorageWedgedError();
     }
+    // The delete already ran, so the queued rows are gone: report the
+    // destructive step NOW, before reopening, or a failed reopen would hide the
+    // exact loss this notice exists to surface.
+    this.#notifyQuietly(() => this.#onStorageReset?.());
     try {
       // The successful #open already clears the latch; #wedged cannot be true
       // here, since a latched #open would have thrown before the retry above.
       const database = await this.#open();
-      this.#notifyQuietly(() => this.#onStorageReset?.());
+      if (this.#generation !== generation) {
+        // The adapter was closed while the reset ran: close the late connection
+        // and refuse it, but say why with the same error a closed open gives.
+        this.#retire(database);
+        throw new Error("Mutation outbox connection was closed");
+      }
       return database;
     } catch (finalError) {
       if (finalError instanceof MutationStorageTimeoutError) {
