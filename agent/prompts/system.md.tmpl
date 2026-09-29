@@ -167,6 +167,7 @@ Model: {{ .Model }}
 Knowledge cutoff: {{ .KnowledgeCutoff }}
 {{- if .ResourceCapsJSON }}
 <resource_caps>{{ .ResourceCapsJSON }}</resource_caps>
+These are the total limits available to this environment, shared by every session and delegate in it — a delegate does not get its own allowance.
 {{- end }}
 {{- if .Sandbox }}
 Sandbox: {{ .Sandbox }}

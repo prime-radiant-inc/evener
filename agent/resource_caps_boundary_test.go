@@ -110,3 +110,39 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderedEnvironmentDisclosesResourceCapsAreShared guards the prompt's
+// honesty about memory: the caps env_info advertises are the whole
+// environment's, shared by every session and delegate in it, not a per-session
+// allowance. Issue #496. The disclosure is tied to the caps: when there are none
+// to advertise, there is nothing to say they are shared.
+func TestRenderedEnvironmentDisclosesResourceCapsAreShared(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		resources *schema.ResourceCaps
+		want      bool
+	}{
+		"finite caps are disclosed as shared": {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, want: true},
+		"no caps means no disclosure":         {resources: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: tc.resources}
+			sess := newSession(t, withConfig(SessionConfig{
+				testOnly: testConfig{
+					skipGitSnapshot: true,
+					environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
+						return info
+					},
+				},
+			}))
+			prompt, warning := sess.renderSystemPrompt(sess.env)
+			if warning != "" {
+				t.Fatalf("render system prompt: %s", warning)
+			}
+			if got := strings.Contains(prompt, "shared by every session and delegate"); got != tc.want {
+				t.Fatalf("prompt discloses shared caps = %v, want %v\nprompt:\n%s", got, tc.want, prompt)
+			}
+		})
+	}
+}
