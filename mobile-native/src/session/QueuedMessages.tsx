@@ -6,6 +6,7 @@ import { SymbolView } from "expo-symbols";
 import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useKeyboardShown } from "../useKeyboardShown";
 import { type GhostBackdrop, GhostBubble, GhostButton } from "./GhostBubble";
 import { foldQueue, type Ghost, type GhostAction, type QueueFold, shownGhosts } from "./ghosts";
 
@@ -33,12 +34,13 @@ export function QueuedMessages({
 	editHint,
 	backdrop,
 	draftAttachments,
-	typing = false,
+	typing: typingAllowed = false,
 	onAction,
 	onMore,
 }: QueuedMessagesProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const typing = useKeyboardShown() && typingAllowed;
 	// Opened while typing; the next time you type, the queue folds again.
 	const [opened, setOpened] = useState(false);
 	if (!typing && opened) setOpened(false);
