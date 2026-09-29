@@ -99,7 +99,8 @@ export class BoardReplay {
 			}
 			// Its outcome unknown: the journal holds it and settles it, as it
 			// does an online change.
-			if (outcome === "unconfirmed") void actions.reconcile();
+			// A settling that fails leaves the journal holding it, as online.
+			if (outcome === "unconfirmed") void actions.reconcile().catch(() => undefined);
 			this.hold.settled(record.id);
 		}
 	}
