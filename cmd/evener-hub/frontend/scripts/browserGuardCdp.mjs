@@ -465,20 +465,18 @@ async function navigateToOnce({ ws, send }, url) {
  * unset while every request succeeds - a deterministic code failure. Only a
  * boot death whose FINAL attempt owned recognized network-change failures is
  * framed as the environment flake. Evidence is scoped by DOCUMENT IDENTITY,
- * never by the attempt counter or arrival time: a navigation's loaderId is
- * recorded when its main frame COMMITS (Page.frameNavigated, or the load-time
- * fallback), every request is tagged with the loaderId it reported
- * (Network.requestWillBeSent, first writer wins - redirects re-emit under the
- * same pair), and each loadingFailed resolves through its request's loaderId
- * to the attempt that committed that document. A seen request that reported NO
- * loaderId is anchored at SEND time to the attempt that owned the live
- * document then; an UNSEEN send alone anchors to the last committed document -
- * the one that is live when the failure arrives, still the previous one in the
- * gap before a new navigation commits. Ownership is resolved when the verdict
- * is read, so a failure that arrives before its navigation commits still
- * resolves through the commit that later names it. When no loaderId exists at
- * all, the committed ATTEMPT number owns the document's requests, and only a
- * document that never committed degrades to the arrival counter. The terminal attribution
+ * never by the attempt counter or arrival time: a frame's loaderId is recorded
+ * at its Page.frameNavigated commit, every request is tagged with the loaderId
+ * it reported (Network.requestWillBeSent, first writer wins - redirects
+ * re-emit under the same pair), and each loadingFailed resolves through its
+ * request's loaderId to the attempt that committed that frame. A seen request
+ * that reported NO loaderId is anchored at SEND time to the attempt that owned
+ * the live document then; a loaderId whose frame never committed falls back to
+ * the attempt in flight when the failure arrived; and an UNSEEN send alone
+ * anchors to the document live when the failure arrives, still the previous one
+ * in the gap before a new navigation commits. Ownership is resolved when the
+ * verdict is read, so a failure that arrives before its frame commits still
+ * resolves through the commit that later names it. The terminal attribution
  * reads only the final attempt's failures, so a flap that killed an earlier
  * attempt cannot launder a deterministic death on the final one.
  * Navigation-induced aborts
