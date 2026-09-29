@@ -1078,6 +1078,7 @@ export function ConversationScreen({
 							<SessionTitle
 								title={children}
 								line={stateLine}
+								backCount={othersWaitingCount}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 								neighbors={{ previous: hasPrevious, next: hasNext }}
@@ -1134,6 +1135,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		hasPrevious,
 		hasNext,
+		othersWaitingCount,
 		menuLevel,
 		hasSubagents,
 		documents.length,
