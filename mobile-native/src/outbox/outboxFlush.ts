@@ -136,10 +136,13 @@ export class OutboxFlush {
 				const target = parseTargetKey(key);
 				if (target === null || target.hubId !== hubId) return undefined;
 				// A claim whose registration is gone (a session screen took the
-				// target over, then let it go) holds nothing: take it again.
+				// target over, then let it go) holds nothing: take it again, or,
+				// while its settle is out, have that settle's end look again.
 				const claim = this.owned.get(key);
-				if (claim !== undefined && !claim.settling && runtime.targetClient(hubId, target.ref) === undefined)
-					this.owned.delete(key);
+				if (claim !== undefined && runtime.targetClient(hubId, target.ref) === undefined) {
+					if (claim.settling) this.touched.add(key);
+					else this.owned.delete(key);
+				}
 				if (this.owned.has(key)) return undefined;
 				return this.settle(runtime, key, hubId, target.ref, client).catch(() => undefined);
 			}),

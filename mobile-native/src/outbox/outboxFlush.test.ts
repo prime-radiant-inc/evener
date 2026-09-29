@@ -642,6 +642,37 @@ it("looks again after a backoff when storage fails while settling for a covered 
 	}
 });
 
+it("takes a target back when a screen took it over and let it go while the flush's read was out", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const client = new FakeClient("ready");
+	const reads: ((response: ThreadReadResponse) => void)[] = [];
+	client.on(
+		"thread/read",
+		() =>
+			new Promise<ThreadReadResponse>((resolve) => {
+				reads.push(resolve);
+			}),
+	);
+	client.on("turn/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(reads).toHaveLength(1));
+	// A session screen opens and leaves while that read is out, and asks the
+	// flush to look as it goes.
+	const unregister = outbox.registerTarget("hub-1", "ref-1", client);
+	unregister();
+	await flush.flush();
+
+	// The old read answers stale; the flush looks again and sends.
+	reads.shift()?.(read("ref-1"));
+	await vi.waitFor(() => expect(reads).toHaveLength(1));
+	reads.shift()?.(read("ref-1"));
+	await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("reads the hub and ref out of a composite target key", () => {
 	expect(parseTargetKey(JSON.stringify(["hub-1", "local:thread-1"]))).toEqual({
 		hubId: "hub-1",
