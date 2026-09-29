@@ -98,9 +98,10 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // blank line, the count alone for an empty directory, or "2 of 5 entries
 // (offset 0) — more…" for a page of a longer one. A summary says how many it
 // returned; an output without a count counts its lines. The footer is always
-// the last line, so only the last line is read: an entry named like a count
-// ("2 entries.md") never reads as one.
-const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries(?: \(|$)/;
+// the last line, so only the last line is read, and only the whole footer
+// (agent/session_tools_shell.go's formatDirListing) counts: an entry named
+// like a count ("2 entries.md", "2 entries (notes)") never reads as one.
+const LIST_DIR_COUNT_RE = /^(\d+)(?: of \d+ entries \(offset \d+\)(?: — more with list_dir\(offset=\d+\))?| entries)$/;
 
 function entries(n: number | string): string {
   return `${n} ${String(n) === "1" ? "entry" : "entries"}`;

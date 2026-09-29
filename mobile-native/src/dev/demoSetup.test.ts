@@ -185,6 +185,38 @@ describe("plugins", () => {
 	});
 });
 
+describe("transcript display", () => {
+	it("starts from the hub's shipped defaults: Tools on desktop, Intent on the phone", () => {
+		const defaults = setup().answer("evener/settings/transcriptDisplay/get", {});
+		expect(defaults.desktop).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "tools" } } });
+		expect(defaults.mobile).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "intent" } } });
+	});
+
+	it("takes a patch at the current revision and moves that layout's revision on", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		const config = { ...mobile.config, content: { kind: "preset", level: "full" } };
+		expect(
+			demo.answer("evener/settings/transcriptDisplay/patch", { layout: "mobile", expectedRevision: 0, config }),
+		).toEqual({ layout: "mobile", revision: 1, config });
+		const after = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(after.mobile).toEqual({ revision: 1, config });
+		expect(after.desktop.revision).toBe(0);
+	});
+
+	it("refuses a patch against a revision that isn't current, as the hub does", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(() =>
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 4,
+				config: mobile.config,
+			}),
+		).toThrow("transcript display mobile revision conflict: expected 4, current 0");
+	});
+});
+
 describe("models", () => {
 	it("carries fifteen models and three recent ones", () => {
 		const models = setup().answer("model/list", {});
