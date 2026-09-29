@@ -3,13 +3,14 @@
 import { useMemo } from "react";
 import { FlatList } from "react-native";
 import { parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { expandLineTabs } from "../ansiOutputStyles";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MAX_ITEM_BYTES, TRUNCATION_MARKER } from "../projectedRows";
 import { Copy } from "../ui";
 
 export function LogViewer({ title, text, onClose }: { title: string; text: string; onClose: () => void }) {
-	const lines = useMemo(() => parseAnsiLines(text), [text]);
+	const lines = useMemo(() => parseAnsiLines(text).map(expandLineTabs), [text]);
 	// The store cuts a field at 64 KiB and ends it with its marker.
 	const cut = text.endsWith(TRUNCATION_MARKER);
 	return (

@@ -32,6 +32,11 @@ describe("the full log", () => {
 		expect(renderedText(whole)).not.toContain("Showing the first");
 	});
 
+	it("expands tabs to the next stop of 8, as the preview does", () => {
+		const tree = render(<LogViewer title="t" text={"line 1\tgo\nline 2"} onClose={() => {}} />);
+		expect(lineLabels(tree.root)).toEqual(["line 1  go", "line 2"]);
+	});
+
 	it("closes with Done", () => {
 		const onClose = vi.fn();
 		const tree = render(<LogViewer title="t" text={text} onClose={onClose} />);
