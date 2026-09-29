@@ -1,6 +1,6 @@
 import { ScrollView, Text } from "react-native";
 import { act, type ReactTestRendererJSON } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, renderedText } from "../renderNative.testkit";
 import { Sheet } from "./Sheet";
 
@@ -80,19 +80,33 @@ describe("the sheet's chrome", () => {
 		expect(title.props.style.maxWidth).toBe("56%");
 		expect(title.props.children).toBe("Sign in to codex-jesse-fsck.com");
 	});
+
+	describe("at the largest text sizes (#3311)", () => {
+		afterEach(() => {
+			text.fontScale = 1;
+		});
+
+		it("lets its title follow Dynamic Type all the way, since it truncates to one line anyway", () => {
+			text.fontScale = 53 / 17;
+			const tree = render(
+				<Sheet title="Sign in to codex" onCancel={() => {}}>
+					<Text>body</Text>
+				</Sheet>,
+			);
+			expect(tree.root.findByProps({ accessibilityRole: "header" }).props.style.fontSize).toBe(53);
+		});
+
+		it("keeps the title's room when Done's label is long: the side slots share only what's left", () => {
+			const tree = render(
+				<Sheet title="Sign in to codex" onCancel={() => {}} done={{ label: "Terminer et enregistrer", onPress: () => {} }}>
+					<Text>body</Text>
+				</Sheet>,
+			);
+			const title = tree.root.findByProps({ accessibilityRole: "header" });
+			const row = title.parent;
+			const slots = (row?.children ?? []).filter((child) => typeof child !== "string" && child !== title);
+			for (const slot of slots) expect(typeof slot !== "string" && slot.props.style).toMatchObject({ flex: 1 });
+		});
+	});
 });
 
-it("keeps its title to xxxLarge at the accessibility sizes, as its header buttons do (#3311)", () => {
-	try {
-		text.fontScale = 53 / 17;
-		const tree = render(
-			<Sheet title="Sign in to codex" onCancel={() => {}}>
-				<Text>body</Text>
-			</Sheet>,
-		);
-		const title = tree.root.findByProps({ accessibilityRole: "header" });
-		expect(title.props.style.fontSize).toBe(23);
-	} finally {
-		text.fontScale = 1;
-	}
-});

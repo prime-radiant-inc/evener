@@ -1,20 +1,20 @@
 // A sheet's header action (Done, Cancel, Save): accent ink, semibold when it
 // finishes the page, a 44pt target that dims while pressed and reads in ink-low
-// while it can't run, following Dynamic Type on iOS up to xxxLarge. Like iOS's
-// own bar buttons it stops growing at the accessibility sizes and stays on one
-// line, so a word never breaks across the header.
-import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
-import { allowFontScaling, useColors } from "../ui";
+// while it can't run, following Dynamic Type on iOS up to xxxLarge. Our design
+// stops it growing at the accessibility sizes and keeps it to one line, so a
+// word never breaks across the header; a long press shows the whole label in
+// the Large Content Viewer, as Apple asks of text that stops growing.
+import { Pressable, Text } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 /** Body at xxxLarge, the largest size before the accessibility sizes: 23pt
  * over the default 17 (Apple's Dynamic Type sizes). */
 const XXXL_SCALE = 23 / 17;
 
-/** How much a sheet header's text grows: with Dynamic Type on iOS, up to
- * xxxLarge. The header's title and its buttons share it. */
-export function useHeaderTextScale(): number {
-	const { fontScale } = useWindowDimensions();
-	return Platform.OS === "ios" ? Math.min(fontScale, XXXL_SCALE) : 1;
+/** How much a header button's label grows: with Dynamic Type, up to
+ * xxxLarge. */
+function useHeaderButtonScale(): number {
+	return Math.min(useTextScale(), XXXL_SCALE);
 }
 
 export function HeaderButton({
@@ -32,11 +32,13 @@ export function HeaderButton({
 	onPress(): void;
 }) {
 	const { palette } = useColors();
-	const scale = useHeaderTextScale();
+	const scale = useHeaderButtonScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
+			accessibilityShowsLargeContentViewer
+			accessibilityLargeContentTitle={label}
 			accessibilityState={busy ? { disabled, busy } : { disabled }}
 			disabled={disabled}
 			hitSlop={8}
@@ -44,6 +46,8 @@ export function HeaderButton({
 			style={({ pressed }) => ({
 				minHeight: 44,
 				minWidth: 44,
+				// A long label truncates inside its slot.
+				maxWidth: "100%",
 				justifyContent: "center",
 				paddingHorizontal: 8,
 				opacity: pressed && !disabled ? 0.6 : 1,
@@ -57,6 +61,7 @@ export function HeaderButton({
 					fontSize: 17 * scale,
 					lineHeight: 24 * scale,
 					fontWeight: strong ? "600" : "400",
+					flexShrink: 1,
 				}}
 			>
 				{label}

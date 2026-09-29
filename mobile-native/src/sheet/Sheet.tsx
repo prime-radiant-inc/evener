@@ -14,8 +14,8 @@
 // header. A modal has no detents, but keeps the same shape.
 import type { ReactElement, ReactNode } from "react";
 import { Text, View } from "react-native";
-import { allowFontScaling, useColors } from "../ui";
-import { HeaderButton, useHeaderTextScale } from "./HeaderButton";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { HeaderButton } from "./HeaderButton";
 
 export interface SheetButton {
 	/** "Done" unless the sheet names its own verb, such as "Add" or "Send". */
@@ -42,7 +42,7 @@ export interface SheetProps {
 
 export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory, children }: SheetProps) {
 	const { palette } = useColors();
-	const scale = useHeaderTextScale();
+	const scale = useTextScale();
 	return (
 		<>
 			<View collapsable={false} style={{ backgroundColor: palette.canvas }}>
