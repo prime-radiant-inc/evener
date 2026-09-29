@@ -3097,8 +3097,6 @@ describe("ConversationStore", () => {
 			expect(store.getState().conversation?.items).toHaveLength(500);
 		});
 
-		// The page before the oldest row kept is stale when that row is the
-		// transcript's first: there is nothing older, and nothing to re-read.
 		// A read of another instance replaces the window, and the rows it
 		// trimmed with it.
 		it("forgets a trim when a read replaces the instance", async () => {
@@ -3132,6 +3130,8 @@ describe("ConversationStore", () => {
 			expect(service.readProjectionCalls).toHaveLength(reads + 1);
 		});
 
+		// The page before the oldest row kept is stale when that row is the
+		// transcript's first: there is nothing older, and nothing to re-read.
 		it("takes a stale page above the trimmed rows as nothing older", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
