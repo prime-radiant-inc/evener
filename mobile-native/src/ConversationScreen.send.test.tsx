@@ -308,7 +308,10 @@ const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) =
 		stop: () => ({ outcome: "stopping" }),
 		readFails: null,
 	};
+// Whether model/list refuses, as a hub mid-restart does.
+const catalogHub = { fails: false };
 afterEach(() => {
+	catalogHub.fails = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
@@ -359,6 +362,7 @@ function hubClient(
 			}
 			// The page before the first read: older turns, and the start of history.
 			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
@@ -1090,6 +1094,21 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
 	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
 	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
+});
+
+it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {
+	catalogHub.fails = true;
+	fleet.live = [fleetSession("ref-model", { title: "Model", state: "idle", model_name: "Claude Sonnet 5" })];
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree } = await mount(served);
+	await act(async () => {});
+	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
+	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
 });
 
 it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {

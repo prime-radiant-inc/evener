@@ -1856,7 +1856,12 @@ export function ConversationScreen({
 		() => hostLabeler(fleet.sources, (hostId) => (hostId === "local" && hubName ? hubName : hostId)),
 		[fleet.sources, hubName],
 	);
-	const modelLabel = conversation ? modelChipLabel(conversation, controlsState?.catalog?.data) : "";
+	// The Board row names the model too (S17), for while the catalog is away.
+	const rowModelName = useMemo(
+		() => live.find((row) => row.ref === route.params.ref)?.model_name,
+		[live, route.params.ref],
+	);
+	const modelLabel = conversation ? modelChipLabel(conversation, controlsState?.catalog?.data, rowModelName) : "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
 			// Provided while the screen lives, with or without controls, so a

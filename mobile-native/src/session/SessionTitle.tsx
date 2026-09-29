@@ -3,12 +3,19 @@
 // moves to the next or previous session in Live order (spec 6).
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
+
+/** How far in from each screen edge the nav bar's buttons reach: Back with
+ * its count pill on the left, ⋯ on the right, each with its margin and the
+ * gap before the title (measured on iOS 26's glass bar, iPhone 17 Pro). The
+ * native header sizes a custom title view by its content, so the title keeps
+ * inside the span between them itself (#2956). */
+export const NAV_BAR_BUTTON_SPAN = 80;
 
 export function SessionTitle({
 	title,
@@ -28,6 +35,7 @@ export function SessionTitle({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { width } = useWindowDimensions();
 	const mark = markFor(line.state, false);
 	// The gesture is built once and reaches the latest onSwipe through the
 	// ref, so a re-render never hands the detector a new gesture mid-pan.
@@ -71,6 +79,7 @@ export function SessionTitle({
 				}}
 				style={({ pressed }) => ({
 					minHeight: 44,
+					maxWidth: width - 2 * NAV_BAR_BUTTON_SPAN,
 					alignItems: "center",
 					justifyContent: "center",
 					opacity: pressed ? 0.6 : 1,
@@ -98,6 +107,8 @@ export function SessionTitle({
 							fontSize: 13 * scale,
 							lineHeight: 18 * scale,
 							fontVariant: ["tabular-nums"],
+							// A long state line truncates inside the title's width too.
+							flexShrink: 1,
 						}}
 					>
 						{line.text}

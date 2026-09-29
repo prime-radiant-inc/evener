@@ -1,7 +1,7 @@
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { type PanGestureMock, render, renderedText } from "../renderNative.testkit";
-import { SessionTitle } from "./SessionTitle";
+import { NAV_BAR_BUTTON_SPAN, SessionTitle } from "./SessionTitle";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -65,6 +65,23 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		expect(title?.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
 		expect(title?.props.style).toMatchObject({ fontSize: 15, fontWeight: "600" });
 		expect(state?.props.style).toMatchObject({ fontSize: 13, lineHeight: 18, fontVariant: ["tabular-nums"] });
+	});
+
+	it("stays between the nav bar's buttons, however long the title (#2956)", () => {
+		// The native header sizes a custom title by its content, so an
+		// unbounded one runs under Back and ⋯ instead of truncating. The test
+		// kit's window is 390pt wide.
+		const tree = render(
+			<SessionTitle
+				title="Audit Tool Descriptions for Implied Options"
+				line={{ state: "idle", text: "Finished" }}
+				{...base}
+			/>,
+		);
+		const button = tree.root.find((node) => node.props.accessibilityRole === "button");
+		const style =
+			typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style;
+		expect(style.maxWidth).toBe(390 - 2 * NAV_BAR_BUTTON_SPAN);
 	});
 
 	it("moves through Live order on a horizontal pan, without taking the tap or a vertical drag (spec 6)", () => {
