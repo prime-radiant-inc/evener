@@ -199,12 +199,18 @@ function Providers({
 	// Changes whenever you leave or switch the provider detail, so a late result
 	// from an earlier visit is ignored.
 	const detailVisitId = useRef(0);
-	// A screen the user has left must not act on a write that outlives it: the
-	// bump makes every captured visit stale, so a late `act` continuation or
-	// probe result neither reports an error nor issues a listing read.
+	// The id of the newest model check, so only that check can clear "Checking
+	// for new models…". Unlike detailVisitId it survives a link that reopens the
+	// same provider, and closing the detail forgets the check.
+	const latestModelCheckId = useRef(0);
+	// A screen the user has left must not act on a write or a check that
+	// outlives it: the bumps make every captured visit and check stale, so a
+	// late `act` continuation, probe result or check neither reports nor
+	// touches the screen's state.
 	useEffect(
 		() => () => {
 			detailVisitId.current += 1;
+			latestModelCheckId.current += 1;
 		},
 		[],
 	);
@@ -307,25 +313,20 @@ function Providers({
 	// Asking the provider for its current models is a read: it runs beside a
 	// write, and its answer lands in the listing like any other.
 	const [checkingModels, setCheckingModels] = useState<string | null>(null);
-	// The id of the newest model check, so only that check can clear "Checking
-	// for new models…". Unlike detailVisitId it survives a link that reopens the
-	// same provider, and closing the detail forgets the check.
-	const latestModelCheckId = useRef(0);
-	// The provider whose detail is open, for a check's late failure to find.
-	const shownProvider = useRef(selected);
-	useEffect(() => {
-		shownProvider.current = selected;
-	}, [selected]);
+	// The provider whose newest check failed. Its copy shows only while that
+	// provider's detail is open, compared at render, so a link that opens
+	// another provider never carries it there.
+	const [modelsCheckFailed, setModelsCheckFailed] = useState<string | null>(null);
 	async function checkModels(name: string) {
 		const check = ++latestModelCheckId.current;
 		const current = () => check === latestModelCheckId.current;
 		setActionError(null);
+		setModelsCheckFailed(null);
 		setCheckingModels(name);
 		try {
 			await surface.checkModels(name);
 		} catch {
-			// Only on the detail that asked: a link may have opened another one.
-			if (current() && shownProvider.current === name) setActionError(MODELS_NOT_CHECKED);
+			if (current()) setModelsCheckFailed(name);
 		} finally {
 			if (current()) setCheckingModels(null);
 		}
@@ -344,6 +345,7 @@ function Providers({
 		setActionError(null);
 		latestModelCheckId.current += 1;
 		setCheckingModels(null);
+		setModelsCheckFailed(null);
 	}
 	async function act(
 		action: () => Promise<unknown>,
@@ -592,6 +594,7 @@ function Providers({
 											void act(() => surface.setModelDisabled(instance.name, model, disabled));
 										}}
 										checking={checkingModels === instance.name}
+										checkFailed={modelsCheckFailed === instance.name}
 										checkHeld={!ready}
 										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
 									/>
@@ -765,6 +768,7 @@ function ProviderFacts({
 	togglesHeld,
 	onToggleModel,
 	checking,
+	checkFailed,
 	checkHeld,
 	onCheckModels,
 }: {
@@ -775,6 +779,8 @@ function ProviderFacts({
 	onToggleModel(model: string, disabled: boolean): void;
 	/** The provider is being asked for its current models. */
 	checking: boolean;
+	/** The newest check for new models failed. */
+	checkFailed: boolean;
 	/** The connection can't carry a check right now. */
 	checkHeld: boolean;
 	onCheckModels(): void;
@@ -839,6 +845,7 @@ function ProviderFacts({
 				/>
 			</Group>
 			{models.length === 0 ? <GroupFooter>No models listed.</GroupFooter> : null}
+			{checkFailed ? <GroupFooter tone="danger">{MODELS_NOT_CHECKED}</GroupFooter> : null}
 		</>
 	);
 }
