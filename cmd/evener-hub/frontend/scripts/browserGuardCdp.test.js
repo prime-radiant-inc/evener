@@ -667,29 +667,31 @@ test("navigateTo fails with the boot cause - never the font check - when the ret
     switch (method) {
       case "Page.navigate":
         navigations++;
-        // The navigation commits (Page.frameNavigated) before its boot burst
-        // dies: these failures belong to THIS attempt's document, the document
-        // that is live once the frame has navigated.
-        socket.dispatch("message", {
-          data: JSON.stringify({
-            method: "Page.frameNavigated",
-            params: { frame: { loaderId: `loader-${navigations}` } },
-          }),
-        });
-        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-        // The burst dies on EVERY navigation: the page still loads, but the
-        // module and stylesheet requests fail with the network error. Evidence
-        // is scoped per attempt, so the environment framing holds only while
-        // the FINAL attempt itself died on the wire (the stale-evidence test
-        // below pins the other side).
-        for (const type of ["Script", "Stylesheet"]) {
+        // The commit and boot burst land after the navigate response binds this
+        // navigation's loaderId to the attempt; the failures belong to THIS
+        // attempt's document, the document live once the frame has navigated.
+        setTimeout(() => {
           socket.dispatch("message", {
             data: JSON.stringify({
-              method: "Network.loadingFailed",
-              params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
             }),
           });
-        }
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          // The burst dies on EVERY navigation: the page still loads, but the
+          // module and stylesheet requests fail with the network error. Evidence
+          // is scoped per attempt, so the environment framing holds only while
+          // the FINAL attempt itself died on the wire (the stale-evidence test
+          // below pins the other side).
+          for (const type of ["Script", "Stylesheet"]) {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+          }
+        }, 0);
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
         return { result: { result: { value: false } } };
@@ -951,21 +953,24 @@ test("a deterministic request failure is reported but never flips the attributio
     switch (method) {
       case "Page.navigate":
         navigations++;
-        // The document commits before its request dies: the failure belongs to
-        // this attempt's document, not the one that was live beforehand.
-        socket.dispatch("message", {
-          data: JSON.stringify({
-            method: "Page.frameNavigated",
-            params: { frame: { loaderId: `loader-${navigations}` } },
-          }),
-        });
-        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-        socket.dispatch("message", {
-          data: JSON.stringify({
-            method: "Network.loadingFailed",
-            params: { type: "Script", errorText: "net::ERR_FAILED" },
-          }),
-        });
+        // The commit (after the response binds its loaderId) precedes the
+        // request's death: the failure belongs to this attempt's document, not
+        // the one that was live beforehand.
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { type: "Script", errorText: "net::ERR_FAILED" },
+            }),
+          });
+        }, 0);
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
         return { result: { result: { value: false } } };
@@ -1013,22 +1018,25 @@ test("a mixed final window is inconclusive and reports both kinds of evidence", 
     switch (method) {
       case "Page.navigate":
         navigations++;
-        // Both failures are the committed document's own boot burst.
-        socket.dispatch("message", {
-          data: JSON.stringify({
-            method: "Page.frameNavigated",
-            params: { frame: { loaderId: `loader-${navigations}` } },
-          }),
-        });
-        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-        for (const errorText of ["net::ERR_NETWORK_CHANGED", "net::ERR_FAILED"]) {
+        // The commit lands after the response binds its loaderId; both failures
+        // are the committed document's own boot burst.
+        setTimeout(() => {
           socket.dispatch("message", {
             data: JSON.stringify({
-              method: "Network.loadingFailed",
-              params: { requestId: `req-${navigations}-${errorText}`, type: "Script", errorText },
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
             }),
           });
-        }
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          for (const errorText of ["net::ERR_NETWORK_CHANGED", "net::ERR_FAILED"]) {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { requestId: `req-${navigations}-${errorText}`, type: "Script", errorText },
+              }),
+            });
+          }
+        }, 0);
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
         return { result: { result: { value: false } } };
@@ -1388,13 +1396,18 @@ test("a delayed load event from the previous document does not commit the incomi
           }, 0);
           return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
         }
-        socket.dispatch("message", {
-          data: JSON.stringify({
-            method: "Page.frameNavigated",
-            params: { frame: { loaderId: `loader-${navigations}` } },
-          }),
-        });
-        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        // The commit lands after the navigate response binds this navigation's
+        // loaderId to the attempt - so the pre-commit failure above resolves
+        // through it once the frame commits.
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        }, 0);
         return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
       case "Runtime.evaluate":
         // Hold the boot check open past the delayed request above so it lands
@@ -1509,12 +1522,11 @@ test("a commit that arrives after a stale load still names the final attempt's d
   assert.equal(socket.listenerCount("message"), 0);
 });
 
-// A navigation whose frame never commits cannot settle its loaderId. Rather
-// than leave that loaderId mapped to whatever attempt was live when the request
-// was first seen, the failure belongs to the navigation that was in flight when
-// it arrived - the attempt whose document carried the loaderId - so a final
-// attempt's own wire death still counts for the final verdict.
-test("an uncommitted navigation's loaderId failure counts for the attempt in flight", async () => {
+// A navigation whose frame never commits cannot settle its loaderId. Retry
+// boundaries must not move attribution: the failure stays with the attempt that
+// owned the live document when the request was SENT, never the retry that
+// happens to be in flight when it arrives.
+test("an uncommitted navigation's loaderId failure stays with its send-time attempt", async () => {
   const socket = fakeSocket();
   let navigations = 0;
   const send = async (method) => {
@@ -1563,8 +1575,105 @@ test("an uncommitted navigation's loaderId failure counts for the attempt in fli
       }),
       (error) => {
         assert.match(error.message, /never booted/);
-        assert.match(error.message, /environment problem, not a test case failure/);
-        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        // The uncommitted loaderId belongs to the previous committed document's
+        // attempt, so the final attempt's window is empty.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A commit must bind to the navigation that named its loaderId, never to the
+// ambient retry counter. When a commit is delivered late - after attempts++ has
+// already moved on - recording it against the counter would map the previous
+// document's loaderId to the incoming retry, and its failure would then land in
+// the final verdict as environment evidence. The Page.navigate response binds
+// the loaderId to its attempt, so the late commit still names its own.
+test("a commit delivered after the counter advanced still names its own navigation", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: "loader-1" } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          return { result: { frameId: "fixture-frame", loaderId: "loader-1" } };
+        }
+        if (navigations === 2) {
+          // This navigation's load event resolves its wait before it commits;
+          // its request (loader-2) is the one whose death arrives late.
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-late", loaderId: "loader-2" },
+            }),
+          });
+          return { result: { frameId: "fixture-frame", loaderId: "loader-2" } };
+        }
+        // The final navigation's window: attempt 2's commit only NOW arrives,
+        // after the counter has advanced to this final attempt - and the late
+        // failure for attempt 2's request arrives with it.
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Page.frameNavigated",
+            params: { frame: { loaderId: "loader-2" } },
+          }),
+        });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { requestId: "req-late", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+          }),
+        });
+        // This navigation's own commit and load land after its response, which
+        // binds loader-3 to the final attempt.
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: "loader-3" } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        }, 0);
+        return { result: { frameId: "fixture-frame", loaderId: "loader-3" } };
+      case "Runtime.evaluate":
+        if (navigations === 1 + BOOT_RETRY_LIMIT) await new Promise((resolve) => setTimeout(resolve, 10));
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The late failure belongs to attempt 2; the final attempt captured
+        // nothing of its own, so the diagnosis is the regression framing.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
         return true;
       },
     );
