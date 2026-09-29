@@ -98,6 +98,12 @@ describe("a call and its result, served as two items", () => {
 		);
 	});
 
+	// The result's half: its output, which the call never carries.
+	it.each(["tools", "full"] as const)("keeps the result's output on the step, at %s", (level) => {
+		expect(step(level, "read_file").detail.output).toContain("package agent");
+		expect(stepEvidence(step(level, "shell"))).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
+	});
+
 	it.each(["tools", "full"] as const)("opens an edit, a write and a patch to what they changed, at %s", (level) => {
 		expect(stepEvidence(step(level, "edit_file")).map((evidence) => evidence.kind)).toEqual(["diff"]);
 		expect(stepEvidence(step(level, "write_file"))).toEqual([{ kind: "wrote", path: "agent/tree_order.go" }]);
