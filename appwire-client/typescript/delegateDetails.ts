@@ -193,14 +193,23 @@ export function delegateEndingText(delegate: DelegateEndingFields): string | und
   return OUTCOME_WORDS.get(delegate.outcome ?? "");
 }
 
-// The two codes a delegate's resumability closes with that the run-ending
-// vocabulary doesn't carry (agent/delegate_runtime.go,
-// session_tools_worktree_dispose.go). The other closure codes -
+// The codes a delegate's resumability closes with that the run-ending
+// vocabulary doesn't carry: the eight restore-input codes
+// (agent/delegate_runtime.go's notResumable* constants, returned by
+// missingDelegateRestoreInputReason) and worktree disposal
+// (agent/session_tools_worktree_dispose.go). The other closure codes -
 // construction_failed, launch_failed, artifacts_dir_failed,
 // input_admission_failed, turn_budget_exhausted - are run-ending reasons too,
 // so delegateEndingText already has their words.
 const NOT_RESUMABLE_WORDS = new Map([
+  ["missing_delegate_resume_metadata", "its resume metadata is missing"],
+  ["parent_linkage_unavailable", "its parent linkage is unavailable"],
   ["missing_child_session_meta", "its session metadata is missing"],
+  ["corrupt_child_session_meta", "its session metadata is corrupt"],
+  ["missing_child_transcript", "its transcript is missing"],
+  ["corrupt_child_transcript", "its transcript is corrupt"],
+  ["transcript_session_mismatch", "its transcript belongs to another session"],
+  ["working_dir_missing", "its working directory is missing"],
   ["isolation_disposed", "its isolation was disposed"],
 ]);
 

@@ -380,6 +380,7 @@ test("job_status: body renders not-resumable reason diagnostic", () => {
 test.each([
   ["turn_budget_exhausted", /Not resumable: ran out of turns/],
   ["isolation_disposed", /Not resumable: its isolation was disposed/],
+  ["working_dir_missing", /Not resumable: its working directory is missing/],
 ])("job_status: body says not-resumable code %s in words", (reason, words) => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
