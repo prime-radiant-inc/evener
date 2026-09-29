@@ -21,6 +21,7 @@ import {
 	subagentWhy,
 	stripSegments,
 	subtreeStopped,
+	subtreeStops,
 	tallySubagents,
 	timeInState,
 } from "./subagentModel";
@@ -139,6 +140,15 @@ describe("a subagent's state is its own (spec 9)", () => {
 		const failedParent = failed("p", { child: session("local:p", [entry(done("c", { outcome: "cancelled" }))]) });
 		expect(subtreeStopped(failedParent)).toBe(true);
 		expect(subtreeStopped(failed("p"))).toBe(false);
+	});
+
+	it("counts a subagent's own stop by the same rule its row reads", () => {
+		const statusOnly = delegate("u", { terminal: true, status: "cancelled" });
+		expect(rowOf(statusOnly).stopped).toBe(true);
+		expect(subtreeStops(statusOnly)).toBe(1);
+		expect(subtreeStops(done("s", { outcome: "stopped" }))).toBe(1);
+		expect(subtreeStops(running("r", { outcome: "stopped" }))).toBe(0);
+		expect(subtreeStops(done("d"))).toBe(0);
 	});
 });
 

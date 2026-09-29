@@ -94,10 +94,10 @@ export function subagentStateWord(state: SubagentState): string {
 
 /** How many runs in the subagent's subtree, its own included, ended in a
  * stop: its subagents' runs and the commands they ran. For PR 3's stop
- * request ("Stopped at your request"); a row's own "Stopped" is its own
- * outcome (ruling 4). */
+ * request ("Stopped at your request"). Its own run counts by `endedInStop`,
+ * the rule its row's "Stopped" reads (ruling 4). */
 export function subtreeStops(delegate: ActivityDelegate): number {
-	const own = delegate.terminal === true && isStoppedStatus(delegate.outcome) ? 1 : 0;
+	const own = endedInStop(delegate) ? 1 : 0;
 	return (delegate.child?.entries ?? []).reduce((count, entry) => {
 		if (entry.kind === "delegate") return count + subtreeStops(entry.delegate);
 		return count + (entry.job.terminal && isStoppedStatus(entry.job.status) ? 1 : 0);
