@@ -98,6 +98,7 @@ vi.mock("expo-web-browser", () => ({}));
 // The enriched-markdown native component cannot load outside a device; as a
 // host string its children render as passed, which is all the screen's
 // timeline items need from it under this harness.
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));

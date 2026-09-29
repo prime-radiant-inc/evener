@@ -4,7 +4,9 @@ import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
 import { typeRoles } from "./design/tokens";
 import { externalMarkdownLink } from "./markdownLinks";
+import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
+import { MermaidDiagram } from "./MermaidDiagram";
 import { useColors } from "./ui";
 
 // Agent prose in the serif, headings in the system font.
@@ -85,34 +87,49 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	// from the palette, one constant per color scheme.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, as above
 	const style = useMemo(() => markdownStyle(colors, TRANSCRIPT_ROLES), [colors.palette]);
+	const segments = useMemo(() => splitNativeSegments(markdown), [markdown]);
 	return (
-		<EnrichedMarkdownText
-			markdown={markdown}
-			markdownStyle={style}
-			flavor="github"
-			selectable={selectable}
-			allowFontScaling
-			enableTaskListItemToggle={false}
-			streamingAnimation={false}
-			spoilerOverlay="solid"
-			onLinkPress={({ url }) => {
-				void openLink(url);
-			}}
-			onLinkLongPress={({ url }) => showLink(url)}
-			contextMenuItems={
-				selectable
-					? [
-							{
-								text: "Copy response",
-								onPress: () => {
-									void copyText(markdown);
-								},
-							},
-						]
-					: undefined
-			}
-			accessibilityActions={accessibilityActions}
-			onAccessibilityAction={onAccessibilityAction}
-		/>
+		<>
+			{segments.map((segment, index) =>
+				segment.kind === "mermaid" ? (
+					<MermaidDiagram
+						key={index}
+						source={segment.source}
+						accessibilityActions={accessibilityActions}
+						onAccessibilityAction={onAccessibilityAction}
+					/>
+				) : (
+					<EnrichedMarkdownText
+						key={index}
+						markdown={segment.source}
+						markdownStyle={style}
+						flavor="github"
+						selectable={selectable}
+						allowFontScaling
+						enableTaskListItemToggle={false}
+						streamingAnimation={false}
+						spoilerOverlay="solid"
+						onLinkPress={({ url }) => {
+							void openLink(url);
+						}}
+						onLinkLongPress={({ url }) => showLink(url)}
+						contextMenuItems={
+							selectable
+								? [
+										{
+											text: "Copy response",
+											onPress: () => {
+												void copyText(markdown);
+											},
+										},
+									]
+								: undefined
+						}
+						accessibilityActions={accessibilityActions}
+						onAccessibilityAction={onAccessibilityAction}
+					/>
+				),
+			)}
+		</>
 	);
 });
