@@ -944,6 +944,12 @@ export interface DemoFleet extends FleetAnswers {
 	// for that change. "question" turns ASKING_SESSION_ID's working row into
 	// a pending question.
 	step(name: DemoStep): NavigationInvalidatedPayload;
+	// Moves the session named by its wire `ref` to `state` and returns the
+	// evener/navigation/invalidated payload for that row change, or null when
+	// the fleet doesn't hold the session or its row is already in that state.
+	// demo-hub.mts calls this when a fleet session's turn starts or stops, so
+	// the Board's row follows the session's thread.
+	setSessionState(ref: string, state: ProtoState): NavigationInvalidatedPayload | null;
 	// Answers evener/archive/set for a session, named as the Board's
 	// archiveTarget names it: a local row by its session id (or its local:
 	// ref), another host's by its ref. Returns the reply and the
@@ -1002,6 +1008,25 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
+	// Moves `target`'s row to `state` at the next revision and returns the
+	// invalidation for one row's state change. A negative `ago` puts updated_at
+	// at the moment of the change, after startup, the way a real hub stamps a
+	// row when its state changes.
+	function commitRowState(target: RawSession, state: ProtoState): NavigationInvalidatedPayload {
+		const changedAgo = (startupMs - clock()) / 1000;
+		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, state, ago: changedAgo } : raw));
+		// The resources a real hub invalidates for one row's state change
+		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
+		// Board sections, and the row's project. Search has no invalidation
+		// target; the next search simply answers from the changed fleet.
+		return commit(changed, (revision) => [
+			{ kind: "manifest", revision },
+			{ kind: "section", section: "live", revision },
+			{ kind: "section", section: "needs_you", revision },
+			{ kind: "project", projectKey: projectKeyOf(target), revision },
+		]);
+	}
+
 	function step(name: DemoStep): NavigationInvalidatedPayload {
 		if (name === "host-offline" || name === "host-online") {
 			offlineHost = name === "host-offline";
@@ -1015,28 +1040,10 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		}
 		const [id, state] = ROW_STEPS[name];
 		const target = sessionsList.find((raw) => raw.id === id);
-		// A fleet without the row (EVENER_DEMO_FLEET_EMPTY) changes nothing,
-		// and the step still answers at a new revision, as askQuestion did.
-		if (!target)
-			return commit(sessionsList, (revision) => [
-				{ kind: "manifest", revision },
-				{ kind: "section", section: "live", revision },
-				{ kind: "section", section: "needs_you", revision },
-			]);
-		// A negative `ago` puts updated_at at the moment of the change, after
-		// startup, the way a real hub stamps a row when its state changes.
-		const changedAgo = (startupMs - clock()) / 1000;
-		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, state, ago: changedAgo } : raw));
-		// The resources a real hub invalidates for one row's state change
-		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
-		// Board sections, and the row's project. Search has no invalidation
-		// target; the next search simply answers from the changed fleet.
-		return commit(changed, (revision) => [
-			{ kind: "manifest", revision },
-			{ kind: "section", section: "live", revision },
-			{ kind: "section", section: "needs_you", revision },
-			{ kind: "project", projectKey: projectKeyOf(target), revision },
-		]);
+		// A fleet without the row (EVENER_DEMO_FLEET_EMPTY) has nothing to
+		// change, so the step changes nothing: no new sequence, no targets.
+		if (!target) return { generationId: DEMO_FLEET_GENERATION, sequence, targets: [] };
+		return commitRowState(target, state);
 	}
 
 	function archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload } {
@@ -1078,6 +1085,11 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerPluginList: () => answers.answerPluginList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		step,
+		setSessionState: (ref, state) => {
+			const target = sessionsList.find((raw) => sessionRef(raw) === ref);
+			if (!target || target.state === state) return null;
+			return commitRowState(target, state);
+		},
 		archive,
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 	};
@@ -1143,14 +1155,15 @@ function fleetAnswers(
 	// hub's PinCandidates keeps it (cmd/evener-hub/internal/hubcore/tree.go).
 	const pinSessions = (id: string) =>
 		sessionsList.filter((raw) => raw.state !== "shutdown" && raw.category === id).map(rowOf);
-	// A category with nothing pinned in it doesn't get a row, which is what
-	// empties the pin catalog for the empty fleet. The real hub keeps empty
-	// durable sections (navigation_projection.go buildPinSectionsContext);
-	// both demo categories hold rows in the full fleet, so only the empty
-	// fleet sees the difference.
-	const pinSections = pinCategoryIds
-		.map((id) => ({ id, name: id === "release" ? "Release" : "Research", count: pinSessions(id).length }))
-		.filter((section) => section.count > 0);
+	// Both categories are durable sections the hub always serves, even with no
+	// rows pinned in them (navigation_projection.go buildPinSectionsContext
+	// keeps every section it is given, memberCount aside), so an empty fleet
+	// still reports Release and Research with count 0 rather than no catalog.
+	const pinSections = pinCategoryIds.map((id) => ({
+		id,
+		name: id === "release" ? "Release" : "Research",
+		count: pinSessions(id).length,
+	}));
 
 	// PROJECT_META is static fixture metadata, not derived from sessionsList
 	// (the full fleet lists "home" with no sessions), so an empty fleet needs

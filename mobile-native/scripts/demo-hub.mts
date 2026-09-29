@@ -224,6 +224,10 @@ export async function createDemoHub(
 		},
 	};
 	let turnNumber = 0;
+	// The Board-row change a fleet session's turn just made, if any:
+	// setTurnRunning records it and the message handler broadcasts it after
+	// answering, the way it broadcasts an archive's invalidation.
+	let turnNavigation: NavigationInvalidatedPayload | null = null;
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
@@ -232,8 +236,16 @@ export async function createDemoHub(
 			method: "evener/navigation/invalidated",
 			params: payload,
 		});
-		for (const socket of server.clients)
-			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+		for (const socket of server.clients) {
+			if (socket.readyState !== WebSocket.OPEN) continue;
+			// One socket that fails mid-send must not skip the rest of the
+			// broadcast, as a real hub's per-client fan-out does.
+			try {
+				socket.send(notification);
+			} catch {
+				// The socket is gone; its close handler removes it.
+			}
+		}
 	}
 	// Makes the fleet's working row ask its question. Returned for tests to
 	// fire on demand.
@@ -347,6 +359,9 @@ export async function createDemoHub(
 		if (fleetRefs.has(thread.evener.ref)) {
 			if (turn) startFleetTurn(thread, turn, Date.now());
 			else restFleetSession(thread, "idle", Date.now());
+			// The Board follows the turn: a running turn reads Working, a
+			// stopped one Idle, so a Stop leaves the row where its thread is.
+			turnNavigation = requireFleet().setSessionState(thread.evener.ref, turn ? "working" : "idle");
 			return;
 		}
 		const running = turn !== undefined;
@@ -366,6 +381,7 @@ export async function createDemoHub(
 		socket.on("close", () => subscribers.delete(socket));
 		socket.on("message", (raw) => {
 			let id: unknown = null;
+			turnNavigation = null;
 			try {
 				const request = JSON.parse(raw.toString());
 				id = request.id;
@@ -739,6 +755,7 @@ export async function createDemoHub(
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
+				if (turnNavigation) broadcastNavigation(turnNavigation);
 			} catch (error) {
 				socket.send(
 					JSON.stringify({

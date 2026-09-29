@@ -513,7 +513,10 @@ describe("native demonstration hub's redesign fleet", () => {
 				resource: "section",
 				section: "needs_you",
 			});
-			expect(needsYou.revision).toBe(payload.targets[0]?.revision);
+			const needsYouTarget = payload.targets.find(
+				(target) => target.kind === "section" && target.section === "needs_you",
+			);
+			expect(needsYou.revision).toBe(needsYouTarget?.revision);
 			const entities = (needsYou.data as { entities: { value: { session_id?: string } }[] }).entities;
 			expect(entities.map((entity) => entity.value.session_id)).toContain(demoSessionId("s-gateway"));
 		} finally {
@@ -534,6 +537,36 @@ describe("native demonstration hub's redesign fleet", () => {
 			expect(handshake.navigation?.sequence).toBe(1);
 		} finally {
 			client.close();
+			await hub.close();
+		}
+	});
+
+	it("keeps notifying the other clients when one socket fails mid-broadcast", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const dropping = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const listening = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const invalidated = navigationInvalidated(listening);
+		// The first socket the broadcast reaches throws, as a socket that goes
+		// away mid-send does; the rest must still get the notification.
+		const originalSend = WebSocket.prototype.send;
+		let dropped = false;
+		WebSocket.prototype.send = function (this: WebSocket, ...args: unknown[]) {
+			const [data] = args;
+			if (!dropped && typeof data === "string" && data.includes("evener/navigation/invalidated")) {
+				dropped = true;
+				throw new Error("socket is gone");
+			}
+			return (originalSend as (...sendArgs: unknown[]) => void).apply(this, args);
+		} as unknown as typeof WebSocket.prototype.send;
+		try {
+			await dropping.connect();
+			await listening.connect();
+			expect(() => hub.askQuestion()).not.toThrow();
+			expect(await invalidated).toMatchObject({ sequence: 1 });
+		} finally {
+			WebSocket.prototype.send = originalSend;
+			dropping.close();
+			listening.close();
 			await hub.close();
 		}
 	});
@@ -966,6 +999,37 @@ describe("native demonstration hub's fleet sessions", () => {
 			expect(working.status.type).toBe("active");
 			expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
 			expect(working.activeTurnStartedAt).toBeDefined();
+		});
+	});
+
+	it("moves a fleet session's Board row with its turn, out of Working on Stop and back on send", async () => {
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-pr2138");
+			const rowState = async () => {
+				const live = await client.request("evener/navigation/read", {
+					representationVersion: 2,
+					resource: "section",
+					section: "live",
+				});
+				const entities = (live.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;
+				return entities.find((entity) => entity.value.session_id === demoSessionId("s-pr2138"))?.value.state;
+			};
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const expectedInstanceId = thread.evener.instanceId ?? "";
+			expect(await rowState()).toBe("active");
+			const stopped = navigationInvalidated(client);
+			await client.request("turn/interrupt", { ref, expectedInstanceId, clientMutationId: "stop-pr2138" });
+			await stopped;
+			expect(await rowState()).toBe("idle");
+			const restarted = navigationInvalidated(client);
+			await client.request("turn/start", {
+				ref,
+				expectedInstanceId,
+				clientMutationId: "start-pr2138",
+				input: [{ type: "text", text: "Keep going" }],
+			});
+			await restarted;
+			expect(await rowState()).toBe("active");
 		});
 	});
 
