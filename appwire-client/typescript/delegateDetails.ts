@@ -13,6 +13,7 @@
 // to compute. Every live measurement falls back to the snapshot's frozen value
 // only when no anchor parses or the clock is not a finite number.
 import type { ActivityDelegate } from "./activityData";
+import { firstLine } from "./displayFormat";
 
 export type DelegateTimingFields = Pick<
   ActivityDelegate,
@@ -126,4 +127,68 @@ export function delegatePacket(
   } catch {
     return undefined;
   }
+}
+
+// The daemon's reason codes (agent/delegate_*.go, subagents.go,
+// session_budget.go) said plainly. A reason is a code; a failed run's cause
+// in words rides beside it as `error` (#3327). delegateDetails.test.ts reads
+// the Go source and fails when a code there has no words here; the TUI's
+// transcript.SubagentEndingText mirrors this table, and its test holds the two
+// alike.
+const ENDING_WORDS = new Map([
+  // A journal written by an older daemon, before failures named their kind.
+  ["failed", "failed"],
+  // A run that failed on an error; its cause rides in `error`.
+  ["run_error", "failed with an error"],
+  // A run that ended with neither an error nor a report.
+  ["ended_without_report", "ended without reporting"],
+  ["terminal_error", "ended with an error"],
+  ["missing_terminal", "ended without reporting"],
+  ["runtime_lost", "runtime lost"],
+  ["input_persist_failed", "couldn't save its input"],
+  ["cancelled", "cancelled"],
+  ["stopped_by_parent", "stopped by its coordinator"],
+  ["tool_round_budget_exhausted", "ran out of tool rounds"],
+  ["turn_budget_exhausted", "ran out of turns"],
+  ["launch_failed", "couldn't start"],
+  ["construction_failed", "couldn't be set up"],
+  ["artifacts_dir_failed", "couldn't create its artifacts folder"],
+  ["input_admission_failed", "couldn't take its input"],
+  ["attention_consumed_without_report", "finished without a new report"],
+]);
+
+// The word for an outcome whose reason is a code this client doesn't know.
+const OUTCOME_WORDS = new Map([
+  ["failed", "failed"],
+  ["exhausted", "ran out of budget"],
+  ["cancelled", "stopped"],
+  ["stopped", "stopped"],
+]);
+
+const CODE = /^[a-z0-9]+(?:_[a-z0-9]+)+$/;
+
+export interface DelegateEndingFields {
+  outcome?: string;
+  reason?: string;
+  error?: string;
+}
+
+// How long an ending may run: one line on every surface that shows it.
+const ENDING_MAX = 120;
+
+/** How a subagent's last run ended, in words, or undefined when there is
+ * nothing to say: the hub's `error` when it sent one, else the reason code
+ * said plainly. A code this client doesn't know reads as its outcome's word,
+ * so a snake_case code never reaches the screen; a reason already in words
+ * (an older hub's) shows as it is. Always one line, bounded, so every
+ * consumer shows the same. */
+export function delegateEndingText(delegate: DelegateEndingFields): string | undefined {
+  const error = firstLine(delegate.error ?? "", ENDING_MAX);
+  if (error) return error;
+  const reason = delegate.reason?.trim();
+  if (!reason) return undefined;
+  const words = ENDING_WORDS.get(reason);
+  if (words) return words;
+  if (!CODE.test(reason)) return firstLine(reason, ENDING_MAX) || undefined;
+  return OUTCOME_WORDS.get(delegate.outcome ?? "");
 }

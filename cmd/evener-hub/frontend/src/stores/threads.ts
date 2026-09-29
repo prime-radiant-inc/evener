@@ -62,7 +62,7 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
@@ -232,7 +232,11 @@ export interface ThreadsStoreState {
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   // Durably enqueues the human shared-note (an empty note clears it). Returns
   // the committed outbox record, not the daemon acknowledgment. Receipt
-  // responses and evener/notes/updated publish canonical note state.
+  // responses and evener/notes/updated publish canonical note state. A note
+  // save is never a composer send, so it never takes enqueueMutationIntent's
+  // direct fallback (DIRECT_FALLBACK_METHODS) and always resolves with the
+  // committed record; enqueueCommittedMutation asserts that a non-send method
+  // never returns undefined rather than casting the type.
   setHumanNote(
     ref: string,
     note: string,
@@ -738,6 +742,29 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+// Refs whose outbox holds at least one non-canceled row: work the ref's FIFO
+// could still deliver. Deliberately NOT pinnedMutationRefs - that is a
+// retention pin, and a canceled row (which leaves only on an explicit Retry or
+// the thread going away) keeps a ref pinned with nothing left to deliver. The
+// fallback's ordering guard reads this set instead, so a Stop's canceled queued
+// row cannot refuse a later send. Maintained from the records the pin refreshes
+// already read (refreshMutationPins / refreshMutationPinAfterRemoval) and on a
+// commit whose row is not born-canceled.
+const undeliveredMutationRefs = new Set<string>();
+// Per-ref generation bumped by every durable outbox commit. A refresh records
+// it before its outbox read and discards its result if it moved under the read,
+// so a read that began before a commit cannot land after it and clear the
+// commit's own markers (undeliveredMutationRefs / the dispatch arm) from an
+// empty snapshot - which would let a later storage-timeout fallback send
+// directly while the committed row is still queued.
+const mutationCommitGenerations = new Map<string, number>();
+// Per-ref count of durable enqueues whose write is still in flight (from the
+// click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
+// serve this: a background pin refresh clears a ref's arm when the outbox reads
+// empty, which it does while another enqueue's write is still uncommitted, so an
+// arm is not proof that a concurrent enqueue is outstanding. This count is that
+// proof, and only the fallback's ordering guard reads it.
+const inflightDurableEnqueues = new Map<string, number>();
 const olderPageGenerations = new Map<string, number>();
 
 // Refs this connection generation holds a wire subscription for. thread/read
@@ -821,9 +848,21 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-function currentDispatchClient(targetRef?: string, method?: string): AppwireClientLike | null {
+// currentDispatchClient is the dispatch admission: the wired client and its
+// epoch must still be current, and the named ref must pass its fences. The
+// `requireArmed` clause is the dispatcher's own precondition - a ref is
+// dispatched only while it is in dispatchableMutationRefs, the set of refs with
+// durable work waiting. enqueueMutationIntent's fallback asks the SAME question
+// with requireArmed false: it has no durable row of its own, so it cannot be in
+// that set for its own sake, and the clause's absence only means "the client is
+// current and the ref is not fenced" - the admission the fallback needs. The
+// refs that DO hold durable work are covered separately, by the fallback's own
+// ordering guard: undeliveredMutationRefs (the ref's outbox holding a
+// non-canceled row) plus inflightDurableEnqueues (a durable enqueue for the ref
+// still in flight).
+function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
-  if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
   const state = threadsStore.getState();
   if (
     targetRef &&
@@ -887,21 +926,31 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
+    const generation = mutationCommitGenerations.get(targetRef) ?? 0;
     const [outbox, optimistic] = await Promise.all([
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
     ]);
     if (!isCurrentMutationRuntime(runtime)) return;
+    // A durable commit for this ref since the read began means this snapshot
+    // predates it: discard rather than clobber the commit's own markers.
+    if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) continue;
+    const hasUndeliveredWork = outbox.some((record) => record.state !== "canceled");
     if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
+      if (hasUndeliveredWork) undeliveredMutationRefs.add(targetRef);
+      else undeliveredMutationRefs.delete(targetRef);
       continue;
     }
     if (optimistic.length > 0) {
       pinnedMutationRefs.add(targetRef);
+      // An optimistic row is accepted (settled), never undelivered work.
+      undeliveredMutationRefs.delete(targetRef);
       dispatchableMutationRefs.delete(targetRef);
       continue;
     }
     pinnedMutationRefs.delete(targetRef);
+    undeliveredMutationRefs.delete(targetRef);
     dispatchableMutationRefs.delete(targetRef);
     dropUnpinnedModel(targetRef);
   }
@@ -919,11 +968,16 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 // turn on the next discovery; a dispatch killed here costs the user's save.
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
+  const generation = mutationCommitGenerations.get(targetRef) ?? 0;
   const [outbox, optimistic] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
     runtime.storage.listOptimistic(targetRef),
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
+  // As in refreshMutationPins: a commit since the read began outranks it.
+  if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) return;
+  if (outbox.some((record) => record.state !== "canceled")) undeliveredMutationRefs.add(targetRef);
+  else undeliveredMutationRefs.delete(targetRef);
   if (outbox.length > 0 || optimistic.length > 0) {
     pinnedMutationRefs.add(targetRef);
     return;
@@ -1389,7 +1443,14 @@ export async function retryBlockedMutation(
     // capture above: a Stop that landed between the capture and this release
     // outranks the Retry, and the refused release leaves the row canceled
     // for it — the release returning false is this press's refusal.
-    if (!(await runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }))) return false;
+    // Registered around the write: the reopened row is undelivered work, and a
+    // fallback send must see it before the async refresh can.
+    const released = await trackOutboxWrite(
+      record.targetRef,
+      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
+      (didRelease) => didRelease,
+    );
+    if (!released) return false;
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -1454,7 +1515,13 @@ export async function resendRecoveryMutation(
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
-  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
+  // Registered around the write: the resent row is undelivered work, and a
+  // fallback send must see it before the async refresh can.
+  const record = await trackOutboxWrite(
+    targetRef,
+    () => runtime.storage.resendRecovery(clientMutationId, intent),
+    (resent) => resent !== undefined && resent.state !== "canceled",
+  );
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
@@ -1877,6 +1944,18 @@ function threadInstanceID(model: ThreadModel | undefined): string | undefined {
   return model?.instanceId ?? model?.threadId;
 }
 
+// The composer's routes and the wire methods they build, in ONE place: both
+// composerMutationIntent and DIRECT_FALLBACK_METHODS read this map, so a route
+// added here (or a method changed) cannot leave the fallback set silently
+// behind. The Record<ComposerMutationRoute, string> annotation makes the map
+// exhaustive over the route union at compile time.
+const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
+  send: "turn/start",
+  queue: "turn/queue",
+  steer: "turn/steer",
+  drain: "turn/drainAsSteer",
+};
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
@@ -1915,13 +1994,13 @@ function composerMutationIntent(
   if (route === "send") {
     return {
       ...base,
-      method: "turn/start",
+      method: COMPOSER_ROUTE_METHODS.send,
       payload: { ref, expectedInstanceId, input },
-      optimisticDisplay: { method: "turn/start", input },
+      optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.send, input },
     };
   }
   if (route === "queue" || route === "steer") {
-    const method = route === "queue" ? "turn/queue" : "turn/steer";
+    const method = COMPOSER_ROUTE_METHODS[route];
     return {
       ...base,
       method,
@@ -1935,9 +2014,9 @@ function composerMutationIntent(
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
-    method: "turn/drainAsSteer",
+    method: COMPOSER_ROUTE_METHODS.drain,
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
-    optimisticDisplay: { method: "turn/drainAsSteer", input },
+    optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.drain, input },
   };
 }
 
@@ -2168,11 +2247,99 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "notes/human/set": "Notes aren't available until this session is resumed",
 };
 
+// The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
+// builder and this set cannot drift. These are the only mutations the direct
+// fallback answers when the durable outbox cannot be written: each has no
+// response-side local commit beyond the wire call itself, so a plain RPC looks
+// to the rest of the store exactly like the dispatched row would have. Every
+// other durable write keeps its own contract and stays fail-closed - see the
+// catch in enqueueMutationIntent.
+const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
+
+// Decrement a ref's in-flight durable-enqueue count, dropping the entry at
+// zero. Paired exactly with the increment in enqueueMutationIntent and
+// trackOutboxWrite, on both the settle and the throw path. A release with no
+// matching acquire is a bookkeeping bug, not a normal case, so it throws rather
+// than defaulting the missing entry to 1 - that default would also hide a
+// double release or a mid-flight reset.
+function releaseInflightDurableEnqueue(ref: string): void {
+  const current = inflightDurableEnqueues.get(ref);
+  if (current === undefined) {
+    throw new Error(`threads store: released an in-flight durable enqueue for ${ref} that was never acquired`);
+  }
+  if (current > 1) inflightDurableEnqueues.set(ref, current - 1);
+  else inflightDurableEnqueues.delete(ref);
+}
+
+// Register an outbox write that can create or reopen a row this tab now owes
+// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
+// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
+// marked as holding undelivered work when the write commits a row that is not
+// canceled. Without this the guard's in-memory state stays stale-empty until an
+// async refresh reads the row back - and if storage wedges first, a fallback
+// send jumps the row that was just written. (Writes that only REMOVE or cancel
+// rows - discardRecovery, updateRecoveryInput, discardCanceled,
+// discardCanceledOfInstance, cancelUnattempted - need no registration: they
+// never create undelivered work, and the next refresh/hydration recomputes the
+// set from the records when it can read them.)
+async function trackOutboxWrite<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedUndelivered: (result: T) => boolean,
+): Promise<T> {
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  try {
+    const result = await write();
+    if (committedUndelivered(result)) {
+      undeliveredMutationRefs.add(ref);
+      noteMutationCommit(ref);
+    }
+    return result;
+  } finally {
+    releaseInflightDurableEnqueue(ref);
+  }
+}
+
+// Remove a ref's dispatch arm once the ref is genuinely idle: it has no
+// undelivered durable work (a non-canceled outbox row) and no durable enqueue
+// still in flight. Ownership is deliberately NOT consulted - the arm is shared
+// state, and with ownership two clicks can each decline to remove it (A's
+// because B was still in flight at A's failure, B's because B never added it),
+// leaving a stale arm with no durable row behind it. Quiescence is exactly the
+// state in which an arm has nothing left to dispatch, so a stale one should go.
+// pinnedMutationRefs is NOT read here either: it is a retention pin, and a ref
+// whose only row is canceled (which leaves only on an explicit Retry or the
+// thread going away) stays pinned forever.
+function disarmQuiescedMutationArm(ref: string): void {
+  if (!undeliveredMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
+    dispatchableMutationRefs.delete(ref);
+  }
+}
+
+// Note a durable outbox commit for the ref: refreshes that began their read
+// before it discard their (now-stale) snapshot - see mutationCommitGenerations.
+function noteMutationCommit(ref: string): void {
+  mutationCommitGenerations.set(ref, (mutationCommitGenerations.get(ref) ?? 0) + 1);
+}
+
+// The hydrated-replay gate: a matching pending hydration for the ref keeps
+// dispatch closed while its replay is in flight. Read at the moment it is
+// consulted, never from a value captured earlier - the click's arming and the
+// commit's re-arm both ask NOW, so a hydration that starts or finishes across
+// the write is seen either way. (A captured snapshot would re-arm during a
+// replay that started mid-write, or skip the re-arm for a hydration that
+// finished mid-write, leaving the committed row unarmed until the next
+// discovery.)
+function dispatchReplayGateOpen(ref: string): boolean {
+  const pending = pendingThreadHydrations.get(ref);
+  return pending?.client !== wiredClient || pending.epoch !== readyEpoch;
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
-): Promise<MutationOutboxRecord> {
+): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
@@ -2220,29 +2387,199 @@ async function enqueueMutationIntent(
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
-  const pending = pendingThreadHydrations.get(ref);
-  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
+  // The click arms the ref for dispatch; a matching pending hydration keeps the
+  // replay gate closed instead. Whether this click added the value or found it
+  // already set no longer matters - the disarm is quiescence-based, not
+  // ownership-based (see disarmQuiescedMutationArm).
+  if (dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
   }
+  // Register this click's durable write as in flight for the ordering guard
+  // below. It stays counted until the write settles, so a concurrent enqueue
+  // the fallback must not jump stays visible even though it has not committed
+  // (and so has not pinned, and its arm a refresh can clear).
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   let record: MutationOutboxRecord;
   try {
-    // The click-time capture, awaited at the write it fences. A rejecting
-    // read (MutationStorageTimeoutError, VersionError, a retired connection)
-    // is a failed submission exactly like a failed enqueue: the catch below
-    // disarms the ref this click armed, so a transient read failure leaves no
-    // stale dispatch bookkeeping for later discovery passes to act on.
-    const barrier: MutationStopBarrier | undefined =
-      barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
-    record =
-      durableWrite === "interruptAndCancel"
+    // The click-time capture, awaited at the write it fences, and the durable
+    // enqueue behind it, retried once on a storage timeout (see
+    // enqueueDurableMutation).
+    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+  } catch (error) {
+    // This click's write has settled; only OTHER enqueues remain counted.
+    releaseInflightDurableEnqueue(ref);
+    // The direct fallback answers ONLY a durable enqueue whose method is one of
+    // the composer's four send verbs (DIRECT_FALLBACK_METHODS). Every other
+    // durable write keeps its own contract and fails closed here:
+    // turn/interrupt is Stop - its enqueue is enqueueInterruptAndCancel, the
+    // one transaction in which the ref's cancelable rows turn "canceled" AND
+    // the interrupt record is written, both land or neither does, so falling
+    // back would dispatch the interrupt while writing no cancels and leave the
+    // queued messages the click was cancelling still queued for a later
+    // dispatch. thread/clear needs its response applied locally
+    // (applyClearResponse) and notes/human/set needs its onCommitted to mark
+    // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
+    // A storage-unavailable failure on any of those propagates exactly as every
+    // other submission failure: the caller sees the refusal. This click's own
+    // write has settled, so drop the ref's arm if it is now idle - see
+    // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
+    // fallback below, so its fail-closed decision lives with its invariant.)
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
+      disarmQuiescedMutationArm(ref);
+      throw error;
+    }
+    // Persistent storage failure on a composer send: the durable write could
+    // not be made, so send it as a plain RPC right now, exactly as the
+    // non-durable operations do (setModel, rename, compact, ...). The outbox
+    // row, the dispatcher, the receipt/settle machinery and the recovery list
+    // are all skipped - there is nothing durable to settle or replay.
+    //
+    // It must still re-earn the admission the dispatcher would grant, because
+    // it is NOT the ref's durable FIFO head. currentDispatchClient is that
+    // exact admission (the dispatcher asks it per ref and method), so re-run
+    // it: it re-checks the wired client and readyEpoch - both may have changed
+    // across the watchdogs - the client's ready state, and the ref's fences (a
+    // pending reconciliation, a reconciliation failure, a Stop drain via
+    // stoppingRefs, the restart obligation with turn/start's resume-only
+    // carve-out, and restartRequired). requireArmed is off: the fallback's own
+    // ordering guard is not the dispatcher's arm but the two checks below.
+    //
+    // A fallback send must not jump an earlier durable send for the ref, and
+    // two in-memory facts cover what this tab can see. undeliveredMutationRefs
+    // is the ref's outbox holding a NON-CANCELED row - undelivered work. (Not
+    // pinnedMutationRefs: that is a retention pin, and a canceled row keeps a
+    // ref pinned with nothing left to deliver, so reading it would refuse the
+    // fallback for a ref whose only row a Stop already canceled.) And
+    // inflightDurableEnqueues counts durable enqueues whose write has not
+    // settled yet - the CONCURRENT case a committed row cannot show: this
+    // click's own was just released, so a nonzero count is another enqueue for
+    // this ref still in flight, one that has not committed (so not undelivered
+    // work yet) and whose dispatch arm a background refresh can clear. The
+    // precise answer - whether the ref's nextDispatchable head is this send -
+    // lives in storage, which is unavailable here; these two are what the
+    // in-memory state proves, and the fallback refuses on either rather than
+    // reorder.
+    const dispatchClient = currentDispatchClient(ref, intent.method, false);
+    const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
+    if (dispatchClient === null || undeliveredMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
+      disarmQuiescedMutationArm(ref);
+      throw error;
+    }
+    // The admission above proved the ref has no undelivered work and no enqueue
+    // in flight, so it is idle: drop the arm - see disarmQuiescedMutationArm.
+    disarmQuiescedMutationArm(ref);
+    //
+    // The forfeited cross-tab Stop fence: this send carries no click-time stop
+    // epoch - whether the capture read timed out, or the capture succeeded and
+    // only the enqueue timed out. The epoch is a commit-order comparison
+    // against the durable row the enqueue would have written, not a wire
+    // parameter (the dispatcher sends record.payload alone), so a send with no
+    // row carries none either way. A Stop landing in another tab during that
+    // window therefore cannot be honoured for it; the composer's draft is
+    // untouched (it lives in localStorage), and a send is retryable by hand -
+    // the trade the fallback makes against failing closed.
+    await dispatchMutationDirectly(dispatchClient, intent);
+    return undefined;
+  }
+  // The success path releases exactly once, here, BEFORE the post-commit
+  // bookkeeping and its listeners run: a listener that consults
+  // inflightDurableEnqueues sees this click already decremented, which is the
+  // ordering the previous structure had. Keeping the bookkeeping OUTSIDE the
+  // try means a throw from it can no longer re-enter a release (the
+  // double-release bug), and this release is unreachable from an error path
+  // because the only other exit from the try is the catch above.
+  releaseInflightDurableEnqueue(ref);
+  // Every commit bumps the generation refreshes check against: a born-canceled
+  // row's pin must survive a stale refresh just as an undelivered row's markers
+  // must.
+  noteMutationCommit(ref);
+  pinnedMutationRefs.add(ref);
+  // A committed row is undelivered work unless the stop barrier committed it
+  // born-canceled.
+  const committedUndelivered = record.state !== "canceled";
+  if (committedUndelivered) undeliveredMutationRefs.add(ref);
+  // A background pin refresh can clear the ref's arm while this write was in
+  // flight (it reads the outbox empty before the commit), so re-arm on a
+  // successful non-canceled commit rather than wait for the next hydration's
+  // re-arm in publishAndReconcileThreadHydration. Gated by the same replay-gate
+  // predicate as the click's own arming: a pending hydration still keeps the
+  // gate closed.
+  if (committedUndelivered && dispatchReplayGateOpen(ref)) {
+    dispatchableMutationRefs.add(ref);
+  }
+  notifyMutationPersistence([ref], { record });
+  return record;
+}
+
+// A durable write that timed out may mean only that storage is slow to
+// answer, so try it a second time before giving up. The click-time capture is
+// awaited ONCE here, before the ladder, and every attempt reuses that same
+// observation: re-reading it would let a Stop landing between attempts become
+// the retry's own baseline (the fence the capture exists to hold). A rejecting
+// capture (MutationStorageTimeoutError, VersionError, a retired connection)
+// propagates, and enqueueMutationIntent decides between the fallback and a
+// hard failure.
+const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
+const MUTATION_DURABLE_WRITE_RETRY_DELAY_MS = 50;
+
+async function enqueueDurableMutation(
+  runtime: MutationRuntime,
+  intent: MutationIntent,
+  onCommitted: ((record: MutationOutboxRecord) => void) | undefined,
+  durableWrite: "enqueue" | "interruptAndCancel",
+  barrierRead: Promise<number> | undefined,
+): Promise<MutationOutboxRecord> {
+  const barrier: MutationStopBarrier | undefined =
+    barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
         : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
-  } catch (error) {
-    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
-    throw error;
+    } catch (error) {
+      if (!isStorageUnavailable(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
+    }
   }
-  pinnedMutationRefs.add(ref);
-  notifyMutationPersistence([ref], { record });
+}
+
+// Whether an error is the storage-unavailable signal (the IndexedDB watchdog
+// gave up on an open or a transaction): the one failure the direct fallback
+// answers, because it does not prove the mutation's shape was rejected.
+function isStorageUnavailable(error: unknown): boolean {
+  return error instanceof MutationStorageTimeoutError;
+}
+
+// The imperative transport for a mutation whose durable write could not be
+// made: the same plain RPC the non-durable operations issue. The client mints
+// the clientMutationId exactly as those operations do, so the daemon still
+// dedups a replay; a rejection maps a conflict the same way they do.
+async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
+  const clientMutationId = createSecureUUID();
+  try {
+    const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+  } catch (err) {
+    throw mapConflict(err);
+  }
+}
+
+// A non-send durable write (thread/clear, notes/human/set,
+// turn/promoteQueuedAsSteer) can never take the direct fallback, so
+// enqueueMutationIntent always resolves with its committed record. This asserts
+// that contract instead of casting it: a cast would hand the caller an
+// undefined record its type called present, where a violation here throws. The
+// union stays enqueueMutationIntent's own return; this is the honest narrow for
+// a caller whose method is never one of the composer send verbs.
+async function enqueueCommittedMutation(
+  intent: MutationIntent,
+  onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+): Promise<MutationOutboxRecord> {
+  const record = await enqueueMutationIntent(intent, onCommitted, durableWrite);
+  if (record === undefined) {
+    throw new Error(`threads store: ${intent.method} unexpectedly took the direct send fallback`);
+  }
   return record;
 }
 
@@ -2254,7 +2591,7 @@ async function enqueueMutation(
   attachments?: InputAttachment[],
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<void> {
-  await enqueueMutationIntent(
+  await enqueueCommittedMutation(
     {
       targetRef: ref,
       threadId: threadsStore.getState().threads.get(ref)?.threadId,
@@ -4192,7 +4529,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       throw new Error("Session instance changed");
     const generation = (notesUpdateGenerations.get(ref) ?? 0) + 1;
     notesUpdateGenerations.set(ref, generation);
-    return enqueueMutationIntent(
+    return enqueueCommittedMutation(
       {
         targetRef: ref,
         threadId: model?.threadId,
@@ -4248,7 +4585,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async clearThread(ref) {
     const runtime = requireMutationRuntime();
     await runtime.start;
-    await enqueueMutationIntent(clearMutationIntent(ref));
+    await enqueueCommittedMutation(clearMutationIntent(ref));
     // A clear is fenced by the model's instance id, so it can dispatch while
     // an older resync read is in flight. Its response is the newer cut and
     // retires that read in applyClearResponse.
@@ -4483,6 +4820,9 @@ export function resetThreadsStoreForTests(): void {
   };
   retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
+  inflightDurableEnqueues.clear();
+  undeliveredMutationRefs.clear();
+  mutationCommitGenerations.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;

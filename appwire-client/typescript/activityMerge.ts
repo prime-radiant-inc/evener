@@ -339,6 +339,7 @@ export function applyDelegateUpdate(tree: ActivityTree, info: EvenerDelegateInfo
         phase: info.phase,
         status: info.status,
         reason: info.reason,
+        error: info.error,
         resumable: info.resumable,
         notResumableReason: info.notResumableReason,
         runStartedAt: info.runStartedAt,

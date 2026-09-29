@@ -994,6 +994,11 @@ type Session struct {
 	// mutation store refused. See scheduleRunningTurnReleaseRetry
 	// (session_active_turn.go).
 	runningTurnReleaseRetry runningTurnReleaseRetryState
+	// outputReductionMu guards outputReductionWarned alone: the output clamp
+	// the session last warned about (see warnOutputReduction), empty while no
+	// clamp applies.
+	outputReductionMu     sync.Mutex
+	outputReductionWarned string
 	// attentionRestoreWarnMu guards attentionRestoreWarned alone: per
 	// delegate, the restore error the session last warned about (see
 	// warnDelegateAttentionRestoreFailed).

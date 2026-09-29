@@ -246,9 +246,11 @@ export class MutationOutboxIndexedDB {
   // ref's sequence row, never cached - another tab's Stop is invisible to
   // this tab's memory.
   //
-  // This read is the click's first storage observation; a timeout rejects it
-  // (the send fails), which is the safe outcome - there is no retry to answer
-  // later with an epoch a Stop may have since bumped.
+  // This read is the click's first storage observation, and it is never
+  // retried: a retry could answer later with an epoch a Stop had since bumped,
+  // which is exactly the fence this capture exists to hold. A timeout rejects
+  // it - a composer send then proceeds through threads.ts's direct fallback
+  // with no click-time epoch, while every other durable write fails closed.
   async readStopEpoch(targetRef: string): Promise<number> {
     return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
   }

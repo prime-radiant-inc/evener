@@ -328,6 +328,25 @@ export async function connectPage(endpoint) {
 // page that loaded but never booted is re-navigated at most this many times.
 export const BOOT_RETRY_LIMIT = 2;
 
+/**
+ * The ceiling on every in-page evaluation, named like the Go tripwires in
+ * PR #852 and PR #873.
+ *
+ * Runtime.evaluate is a HARD bound on whatever the expression itself awaits:
+ * the guards' readiness spins run inside one such call, so every guard's own
+ * in-page tripwire must sit BELOW this. When it did not - the #900 diagnosis
+ * ran a 90 s in-page tripwire - the transport timed out first and the guard
+ * reported `timeout calling Runtime.evaluate after 30000ms` with its
+ * structured blocker lost (issue #919). At 30 s the ceiling now outlasts
+ * every guard's in-page budget (the longest is the font registration poll,
+ * FONT_POLL_DEADLINE_MS, at 20 s), so a page still making progress reports
+ * its own blocker first. It is deliberately NOT raised: a page whose frame
+ * loop stalls never re-reads its tripwire, and no finite ceiling recovers the
+ * blocker that case loses - it needs the host-side polling of issue #919's
+ * second fix shape, which is a separate design decision.
+ */
+export const CDP_EVALUATE_TRIPWIRE_MS = 30000;
+
 // The pause between those re-navigations, giving a transient network change
 // time to settle before the burst is asked for again.
 export const BOOT_RETRY_DELAY_MS = 250;
@@ -831,7 +850,7 @@ export async function evaluate(send, expression) {
       awaitPromise: true,
       returnByValue: true,
     }),
-    30000,
+    CDP_EVALUATE_TRIPWIRE_MS,
     "Runtime.evaluate",
   );
   if (response.result.exceptionDetails) {
@@ -893,7 +912,7 @@ export async function evaluate(send, expression) {
  * sustained load - and the fonts.ready await, unbounded while any load
  * hangs, races the budget's REMAINDER, capped at FONT_READY_TIMEOUT_MS, and
  * reports a stall as data. No wait in the page can outlast FONT_POLL_DEADLINE_MS,
- * pinned by test at 20000ms so the evaluate() wrapper's 30000ms ceiling
+ * pinned by test at 20000ms so the evaluate() wrapper's ceiling (CDP_EVALUATE_TRIPWIRE_MS)
  * always fires last: a genuinely fontless or font-stalled document reports
  * one of the actionable diagnostics below, never an opaque timeout.
  */
@@ -901,8 +920,8 @@ export async function evaluate(send, expression) {
 // The registration poll's deadline, which is also the TOTAL in-page budget:
 // the fonts.ready await below runs on this deadline's remainder. It must
 // cover the stylesheet-application windows observed exceeding 10s under
-// sustained machine load, and it must lose to the evaluate() ceiling, never
-// win against it.
+// sustained machine load, and it must lose to the evaluate() ceiling
+// (CDP_EVALUATE_TRIPWIRE_MS), never win against it.
 export const FONT_POLL_DEADLINE_MS = 20000;
 
 // The most the fonts.ready await may take once the poll exits early. When the
