@@ -23,9 +23,9 @@ import {
   clip,
   formatByteCount,
   parseArgs,
-  parseJSONObject,
   str,
   webFetchByteCount,
+  webFetchResult,
   webFetchSummary,
   webSearchResultLines,
   webSearchSummary,
@@ -113,8 +113,9 @@ function webFetchLink(item: { argumentsJSON?: string }): string | undefined {
 function WebFetchBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  const parsed = parseJSONObject(output);
-  const answer = parsed ? str(parsed, "answer") : undefined;
+  // The model's answer, or the page's content when both models refused
+  // (@evener/appwire-client's webFetchResult, which the phone reads too).
+  const answer = webFetchResult(output)?.text;
   return (
     <ContextCard
       source={str(parseArgs(item.argumentsJSON), "url") ?? ""}

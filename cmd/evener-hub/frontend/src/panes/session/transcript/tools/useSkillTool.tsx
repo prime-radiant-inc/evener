@@ -8,15 +8,18 @@
 // still applies cleanly here since it keys off the same signal (blank
 // text), not the tool_state field legacy actually read.
 
-import { useSkillSummary } from "@evener/appwire-client";
+import { skillContext, useSkillSummary } from "@evener/appwire-client";
 import { Markdown } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 
+// The tool returns a <skill-context> block of JSON; the body shows the
+// skill's instructions from it (@evener/appwire-client's skillContext, which
+// the phone reads too). An output in any other shape shows as it is.
 function UseSkillBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  return <Markdown source={output} />;
+  return <Markdown source={skillContext(output)?.instructions ?? output} />;
 }
 
 registerToolRenderer({
