@@ -158,7 +158,7 @@ export function nativeModuleMock() {
 		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 		Animated,
 		Appearance: { setColorScheme: () => {} },
-		Alert: { alert: recordAlert },
+		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
 		KeyboardAvoidingView,
 		Modal: "Modal",
@@ -344,6 +344,21 @@ export interface AlertRequest {
  * drives a confirmation dialog reads the buttons off the request it cares
  * about and invokes the one it wants; production Alert never returns. */
 export const alertRequests: AlertRequest[] = [];
+
+/** One Alert.prompt call the mounted tree made: a test answers it by calling
+ * `callback` with the text it types, as pressing OK would. */
+export interface PromptRequest {
+	title: string;
+	message?: string;
+	callback?: (text: string) => void;
+}
+
+/** Every Alert.prompt call the mounted tree made, oldest first. */
+export const promptRequests: PromptRequest[] = [];
+
+function recordPrompt(title: string, message?: string, callback?: (text: string) => void): void {
+	promptRequests.push({ title, message, callback });
+}
 
 function recordAlert(
 	title: string,
