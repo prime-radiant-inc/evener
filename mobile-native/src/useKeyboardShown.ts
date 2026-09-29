@@ -11,7 +11,7 @@ export function useKeyboardShown(): boolean {
 	useEffect(() => {
 		const ios = Platform.OS === "ios";
 		const subscriptions = [
-			Keyboard.addListener(ios ? "keyboardWillShow" : "keyboardDidShow", () => setShown(true)),
+			Keyboard.addListener(ios ? "keyboardDidShow" : "keyboardDidShow", () => setShown(true)),
 			Keyboard.addListener(ios ? "keyboardWillHide" : "keyboardDidHide", () => setShown(false)),
 		];
 		return () => {
