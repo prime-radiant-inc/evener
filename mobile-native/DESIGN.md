@@ -408,7 +408,7 @@ This records the two shipped sheets: New session, where a session is set up and 
   - More options: Context strategy, Max subagent depth and Max turns, each a segmented control that starts on Default, with the hub's default beneath ("The hub's default is compact."). A value the control doesn't offer lights no segment, and the footer names it ("This session uses 4. The hub's default is 2."). The page ends: "Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults."
 
 ### The Hub
-- **Header:** The hub's name as the title, "Done" (semibold) to close, and one line beneath in ink-mid: the connection ("Connected", or the calm line's words), the hub's version and whether it is current ("Connected · evener 0.9.412 · up to date", or "Update available").
+- **Header:** The hub's name as the title, "Done" (semibold) to close, and one line beneath in ink-mid: the connection ("Connected", "Connecting…" before the hub is ready, or the calm line's words), the hub's version and whether it is current ("Connected · evener 0.9.412 · up to date", or "Update available").
 - **Home:** Grouped rows, each pushing its page:
   - FLEET: Hosts (`server.rack`), counting every machine with the hub's own, tagged amber "1 offline", or gray "1 on another version".
   - SETUP: Providers (`key`), tagged amber "2 to sign in"; Plugins (`puzzlepiece.extension`), the installed count.

@@ -147,6 +147,8 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
@@ -163,6 +165,8 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: fakeB as unknown as ConversationClientLike,
 		state: "ready",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
@@ -392,5 +396,26 @@ it("offers no pull to refresh: the screen keeps itself current", async () => {
 	expect(
 		tree.root.findAll((node) => node.props.refreshControl !== undefined || node.props.onRefresh !== undefined),
 	).toEqual([]);
+	tree.unmount();
+});
+
+it("says plainly when the hub's information didn't load, and loads it on Retry", async () => {
+	const hub = new FakeClient("ready");
+	let fail = true;
+	hub.on("evener/settings/overview", () => {
+		if (fail) throw new Error("overview unavailable");
+		return { hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 } };
+	});
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Could not load hub information.");
+	expect(renderedText(tree)).not.toMatch(/Try again when connected/);
+
+	fail = false;
+	const retry = tree.root.findAll((node) => node.props.accessibilityRole === "button" && node.props.onPress)[0];
+	await act(async () => retry?.props.onPress());
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
 	tree.unmount();
 });

@@ -70,7 +70,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 // The hub overview store keeps the failed request's own text in `error`;
 // this screen shows the same copy for every failure, as the web's sections
 // translate theirs at render.
-const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information. Try again when connected.";
+const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information.";
 
 /** The hub's runtime, storage, agents and MCP servers (ruling 12). Its
  * update, and its links to Providers, Plugins, Display, Keyboard shortcuts and
@@ -111,7 +111,7 @@ function HubSettings({
 	// this one with is still connecting when the focus effect re-runs, so
 	// that read fails with nothing left to re-run it once the connection is
 	// ready. The overview store keeps the last successful load through a
-	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
+	// failed refresh (hubOverview.ts), so the status line over stale-but-shown
 	// data stays usable meanwhile; this is the recovery read: one refresh per
 	// transition back to ready. The focus read is
 	// live-gated, and the live predicate settles in the parent's effect
