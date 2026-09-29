@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, View } from "react-native";
 import { SwipeRow } from "../board/SwipeRow";
-import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
 import { destructiveButton, haptic } from "../haptics";
@@ -48,6 +48,7 @@ export interface GhostBubbleProps {
 export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, backdrop, onAction }: GhostBubbleProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
 	const offersEdit = ghost.buttons.includes("edit") || ghost.menu.includes("edit");
 	const menu = ghost.menu.filter((action) => !(action === "edit" && editBlocked));
@@ -116,9 +117,9 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 					numberOfLines={3}
 					ellipsizeMode="tail"
 					style={{
-						fontFamily: typeRoles.yourMessage.fontFamily,
-						fontSize: typeRoles.yourMessage.fontSize * scale,
-						lineHeight: typeRoles.yourMessage.lineHeight * scale,
+						fontFamily: reading.yourMessage.fontFamily,
+						fontSize: reading.yourMessage.fontSize * scale,
+						lineHeight: reading.yourMessage.lineHeight * scale,
 						color: palette.inkMid,
 					}}
 				>

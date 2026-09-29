@@ -12,6 +12,8 @@ import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { AlertsPage } from "./AlertsPage";
+import { DetailLevelPage } from "./DetailLevelPage";
+import { DisplayPage } from "./DisplayPage";
 import { HostDetailPage } from "./HostDetailPage";
 import { HostsPage } from "./HostsPage";
 import { HubHome } from "./HubHome";
@@ -70,6 +72,8 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						),
 					}}
 				/>
+				<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
+				<HubStack.Screen name="DetailLevel" component={DetailLevelPage} options={{ title: "Default detail level" }} />
 				<HubStack.Screen name="Alerts" component={AlertsPage} options={{ title: "In-app alerts" }} />
 				<HubStack.Screen name="Hosts" component={HostsPage} options={{ title: "Hosts" }} />
 				<HubStack.Screen

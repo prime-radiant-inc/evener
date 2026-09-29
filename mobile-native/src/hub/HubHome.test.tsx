@@ -106,7 +106,7 @@ const ROWS = [
 	"Hosts",
 	"Providers",
 	"Plugins",
-	"Display",
+	"Display, System",
 	"In-app alerts",
 	"Hubs",
 	"Keyboard shortcuts",
@@ -161,7 +161,6 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
-		["Display", "TranscriptPreferences"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -183,10 +182,10 @@ it("opens In-app alerts inside the sheet, between Display and Hubs", async () =>
 		.findAllByProps({ accessibilityRole: "button" })
 		.map((node) => node.props.accessibilityLabel)
 		.filter((label): label is string => ROWS.includes(label));
-	const display = labels.indexOf("Display");
-	expect(labels.slice(display, display + 3)).toEqual(["Display", "In-app alerts", "Hubs"]);
+	const display = labels.indexOf("Display, System");
+	expect(labels.slice(display, display + 3)).toEqual(["Display, System", "In-app alerts", "Hubs"]);
 	press("In-app alerts");
-	expect(sheet.navigate).toHaveBeenLastCalledWith("Alerts");
+	expect(sheet.navigate).toHaveBeenLastCalledWith("Alerts", { hubId: "hub-1" });
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
@@ -272,6 +271,13 @@ it("says so when the hub restarts without the update", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
+});
+
+it("opens Display inside the sheet, valued with this phone's appearance", async () => {
+	const { sheet, press, find } = await mount();
+	expect(find("Display, System")).not.toBeNull();
+	press("Display, System");
+	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });
 
 it("says the update couldn't be confirmed when the hub's first answer after the restart fails", async () => {

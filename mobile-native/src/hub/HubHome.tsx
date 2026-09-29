@@ -11,6 +11,8 @@ import { useCallback, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
+import { useDisplayChoices } from "../display/displayContext";
+import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
@@ -18,17 +20,12 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 
-type InterimScreen =
-	| "Providers"
-	| "Plugins"
-	| "TranscriptPreferences"
-	| "KeybindingPreferences"
-	| "LaunchSettings"
-	| "HubSettings";
+type InterimScreen = "Providers" | "Plugins" | "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId, hubName, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
+	const { appearance } = useDisplayChoices();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const line = hubStatusLine(ready, useConnectionStatusText(), update.check);
@@ -88,8 +85,19 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			</Group>
 			<GroupLabel>This phone</GroupLabel>
 			<Group>
-				<Row icon="textformat.size" label="Display" chevron onPress={() => leaveFor("TranscriptPreferences")} />
-				<Row icon="bubble.left" label="In-app alerts" chevron onPress={() => navigation.navigate("Alerts")} />
+				<Row
+					icon="textformat.size"
+					label="Display"
+					value={APPEARANCE_LABELS[appearance]}
+					chevron
+					onPress={() => navigation.navigate("Display", { hubId })}
+				/>
+				<Row
+					icon="bubble.left"
+					label="In-app alerts"
+					chevron
+					onPress={() => navigation.navigate("Alerts", { hubId })}
+				/>
 				<Row icon="point.3.connected.trianglepath.dotted" label="Hubs" chevron onPress={() => root?.navigate("Hubs")} />
 			</Group>
 			<GroupLabel>More</GroupLabel>
