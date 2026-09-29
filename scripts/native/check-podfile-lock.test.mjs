@@ -226,3 +226,19 @@ test("an spm.config.json whose products is not a list exits 2 with one line", ()
 	assert.match(result.stderr, /^check-podfile-lock: .*products is not a list/);
 	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });
+
+test("an spm.config.json that is not a JSON object exits 2 with one line", () => {
+	const { scriptPath, nm } = fakeTree();
+	mkdirSync(path.join(nm, "expo-modules-autolinking"), { recursive: true });
+	writeFileSync(path.join(nm, "expo-modules-autolinking/package.json"), '{"name":"expo-modules-autolinking","version":"0.0.0"}');
+	const podspecDir = path.join(nm, "expo-camera/ios");
+	mkdirSync(podspecDir, { recursive: true });
+	writeFileSync(path.join(nm, "expo-camera/spm.config.json"), "null");
+	const result = run(scriptPath, ["--lock", realLockPath], {
+		FAKE_RESOLVE: JSON.stringify({ modules: [{ packageName: "expo-camera", pods: [{ podName: "ExpoCamera", podspecDir }] }] }),
+		FAKE_CONFIG: JSON.stringify({ reactNativePath: "/x", dependencies: {} }),
+	});
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*is not a JSON object/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});

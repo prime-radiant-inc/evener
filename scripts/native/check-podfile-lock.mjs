@@ -196,7 +196,10 @@ function declaredCompanions(expoModules, communityNames) {
 		} catch (error) {
 			fail(`cannot parse ${file}: ${error.message}`);
 		}
-		const products = parsed?.products ?? [];
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			fail(`${file} is not a JSON object: ${JSON.stringify(parsed)}`);
+		}
+		const products = parsed.products ?? [];
 		if (!Array.isArray(products)) fail(`${file}'s products is not a list: ${JSON.stringify(products)}`);
 		return products
 			.filter((product) => product?.autolinkWhen)
