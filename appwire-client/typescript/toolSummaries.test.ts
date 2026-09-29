@@ -15,6 +15,8 @@ test.each<[ToolWireCall, string]>([
   ["call_glob", "Matched agent/**/*_test.go · 2 matches"],
   // The count list_dir states on its last line, not its line count.
   ["call_list_dir", "Listed agent · 3 entries"],
+  ["call_list_dir_empty", "Listed empty · 0 entries"],
+  ["call_list_dir_page", "Listed agent · 2 entries"],
   ["call_edit_file", "Edited agent/tree.go · +4 -2"],
   ["call_write_file", "Wrote agent/tree_order.go"],
   ["call_apply_patch", "Patched agent/tree.go, agent/tree_drain.go · +2 -0"],
@@ -136,8 +138,15 @@ test("reads a tool name in words, hyphens and underscores alike", () => {
 test("says the count list_dir states, one entry or many", () => {
   const listed = (output: string) =>
     toolStepSummary({ toolName: "list_dir", argumentsJSON: JSON.stringify({ path: "a" }), output });
-  expect(listed("b.go\t3\n\n1 entry")).toBe("Listed a · 1 entry");
+  expect(listed("b.go\t3\n\n1 entries")).toBe("Listed a · 1 entry");
   expect(listed("b.go\t3\nc.go\t4\n\n2 entries")).toBe("Listed a · 2 entries");
+  // An empty directory is the count alone.
+  expect(listed("0 entries")).toBe("Listed a · 0 entries");
+  // A page of a longer listing counts the entries it returned.
+  expect(listed("b.go\t3\nc.go\t4\n\n2 of 5 entries (offset 0) — more with list_dir(offset=2)")).toBe(
+    "Listed a · 2 entries",
+  );
+  expect(listed("d.go\t3\n\n1 of 5 entries (offset 4)")).toBe("Listed a · 1 entry");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });

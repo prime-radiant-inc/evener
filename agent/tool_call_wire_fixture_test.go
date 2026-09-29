@@ -40,6 +40,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
@@ -61,28 +62,25 @@ type toolWireCall struct {
 	// output is the recorded result for a tool that can't run here; empty
 	// means the tool runs for real.
 	output string
-	// sortLines sorts the real output's lines, for a tool whose order
-	// depends on the filesystem.
-	sortLines bool
-	// grepForm writes the output in the native grep fallback's form: paths
-	// relative to the searched directory, no trailing newline.
-	grepForm bool
-	// noState leaves the tool's state off its result, for a tool whose state
-	// changes every run.
-	noState bool
+	// normalize makes a real result the same on every machine and run; nil
+	// records it as the tool returned it.
+	normalize func(tool.ExecResult) tool.ExecResult
 }
 
 // toolWireWorkspace writes the files the calls read, search and edit, and
-// installs the skill use_skill activates.
+// installs the skill use_skill activates. The workspace's path is resolved
+// once, so the tools and the corpus's relocation read the same spelling (a
+// macOS temp dir lives behind /private).
 func toolWireWorkspace(t *testing.T) (string, *Session) {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	files := map[string]string{
 		"agent/tree.go":       "package agent\n\nfunc settle() {}\n",
 		"agent/tree_test.go":  "package agent\n\nfunc settleForTest() {}\n",
 		"agent/drain_test.go": "package agent\n",
-		"skills/systematic-debugging/SKILL.md": "---\nname: systematic-debugging\ndescription: Find the root cause first\n---\n" +
-			"# Systematic debugging\n\nFind the root cause first.\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(dir, name)
@@ -93,6 +91,11 @@ func toolWireWorkspace(t *testing.T) (string, *Session) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillMD(t, dir, "systematic-debugging",
+		"---\nname: systematic-debugging\ndescription: Find the root cause first\n---\n# Systematic debugging\n\nFind the root cause first.\n")
 	s := newSession(t, withDir(dir))
 	skillDir := filepath.Join(dir, "skills", "systematic-debugging")
 	s.skills.Entries["systematic-debugging"] = skill.Descriptor{
@@ -108,31 +111,37 @@ func toolWireWorkspace(t *testing.T) (string, *Session) {
 	return dir, s
 }
 
-// nativeGrepForm writes ripgrep's output the way execenv's native Grep
-// fallback does: each path relative to the searched directory, no trailing
-// newline. The fallback's own output passes through unchanged.
-func nativeGrepForm(output, dir, searched string) string {
-	base := filepath.Join(dir, searched) + string(filepath.Separator)
-	resolvedBase := base
-	if resolved, err := filepath.EvalSymlinks(filepath.Join(dir, searched)); err == nil {
-		resolvedBase = resolved + string(filepath.Separator)
-	}
-	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimPrefix(strings.TrimPrefix(line, resolvedBase), base)
-	}
-	return strings.Join(lines, "\n")
+// sortedOutput sorts a result's lines, for a tool whose order depends on the
+// filesystem: glob orders by modification time and grep by its walk.
+func sortedOutput(res tool.ExecResult) tool.ExecResult {
+	lines := strings.Split(res.Output, "\n")
+	sort.Strings(lines)
+	res.Output = strings.Join(lines, "\n")
+	return res
 }
 
-func sortedLines(text string) string {
-	trailing := strings.HasSuffix(text, "\n")
-	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
-	sort.Strings(lines)
-	joined := strings.Join(lines, "\n")
-	if trailing {
-		joined += "\n"
+// nativeGrepForm writes a grep result the way execenv's native Grep fallback
+// does, sorted: each path relative to the searched directory, no trailing
+// newline. ripgrep, which Grep uses when it is installed, prints absolute
+// paths and a trailing newline; the fallback's own output passes through
+// unchanged.
+func nativeGrepForm(dir, searched string) func(tool.ExecResult) tool.ExecResult {
+	base := filepath.Join(dir, searched) + string(filepath.Separator)
+	return func(res tool.ExecResult) tool.ExecResult {
+		lines := strings.Split(strings.TrimSuffix(res.Output, "\n"), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimPrefix(line, base)
+		}
+		res.Output = strings.Join(lines, "\n")
+		return sortedOutput(res)
 	}
-	return joined
+}
+
+// withoutState leaves a result's tool state off, for a tool whose state
+// changes every run.
+func withoutState(res tool.ExecResult) tool.ExecResult {
+	res.ToolState = nil
+	return res
 }
 
 func TestToolCallWireFixtures(t *testing.T) {
@@ -165,21 +174,30 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_grep", tool: "grep",
-			note:      "A search in a path, filtered by a glob: one path:line:text line per hit (sorted here).",
+			note:      "A search in a path, filtered by a glob: one path:line:text line per hit (sorted, in the native fallback's form).",
 			args:      map[string]any{"pattern": "func settle", "path": "agent", "glob_filter": "*.go"},
-			sortLines: true,
-			grepForm:  true,
+			normalize: nativeGrepForm(dir, "agent"),
 		},
 		{
 			id: "call_glob", tool: "glob",
 			note:      "A glob match: one path per match (sorted here).",
 			args:      map[string]any{"pattern": "agent/**/*_test.go"},
-			sortLines: true,
+			normalize: sortedOutput,
 		},
 		{
 			id: "call_list_dir", tool: "list_dir",
 			note: "A directory listing: one name and size per entry, then a blank line and the entry count.",
 			args: map[string]any{"path": "agent"},
+		},
+		{
+			id: "call_list_dir_empty", tool: "list_dir",
+			note: "An empty directory: the count alone.",
+			args: map[string]any{"path": "empty"},
+		},
+		{
+			id: "call_list_dir_page", tool: "list_dir",
+			note: "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
+			args: map[string]any{"path": "agent", "limit": 2},
 		},
 		{
 			id: "call_edit_file", tool: "edit_file",
@@ -220,9 +238,9 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_use_skill", tool: "use_skill",
-			note:    "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
-			args:    map[string]any{"skill_name": "systematic-debugging"},
-			noState: true,
+			note:      "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
+			args:      map[string]any{"skill_name": "systematic-debugging"},
+			normalize: withoutState,
 		},
 		{
 			id: "call_mcp", tool: "github__create_issue",
@@ -258,19 +276,12 @@ func TestToolCallWireFixtures(t *testing.T) {
 			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args})
 			// The result as a session records it, less its duration, which
 			// differs every run.
-			output, isErr, state = res.Output, res.IsError, res.ToolState
-			if call.noState {
-				state = nil
+			if call.normalize != nil {
+				res = call.normalize(res)
 			}
+			output, isErr, state = res.Output, res.IsError, res.ToolState
 			if isErr {
 				t.Fatalf("%s: the %s call failed: %s", call.id, call.tool, output)
-			}
-			if call.grepForm {
-				searched, _ := call.args["path"].(string)
-				output = nativeGrepForm(output, dir, searched)
-			}
-			if call.sortLines {
-				output = sortedLines(output)
 			}
 		}
 		announce.Content = append(announce.Content, llm.ContentPart{
@@ -301,22 +312,16 @@ func TestToolCallWireFixtures(t *testing.T) {
 }
 
 // toolWireRelocated rewrites the temp workspace's path, wherever it appears
-// in the items (a shell command's cd, grep's and glob's paths, a skill's
-// source), to toolWireCwd. macOS resolves its temp dir through /private, so
-// both spellings are rewritten.
+// in the items (a shell command's cd, glob's paths, a skill's source), to
+// toolWireCwd.
 func toolWireRelocated(t *testing.T, items []appwire.ThreadItem, dir string) []appwire.ThreadItem {
 	t.Helper()
 	encoded, err := json.Marshal(items)
 	if err != nil {
 		t.Fatalf("encode items: %v", err)
 	}
-	text := string(encoded)
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
-		text = strings.ReplaceAll(text, resolved, toolWireCwd)
-	}
-	text = strings.ReplaceAll(text, dir, toolWireCwd)
 	var relocated []appwire.ThreadItem
-	if err := json.Unmarshal([]byte(text), &relocated); err != nil {
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(string(encoded), dir, toolWireCwd)), &relocated); err != nil {
 		t.Fatalf("decode items: %v", err)
 	}
 	return relocated

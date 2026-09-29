@@ -5,8 +5,10 @@
     "call_apply_patch": "A v4a patch updating one file and adding another.",
     "call_edit_file": "One replacement in one file.",
     "call_glob": "A glob match: one path per match (sorted here).",
-    "call_grep": "A search in a path, filtered by a glob: one path:line:text line per hit (sorted here).",
+    "call_grep": "A search in a path, filtered by a glob: one path:line:text line per hit (sorted, in the native fallback's form).",
     "call_list_dir": "A directory listing: one name and size per entry, then a blank line and the entry count.",
+    "call_list_dir_empty": "An empty directory: the count alone.",
+    "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
     "call_mcp": "Hand-written (needs an MCP server): an MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
     "call_mcp_hyphenated": "Hand-written (needs an MCP server): an MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
     "call_read_file": "A whole-file read: the output numbers each line.",
@@ -74,6 +76,26 @@
       "type": "commandExecution",
       "id": "item_tool_1_5",
       "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_empty",
+      "argumentsJson": "{\"path\":\"empty\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_6",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_page",
+      "argumentsJson": "{\"limit\":2,\"path\":\"agent\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_7",
+      "turnId": "turn_1",
       "toolName": "edit_file",
       "callId": "call_edit_file",
       "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"func settle() {\\n\\tdrain()\\n}\\n\",\"old_string\":\"func settle() {}\\n\"}",
@@ -82,7 +104,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_6",
+      "id": "item_tool_1_8",
       "turnId": "turn_1",
       "toolName": "write_file",
       "callId": "call_write_file",
@@ -92,7 +114,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_7",
+      "id": "item_tool_1_9",
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
@@ -102,7 +124,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_8",
+      "id": "item_tool_1_10",
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell",
@@ -112,7 +134,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_9",
+      "id": "item_tool_1_11",
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_failed",
@@ -122,7 +144,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_10",
+      "id": "item_tool_1_12",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -132,7 +154,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_11",
+      "id": "item_tool_1_13",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -142,7 +164,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_12",
+      "id": "item_tool_1_14",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -152,7 +174,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_13",
+      "id": "item_tool_1_15",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -162,7 +184,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_14",
+      "id": "item_tool_1_16",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -172,7 +194,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_15",
+      "id": "item_tool_1_17",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -234,6 +256,26 @@
       "type": "commandExecution",
       "id": "item_tool_result_2_5",
       "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_empty",
+      "output": "0 entries",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_6",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_page",
+      "output": "drain_test.go\t14\ntree.go\t32\n\n2 of 3 entries (offset 0) — more with list_dir(offset=2)",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_7",
+      "turnId": "turn_1",
       "toolName": "edit_file",
       "callId": "call_edit_file",
       "output": "edited agent/tree.go: 1 replacement",
@@ -242,7 +284,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_6",
+      "id": "item_tool_result_2_8",
       "turnId": "turn_1",
       "toolName": "write_file",
       "callId": "call_write_file",
@@ -252,7 +294,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_7",
+      "id": "item_tool_result_2_9",
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
@@ -262,7 +304,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_8",
+      "id": "item_tool_result_2_10",
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell",
@@ -285,7 +327,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_9",
+      "id": "item_tool_result_2_11",
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_failed",
@@ -307,7 +349,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_10",
+      "id": "item_tool_result_2_12",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -317,7 +359,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_11",
+      "id": "item_tool_result_2_13",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -327,7 +369,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_12",
+      "id": "item_tool_result_2_14",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -337,7 +379,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_13",
+      "id": "item_tool_result_2_15",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -347,7 +389,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_14",
+      "id": "item_tool_result_2_16",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -357,7 +399,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_15",
+      "id": "item_tool_result_2_17",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
