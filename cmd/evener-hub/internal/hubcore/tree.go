@@ -1381,13 +1381,11 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if !ok || ancestor.IsSubagent {
 			continue
 		}
-		state := stateFor(ancestor.ID)
-		for i := len(chain) - 1; i >= 0; i-- {
-			own := stateFor(chain[i].ID)
-			if state == "ended" {
-				own = "ended"
-			}
-			state = own
+		// Ended is sticky down the chain: a subagent under an ended parent
+		// counts as ended whatever its own entry reports.
+		state := stateFor(m.ID)
+		if stateFor(ancestor.ID) == "ended" || slices.ContainsFunc(chain[1:], func(c schema.SessionMeta) bool { return stateFor(c.ID) == "ended" }) {
+			state = "ended"
 		}
 		if state != "active" && len(liveMap[m.ID].RunningJobs) == 0 {
 			continue
