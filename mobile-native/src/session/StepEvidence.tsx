@@ -12,6 +12,7 @@ import type { RunStep } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
 import { LogViewer } from "./LogViewer";
+import { stepWords } from "./transcriptRows";
 
 type Palette = ReturnType<typeof useColors>["palette"];
 
@@ -164,7 +165,7 @@ export function StepEvidence({
 	evidence: readonly Evidence[];
 	hubId: string;
 }) {
-	const title = step.detail.description || step.label;
+	const title = step.detail.description || stepWords(step);
 	return (
 		<View style={{ gap: 8 }}>
 			{evidence.map((item) => (

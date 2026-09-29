@@ -19,7 +19,7 @@ import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
-import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
+import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
@@ -213,15 +213,18 @@ export function TimelineItem({
 				content = <Copy muted>{activityPresentation.summary}</Copy>;
 				break;
 			}
+			// A tool step reads as its words (the package's toolStepSummary),
+			// never its raw tool name.
+			const stepName = stepWords(item);
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
 					<Action
 						tone="quiet"
-						label={`${expanded ? "Collapse" : "Expand"} ${item.label}`}
+						label={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
 						expanded={expanded}
 						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} ${item.label} · ${item.state}`}</Action>
+					>{`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}</Action>
 					{expanded ? (
 						<>
 							{item.detail.arguments ? (

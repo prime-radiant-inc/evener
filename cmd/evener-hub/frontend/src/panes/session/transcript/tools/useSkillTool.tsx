@@ -8,8 +8,7 @@
 // still applies cleanly here since it keys off the same signal (blank
 // text), not the tool_state field legacy actually read.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { parseArgs, str } from "@evener/appwire-client";
+import { useSkillSummary } from "@evener/appwire-client";
 import { Markdown } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -24,10 +23,6 @@ registerToolRenderer({
   match: "use_skill",
   fold: "never", // which skill is running is never a footnote
   icon: "skill",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const skillName = str(args, "skill_name") ?? str(args, "name") ?? "";
-    return `Activated skill: ${skillName}`;
-  },
+  summary: useSkillSummary,
   body: UseSkillBody,
 });

@@ -10,6 +10,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "./mutationOutbox";
+import { acceptedRecord, carriesOptimisticInput } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -413,7 +414,6 @@ export class MutationOutboxIndexedDB {
         await this.#discardSupersededNoteRecovery(transaction, source);
         settledSource = source;
 
-        const display = source.optimisticDisplay;
         // A "pending" receipt means accepted but not yet described by
         // authoritative state. The daemon reports pending for exactly the
         // mutations whose acceptance a read cannot yet prove - every
@@ -429,29 +429,11 @@ export class MutationOutboxIndexedDB {
         // already readable in the session's own state, so its pending receipts
         // drop the row exactly as before.
         const retainsAcceptedCopy =
-          projectionState === "pending" &&
-          ((display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input)) ||
-            source.method === "notes/human/set");
+          projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
         if (retainsAcceptedCopy) {
-          const accepted: MutationOptimisticRecord = {
-            version: source.version,
-            clientMutationId: source.clientMutationId,
-            // Provenance survives the outbox -> optimistic transition: dropping
-            // it here would make the accepted-but-unreflected mutation
-            // unattributed, and every tab would claim it as its own send.
-            originClientId: source.originClientId,
-            intentSequence: source.intentSequence,
-            createdAt: source.createdAt,
-            targetRef: source.targetRef,
-            threadId: source.threadId,
-            instanceId: source.instanceId,
-            method: source.method,
-            payload: source.payload,
-            attachments: source.attachments,
-            optimisticDisplay: source.optimisticDisplay,
-            state: "accepted",
-          };
-          await requestResult(optimistic.put(accepted));
+          // The accepted whitelist lives in the package's acceptedRecord so
+          // this adapter and native's build the same row.
+          await requestResult(optimistic.put(acceptedRecord(source)));
         } else if (optimisticRecord) {
           await requestResult(optimistic.delete(clientMutationId));
         }

@@ -5,7 +5,7 @@
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import { hasItemFailure } from "@evener/appwire-client";
+import { fallbackToolSummary, hasItemFailure } from "@evener/appwire-client";
 import { type ComponentType, createElement, Fragment } from "react";
 import type { ToolIconKind } from "../../../widgets";
 import { MCPToolArguments } from "./MCPToolArguments";
@@ -230,7 +230,10 @@ export function registerToolRenderer(d: ToolRendererDescriptor): void {
 // used for any tool name with no registered descriptor.
 const DEFAULT_DESCRIPTOR: ToolRendererDescriptor = {
   match: () => true,
-  summary: (item) => item.toolName ?? "tool",
+  // A tool no descriptor covers, an MCP tool among them, reads as words
+  // ("Used github: create issue"), never its raw name: the package's
+  // fallbackToolSummary, which the phone's step lines use too.
+  summary: fallbackToolSummary,
   // The generic tool glyph: MCP tools (and any other unregistered name) have
   // no family descriptor, so they all wear the wrench.
   icon: "wrench",
