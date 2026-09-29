@@ -755,3 +755,28 @@ func TestRenderMarkdown_DelegateCreateErrorSurfaces(t *testing.T) {
 		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }
+
+// TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces pins that the artifacts
+// directory stays visible in the condensed status line instead of becoming a
+// known-but-invisible key the moment the raw-JSON fallback stops firing.
+func TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces(t *testing.T) {
+	t.Parallel()
+	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:   "dlg_artifacts",
+		Type:         "delegate",
+		Status:       "created",
+		ArtifactsDir: "/state/sessions/sess_child/artifacts",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+
+	out := renderToolCardForResult("delegate", "call_artifacts", body)
+
+	if !strings.Contains(out, "artifacts_dir=/state/sessions/sess_child/artifacts") {
+		t.Errorf("artifacts_dir must stay visible in the condensed rendering, got:\n%s", out)
+	}
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
+	}
+}

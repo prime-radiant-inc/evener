@@ -1813,7 +1813,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 			result.Warnings = []string{selection.warning.Message}
 		}
 		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
-		result.ArtifactsDir = artifactsDir
+		// Advertise the artifacts directory only when it still exists: a failure
+		// path that disposed the child removed it, and the result must not name a
+		// path that is gone. A retained candidate keeps its directory and so keeps
+		// advertising it.
+		result.ArtifactsDir = advertiseArtifactsDir(artifactsDir)
 		return result
 	}
 	// ReserveCreate always mints a child session id, so an empty one is a bug:

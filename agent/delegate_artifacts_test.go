@@ -30,6 +30,20 @@ func TestDelegateArtifactsDir_LivesUnderDelegationState(t *testing.T) {
 	}
 }
 
+func TestAdvertiseArtifactsDir_OnlyWhenPresent(t *testing.T) {
+	t.Parallel()
+	if got := advertiseArtifactsDir(""); got != "" {
+		t.Fatalf("advertiseArtifactsDir(\"\") = %q, want empty", got)
+	}
+	if got := advertiseArtifactsDir(filepath.Join(t.TempDir(), "missing")); got != "" {
+		t.Fatalf("advertiseArtifactsDir(missing) = %q, want empty", got)
+	}
+	dir := t.TempDir()
+	if got := advertiseArtifactsDir(dir); got != dir {
+		t.Fatalf("advertiseArtifactsDir(existing) = %q, want %q", got, dir)
+	}
+}
+
 // TestCreateDelegate_CreationResultNamesArtifactsDir pins the issue's core
 // contract: every delegation gets its own durable artifacts directory at
 // creation, the delegate tool's creation result names it, a report written

@@ -1345,6 +1345,7 @@ var jobResultMetadataKeys = []string{
 	"requested_model",
 	"resolved_profile_id",
 	"resolved_model",
+	"artifacts_dir",
 	"reasoning_effort",
 	"run_started_at",
 	"run_ended_at",
