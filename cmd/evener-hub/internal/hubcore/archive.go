@@ -3,9 +3,11 @@ package hubcore
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/afero"
@@ -75,6 +77,14 @@ type ArchiveStore struct {
 	// onChange, when set via SetOnChange, is fired after a successful Set or
 	// Delete. Nil is a safe no-op (existing tests construct stores without it).
 	onChange func()
+
+	// cache holds the last successful Decisions read. Every Set and Delete
+	// through this store is the only writer of the table, so a write bumps
+	// writes and drops the cache; a read stores its result only if no write
+	// landed while it was reading.
+	cacheMu sync.Mutex
+	cache   map[ArchiveKey]bool
+	writes  uint64
 }
 
 // NewArchiveStore returns a store backed by the SQLite file at dbPath. An empty
@@ -152,12 +162,41 @@ func (s *ArchiveStore) Set(source, kind, id string, archived bool, now time.Time
 	if err != nil {
 		return err
 	}
+	s.invalidateCache()
 	s.fireChange()
 	return nil
 }
 
-// Decisions returns every explicit decision. Empty when no DB / no table.
+func (s *ArchiveStore) invalidateCache() {
+	s.cacheMu.Lock()
+	s.writes++
+	s.cache = nil
+	s.cacheMu.Unlock()
+}
+
+// Decisions returns every explicit decision as a copy the caller may keep or
+// edit. Empty when no DB / no table.
 func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
+	s.cacheMu.Lock()
+	if s.cache != nil {
+		out := maps.Clone(s.cache)
+		s.cacheMu.Unlock()
+		return out, nil
+	}
+	seen := s.writes
+	s.cacheMu.Unlock()
+	out, err := s.readDecisions()
+	if err == nil {
+		s.cacheMu.Lock()
+		if s.writes == seen {
+			s.cache = maps.Clone(out)
+		}
+		s.cacheMu.Unlock()
+	}
+	return out, err
+}
+
+func (s *ArchiveStore) readDecisions() (map[ArchiveKey]bool, error) {
 	out := make(map[ArchiveKey]bool)
 	if s.dbPath == "" {
 		return out, nil
@@ -202,6 +241,7 @@ func (s *ArchiveStore) Delete(source, kind, id string) error {
 	if err != nil {
 		return err
 	}
+	s.invalidateCache()
 	s.fireChange()
 	return nil
 }

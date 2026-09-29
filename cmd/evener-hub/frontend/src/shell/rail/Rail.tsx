@@ -2055,7 +2055,7 @@ function NavigationRail({
             </div>
           }
         >
-          <p>{`Permanently delete every session in "${deleteTarget.name}"? This removes their transcripts and cannot be undone.`}</p>
+          <p>{`Permanently delete every session in "${deleteTarget.name}", including their subagents? This removes their transcripts and cannot be undone.`}</p>
         </Dialog>
       )}
     </div>

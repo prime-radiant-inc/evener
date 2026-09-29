@@ -162,7 +162,7 @@ a browser, and only assert what the rail renders.
 
 - **Confirmation is a real in-app dialog, not `window.confirm`.** Deleting a
   project from the UI opens `<Dialog title="Delete project?">` with body text
-  `Permanently delete every session in "<name>"? …` and footer buttons
+  `Permanently delete every session in "<name>", including their subagents? …` and footer buttons
   `Cancel` / `Delete` (`Rail.tsx:655-676`); the widget renders
   `role="dialog" aria-modal="true"` (`widgets/dialog/OverlayPanel.tsx:92-94`).
   Stubbing `window.confirm` does nothing — there is no native dialog to
