@@ -51,6 +51,16 @@ function findRow(rows: NavigationSessionSummary[], slug: string): NavigationSess
 	return row;
 }
 
+describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
+	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
+		const row = findRow(liveRows(createDemoFleet({ now: STARTUP, toolFamilies: true })), "s-tools");
+		expect(row).toMatchObject({ title: "Show Every Tool Family" });
+		expect(liveRows(createDemoFleet({ now: STARTUP })).map((row) => row.session_id)).not.toContain(
+			demoSessionId("s-tools"),
+		);
+	});
+});
+
 describe("demo fleet manifest", () => {
 	it('reports the Live and needs-you counts the redesign spec\'s Board mockup shows (section 7.1: "Live 20 (4)")', () => {
 		const fleet = createDemoFleet({ now: STARTUP });
