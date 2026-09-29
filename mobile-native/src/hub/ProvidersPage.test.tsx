@@ -901,7 +901,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 
 	// The resume waits: starting against the stale rows would refuse the
 	// device start and strand the flow in its error phase.
-	expect(renderedText(tree)).not.toContain("Sign-in could not be started");
+	expect(renderedText(tree)).not.toContain("couldn't start signing in");
 
 	// The listing the new connection owes lands; the gate clears and the
 	// idle exchange finally runs.

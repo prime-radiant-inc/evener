@@ -69,7 +69,7 @@ it("a start from a replaced connection's listing is refused and reads as not sta
 	connect(replacement.client);
 	await flow.start();
 	expect(flow.getSnapshot().phase).toBe("error");
-	expect(flow.getSnapshot().error).toContain("could not be started");
+	expect(flow.getSnapshot().error).toContain("couldn't start signing in");
 	expect(authCalls(replacement.calls)).toEqual([]);
 	flow.dispose();
 });
