@@ -88,6 +88,10 @@ type retirementResumeOptions struct {
 	mutationGate  bool   // peer blocks inside the mutation handler until released
 	deletionStore *hubcore.DeletionStore
 	providerGate  bool // replacement adapter blocks the provider call until released
+	// threadAlias gives the retiring daemon a distinct ownership ThreadID beside
+	// its SessionID, so forceStopAliases yields a multi-alias ownership group —
+	// the grouped shape a force stop persists and confirms across.
+	threadAlias string
 }
 
 type retirementStartResult struct {
@@ -124,6 +128,10 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 	peerSessionID := opts.peerSessionID
 	if peerSessionID == "" {
 		peerSessionID = f.sessionID
+	}
+	threadAlias := f.sessionID
+	if opts.threadAlias != "" {
+		threadAlias = opts.threadAlias
 	}
 
 	if opts.mutationGate {
@@ -197,7 +205,7 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 		Protocol:     appwire.ProtocolVersion,
 		Endpoint:     "ws" + strings.TrimPrefix(f.peer.URL, "http"),
 		SourceID:     "local",
-		ThreadID:     f.sessionID,
+		ThreadID:     threadAlias,
 		SessionID:    f.sessionID,
 		WorkspaceRef: f.ref,
 		StateDir:     f.stateDir,
@@ -1715,6 +1723,63 @@ func TestRetirementResumeAdmitsResumeOnlyFoldableSend(t *testing.T) {
 	}
 	if result.resp.Turn.ID == "" {
 		t.Fatalf("turn/start under the resume-only fence returned no turn: %+v", result.resp)
+	}
+	if got := f.launches.Load(); got != 1 {
+		t.Fatalf("replacement launches = %d, want 1", got)
+	}
+	if got := f.accepted.Load(); got != 1 {
+		t.Fatalf("accepted turns = %d, want 1 (the prompt must reach the replacement)", got)
+	}
+}
+
+// TestRetirementResumeAdmitsResumeOnlyFoldableGroupedSend is the round-14
+// regression for RoboRev's Medium on fa0f567: the resume-only carve-out matched
+// the request's admission against the ONE id the request named, but
+// resumeAfterConfirmedRetirement re-checks that SAME admission for every alias
+// in the resolved ownership group. A force stop persists ResumeRequired and
+// confirms ExitConfirmed for the whole group (hubcore.PersistForceStopWithOwner /
+// ConfirmForceStop), and forceStopAliases yields more than one id for a grouped
+// daemon, so the alias the request did not name was refused on ResumeRequired
+// alone. The send must resume the grouped session and reach the replacement,
+// not park as a blocked mutation.
+func TestRetirementResumeAdmitsResumeOnlyFoldableGroupedSend(t *testing.T) {
+	// A distinct ownership ThreadID beside the SessionID is forceStopAliases'
+	// SessionID + ThreadID shape: the live daemon reports both.
+	f := newRetirementResumeFixture(t, retirementResumeOptions{threadAlias: hubtest.SessionID(t)})
+	aliases := forceStopAliases(f.oldEntry)
+	if len(aliases) < 2 {
+		t.Fatalf("fixture did not stage a grouped ownership alias set: %v", aliases)
+	}
+	// The confirmed-exit resume-only fence spread over the WHOLE ownership group,
+	// exactly the obligation a force stop leaves: every alias carries
+	// ResumeRequired with a proven exit.
+	finish := f.locks.BeginForceStop(aliases)
+	if err := f.locks.PersistForceStop(aliases, f.sessionID); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	finish.Finish(true)
+	if err := f.locks.ConfirmForceStop(f.sessionID); err != nil {
+		t.Fatalf("ConfirmForceStop: %v", err)
+	}
+	for _, id := range aliases {
+		if state := f.locks.RecoveryState(id); !state.ResumeRequired || state.Stopping != 0 || !state.ExitConfirmed {
+			t.Fatalf("grouped fence not staged on %q: %+v", id, state)
+		}
+	}
+
+	client := f.dial(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	done := f.startAsync(ctx, client, "grouped-resume-only-retirement", "resume and deliver")
+	f.awaitWaitBehindOwner(ctx, t, done)
+	f.confirmExit(t)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("admitting the grouped send under the resume-only fence: %v", result.err)
+	}
+	if result.resp.Turn.ID == "" {
+		t.Fatalf("grouped turn/start under the resume-only fence returned no turn: %+v", result.resp)
 	}
 	if got := f.launches.Load(); got != 1 {
 		t.Fatalf("replacement launches = %d, want 1", got)

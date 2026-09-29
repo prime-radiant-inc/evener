@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -308,7 +309,7 @@ func sessionResumeRequiredError() error {
 // refusal exist in exactly one place.
 func sessionStateRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
 	state := sessionRecoveryState(cfg, ref, threadID)
-	if state.Stopping > 0 || (state.ResumeRequired && (!state.ExitConfirmed || !sessionAdmitsResumeRequired(ctx, ref, threadID))) {
+	if state.Stopping > 0 || (state.ResumeRequired && (!state.ExitConfirmed || !sessionAdmitsResumeRequired(ctx, cfg, ref, threadID))) {
 		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
@@ -337,21 +338,37 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 // refuses), a stale admission epoch, the connection fence, and an incompatible
 // daemon (daemonRestartRequiredError) are all still refused, and every action
 // other than turn/start keeps the fence unchanged.
-func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool {
-	admission, ok := sessionRecoveryAdmissionFor(ctx, ref, threadID)
+func sessionAdmitsResumeRequired(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	admission, ok := sessionRecoveryAdmissionFor(ctx, cfg, ref, threadID)
 	return ok && admission.admitResumeRequired
 }
 
 // sessionRecoveryAdmissionFor returns the recovery admission that
 // admitSessionRecovery stamped on ctx for (ref, threadID), when it stamped one
-// for that session. The admission carries the request's captured epoch, exactly
-// what sessionActionRecoveryError compares against the live state's.
-func sessionRecoveryAdmissionFor(ctx context.Context, ref, threadID string) (sessionRecoveryAdmission, bool) {
+// for that session or for any alias of its recovery group. The admission carries
+// the request's captured epoch, exactly what sessionActionRecoveryError compares
+// against the live state's.
+//
+// The alias case exists for the retirement re-check: resumeAfterConfirmedRetirement
+// re-reads the SAME request admission for every id in the resolved ownership
+// group, and a force stop persists one obligation across the whole group, so an
+// alias of the admitted session's group is the same request's session. The
+// send-side fences read the request's own identity, where the exact match
+// already holds, so membership only adds the alias case the grouped re-check
+// needs. A request with no admission still matches nothing.
+func sessionRecoveryAdmissionFor(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) (sessionRecoveryAdmission, bool) {
 	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
-	if !ok || admission.sessionID != deletionThreadID(ref, threadID) {
+	if !ok {
 		return sessionRecoveryAdmission{}, false
 	}
-	return admission, true
+	id := deletionThreadID(ref, threadID)
+	if admission.sessionID == id {
+		return admission, true
+	}
+	if cfg.ResumeLocks != nil && slices.Contains(cfg.ResumeLocks.RecoveryAliases(admission.sessionID), id) {
+		return admission, true
+	}
+	return sessionRecoveryAdmission{}, false
 }
 
 // turnStartResumeExplicit reports whether a turn/start request's folded resume
@@ -380,7 +397,7 @@ func sessionRecoveryAdmissionFor(ctx context.Context, ref, threadID string) (ses
 // error case fails closed - so the folded resume never launches during a Stop
 // drain or under any other fence the fresh admission would refuse.
 func turnStartResumeExplicit(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
-	admission, ok := sessionRecoveryAdmissionFor(ctx, ref, threadID)
+	admission, ok := sessionRecoveryAdmissionFor(ctx, cfg, ref, threadID)
 	if !ok || !admission.admitResumeRequired {
 		return false
 	}
