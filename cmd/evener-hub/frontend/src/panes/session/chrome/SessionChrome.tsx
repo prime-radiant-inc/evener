@@ -34,7 +34,11 @@ import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
-import { activitySidebarStore, useActivitySidebarOpenFor } from "../../../shell/activitybar/activitySidebarStore";
+import {
+  activitySidebarOpenFor,
+  activitySidebarStore,
+  useActivitySidebarOpenFor,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -218,9 +222,12 @@ export function SessionChrome({
   };
   const openActivity = () => {
     // Desktop: the activity sidebar (the zoom system's triage surface).
-    // Mobile: the per-session Sheet, unchanged.
+    // Mobile: the per-session Sheet, unchanged. Desktop toggles only when the
+    // sidebar already shows THIS session; open on another session, the item
+    // re-scopes it here instead of closing it under the user.
     if (isMobile) activityRef.current?.open();
-    else activitySidebarStore.getState().toggle();
+    else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    else activitySidebarStore.getState().openWith();
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;

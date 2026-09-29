@@ -944,7 +944,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             ) : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
             ) : (
-              <DockRegion />
+              // The workspace host carries its flex share by class, not by
+              // :last-child: the activity sidebar mounts as a sibling AFTER it,
+              // and a positional rule would either stretch the sidebar or drop
+              // the host's sizing the moment the sidebar opens.
+              <div className={styles.workspaceHost} data-testid="workspace-host">
+                <DockRegion />
+              </div>
             )}
             {/* The activity sidebar: the zoom system's triage surface, a right
               shell region scoped to the session being read. Desktop only. */}

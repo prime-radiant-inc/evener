@@ -17,9 +17,10 @@ const SRC = dirname(dirname(fileURLToPath(import.meta.url))); // src/motion/.. =
 // precedent).
 const EXEMPT = new Set([join("motion", "index.tsx"), join("motion", "import-boundary.test.ts")]);
 
-// Both specifiers, either quote, any subpath, with or without a space after
-// "from" - the one pattern the boundary recognizes.
-const MOTION_IMPORT_RE = /from\s+["'](?:motion|framer-motion)(?:\/[^"']*)?["']/;
+// Both specifiers, either quote, any subpath, in every form that binds the
+// library: static or re-export ("from"), bare side-effect import, dynamic
+// import(), and require(). "import.meta" is none of those (no quote follows).
+const MOTION_IMPORT_RE = /\b(?:from|import|require)\s*\(?\s*["'](?:motion|framer-motion)(?:\/[^"']*)?["']/;
 
 function walk(dir: string): string[] {
   const found: string[] = [];
@@ -43,16 +44,26 @@ describe("motion import boundary", () => {
     expect(offenders).toEqual([]);
   });
 
-  test("the pattern catches both specifiers, subpaths, and quote styles", () => {
+  test("the pattern catches both specifiers, subpaths, quote styles, and every binding form", () => {
     const caught = [
       `import { m } from "motion/react"`,
       `import { m } from 'motion'`,
       `import { m } from "framer-motion"`,
       `import { m } from 'framer-motion/m'`,
       `} from "motion/react";`,
+      // A re-export binds the library just the same as an import.
+      `export { m } from "motion/react";`,
+      // Bare side-effect import.
+      `import "motion";`,
+      // Dynamic import and require bind a second copy of the library too.
+      `const m = await import("motion/react");`,
+      `const m = await import( 'framer-motion' );`,
+      `const { m } = require("motion/react");`,
     ];
     for (const sample of caught) expect(MOTION_IMPORT_RE.test(sample)).toBe(true);
     expect(MOTION_IMPORT_RE.test(`import { x } from "motion-sickness"`)).toBe(false);
     expect(MOTION_IMPORT_RE.test(`import { x } from "./motion"`)).toBe(false);
+    // import.meta is not an import of anything.
+    expect(MOTION_IMPORT_RE.test(`const here = import.meta.url;`)).toBe(false);
   });
 });

@@ -45,11 +45,18 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
   const foldTotal = inactive.length + more;
   return (
     <div className={CLASS.stack}>
-      {children.length === 0 ? <span className={CLASS.emptyNote}>No subagents at this level.</span> : null}
+      {children.length === 0 && foldTotal === 0 ? (
+        <span className={CLASS.emptyNote}>No subagents at this level.</span>
+      ) : null}
       {current.map((sub) => (
         <AgentRow key={sub.ref} sub={sub} onDrill={() => drill(scope.leaf, sub)} />
       ))}
-      {foldTotal > 0 ? (
+      {inactive.length === 0 && more > 0 ? (
+        // Nothing loaded to fold: the wire's remainder shows directly
+        // (WatchesTab's pattern), never behind a click that reveals a lone note.
+        <span className={CLASS.passiveMore}>+{more} more</span>
+      ) : null}
+      {inactive.length > 0 ? (
         <>
           <div>
             <Button variant="quiet" size="sm" onClick={() => setFoldOpen((value) => !value)}>

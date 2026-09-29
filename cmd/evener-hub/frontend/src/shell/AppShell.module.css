@@ -33,9 +33,13 @@
   min-width: 0;
 }
 
-.content > :last-child {
-  /* The workspace host (DockHost/StackHost/NotFound) takes all remaining
-   * width beside the rail. */
+/* The workspace host takes all remaining width beside the rail. Keyed by
+ * class for the dockview host (the activity sidebar mounts as a LATER sibling
+ * in .content, so a bare :last-child rule would jump to it when open); the
+ * :last-child fallback keeps the mobile StackHost and the NotFound page, which
+ * never share the row with the aside. */
+.content > .workspaceHost,
+.content > :last-child:not(aside) {
   flex: 1 1 auto;
   min-width: 0;
 }

@@ -49,4 +49,25 @@ describe("spatialTransition", () => {
   test("uses the standard easing", () => {
     expect(spatialTransition().ease).toBe("easeOut");
   });
+
+  test("maps the easing token's CSS spelling to the library's", () => {
+    document.documentElement.style.setProperty("--motion-easing-standard", "ease-in");
+    expect(spatialTransition().ease).toBe("easeIn");
+    document.documentElement.style.setProperty("--motion-easing-standard", "cubic-bezier(0.2, 0, 0, 1)");
+    expect(spatialTransition().ease).toEqual([0.2, 0, 0, 1]);
+    document.documentElement.style.removeProperty("--motion-easing-standard");
+    expect(spatialTransition().ease).toBe("easeOut");
+  });
+
+  test("memoizes on the raw token values: stable inputs share one object, a token change re-reads", () => {
+    const first = spatialTransition();
+    expect(spatialTransition()).toBe(first);
+    document.documentElement.style.setProperty("--motion-duration-spatial", "300ms");
+    const second = spatialTransition();
+    expect(second).not.toBe(first);
+    expect(second.duration).toBe(0.3);
+    document.documentElement.style.removeProperty("--motion-duration-spatial");
+    // Back to the absent-token values: the same memoized object returns.
+    expect(spatialTransition()).toBe(first);
+  });
 });

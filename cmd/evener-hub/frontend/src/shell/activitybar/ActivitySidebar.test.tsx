@@ -7,7 +7,7 @@
 
 import type { NavigationManifest } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
@@ -160,6 +160,117 @@ describe("ActivitySidebar", () => {
     renderSidebar();
     fireEvent.click(screen.getByRole("button", { name: /Close/ }));
     expect(activitySidebarStore.getState().open).toBe(false);
+  });
+
+  test("the fold and its paging reset when the scope's leaf changes", () => {
+    // Two sessions, each with an inactive child behind a fold.
+    const { ROOT_A, ROOT_D } = sampleTree();
+    const rootB = { ...ROOT_D, ref: "local:d", title: "D", children: ROOT_A.children };
+    const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+    const locationKey = (ref: string) => ({ kind: "location", ref }) as const;
+    navigationStore.setState({
+      resources: new Map([
+        [keyID(liveKey), resource(liveKey, { sessions: [ROOT_A, rootB] })],
+        [
+          keyID(locationKey("local:a")),
+          resource(locationKey("local:a"), {
+            ref: "local:a",
+            top_level_ref: "local:a",
+            top_level: true,
+            session: ROOT_A,
+          }),
+        ],
+        [
+          keyID(locationKey("local:d")),
+          resource(locationKey("local:d"), {
+            ref: "local:d",
+            top_level_ref: "local:d",
+            top_level: true,
+            session: rootB,
+          }),
+        ],
+      ]),
+    });
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    // Open the fold on A.
+    fireEvent.click(screen.getByRole("button", { name: /Inactive subagents/ }));
+    expect(screen.getByText("C")).toBeTruthy();
+    // Re-scope to D: the fold must be closed again, not carried over.
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "local:d" });
+    });
+    expect(screen.queryByText("C")).toBeNull();
+    expect(screen.getByRole("button", { name: /Inactive subagents/ })).toBeTruthy();
+  });
+
+  test("agents tab with no loaded subagents but more on the wire shows the remainder, never a contradiction", () => {
+    // The wire omitted every subagent row but says 5 exist. The tab must not
+    // claim "No subagents" while folding 5 behind a click: show the passive
+    // remainder directly (WatchesTab's pattern), with no fold hiding it.
+    const { ROOT_D } = sampleTree();
+    const sparse = { ...ROOT_D, ref: "local:sparse", title: "S", children: [], more_subagents: 5 };
+    const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: "local:sparse" } as const;
+    navigationStore.setState({
+      resources: new Map([
+        [keyID(liveKey), resource(liveKey, { sessions: [sparse] })],
+        [
+          keyID(locationKey),
+          resource(locationKey, {
+            ref: "local:sparse",
+            top_level_ref: "local:sparse",
+            top_level: true,
+            session: sparse,
+          }),
+        ],
+      ]),
+    });
+    workspaceStore.getState().openPane("session", { ref: "local:sparse" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    expect(screen.queryByText("No subagents at this level.")).toBeNull();
+    expect(screen.getByText("+5 more")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Inactive subagents/ })).toBeNull();
+  });
+
+  test("agents tab with truly no subagents says so", () => {
+    installTree();
+    workspaceStore.getState().openPane("session", { ref: "local:d" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    expect(screen.getByText("No subagents at this level.")).toBeTruthy();
+  });
+
+  test("Escape closes the open sidebar", () => {
+    installTree();
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    expect(screen.getByTestId("activity-sidebar")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(activitySidebarStore.getState().open).toBe(false);
+  });
+
+  test("Escape with a handled default does not close (a composer Esc keeps its meaning)", () => {
+    installTree();
+    // A handler closer to the focus (here: registered first, like the
+    // composer's own Esc handler inside the document) preventDefaults the
+    // event; the sidebar must stand.
+    const claim = (event: KeyboardEvent) => {
+      if (event.key === "Escape") event.preventDefault();
+    };
+    document.addEventListener("keydown", claim);
+    try {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+      activitySidebarStore.getState().openWith("agents");
+      renderSidebar();
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(activitySidebarStore.getState().open).toBe(true);
+    } finally {
+      document.removeEventListener("keydown", claim);
+    }
   });
 
   // Animation frames don't run in jsdom, so the entrance's look is verified

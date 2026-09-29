@@ -865,6 +865,42 @@ test("the menu marks every pre-opened session pane as checked", async () => {
   }
 });
 
+test("desktop Activity toggles closed only when the sidebar is scoped to this session", async () => {
+  // The scope follows focus: focusing session B re-scopes the open sidebar to
+  // B, so B's chrome menu reads "Activity ✓" and the item toggles closed.
+  // "Open on session A while B's menu is in use" is unreachable in
+  // production (dockview unmounts an inactive pane's chrome) - the reachable
+  // contract is that Activity never closes a sidebar scoped elsewhere.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_b"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_b");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    // Sidebar open on session A.
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith();
+    expect(activitySidebarStore.getState().open).toBe(true);
+
+    // Focusing session B re-scopes the open sidebar to it (the scope follows
+    // focus): B's chrome shows the checked item, and selecting it closes.
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_b" });
+    });
+    render(<SessionChrome ref="ref_b" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity ✓" }));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    restoreSession();
+  }
+});
+
 test("mobile chrome opens Sheets without changing workspace panes", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();

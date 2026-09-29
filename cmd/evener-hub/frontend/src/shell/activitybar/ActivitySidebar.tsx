@@ -7,7 +7,7 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { IconButton, SegmentedControl } from "../../widgets";
@@ -36,6 +36,19 @@ export function ActivitySidebar() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
+
+  // Esc closes the sidebar while it's open - the dismiss gesture every
+  // transient surface in this app honors. defaultPrevented means something
+  // closer to the focus already claimed it (the composer's own Esc), so the
+  // sidebar stands.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) activitySidebarStore.getState().close();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
   return (
     <AnimatePresence initial={false}>
       {open && scope !== null ? (
@@ -67,7 +80,10 @@ export function ActivitySidebar() {
               options={ACTIVITY_TABS.map((spec) => ({ value: spec.id, label: spec.tabLabel(scope.counts) }))}
             />
           </div>
-          <div className={CLASS.body}>{Body === null ? null : <Body scope={scope} />}</div>
+          {/* key on the leaf: the tab's fold/paging state belongs to the
+              scope, and a re-scope must not inherit the previous leaf's
+              open folds and page offsets. */}
+          <div className={CLASS.body}>{Body === null ? null : <Body key={scope.leaf.ref} scope={scope} />}</div>
         </m.aside>
       ) : null}
     </AnimatePresence>

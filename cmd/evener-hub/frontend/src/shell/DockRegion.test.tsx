@@ -137,7 +137,9 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   // before the await is stale and its contains() check flakes.
   await screen.findByTestId("rail-search");
   const failure = screen.getByText("Couldn't load the workspace").closest("[data-testid='empty-state']");
-  const workspaceRow = failure?.parentElement;
+  // AppShell wraps DockRegion in a workspace-host div (the flex child that
+  // lets the sidebar sit beside the workspace), so ascend through it.
+  const workspaceRow = failure?.closest("[data-testid='workspace-host']")?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
 });
 
@@ -240,7 +242,7 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
   // check flakes.
   await screen.findByTestId("rail-search");
   const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
-  const workspaceRow = loading?.parentElement;
+  const workspaceRow = loading?.closest("[data-testid='workspace-host']")?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
   // The rail chunk arrives with its own empty-state Retry (a bare
   // FakeClient("ready") scripts no navigation manifest, so the rail shows
