@@ -1040,11 +1040,7 @@ func localDaemonMutationEntryError(clientMutationID string, err error) error {
 	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		return err
 	}
-	data.ClientMutationID = clientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
-	wire.Data = data
-	return wire
+	return wire.NotAccepted(clientMutationID)
 }
 
 // DaemonInitializeError identifies failures before a daemon accepts session RPCs.

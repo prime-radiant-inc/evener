@@ -3,6 +3,7 @@ import {
 	buildComposerInput,
 	MAX_ATTACHMENTS,
 	markerText,
+	mutationErrorData,
 	pluginSelectionFromOverrides,
 	pluginSelectionIssues,
 	resolveScalars,
@@ -471,10 +472,23 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				return { status: "created", hubId, thread: result.thread };
 			} catch (error) {
 				if (generation !== connection) return { status: "obsolete" };
-				// Any failure of a start the hub was sent leaves it uncertain: the hub
-				// can refuse one after its session already exists (a validation
-				// refusal of the initial input comes after the spawn), and the
-				// phone can't tell those apart yet (#3184).
+				// The hub says when it refused a start before any session existed
+				// (#3184): the draft isn't one that may have started, so Start stays.
+				if (
+					startDispatched &&
+					error instanceof WireError &&
+					mutationErrorData(error)?.mutationOutcome === "notAccepted"
+				) {
+					unconfirmedContent = null;
+					set({
+						unconfirmedCreation: false,
+						error: `${error.message}\n\nNo session was started. Your input is kept.`,
+					});
+					return { status: "failed" };
+				}
+				// Any other failure of a start the hub was sent leaves it uncertain:
+				// the hub can refuse one after its session exists (a refusal of the
+				// initial input comes after the spawn), and an older hub never says.
 				set({
 					error: startDispatched
 						? (error instanceof WireError ? `${error.message}\n\n` : "") +

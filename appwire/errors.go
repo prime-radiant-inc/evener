@@ -702,6 +702,20 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 	}
 }
 
+// NotAccepted marks the refusal as a request that wasn't carried out and isn't
+// to be retried as it is, since it would be refused the same way.
+// clientMutationID names the refused mutation, or is empty when the request
+// carried none. The code, message and evenerErrorInfo stay; data of another
+// shape gives way to the standard ErrorData, so the outcome is always readable.
+func (e WireError) NotAccepted(clientMutationID string) WireError {
+	data, _ := e.Data.(ErrorData)
+	data.ClientMutationID = clientMutationID
+	data.MutationOutcome = MutationOutcomeNotAccepted
+	data.RetryDisposition = RetryDispositionNone
+	e.Data = data
+	return e
+}
+
 func MutationUnknown(clientMutationID, message string) WireError {
 	return WireError{
 		Code:    CodeInternalError,
