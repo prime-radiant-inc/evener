@@ -30,6 +30,7 @@ import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
 import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
+import { useRootStackOptions } from "./src/rootStack";
 import {
 	PinnedSectionScreen,
 	PinSectionsScreen,
@@ -130,6 +131,7 @@ function Navigation() {
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
+	const rootStackOptions = useRootStackOptions();
 	const dark = useColorScheme() === "dark";
 	if (loading)
 		return (
@@ -160,16 +162,7 @@ function Navigation() {
 				theme={dark ? DarkTheme : DefaultTheme}
 			>
 				<StatusBar style={dark ? "light" : "dark"} />
-				<Stack.Navigator
-					screenOptions={{
-						headerStyle: { backgroundColor: colors.background },
-						headerTintColor: colors.accent,
-						headerTitleStyle: { color: colors.text },
-						headerShadowVisible: false,
-						headerBackButtonDisplayMode: "minimal",
-						contentStyle: { backgroundColor: colors.background },
-					}}
-				>
+				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen
 						name="Hubs"
 						component={FirstRunScreen}

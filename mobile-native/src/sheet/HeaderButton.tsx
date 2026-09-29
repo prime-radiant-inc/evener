@@ -5,17 +5,8 @@
 // word never breaks across the header; a long press shows the whole label in
 // the Large Content Viewer, as Apple asks of text that stops growing.
 import { Pressable, Text } from "react-native";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
-
-/** Body at xxxLarge, the largest size before the accessibility sizes: 23pt
- * over the default 17 (Apple's Dynamic Type sizes). */
-const XXXL_SCALE = 23 / 17;
-
-/** How much a sheet header's text grows, its buttons and its title alike:
- * with Dynamic Type, up to xxxLarge. */
-export function useHeaderTextScale(): number {
-	return Math.min(useTextScale(), XXXL_SCALE);
-}
+import { useHeaderTextScale } from "../headerText";
+import { allowFontScaling, useColors } from "../ui";
 
 export function HeaderButton({
 	label,
