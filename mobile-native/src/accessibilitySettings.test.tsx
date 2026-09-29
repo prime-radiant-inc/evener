@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { useReduceMotion, useReduceTransparency } from "./reduceMotion";
+import { useReduceMotion, useReduceTransparency } from "./accessibilitySettings";
 import { renderHook } from "./renderNative.testkit";
 
 const accessibility = vi.hoisted(() => ({

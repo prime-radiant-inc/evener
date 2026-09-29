@@ -36,9 +36,6 @@ import { shrinkingScroller } from "./session/dockCard";
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** The software keyboard as React Native's Keyboard module reports it: a
- * screen subscribes through Keyboard.addListener, and a test raises or lowers
- * it with show() and hide(). */
 /** The device's system glass and its accessibility settings, as the app
  * reads them: whether the Liquid Glass API is there (expo-glass-effect's
  * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
@@ -47,7 +44,9 @@ export const systemGlass = (() => {
 	const listeners = new Set<(value: boolean) => void>();
 	let reduceTransparency = false;
 	return {
-		available: false,
+		/** "throws" stands for a binary without the native module, where
+		 * reading it throws. */
+		available: false as boolean | "throws",
 		get reduceTransparency() {
 			return reduceTransparency;
 		},
@@ -67,6 +66,9 @@ export const systemGlass = (() => {
 	};
 })();
 
+/** The software keyboard as React Native's Keyboard module reports it: a
+ * screen subscribes through Keyboard.addListener, and a test raises or lowers
+ * it with show() and hide(). */
 export const keyboard = (() => {
 	const listeners = new Map<string, Set<() => void>>();
 	const emit = (event: string) => {
@@ -224,6 +226,8 @@ export function nativeModuleMock() {
 	return {
 		AccessibilityInfo: {
 			announceForAccessibility: vi.fn(),
+			// Reduce Motion stays off and never changes here: a suite that
+			// needs it mocks AccessibilityInfo itself.
 			isReduceMotionEnabled: () => Promise.resolve(false),
 			isReduceTransparencyEnabled: () => Promise.resolve(systemGlass.reduceTransparency),
 			addEventListener: (event: string, listener: (value: boolean) => void) =>

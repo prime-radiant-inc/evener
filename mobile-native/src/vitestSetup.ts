@@ -39,7 +39,13 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 vi.mock("expo-glass-effect", async () => {
 	const { systemGlass } = await import("./renderNative.testkit");
-	return { GlassView: "GlassView", isGlassEffectAPIAvailable: () => systemGlass.available };
+	return {
+		GlassView: "GlassView",
+		isGlassEffectAPIAvailable: () => {
+			if (systemGlass.available === "throws") throw new Error("Cannot find native module 'ExpoGlassEffect'");
+			return systemGlass.available;
+		},
+	};
 });
 
 vi.mock("expo-sqlite/kv-store", () => {
