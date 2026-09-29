@@ -149,6 +149,24 @@ describe("splitLiveMarkdownSegments", () => {
       spy.mockRestore();
     }
   });
+
+  it("does not re-lex a rejected list-continuation candidate on a cache hit", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    // The fence line-matches the scan but lexes inside the list, so the
+    // candidate is rejected and no head is frozen. A steady stream still must
+    // not re-run the validation lex: the rejection verdict is a pure function
+    // of the candidate text, so the cache keys on the candidate itself.
+    const candidate = "- item\n  ```mermaid\n  graph TD; A-->B\n  ```\n";
+    splitLiveMarkdownSegments(`${candidate}- second\n`, cache);
+    const spy = vi.spyOn(markdownLexer, "lexer");
+    try {
+      splitLiveMarkdownSegments(`${candidate}- second\n- third\n`, cache);
+      expect(spy.mock.calls.filter((call) => call[0] === candidate)).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("messageMayContainMermaid", () => {

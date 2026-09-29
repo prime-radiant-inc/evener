@@ -201,6 +201,11 @@ export function splitMarkdownSegments(closedSource: string, realSource: string |
 }
 
 export interface LiveSegmentsCache {
+  // The raw scan candidate the entry was computed for - the cache key. It
+  // differs from headSource exactly when the candidate was REJECTED (a
+  // list-continuation fence): keying on the candidate lets that steady state
+  // hit too, instead of re-running the validation lex on every render.
+  key: string;
   headSource: string;
   headSegments: MarkdownSegment[];
   // Whether the head text carries a link definition, computed once per distinct
@@ -279,16 +284,17 @@ export function splitLiveMarkdownSegments(
   cache: { current: LiveSegmentsCache | null },
 ): MarkdownSegment[] {
   const end = lastClosedMermaidFenceEnd(realSource);
-  let headSource = realSource.slice(0, end);
+  const candidate = realSource.slice(0, end);
   let entry = cache.current;
-  if (entry === null || entry.headSource !== headSource) {
+  if (entry === null || entry.key !== candidate) {
     // Cache miss (a changed head): validation lex, head segmentation, and the
-    // head's def verdict all run only here, keyed on the head's exact text. A
-    // rejected candidate caches under "" with ([], false) - exactly the value a
-    // genuine no-fence-yet state produces, so the "" key is safe; validation is
-    // a pure function of headSource, so skipping it on a hit is sound.
+    // head's def verdict all run only here. The entry keys on the candidate
+    // text and validation is a pure function of it, so a hit - including a
+    // steady REJECTED candidate, which keeps headSource "" - skips the lex.
+    let headSource = candidate;
     if (headSource !== "" && !headEndsAtTerminatedMermaid(headSource)) headSource = "";
     entry = {
+      key: candidate,
       headSource,
       headSegments: headSource === "" ? [] : splitMarkdownSegments(headSource, null),
       headHasDef: headSource !== "" && containsLinkDefinition(headSource),
