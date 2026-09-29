@@ -1,9 +1,10 @@
 // The scripted hub the Board's navigation reads meet (boardData.ts), shared
 // by the suites that drive a board controller: each request waits until the
 // test answers it, by reader, in the order asked.
+import { WireError } from "@evener/appwire-client";
 import type {
 	AnyNotification,
-	AuthStatusResponse,
+	HubNotice,
 	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationReadResponse,
@@ -69,17 +70,15 @@ export const sessions = (prefix: string, count: number, from = 0) =>
 export const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Each category's reads are a reader of their own, named by its id. */
-export type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}` | "auth" | "plugins";
+export type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}` | "notices";
 export const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
-	method === "evener/auth/list"
-		? "auth"
-		: method === "evener/plugin/list"
-			? "plugins"
-			: params.resource === "section"
-				? (params.section as Reader)
-				: params.resource === "pin_section"
-					? `pin_section:${params.sectionId}`
-					: (params.resource as Reader);
+	method === "evener/notices/list"
+		? "notices"
+		: params.resource === "section"
+			? (params.section as Reader)
+			: params.resource === "pin_section"
+				? `pin_section:${params.sectionId}`
+				: (params.resource as Reader);
 /** The oldest unanswered request for one reader. */
 export function next(hub: Hub, reader: Reader) {
 	const request = hub.requests.find((candidate) => !candidate.answered && readerOf(candidate) === reader);
@@ -108,18 +107,22 @@ export function invalidate(
 			params: { generationId, sequence, targets },
 		});
 }
-export const expired = (provider: string): AuthStatusResponse => ({
-	provider,
-	supported: true,
-	signedIn: false,
-	activeSource: "oauth",
-	hasStoredOAuth: true,
-	needsLogin: true,
-});
-export function answerAuth(hub: Hub, providers: AuthStatusResponse[]) {
-	next(hub, "auth").resolve({ providers } as never);
+/** A hub notice (S11) as evener/notices/list and evener/notices/changed
+ * carry it (cmd/evener-hub/app_notices.go): "<kind>:<subject>", and
+ * "<kind>:<plugin>@<marketplace>" with its marketplace for a broken plugin;
+ * its count only when the hub has one. */
+export const hubNotice = (kind: string, subject: string, affectedSessions?: number): HubNotice =>
+	kind === "pluginBroken"
+		? { id: `${kind}:${subject}@evener`, kind, subject, marketplace: "evener" }
+		: { id: `${kind}:${subject}`, kind, subject, ...(affectedSessions ? { affectedSessions } : {}) };
+export function answerNotices(hub: Hub, notices: HubNotice[]) {
+	next(hub, "notices").resolve({ notices } as never);
 }
-export function authUpdated(hub: Hub, provider?: string) {
+/** An older hub, which has no evener/notices/list. */
+export function noticesMethodNotFound(hub: Hub) {
+	next(hub, "notices").reject(new WireError("method not found: evener/notices/list", -32601));
+}
+export function noticesChanged(hub: Hub, notices: HubNotice[]) {
 	for (const listener of hub.listeners)
-		listener({ method: "evener/auth/updated", params: provider ? { provider } : {} } as AnyNotification);
+		listener({ method: "evener/notices/changed", params: { notices } } as AnyNotification);
 }

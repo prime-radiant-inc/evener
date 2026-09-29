@@ -500,18 +500,24 @@ describe("native demonstration hub's redesign fleet", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
-			const began = Date.now();
+			// Only the hub's hold timer runs on fake time; socket I/O stays real.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 			const order: string[] = [];
 			const starting = client
 				.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" })
 				.then((started) => (order.push("start"), started));
 			// Every other method answers while the start is still held.
 			await client.request("evener/projects/recent", {}).then(() => order.push("recent"));
+			vi.advanceTimersByTime(299);
+			// A reply the hub sent before this round trip would have arrived ahead of it.
+			await client.request("evener/projects/recent", {});
+			expect(order).toEqual(["recent"]);
+			vi.advanceTimersByTime(1);
 			const started = await starting;
 			expect(order).toEqual(["recent", "start"]);
-			expect(Date.now() - began).toBeGreaterThanOrEqual(300);
 			expect(started.thread.evener.ref).toBe("demo:created-1");
 		} finally {
+			vi.useRealTimers();
 			client.close();
 			await hub.close();
 		}
@@ -1440,6 +1446,35 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 			const resume = await read("s-resume");
 			expect(resume.status.type).toBe("idle");
 			expect(resume.evener.activeTurnId).toBeUndefined();
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	// The hub's notices (S11): evener/notices/list answers them, and a host
+	// going offline or coming back announces the new list to every client.
+	it("lists its notices, and announces the new list when paradise-park goes offline and comes back", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const announced: string[][] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/notices/changed")
+				announced.push((notification.params as { notices: { id: string }[] }).notices.map((notice) => notice.id));
+		});
+		try {
+			await client.connect();
+			expect((await client.request("evener/notices/list", {})).notices.map((notice) => notice.id)).toEqual([
+				"signInRequired:codex-jesse-fsck.com",
+			]);
+			commands.write("host-offline\nhost-online\n");
+			await vi.waitFor(() =>
+				expect(announced).toEqual([
+					["signInRequired:codex-jesse-fsck.com", "hostOffline:paradise-park"],
+					["signInRequired:codex-jesse-fsck.com"],
+				]),
+			);
 		} finally {
 			client.close();
 			await hub.close();

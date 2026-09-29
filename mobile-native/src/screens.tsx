@@ -38,6 +38,7 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
+	type ModelListResponse,
 	type NavigationSessionSummary,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
@@ -51,7 +52,6 @@ import {
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
-import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { useConnection } from "./ConnectionProvider";
 import {
@@ -169,7 +169,13 @@ import {
 } from "./session/SessionInfoSheet";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
-import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
+import {
+	canDeleteSavedSession,
+	canOpenModelSheet,
+	latestForkPoint,
+	modelChipLabel,
+	sessionHosts,
+} from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
@@ -344,7 +350,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState } = useConnection();
+	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -743,6 +749,10 @@ export function ConversationScreen({
 		},
 		[store, navigation, route.key, route.params, bindingInstance, bindingGeneration],
 	);
+	// The model catalog the screen last knew, handed to each new controls so
+	// the model keeps its name across a screen pushed over this one and a
+	// rebinding, while the catalog reads again (audit N6).
+	const knownCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
@@ -780,6 +790,7 @@ export function ConversationScreen({
 				!commandBusy.current &&
 				!document.getSnapshot().submitting &&
 				store.getState().pendingMutation?.status !== "pending",
+			knownCatalog.current,
 		);
 	}, [
 		service,
@@ -2007,14 +2018,12 @@ export function ConversationScreen({
 	useEffect(() => {
 		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
 	});
-	// A host is named by the manifest's label. Until the manifest has
-	// loaded, the hub's own sessions are named for the connected hub, and any
-	// other host by its id.
-	const hubName = activeProfile?.id === route.params.hubId ? activeProfile.name : null;
-	const hostLabel = useMemo(
-		() => hostLabeler(fleet.sources, (hostId) => (hostId === "local" && hubName ? hubName : hostId)),
-		[fleet.sources, hubName],
-	);
+	// The hub's own machine goes by the hub's name, as Hub > Hosts names it;
+	// any other host by the manifest's label, or its id until the manifest
+	// has loaded (sessionHosts). The hub list names this hub even while
+	// another hub is the active one.
+	const hubName = profiles.find((profile) => profile.id === route.params.hubId)?.name ?? null;
+	const host = useMemo(() => sessionHosts(fleet.sources, hubName, connected), [fleet.sources, hubName, connected]);
 	// The Board row names the model too (S17), for while the catalog is away.
 	const modelLabel = conversation
 		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
@@ -2027,7 +2036,7 @@ export function ConversationScreen({
 				? {
 						session: conversation,
 						controls,
-						hostLabel,
+						host,
 						modelLabel,
 						runMs,
 						ready,
@@ -2037,7 +2046,7 @@ export function ConversationScreen({
 						toast: toaster.show,
 					}
 				: undefined,
-		[conversation, controls, hostLabel, modelLabel, runMs, ready, toaster.show],
+		[conversation, controls, host, modelLabel, runMs, ready, toaster.show],
 	);
 	useProvideSheetHost(sessionInfoHosts, sheetKey(route.params.hubId, route.params.ref), sessionInfoHost);
 	// The model sheet's host (ruling 37).
@@ -2064,10 +2073,20 @@ export function ConversationScreen({
 	);
 	useProvideSheetHost(commandHosts, sheetKey(route.params.hubId, route.params.ref), commandsHost);
 	// The chip names the model the way the catalog does, so the screen loads
-	// the catalog once for each binding it opens connected.
+	// the catalog once for each binding it opens connected. Controls made
+	// while the session was still reopening can't read yet, so the read waits
+	// for the session to be open.
+	const sessionOpen = snapshot.status === "open";
 	useEffect(() => {
-		if (controls && hasConversation) void controls.loadModels();
-	}, [controls, hasConversation]);
+		if (controls && hasConversation && sessionOpen) void controls.loadModels();
+	}, [controls, hasConversation, sessionOpen]);
+	// The screen keeps what the current controls know of the catalog, so the
+	// controls made after a pushed screen closes start from it: a catalog they
+	// read, or none after a failed read cleared it.
+	const catalog = controlsState?.catalog ?? null;
+	useEffect(() => {
+		if (controls) knownCatalog.current = catalog;
+	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20).
 	const notice =

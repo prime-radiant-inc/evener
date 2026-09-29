@@ -1708,11 +1708,19 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	// Select skills from manifests independently of full plugin component loading.
-	home, _ := os.UserHomeDir()
-	sources, diagnostics := plugin.SkillSources(s.cfg.PluginDirs)
+	home, userSkillsDir := "", ""
+	var sources []skill.PluginSource
+	var diagnostics []skill.Diagnostic
+	// The tool-fluency harness sets this so an eval round sees only bundled,
+	// project, and explicitly added skills, not the operator's own (#3227).
+	if envvars.EVENERNoUserSkills.Getenv() != "1" {
+		home, _ = os.UserHomeDir()
+		userSkillsDir = userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills")
+		sources, diagnostics = plugin.SkillSources(s.cfg.PluginDirs)
+	}
 	s.skills = skill.Discover(s.currentEnv(), skill.DiscoverOptions{
 		HomeDir:       home,
-		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		UserSkillsDir: userSkillsDir,
 		ExtraDirs:     s.cfg.SkillsDirs,
 		Plugins:       sources,
 	})

@@ -1,4 +1,8 @@
 import { expect, it, vi } from "vitest";
+// Static, not `await import()` in a test body: the first import compiles the
+// module graph, and charging that to a test's timeout is the load-sensitive
+// part (the native suite once timed out here under parallel load, #3214).
+import { forgetLaunchMemoryForHub, launchMemory } from "./nativeLaunchMemory";
 
 const values = new Map<string, string>();
 const failure = { remove: false };
@@ -28,15 +32,13 @@ vi.mock("../board/perHub", async (importOriginal) => {
 	};
 });
 
-it("keeps its per-hub memory through the shared perHub helper", async () => {
-	const { launchMemory } = await import("./nativeLaunchMemory");
+it("keeps its per-hub memory through the shared perHub helper", () => {
 	expect(launchMemory("hub-a")).toBe(launchMemory("hub-a"));
 	expect(launchMemory("hub-b")).not.toBe(launchMemory("hub-a"));
 	expect(perHub.makers).toBe(1);
 });
 
-it("forgets a removed hub's cached memory even when the phone can't delete its keys", async () => {
-	const { forgetLaunchMemoryForHub, launchMemory } = await import("./nativeLaunchMemory");
+it("forgets a removed hub's cached memory even when the phone can't delete its keys", () => {
 	const before = launchMemory("hub-a");
 	expect(launchMemory("hub-a")).toBe(before);
 	failure.remove = true;
