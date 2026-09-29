@@ -2425,6 +2425,13 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
 	access := envelope.Access
+	// The envelope is shared across every snapshot, so hand out a copy of the
+	// Access value rather than the cached pointer (S15): a caller that mutates
+	// its snapshot must not corrupt the cache or race concurrent readers.
+	if access != nil {
+		clone := *access
+		access = &clone
+	}
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {

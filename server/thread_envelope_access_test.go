@@ -55,3 +55,24 @@ func TestDescendantThreadsCarryTheirOwnAccess(t *testing.T) {
 		t.Fatalf("root access = %+v, want the root's own workspace-write", got)
 	}
 }
+
+// A snapshot must not hand out the cached envelope's Access pointer: the
+// envelope is shared across every read, so a caller mutating its copy would
+// corrupt the cache and race concurrent readers. Access is a value type, so
+// the snapshot gets its own copy.
+func TestThreadSnapshotsDoNotAliasTheEnvelopeAccess(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
+		ID:     "root",
+		Config: schema.ConfigSnapshot{Sandbox: "workspace-write"},
+	}})
+	snap := readThreadOverWire(t, srv, "local:root")
+	if snap.Evener.Access == nil {
+		t.Fatal("access missing from snapshot")
+	}
+	snap.Evener.Access.Sandbox = "off"
+	if got := srv.appEnvelope.Access; got == nil || got.Sandbox != "workspace-write" {
+		t.Fatalf("envelope access = %+v after mutating the snapshot, want workspace-write", got)
+	}
+}
