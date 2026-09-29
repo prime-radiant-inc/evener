@@ -1431,3 +1431,15 @@ it("closes the editor without asking once its save lands", async () => {
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(alertRequests).toHaveLength(0);
 });
+
+it("closes the detail with Done while an unrelated write is in flight, with no key pasted", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })]);
+	fake.on("evener/instance/setDefault", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Make default");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});

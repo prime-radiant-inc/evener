@@ -115,5 +115,11 @@ it("sees a changed field as a change, field by field", () => {
 
 it("counts a variable typed and cleared again as no change", () => {
 	expect(draftChanged(blank, { ...blank, vars: { REGION: "" } })).toBe(false);
-	expect(draftChanged({ ...blank, vars: { REGION: "eu" } }, { ...blank, vars: { REGION: "eu", TENANT: "" } })).toBe(false);
+	const opened = { ...blank, vars: { REGION: "eu" } };
+	expect(draftChanged(opened, { ...blank, vars: { REGION: "eu", TENANT: "" } })).toBe(false);
+});
+
+it("counts only what the saved request would change: spaces around a value are no change", () => {
+	expect(draftChanged(blank, { ...blank, name: "  ", baseUrl: " ", vars: { REGION: " " } })).toBe(false);
+	expect(draftChanged({ ...blank, name: "work" }, { ...blank, name: "work " })).toBe(false);
 });

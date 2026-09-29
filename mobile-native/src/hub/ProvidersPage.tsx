@@ -296,7 +296,7 @@ function Providers({
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
 	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
 	const leaveKey = (leave: () => void) =>
-		guardLeave({ busy: surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
+		guardLeave({ busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
 	function close() {
 		editorVersion.current += 1;
 		setSelected(null);
