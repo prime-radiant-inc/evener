@@ -10,7 +10,7 @@
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
-import { outputTails, webFetchResult } from "./toolEvidence";
+import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -102,21 +102,21 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // ("2 entries.md") never reads as one.
 const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries(?: \(|$)/;
 
+function entries(n: number | string): string {
+  return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
+}
+
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
   // The footer is the last line of the tool's own output, which may be
   // followed by an intervention the registry appended.
-  const stated = outputTails(output)
-    .map((tail) => {
-      const trimmed = tail.trimEnd();
-      return LIST_DIR_COUNT_RE.exec(trimmed.slice(trimmed.lastIndexOf("\n") + 1))?.[1];
-    })
-    .find((count) => count !== undefined);
-  if (stated === undefined) {
-    const n = lineCount(output);
-    return `${n} ${n === 1 ? "entry" : "entries"}`;
+  const tails = outputTails(output);
+  for (const tail of tails) {
+    const stated = LIST_DIR_COUNT_RE.exec(lastLine(tail.trimEnd()))?.[1];
+    if (stated !== undefined) return entries(stated);
   }
-  return `${stated} ${stated === "1" ? "entry" : "entries"}`;
+  // No footer: the listing's own lines, without an intervention after it.
+  return entries(lineCount(tails.at(-1) ?? output));
 }
 
 /** "Listed agent/internal · 4 entries", or "Listed files". */

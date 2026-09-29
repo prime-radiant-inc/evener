@@ -164,6 +164,10 @@ test("says the count list_dir states, one entry or many", () => {
       "b.go\t3\nc.go\t4\nd.go\t5\n\n3 entries\n\nYou have now made this same call and received the identical result 2 times in a row.",
     ),
   ).toBe("Listed a · 3 entries");
+  // Without a footer, a nudge's lines aren't counted as entries.
+  expect(
+    listed("a.go\nb.go\n\nYou have now made this same call and received the identical result 2 times in a row."),
+  ).toBe("Listed a · 2 entries");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });

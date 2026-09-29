@@ -2,7 +2,15 @@
 
 import { expect, test } from "vitest";
 import { toolWireStep } from "./testing/toolWireFixtures";
-import { prettyJSON, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
+import {
+  MAX_OUTPUT_TAIL_CUTS,
+  OUTPUT_TAIL_WINDOW,
+  outputTails,
+  prettyJSON,
+  shellOutput,
+  skillContext,
+  webFetchResult,
+} from "./toolEvidence";
 
 // Every case reads what the daemon actually sends (agent/testdata/toolwire).
 
@@ -79,6 +87,28 @@ test("leaves out an appended intervention that holds blank lines of its own", ()
 
 test("reads a directly backgrounded command as still running, not timed out", () => {
   expect(shellOutput("started\n[running in background as job_x]")).toEqual({ text: "started", stillRunning: true });
+});
+
+// A running command has no footer yet, and the web reads its tail on every
+// render, so the cuts tried are bounded: only within the output's last
+// OUTPUT_TAIL_WINDOW characters, and at most MAX_OUTPUT_TAIL_CUTS of them.
+test("tries a bounded number of cuts, only near the end, however many blank lines", () => {
+  const blank = "x\n\n".repeat(16_000);
+  const tails = outputTails(blank);
+  expect(tails.length).toBeLessThanOrEqual(MAX_OUTPUT_TAIL_CUTS + 1);
+  for (const tail of tails.slice(1)) expect(tail.length).toBeGreaterThanOrEqual(blank.length - OUTPUT_TAIL_WINDOW);
+  expect(shellOutput(blank).text).toBe(blank.replace(/\n+$/, ""));
+});
+
+test("strips only the environment's whole block, anchored at the end", () => {
+  // Not the environment's block (the Go block says "after <N>ms. Partial
+  // output is shown above."), so all of it is the command's output.
+  expect(
+    shellOutput("[ERROR: Command timed out after 5s]\nfoo [1]\nexit_code=0 duration_ms=5 timed_out=false\n"),
+  ).toEqual({
+    text: "[ERROR: Command timed out after 5s]\nfoo [1]",
+    exitCode: 0,
+  });
 });
 
 test("reads the buffered environment's trailer and its timeout error", () => {

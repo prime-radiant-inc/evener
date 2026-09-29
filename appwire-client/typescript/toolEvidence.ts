@@ -35,19 +35,21 @@ const TRAILING_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>\s*$/;
 // was cancelled.
 const BUFFERED_TRAILER_RE = /^exit_code=(-?\d+) duration_ms=\d+ timed_out=(true|false)$/;
 
-// The buffered environment's own blocks (runBufferedShell): a timeout or a
-// cancel. An "[ERROR: …]" line the command printed is its output.
-const ENVIRONMENT_ERROR_STARTS = [
-  "[ERROR: Command timed out after ",
-  "[ERROR: Command was canceled before completion.",
-];
+// The buffered environment's own block (runBufferedShell), whole and at the
+// end: a cancel, or a timeout with its retry line. An "[ERROR: …]" line the
+// command printed is its output.
+const ENVIRONMENT_ERROR_RE =
+  /\[ERROR: Command (?:was canceled before completion|timed out after \d+ms)\. Partial output is shown above\.(?:\n[^\]]*)?\]\s*$/;
 
-// The body without the final block the buffered environment wrote, when it
-// ends in one.
+// The body without the block the buffered environment wrote, when it ends in
+// one.
 function withoutTrailingError(body: string): string {
-  const start = Math.max(...ENVIRONMENT_ERROR_STARTS.map((marker) => body.lastIndexOf(marker)));
-  if (start === -1 || !body.trimEnd().endsWith("]")) return body;
-  return body.slice(0, start);
+  return body.replace(ENVIRONMENT_ERROR_RE, "");
+}
+
+/** A text's last line. */
+export function lastLine(text: string): string {
+  return text.slice(text.lastIndexOf("\n") + 1);
 }
 
 /** A command's output, read from the tail the shell tool ends it with. */
@@ -63,16 +65,29 @@ export interface ShellOutput {
   windowed?: boolean;
 }
 
+/** How far from the end an intervention can start: the registry's are a
+ * sentence or two. */
+export const OUTPUT_TAIL_WINDOW = 8192;
+/** At most this many cuts are tried. */
+export const MAX_OUTPUT_TAIL_CUTS = 16;
+
 /** Where a tool's own output may end: the whole output, then the output cut
- * at each blank line from the last to the first. The registry appends an
- * intervention after a blank line (agent/internal/tool/breaker.go's
- * appendIntervention), and the intervention may hold blank lines of its own,
- * so a reader takes the first of these that reads as the tool's tail. */
+ * at each blank line from the last back, within the output's last
+ * OUTPUT_TAIL_WINDOW characters and at most MAX_OUTPUT_TAIL_CUTS of them.
+ * The registry appends an intervention after a blank line
+ * (agent/internal/tool/breaker.go's appendIntervention), and it may hold
+ * blank lines of its own, so a reader takes the first of these that reads
+ * as the tool's tail. Bounded, because a running command's output has no
+ * footer yet and is read on every render. */
 export function outputTails(output: string): string[] {
   const tails = [output];
-  for (let cut = output.lastIndexOf("\n\n"); cut !== -1; cut = output.lastIndexOf("\n\n", cut - 1)) {
+  const floor = output.length - OUTPUT_TAIL_WINDOW;
+  for (
+    let cut = output.lastIndexOf("\n\n");
+    cut > 0 && cut >= floor && tails.length <= MAX_OUTPUT_TAIL_CUTS;
+    cut = output.lastIndexOf("\n\n", cut - 1)
+  ) {
     tails.push(output.slice(0, cut));
-    if (cut === 0) break;
   }
   return tails;
 }
@@ -109,9 +124,9 @@ function readBracketed(text: string): ShellOutput | undefined {
 
 function readBuffered(text: string): ShellOutput | undefined {
   const trimmed = withoutTrailingNewlines(text);
-  const cut = trimmed.lastIndexOf("\n");
-  const trailer = BUFFERED_TRAILER_RE.exec(trimmed.slice(cut + 1));
+  const trailer = BUFFERED_TRAILER_RE.exec(lastLine(trimmed));
   if (!trailer) return undefined;
+  const cut = trimmed.lastIndexOf("\n");
   const body = cut === -1 ? "" : withoutTrailingError(trimmed.slice(0, cut));
   return {
     text: withoutTrailingNewlines(body),
