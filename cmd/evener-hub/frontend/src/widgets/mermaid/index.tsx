@@ -81,7 +81,7 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
       // Sanitized by security.ts's two layers; see that file. pointer-events
       // come from mermaid.module.css's .svg rules.
       // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via the mermaid pipeline's two DOMPurify layers, see security.ts
-      <div className={CLASS.svg} dangerouslySetInnerHTML={{ __html: svg }} />
+      <div className={CLASS.svg} aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
     );
     // A rendered diagram is a real control, not a static block: render the
     // container as a button so a keyboard user can open the viewer too, and the
@@ -92,6 +92,7 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
           type="button"
           className={`${CLASS.root} ${CLASS.clickable}`}
           data-mermaid-diagram=""
+          aria-label="Open diagram fullscreen"
           onClick={() => setViewer({ svg })}
         >
           {body}

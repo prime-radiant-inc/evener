@@ -93,6 +93,10 @@ describe("MermaidDiagram", () => {
       expect(button).not.toBeNull();
       return button!;
     });
+    // The trigger's only content is the (aria-hidden) SVG, so its name must
+    // come from aria-label or a screen reader announces a bare "button".
+    expect(screen.getByRole("button", { name: "Open diagram fullscreen" })).toBe(trigger);
+    expect(trigger.querySelector('[aria-hidden="true"]')).not.toBeNull();
     await user.click(trigger);
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
