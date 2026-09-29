@@ -29,24 +29,34 @@ export function showMenu(items: readonly MenuItem[], preview: string, onClose?: 
 		return;
 	}
 	// Android's alert holds at most three buttons, so it dismisses by a tap
-	// outside rather than spending one on Cancel.
+	// outside rather than spending one on Cancel. Its title is the preview, as
+	// NotesSheet's link menu does; a tap on a button and the alert's own
+	// dismissal both report the close, so `closed` keeps onClose to one run,
+	// before the chosen item.
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		onClose?.();
+	};
 	Alert.alert(
-		"Message",
 		preview,
+		undefined,
 		items.map((item) => ({
 			text: item.label,
 			onPress: () => {
-				onClose?.();
+				close();
 				item.run();
 			},
 		})),
-		{ cancelable: true, onDismiss: onClose },
+		{ cancelable: true, ...(onClose ? { onDismiss: close } : {}) },
 	);
 }
 
-/** A text's first 120 characters on one line, for the Android menu. */
+/** A text's first 220 characters on one line, for the Android menu (spec
+ * 10.2: the block menu previews the block's first 220 characters). */
 export function menuPreview(text: string): string {
-	return text.replace(/\s+/g, " ").trim().slice(0, 120);
+	return text.replace(/\s+/g, " ").trim().slice(0, 220);
 }
 
 export function menuAccessibility(items: readonly MenuItem[]) {
