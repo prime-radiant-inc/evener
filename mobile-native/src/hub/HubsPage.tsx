@@ -22,9 +22,6 @@ export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs
 			<Group label="Hubs">
 				{profiles.map((profile) => {
 					const selected = profile.id === activeProfile?.id;
-					// Only the selected hub has a connection to describe; the others are
-					// simply not in use (prototype hub.js:202).
-					const sub = selected ? `${profile.origin} · ${hubConnectionWord(ready, connectionLine)}` : profile.origin;
 					return (
 						// The details button sits beside the row rather than inside it,
 						// so VoiceOver reaches it as its own element.
@@ -32,7 +29,10 @@ export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs
 							<View style={{ flex: 1 }}>
 								<Row
 									label={profile.name}
-									sub={sub}
+									sub={profile.origin}
+									// Only the selected hub has a connection to describe; the
+									// others are simply not in use (prototype hub.js:202).
+									value={selected ? hubConnectionWord(ready, connectionLine) : undefined}
 									machineSub
 									checked={selected}
 									onPress={selected ? undefined : () => selectHub(profile.id)}

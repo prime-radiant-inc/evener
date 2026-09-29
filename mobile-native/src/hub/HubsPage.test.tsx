@@ -86,7 +86,7 @@ it("lists every saved hub with its address, and checks the selected one", () => 
 
 it("shows each hub's address in Menlo", () => {
 	const { tree } = mount();
-	for (const line of ["https://magic-kingdom:9180 · Connected", "http://100.113.28.18:9180"]) {
+	for (const line of ["https://magic-kingdom:9180", "http://100.113.28.18:9180"]) {
 		const address = tree.root.find((node) => String(node.type) === "Text" && node.props.children === line);
 		expect(JSON.stringify(address.props.style)).toContain("Menlo");
 	}
@@ -143,14 +143,16 @@ it("says where the pairing code lives, and never asks to reconnect", () => {
 	expect(text).not.toMatch(/\bReconnect\b/);
 });
 
-function subOf(tree: ReactTestRenderer, name: string): string | undefined {
-	return tree.root.findAll((node) => node.type === Row && node.props.label === name)[0]?.props.sub;
+function rowOf(tree: ReactTestRenderer, name: string) {
+	return tree.root.findAll((node) => node.type === Row && node.props.label === name)[0]?.props;
 }
 
-it("says the selected hub is connected beside its address, and gives the others their address alone", () => {
+it("says the selected hub is connected, in the UI font beside its address, and says nothing of the others", () => {
 	const { tree } = mount();
-	expect(subOf(tree, "magic-kingdom")).toBe("https://magic-kingdom:9180 · Connected");
-	expect(subOf(tree, "paradise-park")).toBe("http://100.113.28.18:9180");
+	expect(rowOf(tree, "magic-kingdom")).toMatchObject({ sub: "https://magic-kingdom:9180", value: "Connected" });
+	expect(rowOf(tree, "paradise-park")).toMatchObject({ sub: "http://100.113.28.18:9180", value: undefined });
+	const word = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "Connected");
+	expect(JSON.stringify(word.props.style)).not.toContain("Menlo");
 });
 
 it("says the selected hub's connection state in the words the Hub's header uses", () => {
@@ -161,7 +163,7 @@ it("says the selected hub's connection state in the words the Hub's header uses"
 		connection.downSince = now - 5_000;
 		connection.lastLiveAt = now;
 		const { tree } = mount();
-		expect(subOf(tree, "magic-kingdom")).toBe("https://magic-kingdom:9180 · Reconnecting…");
+		expect(rowOf(tree, "magic-kingdom")?.value).toBe("Reconnecting…");
 		act(() => tree.unmount());
 	} finally {
 		vi.useRealTimers();

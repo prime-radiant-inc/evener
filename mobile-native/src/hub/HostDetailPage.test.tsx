@@ -2,7 +2,7 @@ import { createHubUpdateController, type HostRow, WireError } from "@evener/appw
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { fonts, palettes } from "../design/tokens";
+import { fonts, palettes, uiType } from "../design/tokens";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
@@ -118,7 +118,7 @@ it("puts an offline host's state in the attention ink, its last error in Menlo, 
 	page.dispose();
 });
 
-it("keeps the last error inside its own group, in Menlo and the danger ink (prototype hub.js:67)", async () => {
+it("keeps the last error inside its own group, in footnote Menlo and the danger ink (hub.js:67)", async () => {
 	const page = await mount(
 		scriptedFleet([hostRow("attic", { attached: false, origin: "sidecar", lastAttachError: "ssh: connect refused" })]),
 		"attic",
@@ -131,6 +131,8 @@ it("keeps the last error inside its own group, in Menlo and the danger ink (prot
 	const style = Object.assign({}, ...[error?.props.style].flat());
 	expect(style.fontFamily).toBe(fonts.mono);
 	expect(style.color).toBe(palettes.light.dangerInk);
+	// Footnote-sized, as the prototype's 13px, not a 17pt row label.
+	expect(style.fontSize).toBe(uiType.footnote.fontSize);
 	page.dispose();
 });
 
