@@ -9,6 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
+import { useOfferAlert } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
 import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
@@ -79,6 +80,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 	});
+	const offerAlert = useOfferAlert();
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
@@ -93,7 +95,17 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) return;
+		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) {
+			// The session exists but this sheet can no longer open it: say so
+			// where the person is, so it isn't started twice (#3048).
+			offerAlert({
+				kind: "started",
+				ref: outcome.thread.evener.ref,
+				title: outcome.thread.name || "New session",
+				why: null,
+			});
+			return;
+		}
 		navigation.getParent()?.dispatch(
 			StackActions.replace("Conversation", {
 				hubId: outcome.hubId,
@@ -101,7 +113,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, navigation, imageSelection]);
+	}, [store, memory, navigation, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
 		const { prompt, images } = store.getState();
 		if (!prompt.trim() && images.length === 0) {

@@ -9,6 +9,8 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
+import { AlertCenter } from "../alerts/alertCenter";
+import { AlertsContext } from "../alerts/alertsContext";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { NewSessionForm } from "./NewSessionForm";
@@ -149,13 +151,22 @@ async function mount(options: Options = {}) {
 			headerOptions = { ...headerOptions, ...next };
 		}),
 	};
+	// The app's real alert center, so a start the form can no longer open
+	// reaches the banner.
+	const alerts = new AlertCenter({
+		now: () => Date.now(),
+		setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+		clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
 	const form = () => (
-		<TestSheet value={context}>
-			<NewSessionForm
-				navigation={navigation as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
-				route={{ key: "Form", name: "Form", params: undefined }}
-			/>
-		</TestSheet>
+		<AlertsContext.Provider value={{ center: alerts, reportRoutes: () => {}, noticeFor: () => undefined }}>
+			<TestSheet value={context}>
+				<NewSessionForm
+					navigation={navigation as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
+					route={{ key: "Form", name: "Form", params: undefined }}
+				/>
+			</TestSheet>
+		</AlertsContext.Provider>
 	);
 	const tree = render(form());
 	await settle();
@@ -190,6 +201,7 @@ async function mount(options: Options = {}) {
 		});
 	};
 	return {
+		alerts,
 		tree,
 		focus,
 		releaseStart,
@@ -407,6 +419,10 @@ it("opens nothing when the form lost focus while the start was on its way", asyn
 	// The session exists: the start is remembered and the form is empty for next time.
 	expect(form.memory.history()).toHaveLength(1);
 	expect(form.store.getState().prompt).toBe("");
+	// So it isn't started twice, a banner says so and opens it (#3048).
+	const banner = form.alerts.getSnapshot().banner;
+	expect(banner?.alerts).toEqual([{ kind: "started", ref: expect.any(String), title: expect.any(String), why: null }]);
+	expect(form.alerts.tap()).toMatchObject({ kind: "session" });
 	form.dispose();
 });
 
@@ -419,6 +435,7 @@ it("opens nothing when another connection took over while the start was on its w
 	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
 	expect(form.parent.dispatch).not.toHaveBeenCalled();
 	expect(form.memory.history()).toHaveLength(1);
+	expect(form.alerts.getSnapshot().banner?.alerts[0]).toMatchObject({ kind: "started" });
 	form.dispose();
 });
 
