@@ -68,6 +68,25 @@ it("names each provider whose sign-in expired, with the provider as the hub spel
 	]);
 });
 
+// Spec 7.1: "one sentence naming the affected count". A session the
+// provider's expired sign-in stopped is a failed row naming that provider.
+it("counts the loaded sessions an expired sign-in stopped, each once, and says nothing of a count of none", () => {
+	const stopped = (ref: string, by: string): NavigationSessionSummary => ({
+		...row(ref, "laptop"),
+		state: "failed",
+		failure: { title: `${by} sign-in expired (401)`, cause_kind: "provider", provider: by, status: 401 },
+	});
+	const codex = [stopped("laptop:a", "codex-jesse-fsck.com"), stopped("laptop:b", "codex-jesse-fsck.com")];
+	expect(
+		notices({
+			...none,
+			auth: [provider("codex-jesse-fsck.com", { needsLogin: true }), provider("openai", { needsLogin: true })],
+			// Live's rows, then Needs you's: laptop:a is in both.
+			loadedRows: [...codex, stopped("laptop:c", "anthropic"), codex[0]],
+		}).map((notice) => notice.text),
+	).toEqual(["codex-jesse-fsck.com sign-in expired · 2 sessions", "openai sign-in expired"]);
+});
+
 it("counts an offline host's loaded sessions once each, even a session loaded from both Live and Needs you", () => {
 	const studio = [row("studio:a", "studio"), row("studio:b", "studio"), row("studio:c", "studio")];
 	expect(

@@ -12,10 +12,12 @@ export type Notice = { key: string; text: string } & (
 /** The Board's notices: every provider whose sign-in expired, every offline
  * host and every broken plugin, in that order.
  *
- * An offline host counts the sessions the Board has loaded that run on it,
- * each once however many sections loaded it. The hub sends no per-host
- * count, so a session on a page not yet loaded goes uncounted: the count can
- * fall short but never runs over, until a hub rollup (S11) replaces it. */
+ * Each names the sessions it affects that the Board has loaded, each once
+ * however many sections loaded it: for an expired sign-in, the failed rows
+ * whose failure names that provider; for an offline host, the rows running
+ * on it. The hub sends no such counts, so a session on a page not yet loaded
+ * goes uncounted: a count can fall short but never runs over, until a hub
+ * rollup (S11) replaces it. */
 export function notices(input: {
 	auth: AuthStatusResponse[];
 	sources: Source[];
@@ -23,22 +25,27 @@ export function notices(input: {
 	loadedRows: readonly NavigationSessionSummary[];
 }): Notice[] {
 	const result: Notice[] = [];
+	/** "<sentence> · N sessions" for the loaded rows `affects` picks, counted
+	 * once each; the sentence alone when it picks none. */
+	const withCount = (sentence: string, affects: (row: NavigationSessionSummary) => boolean) => {
+		const refs = new Set(input.loadedRows.filter(affects).map((row) => row.ref));
+		return refs.size ? `${sentence} · ${plural(refs.size, "session")}` : sentence;
+	};
 	for (const { provider, needsLogin } of input.auth)
 		if (needsLogin)
 			result.push({
 				key: `signIn:${provider}`,
 				kind: "signIn",
-				text: `${provider} sign-in expired`,
+				text: withCount(`${provider} sign-in expired`, (row) => row.failure?.provider === provider),
 				action: "Sign in",
 				providerId: provider,
 			});
 	for (const source of input.sources) {
 		if (source.online) continue;
-		const refs = new Set(input.loadedRows.filter((row) => row.host_id === source.id).map((row) => row.ref));
 		result.push({
 			key: `host:${source.id}`,
 			kind: "host",
-			text: refs.size ? `${source.label} is offline · ${plural(refs.size, "session")}` : `${source.label} is offline`,
+			text: withCount(`${source.label} is offline`, (row) => row.host_id === source.id),
 			action: "Details",
 			sourceId: source.id,
 		});
