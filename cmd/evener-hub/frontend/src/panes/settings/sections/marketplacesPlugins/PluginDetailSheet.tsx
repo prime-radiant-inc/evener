@@ -86,7 +86,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   }
 
   async function handleUpgrade() {
-    if (target === null || hubWriteBusy) return;
+    if (target === null) return;
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Checked ${target.plugin} for upgrades`);
