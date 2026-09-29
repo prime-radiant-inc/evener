@@ -615,14 +615,14 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 
 // stoppedGenerationFinishEvent is the single home for the stop-finish
 // decision: the stopped outcome, terminal-error disposition, the
-// "stopped_by_parent" reason, the delivery ID, and the terminal packet. An
+// stopped_by_parent reason, the delivery ID, and the terminal packet. An
 // externally cancelled generation still reports whatever evidence its own run
 // loop already gathered (task, worktree, scratch path — see
-// delegateTerminalPacketMetadata) via the supplied packet; only the bare
-// synthetic packet is used when the run loop produced none at all (kata tpb0).
-// The fold layer (applyRunFinished) still has final say: it replaces this with
-// the bare packet when the owner is outside the stopped subtree or the packet
-// isn't a terminal-error kind.
+// delegateTerminalPacketMetadata) via the supplied packet; the synthetic
+// stopped packet (delegateStoppedTerminalPacket) is used only when the run loop
+// produced none at all (kata tpb0). The fold layer (applyRunFinished) still has
+// final say: it replaces this with its own bare packet when the owner is
+// outside the stopped subtree and the packet isn't a terminal-error kind.
 func stoppedGenerationFinishEvent(lease delegateLease, packet *delegatestore.TerminalPacket, endedAt time.Time) (delegatestore.Event, string) {
 	stopped := delegateStoppedTerminalPacket()
 	if packet != nil {
@@ -633,7 +633,7 @@ func stoppedGenerationFinishEvent(lease delegateLease, packet *delegatestore.Ter
 		lease,
 		delegatestore.OutcomeStopped,
 		delegatestore.DispositionTerminalError,
-		"stopped_by_parent",
+		delegatestore.ReasonStoppedByParent,
 		endedAt,
 		deliveryID,
 		&stopped,

@@ -20,10 +20,7 @@
 // resumes one named remnant through `evener/host/teardown-retry`, and the
 // escalated `teardownRecover` clears an unresolvable one through
 // `evener/host/teardown-recover` with the audited operator attestation
-// (registry spec 08 §6/§11; fencing spec 08c §8). The orphan fence has no wire
-// method yet (S20's `evener/host/orphan-resolve`): its grounded signals are
-// the `orphan-fenced-busy` refusal and a tracked `orphan-unverified` record,
-// and the surfaces render them as resolve-first.
+// (registry spec 08 §6/§11).
 
 import type {
   AppwireClientLike,
@@ -60,7 +57,6 @@ export type HostOpRefusalKind =
   | "host-busy-operation"
   | "host-busy-transient"
   | "teardown-unknown-key"
-  | "orphan-fenced-busy"
   | "invalid-params"
   | "cursor-invalidated"
   | "cursor-too-large"
@@ -75,9 +71,6 @@ export interface HostOpRefusal {
   remnantId?: string;
   /** Present exactly on `host-busy-operation` (08b §11: the running record id). */
   operationId?: string;
-  /** Present on `orphan-fenced-busy` (08c §8: the blocking `orphan-unverified`
-   * record id) and on `teardown-unknown-key`'s `remnantId` above. */
-  recordId?: string;
 }
 
 /** stringData reads one string-valued data field off a wire error, or
@@ -176,18 +169,6 @@ export function hostOpRefusal(error: unknown, context: HostOpRequestContext = "o
           : `The hub does not know teardown remnant ${remnantId}.`;
       return { kind: info, message: withDetail(headline, detail), ...(remnantId === undefined ? {} : { remnantId }) };
     }
-    case "orphan-fenced-busy": {
-      // Fencing spec 08c §8: the refusal on teardown-retry/teardown-recover
-      // names the blocking `orphan-unverified` record plus the
-      // `orphan-resolve` next step — never the generic transient-busy copy,
-      // because the repair call would be silently refused by the fence.
-      const recordId = stringData(error, "recordId") ?? stringData(error, "id");
-      const headline =
-        recordId === undefined
-          ? "An open orphan fence blocks repairing this host; resolve the orphan through evener/host/orphan-resolve first."
-          : `An open orphan fence blocks repairing this host (record ${recordId}); resolve the orphan through evener/host/orphan-resolve first.`;
-      return { kind: info, message: withDetail(headline, detail), ...(recordId === undefined ? {} : { recordId }) };
-    }
     case "invalidParams":
       // The recover attestation's validation refusals (shape, operator
       // mismatch) ride this discriminator; the hub's own sentence names the
@@ -247,7 +228,6 @@ export function deployRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
     // refusal) never arise from deploy; if one ever did, a bare repeat is not
     // obviously safe, so none is the honest answer.
     case "teardown-unknown-key":
-    case "orphan-fenced-busy":
     case "invalid-params":
       return "none";
   }
@@ -302,19 +282,17 @@ export function hostOpRefusalBlocksRetry(kind: HostOpRefusalKind): boolean {
 }
 
 /** teardownRetryRefusalAction maps a `teardown-retry` refusal onto its recovery
- * (08b §6, 08c §8, registry spec 08 §11). A live attempt holding the gate
- * refuses with the typed transient busy — the gate holder owns the attempt, so
- * the operator retries later, never silently. An operation-held gate, an
- * unknown/purged remnant id, an orphan fence, and a validation refusal all
- * refuse a bare repeat: each names its own next step instead (the fence names
- * `orphan-resolve`, the unknown key names a re-read). */
+ * (08b §6, registry spec 08 §11). A live attempt holding the gate refuses with
+ * the typed transient busy — the gate holder owns the attempt, so the operator
+ * retries later, never silently. An operation-held gate, an unknown/purged
+ * remnant id, and a validation refusal all refuse a bare repeat: each names its
+ * own next step instead (the unknown key names a re-read). */
 export function teardownRetryRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
   switch (kind) {
     case "host-busy-transient":
       return "retry";
     case "host-busy-operation":
     case "teardown-unknown-key":
-    case "orphan-fenced-busy":
     case "invalid-params":
       return "none";
     default:
@@ -369,38 +347,6 @@ export type HostRemnantRepair =
   | { phase: "refused"; remnantId: string; action: "retry" | "recover"; refusal: HostOpRefusal }
   | { phase: "retried"; remnantId: string; result: HostTeardownRetryView }
   | { phase: "cleared"; remnantId: string; result: HostTeardownClearView };
-
-/** OrphanFence is the grounded signal that an `orphan-unverified` record
- * fences the name: the refusal the hub returned, or the tracked
- * orphan-unverified operation record. `recordId` is null when the refusal did
- * not carry one. */
-export interface OrphanFence {
-  recordId: string | null;
-}
-
-/** orphanFenceFor reports whether `remnantId` is orphan-fenced, from the two
- * signals the landed wire carries: an `orphan-fenced-busy` refusal (fencing
- * spec 08c §8 — the discriminator the fence emits, pinned ahead of S20's
- * handler) and a tracked operation record in the `orphan-unverified` state
- * (08b §10's closed state set, read by S15's poll). The stored refusal fences
- * only the remnant it was returned for — a later remnant on the same name is
- * never fenced by it — while the operation record fences the NAME, exactly as
- * the hub's orphan fence does (08c §8: "scoped to that host's name only").
- * S20's `evener/host/orphan-resolve` is the way out; until it lands the
- * surfaces name that next step and never offer a call they cannot make. */
-export function orphanFenceFor(
-  repair: HostRemnantRepair | undefined,
-  operation: HostOperationRef | undefined,
-  remnantId: string,
-): OrphanFence | null {
-  if (repair?.phase === "refused" && repair.refusal.kind === "orphan-fenced-busy" && repair.remnantId === remnantId) {
-    return { recordId: repair.refusal.recordId ?? null };
-  }
-  if (operation !== undefined && operation.state === "orphan-unverified") {
-    return { recordId: operation.id };
-  }
-  return null;
-}
 
 /** retryOutcomeLine renders one retry arm's own outcome: the resolved arms say
  * what resolved, the failure arm names the seam and the still-open remnant,
@@ -527,10 +473,9 @@ export interface HostOperationRef {
 
 /** Settled states end the read loop (08b §10's closed state set): the three
  * terminal states. `orphan-unverified` is deliberately NOT settled: it is
- * durable but resolvable through the fencing paths (S20's `orphan-resolve`
- * call, or a later boot's local reap), so the loop keeps polling it until the
- * resolved record reaches a terminal state — treating it as settled would
- * freeze the resolved record behind a stale state until a page reload. */
+ * durable but an out-of-band transition can still move it, so the loop keeps
+ * polling it until the record reaches a terminal state — treating it as settled
+ * would freeze the moved record behind a stale state until a page reload. */
 const SETTLED_OPERATION_STATES: ReadonlySet<string> = new Set(["complete", "failed", "interrupted"]);
 
 export function operationStateSettled(state: string): boolean {

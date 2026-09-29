@@ -4,8 +4,19 @@
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import {
+	Children,
+	Fragment,
+	isValidElement,
+	type ReactNode,
+	type Ref,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
@@ -14,11 +25,13 @@ const SECTION_TOP = 20;
 /** A row's leading glyph slot. */
 const GLYPH = 22;
 
-/** The scrolling page a grouped sheet page sits in. */
-export function GroupedPage({ children }: { children: ReactNode }) {
+/** The scrolling page a grouped sheet page sits in. `scrollRef` is for a page
+ * that brings something into view itself, such as a form's refusal. */
+export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
 	const { palette } = useColors();
 	return (
 		<ScrollView
+			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
 			contentContainerStyle={{ paddingBottom: 32 }}
 			keyboardShouldPersistTaps="handled"
@@ -163,6 +176,19 @@ export interface RowProps {
 	accessibilityLabel?: string;
 }
 
+/** Between the label and a value that wrapped under it. */
+const WRAPPED_VALUE_GAP = 4;
+
+/** Whether a node draws anything: React renders nothing for null,
+ * undefined, booleans and the empty string. */
+function rendersSomething(node: ReactNode): boolean {
+	return node !== undefined && node !== null && typeof node !== "boolean" && node !== "";
+}
+
+/** A grouped row. The label and the value share one wrapping line, with the
+ * second line below it. The label is sized by its own text and grows into the
+ * free space, so a value that doesn't fit beside it moves under it: the
+ * label's words never break apart to make room ("paradise-/park"). */
 export function Row({
 	label,
 	machineLabel = false,
@@ -191,16 +217,35 @@ export function Row({
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
 			<View style={{ flex: 1, gap: 2 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
+				<View
+					testID="row-line"
 					style={{
-						color: labelColor,
-						...scaledType(uiType.listRow, scale),
-						...(machineLabel ? { fontFamily: fonts.mono } : null),
+						flexDirection: "row",
+						flexWrap: "wrap",
+						alignItems: "center",
+						columnGap: space.rowGap,
+						rowGap: WRAPPED_VALUE_GAP,
 					}}
 				>
-					{label}
-				</Text>
+					<Text
+						testID="row-label"
+						allowFontScaling={allowFontScaling}
+						style={{
+							flexGrow: 1,
+							flexShrink: 1,
+							color: labelColor,
+							...scaledType(uiType.listRow, scale),
+							...(machineLabel ? { fontFamily: fonts.mono } : null),
+						}}
+					>
+						{label}
+					</Text>
+					{rendersSomething(value) ? (
+						<View testID="row-value" style={{ flexShrink: 1 }}>
+							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+						</View>
+					) : null}
+				</View>
 				{sub ? (
 					<Text
 						allowFontScaling={allowFontScaling}
@@ -216,7 +261,6 @@ export function Row({
 					</Text>
 				) : null}
 			</View>
-			{plainValue !== undefined ? <RowValue text={plainValue} /> : (value ?? null)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
@@ -347,21 +391,38 @@ export function SwitchRow({
 	);
 }
 
-/** A row that edits a machine value (an address, a path, a list of paths) in
- * Menlo, as typed: no capitals or corrections. The label is VoiceOver's name
- * for it; the page's section label shows it. */
+/** A row that edits a value in place. By default it's a machine value (an
+ * address, a path, a list of paths) in Menlo, as typed: no capitals or
+ * corrections. `machine={false}` is for words someone chose, such as a hub's
+ * name, in SF Pro at the row size. The label is VoiceOver's name for it; the
+ * group's label shows it. */
 export function TextFieldRow({
 	label,
 	value,
 	onChangeText,
 	multiline = false,
 	disabled = false,
+	machine = true,
+	placeholder,
+	secure = false,
+	returnKeyType,
+	onSubmitEditing,
+	ref,
 }: {
 	label: string;
 	value: string;
 	onChangeText(text: string): void;
 	multiline?: boolean;
 	disabled?: boolean;
+	machine?: boolean;
+	placeholder?: string;
+	/** A token or key: the field hides what's typed, and iOS never offers to
+	 * fill or save it. */
+	secure?: boolean;
+	/** "next" to lead on to the form's next field, "done" on its last. */
+	returnKeyType?: "next" | "done";
+	onSubmitEditing?: () => void;
+	ref?: Ref<TextInput>;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -372,14 +433,23 @@ export function TextFieldRow({
 			onChangeText={onChangeText}
 			multiline={multiline}
 			editable={!disabled}
-			autoCapitalize="none"
-			autoCorrect={false}
-			spellCheck={false}
+			placeholder={placeholder}
+			placeholderTextColor={palette.inkLow}
+			secureTextEntry={secure}
+			{...(secure ? { textContentType: "none", autoComplete: "off" } : null)}
+			autoCapitalize={machine ? "none" : "sentences"}
+			autoCorrect={!machine}
+			spellCheck={!machine}
+			returnKeyType={returnKeyType}
+			onSubmitEditing={onSubmitEditing}
+			submitBehavior={returnKeyType === "next" ? "submit" : undefined}
+			ref={ref}
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkHi,
-				fontFamily: fonts.mono,
-				fontSize: uiType.subheadline.fontSize * scale,
+				...(machine
+					? { fontFamily: fonts.mono, fontSize: uiType.subheadline.fontSize * scale }
+					: { fontSize: uiType.listRow.fontSize * scale }),
 				minHeight: multiline ? 88 : 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,
@@ -390,15 +460,58 @@ export function TextFieldRow({
 	);
 }
 
+/** What went wrong with a form, at its top in danger ink. The Save that
+ * caused it sits up in the header, so each new message is spoken: iOS has no
+ * live region, so it's announced there; Android reads the polite live region
+ * on its own, and announcing too would say it twice. */
+export function FormError({ error }: { error: FormErrorReport | null }) {
+	useEffect(() => {
+		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
+	}, [error]);
+	return error ? (
+		<GroupFooter tone="danger" live>
+			{error.message}
+		</GroupFooter>
+	) : null;
+}
+
+/** One refusal of a form's save. Each report is a new object, so a refusal
+ * that repeats the last one's words still scrolls and speaks again. */
+export interface FormErrorReport {
+	message: string;
+}
+
+/** A form's error state: set a message (or null to clear it) as with
+ * useState, and each message becomes its own FormErrorReport. */
+export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+	const [error, setError] = useState<FormErrorReport | null>(null);
+	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	return [error, report];
+}
+
+/** A ref for a form's GroupedPage that scrolls back to the top, where its
+ * FormError shows, each time a new error appears: a person scrolled down to
+ * the last field who taps Save in the header would otherwise miss it. */
+export function useErrorInView(error: FormErrorReport | null): RefObject<ScrollView | null> {
+	const page = useRef<ScrollView>(null);
+	useEffect(() => {
+		if (error) page.current?.scrollTo({ y: 0, animated: true });
+	}, [error]);
+	return page;
+}
+
 /** A group's footer: ink-mid, or the attention or danger ink when it reports
  * something a person must act on. */
 export function GroupFooter({
 	children,
 	tone = "normal",
 	machine = false,
+	live = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** A polite live region: Android reads it again when it changes. */
+	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
 }) {
@@ -408,6 +521,7 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			accessibilityLiveRegion={live ? "polite" : undefined}
 			style={[
 				{
 					color,
@@ -542,11 +656,12 @@ export function RowValue({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+		<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
 			{text ? (
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
+						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
 						fontSize: uiType.listRow.fontSize * scale,
 						fontVariant: ["tabular-nums"],

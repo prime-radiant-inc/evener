@@ -683,3 +683,68 @@ func TestHubTOMLRewriteLeavesNoTempFile(t *testing.T) {
 		t.Fatalf("hub.toml after rewrite = %+v, want the added entry", probe.Hosts)
 	}
 }
+
+// TestHubTOMLLegacyBootstrapRecordLoadsAndIsDroppedOnRewrite pins the upgrade
+// path for the retired crash-fencing bootstrap keys. The removed first-contact
+// caller persisted the attempt fence into hub.toml before it refused (and a
+// converged attempt also wrote helper_installed with helper_version), while the
+// reserved-record rule refuses a reserved field this build does not decode —
+// so dropping those keys from the record struct outright would make every file
+// the prior build wrote unloadable at boot. They must decode, load, and be
+// dropped by the next rewrite.
+func TestHubTOMLLegacyBootstrapRecordLoadsAndIsDroppedOnRewrite(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	legacy := `[[hosts]]
+name = "alpha"
+ssh = "alpha.example"
+
+[host_records.alpha]
+incarnation_id = "inc-alpha"
+presence_epoch = 7
+bootstrap_attempted = true
+bootstrap_epoch_boot = "boot-1"
+bootstrap_epoch_op_seq = 3
+bootstrap_attempt_token = "test"
+helper_installed = true
+helper_version = 1
+`
+	if err := os.WriteFile(configPath, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	if _, err := LoadConfig(configPath); err != nil {
+		t.Fatalf("a hub.toml from the bootstrap build refused to load: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// An unrelated mutation rewrites the file: the retired keys must not ride
+	// through the record preservation rule into the new file.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{
+		Name: "side", Address: "s.example",
+	}}); err != nil {
+		t.Fatalf("Add = %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	var probe struct {
+		HostRecords map[string]map[string]any `toml:"host_records"`
+	}
+	if _, err := toml.Decode(string(data), &probe); err != nil {
+		t.Fatalf("hub.toml unparsable after rewrite: %v\n%s", err, data)
+	}
+	record, ok := probe.HostRecords["alpha"]
+	if !ok {
+		t.Fatalf("rewrite dropped alpha's record entirely:\n%s", data)
+	}
+	for _, key := range []string{
+		"bootstrap_attempted", "bootstrap_epoch_boot", "bootstrap_epoch_op_seq",
+		"bootstrap_attempt_token", "helper_installed", "helper_version",
+	} {
+		if value, present := record[key]; present {
+			t.Errorf("rewrite preserved the retired key %s = %v; want it dropped", key, value)
+		}
+	}
+	if record["incarnation_id"] != "inc-alpha" || record["presence_epoch"] != int64(7) {
+		t.Fatalf("alpha's record after rewrite = %#v, want its identity fields preserved", record)
+	}
+}

@@ -10,6 +10,6 @@ export function openDocumentInSession(
 	navigation: Pick<NativeStackNavigationProp<Routes>, "push">,
 	params: ReaderParams,
 ): void {
-	navigation.push("Conversation", { hubId: params.hubId, ref: params.reviewRef, title: params.reviewTitle });
+	navigation.push("Conversation", { hubId: params.hubId, ref: params.sessionRef, title: params.sessionTitle });
 	navigation.push("Reader", params);
 }

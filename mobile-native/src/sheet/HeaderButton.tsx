@@ -8,11 +8,14 @@ export function HeaderButton({
 	label,
 	strong = false,
 	disabled = false,
+	busy = false,
 	onPress,
 }: {
 	label: string;
 	strong?: boolean;
 	disabled?: boolean;
+	/** Its action is running, such as a save in flight. */
+	busy?: boolean;
 	onPress(): void;
 }) {
 	const { palette } = useColors();
@@ -22,7 +25,7 @@ export function HeaderButton({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			accessibilityState={{ disabled }}
+			accessibilityState={busy ? { disabled, busy } : { disabled }}
 			disabled={disabled}
 			hitSlop={8}
 			onPress={onPress}

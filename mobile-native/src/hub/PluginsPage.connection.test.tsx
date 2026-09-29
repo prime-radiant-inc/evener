@@ -19,13 +19,7 @@ import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { MarketplaceBrowser } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { createPluginMutationGate } from "../pluginMutationGate";
-import {
-	dropped,
-	nativeModuleMock,
-	render,
-	renderedText,
-	screenConnection as connection,
-} from "../renderNative.testkit";
+import { dropped, render, renderedText, screenConnection as connection } from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.

@@ -27,19 +27,17 @@ package hub
 //     tolerates the retryable attach classes within the refresh window — a
 //     restarted host may refuse dials while it comes back up — and fails fast
 //     on terminal causes.
-//   - crash fencing (S17/S18): the fencing epoch is persisted and presented;
-//     the remote write half keeps S3's same-boot subset (hostops/probeepoch.go).
+//   - the fencing epoch: persisted and presented before each probe, per the
+//     deploy pipeline's own §6/§10 subset (hostops/probeepoch.go).
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -255,14 +253,6 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		return record, nil
 	}
 
-	// §8's admission fence, after the dedup replay and before any token decision
-	// or gate: a quarantined host refuses with the fencing-failure form, and a
-	// host holding an open orphan-unverified record refuses transient busy —
-	// neither admits new lifecycle or mutation work past admission.
-	if err := m.orphanAdmissionRefusal(entry.Name); err != nil {
-		return hostops.Record{}, err
-	}
-
 	// (2) The provisional token check (deploy) is a fail-fast readability check
 	// only: nothing is decided here, and a concurrent plan can supersede the
 	// value before the gate is acquired. Then the remnant fence: a fenced name
@@ -459,13 +449,6 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 // predates the handler and every other read failure is `probe-failed` with the
 // failure half named.
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
-	// The fencing refusals this surface shares with the first-contact caller are
-	// converted first, so a helper gate that happens to wrap a probe read (the
-	// helper self-test is itself a read-only round trip) is never `probe-failed`
-	// (§6:161).
-	if wire, ok := fencingRefusalWire(name, err); ok {
-		return wire
-	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -482,83 +465,6 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	default:
 		return appwire.ProbeFailed(name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
 			"probing host %q's running state failed: %v", name, err))
-	}
-}
-
-// fencingRefusalWire converts the refusal classes the fenced probe and the
-// first-contact bootstrap share onto their typed envelopes, ok=false when err
-// is none of them so each caller keeps its remaining arms.
-//
-//   - The helper gate (§8:161) rides the conflict class: a known discriminator
-//     renders its arm (absent or untrusted, with the pinned or observed
-//     version); a discriminator this build cannot render is still a gate
-//     refusal and refuses as an internal error naming the unknown class —
-//     never as `fencing-helper-absent` and never as `probe-failed`.
-//   - A bootstrap attempt bound to a registration the host no longer carries
-//     (a remove and re-add landed while the attempt paused) is the deploy
-//     pipeline's `stale-entry` class on its generation binding: the caller
-//     re-resolves the host and retries. Never a helper-gate arm.
-//   - A crashed bootstrap attempt whose process is still live fences the host
-//     the way an open orphan-unverified record does (§8:158): the transient
-//     busy class, with the diagnostic naming the crashed epoch. Never
-//     `probe-failed`, which names only a re-probe read failure.
-func fencingRefusalWire(name string, err error) (appwire.WireError, bool) {
-	if wire, ok := helperGateWireRefusal(err); ok {
-		return wire, true
-	}
-	if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
-		return appwire.InternalError(fmt.Sprintf(
-			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err)), true
-	}
-	if stale, ok := errors.AsType[*hostfence.StaleAttemptError](err); ok {
-		return appwire.StaleEntry(appwire.StaleEntryBindingGeneration, stale.Error()), true
-	}
-	if orphan, ok := errors.AsType[*hostfence.AttemptOrphanError](err); ok {
-		return appwire.HostBusyTransient(fmt.Sprintf(
-			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
-			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan)), true
-	}
-	return appwire.WireError{}, false
-}
-
-// helperGateWireRefusal maps crash-fencing §8's typed helper-gate refusal onto
-// its AppWire envelope: the conflict class, with the host and the pinned helper
-// version the operator must install out-of-band. ok is false for any other
-// error, so a caller can only classify a genuine gate refusal this way.
-func helperGateWireRefusal(err error) (appwire.WireError, bool) {
-	gate, ok := errors.AsType[*hostfence.HelperGateError](err)
-	if !ok {
-		return appwire.WireError{}, false
-	}
-	// The wire message is the error's own text: helperAbsentRefusal wraps the
-	// gate with the reason the claim/delivery was refused (a lost claim race, a
-	// live foreign process, a failed probe), and that detail must reach the
-	// caller. gate.Host and gate.PinnedVersion carry the data half.
-	return helperGateWire(gate, err.Error())
-}
-
-// helperGateWire is the one conversion from a helper-gate refusal to §8's
-// conflict-class envelope, shared by every surface (the probe classifier here and
-// orphan-resolve's verify arm). A known discriminator renders as its pinned arm —
-// the pinned version for the absent arm, the distrusted version for the untrusted
-// one — and a discriminator this build does not know returns ok=false, so no
-// surface ever renders an unknown class as absent or untrusted and each refuses
-// it explicitly (§8:161's fail-closed posture).
-func helperGateWire(gate *hostfence.HelperGateError, message string) (appwire.WireError, bool) {
-	switch gate.Discriminator {
-	case hostfence.DiscriminatorHelperAbsent:
-		// §8's data names the version to act on: the pinned version the operator
-		// must install out-of-band.
-		return appwire.FencingHelperAbsent(gate.Host, strconv.Itoa(gate.PinnedVersion), message), true
-	case hostfence.DiscriminatorHelperUntrusted:
-		// The untrusted arm names the distrusted version in place of the absent
-		// one.
-		return appwire.FencingHelperUntrusted(gate.Host, strconv.Itoa(gate.ObservedVersion), message), true
-	default:
-		// A discriminator this build does not know is not the absent class: the
-		// caller refuses it explicitly rather than rendering it as an arm this
-		// build never defined.
-		return appwire.WireError{}, false
 	}
 }
 
@@ -797,26 +703,6 @@ func (m *hubHostManager) interruptLeftoverOperations() int {
 	return moved
 }
 
-// spawnScopeFor returns the local-spawn ownership scope for one operation
-// record (crash-fencing §3): every one-shot ssh subprocess the record's
-// mutating steps spawn is created, armed with its pre-spawn intent, matched,
-// and dropped through it. A hub with no operation store has no record to arm —
-// and no operation runs there either — so nil is the honest answer.
-func (m *hubHostManager) spawnScopeFor(recordID string) *sshconn.SpawnScope {
-	if m.cfg.ops == nil || recordID == "" {
-		return nil
-	}
-	return sshconn.NewSpawnScope(recordID, m.cfg.ops)
-}
-
-// withSpawnScope returns ctx carrying the operation record's spawn scope. The
-// worker wraps exactly its mutating steps with it: the deploy and restart
-// calls. The read-only refresh (and every preflight the hub runs) keeps a
-// context with no scope, so §6's exempt read-only one-shots stay unarmed.
-func (m *hubHostManager) withSpawnScope(ctx context.Context, recordID string) context.Context {
-	return sshconn.WithSpawnScope(ctx, m.spawnScopeFor(recordID))
-}
-
 // runOperationWorker executes one persisted operation to a terminal state,
 // recording progress as it goes:
 //
@@ -837,15 +723,6 @@ func (m *hubHostManager) withSpawnScope(ctx context.Context, recordID string) co
 // operation-owned and runs under the same held gate).
 func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	defer work.release()
-
-	// The worker's context is the hub's controller-lifetime context (see
-	// startOperationWorker, its only caller), but a scope it might carry is not
-	// this operation's: clear any inherited scope here and let each mutating
-	// call carry the operation's own scope (withSpawnScope). Without this, the
-	// read-only paths — the attach-first dialing, the post-operation refresh,
-	// the reattach probes — could arm their ssh children against whoever owned
-	// the parent context.
-	ctx = sshconn.WithoutSpawnScope(ctx)
 
 	id := work.record.ID
 	// handoff is the supervisor handoff for the channel a restart left live:
@@ -922,7 +799,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(m.withSpawnScope(ctx, id), work.entry, facts)
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
 		if err != nil {
 			fail(err)
 			return
@@ -1058,15 +935,13 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 }
 
 // runRestartStep runs the 04b restart path and records the progress line both
-// the standalone and planned-restart callers share. The restart's ssh
-// subprocesses run under the operation's spawn scope, so a crash mid-restart
-// leaves a persisted boundary plus intent the boot reap converges.
+// the standalone and planned-restart callers share.
 func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) error {
 	if m.cfg.restartHost == nil {
 		return errors.New("this hub has no restart step wired, so the operation cannot run")
 	}
 	m.recordProgress(id, "restarting the host")
-	if err := m.cfg.restartHost(m.withSpawnScope(ctx, id), entry, facts); err != nil {
+	if err := m.cfg.restartHost(ctx, entry, facts); err != nil {
 		return err
 	}
 	m.recordProgress(id, "restart verified healthy")
@@ -1318,26 +1193,19 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // under the caller's held gate before the deploy's first remote write, and
 // publishes the operation as the gate's holder so a contender's busy refusal is
 // `host-busy-operation` naming the record (§12's "Ensure busy names its
-// operation"). The returned finish records the step's outcome, and the returned
-// spawn scope arms the deploy step's ssh subprocesses into the record (crash-
-// fencing §3). A nil hook (no operation store wired) refuses, never running the
-// deploy unrecorded.
-func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
-	// §8's fence, before the record is minted: an Ensure-triggered deploy for a
-	// quarantined or orphan-unverified name must never reach a remote step.
-	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
-		return nil, nil, err
-	}
+// operation"). The returned finish records the step's outcome. A nil hook (no
+// operation store wired) refuses, never running the deploy unrecorded.
+func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 	ops := m.cfg.ops
 	if ops == nil {
-		return nil, nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
+		return nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return nil, nil, errors.New("this hub carries no boot id, so an Ensure-triggered deploy cannot bind its fencing epoch; nothing was launched")
+		return nil, errors.New("this hub carries no boot id, so an Ensure-triggered deploy cannot bind its fencing epoch; nothing was launched")
 	}
 	clientOperationID, err := newEnsureOperationID()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
@@ -1351,14 +1219,14 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 		SequenceBefore: ops.Sequence(),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("persisting the Ensure-triggered deploy's operation record failed, so nothing was launched: %w", err)
+		return nil, fmt.Errorf("persisting the Ensure-triggered deploy's operation record failed, so nothing was launched: %w", err)
 	}
 	record := outcome.Record
 	if err := m.cfg.gate.HoldAs(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: record.ID}); err != nil {
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindDeploy, err) }, nil
+	return func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindDeploy, err) }, nil
 }
 
 // EnsureRestart records one restart-only Ensure attempt as a durable operation
@@ -1367,25 +1235,19 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 // ID, persists the restart record with its fencing epoch under the caller's
 // held gate before the leg's first remote command, and publishes the operation
 // as the gate's holder so a contender's busy refusal names it. The returned
-// finish records the leg's outcome, and the returned spawn scope arms the
-// leg's ssh subprocesses into the record (crash-fencing §3). A nil hook (no
-// operation store wired) leaves the attempt unrecorded and unarmed, which
-// production never does.
-func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
-	// §8's fence, the EnsureDeploy twin: no restart attempt for a fenced name.
-	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
-		return nil, nil, err
-	}
+// finish records the leg's outcome. A nil hook (no operation store wired)
+// leaves the attempt unrecorded, which production never does.
+func (m *hubHostManager) EnsureRestart(host hostreg.Host) (func(error), error) {
 	ops := m.cfg.ops
 	if ops == nil {
-		return nil, nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")
+		return nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return nil, nil, errors.New("this hub carries no boot id, so a restart-only Ensure attempt cannot bind its fencing epoch; nothing was launched")
+		return nil, errors.New("this hub carries no boot id, so a restart-only Ensure attempt cannot bind its fencing epoch; nothing was launched")
 	}
 	clientOperationID, err := newEnsureOperationID()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
@@ -1399,14 +1261,14 @@ func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, 
 		SequenceBefore: ops.Sequence(),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("persisting the restart-only Ensure attempt's operation record failed, so nothing was launched: %w", err)
+		return nil, fmt.Errorf("persisting the restart-only Ensure attempt's operation record failed, so nothing was launched: %w", err)
 	}
 	record := outcome.Record
 	if err := m.cfg.gate.HoldAs(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: record.ID}); err != nil {
 		m.logf("host %q: the restart-only Ensure operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindRestart, err) }, nil
+	return func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindRestart, err) }, nil
 }
 
 // finishEnsureOperation records one Ensure attempt's outcome on the record its

@@ -73,8 +73,9 @@ type QuarantineSignal struct {
 
 // Quarantine returns the handle's quarantine signal — nil when no custody file
 // exists for the store this handle reads. It stays non-nil across boots for as
-// long as the custody file does, because the names that custody closed stay
-// closed until `orphan-resolve` clears them.
+// long as the custody file does: the signal describes that file, not a state a
+// later pass clears, and the orphan gate that once held names closed was
+// withdrawn (comp08).
 func (s *Store) Quarantine() *QuarantineSignal {
 	if s == nil {
 		return nil
@@ -593,7 +594,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			return snapshot{}, 0, nil, err
 		}
 	}
-	replacement, err := replacementState(custody, custodyPath, artifacts.allocatorFloor)
+	replacement, err := replacementState(custody, artifacts.allocatorFloor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
@@ -639,7 +640,7 @@ func writeReplacement(fs afero.Fs, path string, state snapshot, faults storeFaul
 // replacement's last durable write funnels through here, so all of them open the
 // same state from the same evidence.
 func replacementFromCustody(fs afero.Fs, path, custodyPath string, custody custodyFile, floor uint64, epoch uint64, signal *QuarantineSignal, faults storeFaults) (snapshot, uint64, *QuarantineSignal, error) {
-	state, err := replacementState(custody, custodyPath, floor)
+	state, err := replacementState(custody, floor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}

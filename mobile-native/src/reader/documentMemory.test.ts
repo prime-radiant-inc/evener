@@ -1,23 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { CONTINUE_READING_MS, DocumentMemory, type DocumentKey, forgetDocuments } from "./documentMemory";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const plan: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/superpowers/plans/settle.md" };
 const other: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/design/flake-triage.md" };
 const leaving = (progress: number) => ({
 	title: "Fix the settle/drain race",
 	blocks: ["h1", "p1", "p2"],
 	position: { blockIndex: 1, blockHash: "p1", offset: 12, progress },
-	reviewRef: "local:s-pr2138",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 	updatedAt: "2026-09-26T11:39:00.000Z",
 });
 
@@ -47,8 +39,7 @@ describe("what the phone remembers about a document", () => {
 			sessionRef: "local:s-pr2138",
 			path: "docs/superpowers/plans/settle.md",
 			title: "Fix the settle/drain race",
-			reviewRef: "local:s-pr2138",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Get PR 2138 Test Clean",
 			progress: 0.62,
 			leftAt: 10_000,
 			updatedAt: "2026-09-26T11:39:00.000Z",
@@ -160,6 +151,43 @@ describe("what the phone remembers about a document", () => {
 		expect(offline.continueReading()?.path).toBe(plan.path);
 		expect(() => offline.opened(plan)).not.toThrow();
 		expect(offline.continueReading()).toBeNull();
+	});
+
+	it("drops a pre-#2871 Continue reading trail but still reads the document's own records", () => {
+		// A trail the previous version wrote: its session named twice, no
+		// sessionTitle. It is dropped, not migrated (see parseTrail), while the
+		// per-document position and lastRead data from the same store still parse.
+		const key = JSON.stringify([plan.sessionRef, plan.path]);
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.continue-reading.hub-1",
+					JSON.stringify({
+						sessionRef: plan.sessionRef,
+						path: plan.path,
+						title: "Fix the settle/drain race",
+						reviewRef: plan.sessionRef,
+						reviewTitle: "Get PR 2138 Test Clean",
+						progress: 0.62,
+						leftAt: 10_000,
+					}),
+				],
+				[
+					"evener.native.documents.hub-1",
+					JSON.stringify({
+						[key]: {
+							position: { blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 },
+							lastRead: { blocks: ["h1", "p1", "p2"], readAt: 2_000 },
+							touchedAt: 2_000,
+						},
+					}),
+				],
+			]),
+		);
+		const memory = new DocumentMemory(storage, "hub-1", () => 10_000);
+		expect(memory.continueReading()).toBeNull();
+		expect(memory.position(plan)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 });
+		expect(memory.lastRead(plan)?.blocks).toEqual(["h1", "p1", "p2"]);
 	});
 
 	it("keeps hubs apart, and forgets a removed hub", () => {

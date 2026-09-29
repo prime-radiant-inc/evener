@@ -61,16 +61,16 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
-		// The real Modal renders its children only while visible; the inert host
-		// string would render them always, so the panel would look mounted even
-		// with the modal closed. This stub keeps the screen's open/closed state
-		// observable in the tree: no visible modal, no panel.
+		// The real Modal renders its children while visible, its own default
+		// being visible; the inert host string would render them always, so the
+		// panel would look mounted even with the modal closed. This stub keeps
+		// the screen's open/closed state observable in the tree: a modal told to
+		// hide renders no panel, and one that says nothing holds, as it does.
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
-			props.visible ? createElement("Modal", null, props.children) : null,
+			props.visible !== false ? createElement("Modal", null, props.children) : null,
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -326,14 +326,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
-	if (!tasks) throw new Error("no Tasks item in the header menu");
-	act(() => tasks.onPress());
+	act(() => menuAction("Tasks").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
@@ -348,14 +341,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 	const { tree } = mount(withCapabilities({ sharedNotes: true }));
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
-	if (!notes) throw new Error("no Notes & links item in the header menu");
-	act(() => notes.onPress());
+	act(() => menuAction("Notes & links").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",
@@ -520,6 +506,33 @@ it("shows the chosen detail level and confirms it", async () => {
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
+	tree.unmount();
+});
+
+/** The ⋯ button in the header, as the screen last set it. */
+function menuButton(): ReactElement<{ onPress(): void }> {
+	const button = header().headerRight?.({ canGoBack: true });
+	if (!button) throw new Error("the header set no ⋯ button");
+	return button as ReactElement<{ onPress(): void }>;
+}
+
+it("opens Find in session from the Android ⋯ menu", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuButton().props.onPress());
+	const find = tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
+	)[0];
+	if (!find) throw new Error("no Find in session in the ⋯ menu");
+	act(() => find.props.onPress());
+	await flush();
+
+	expect(
+		tree.root.findAll(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		),
+	).toHaveLength(1);
 	tree.unmount();
 });
 
@@ -745,14 +758,14 @@ function sessionList(tree: ReturnType<typeof render>) {
 					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
 				}),
 			),
+		// As React Native does, the drag's end carries where it let go.
 		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() =>
-				list().props.onScroll({
-					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-				}),
-			);
-			act(() => list().props.onScrollEndDrag());
+			const event = {
+				nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			};
+			act(() => list().props.onScrollBeginDrag(event));
+			act(() => list().props.onScroll(event));
+			act(() => list().props.onScrollEndDrag(event));
 		},
 	};
 }
@@ -765,6 +778,9 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	// A live connection says nothing, and the old Reconnect row is gone.
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	// The goal is a context chip (spec 8.1) and nothing else: the bottom bar
+	// doesn't repeat it as a row, which would cost the transcript a line.
+	expect(renderedText(tree)).not.toContain("Goal · blocked");
 	const chip = (label: string) => {
 		const found = session
 			.block()
@@ -893,7 +909,11 @@ it("hides the chips only for the person's own drag, never for the app moving the
 	// A coast after the drag counts as the person's too.
 	act(() => session.list().props.onMomentumScrollBegin());
 	session.scroll(4010);
-	act(() => session.list().props.onMomentumScrollEnd());
+	act(() =>
+		session.list().props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 4010 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
 	expect(session.block().props.hidden).toBe(false);
 	tree.unmount();
 });

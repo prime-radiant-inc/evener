@@ -431,9 +431,18 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
 		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
 	}) {
-		// Persisted delegates have no rendezvous of their own. Preserve the
-		// authenticated owner's restart restriction in every navigation projection.
+		// Persisted job-tree roots and fork continuations have no rendezvous of
+		// their own. Preserve the authenticated owner's restart restriction in
+		// every navigation projection. The walk still passes through subagents
+		// to reach them, but a subagent has no row to carry the state.
+		roots, running := hubcore.NewRootIndex(nil), hubcore.RunningSubagentIDs(live)
+		if s.cfg.Past != nil {
+			roots = s.cfg.Past.RootIndex()
+		}
 		for _, past := range sessionsUnderIncompatibleDaemons(pastEntries, live, unconfirmed) {
+			if roots.IsSubagent(past.Meta.ID) || running[past.Meta.ID] {
+				continue
+			}
 			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
@@ -1060,46 +1069,13 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 			StartedAt:  hubcore.OrderCreatedAt(createdAt, updatedAt),
 		},
 		SessionID: refText,
-		Status:    thread.Status.Type,
-		// The remote hub's list row carries its session's question and blocked
-		// escalation cards as a local probe does, so the row shows them and the
-		// approval promotes the session into NeedsYou like a local one.
-		PendingAsk:         thread.Evener.AskPending,
-		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
-		PendingEscalations: thread.Evener.PendingEscalations,
-		PendingQuestion:    appwire.ClonePendingQuestion(thread.Evener.PendingQuestion),
-		Failure:            appwire.CloneThreadFailure(thread.Evener.Failure),
-		Project:            project,
+		Project:   project,
 	}
-	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
-	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
-	// The remote hub's root row carries its tree's subagent tally (S3), so the
-	// remote row counts its subagents like a local one.
-	if thread.Evener.Subagents != nil {
-		entry.Subagents = *thread.Evener.Subagents
-	}
-	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
-	entry.LastMessage = thread.Evener.LastMessage
-	// The remote hub's root row carries its session's task progress (S13b), so
-	// the remote row shows its task line like a local one.
-	entry.Tasks = appwire.CloneTaskAggregate(thread.Evener.Tasks)
+	// The remote row reads its thread-row facts through the one shared reader,
+	// so it cannot drift from the local probe (#2638). Capabilities and
+	// ActiveFlags stay absent on a remote row; only a local probe answers them.
+	entry = hubcore.LiveEntryThreadFacts(entry, hubcore.ProbeResultFromThread(thread))
 	return meta, entry, true
-}
-
-func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
-	if diagnostics == nil {
-		return nil
-	}
-	return diagnostics.Jobs
-}
-
-// diagnosticsWatches returns a remote thread's own live-watch rows. A thread
-// with no diagnostics (old daemon, or one that listed nothing) and a
-// diagnostics that omits Watches both yield an empty list — absence is never
-// an error. It delegates to hubcore's shared projection so the local and remote
-// tree code cannot drift.
-func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	return hubcore.DiagnosticsWatches(diagnostics)
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the

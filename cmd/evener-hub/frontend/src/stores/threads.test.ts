@@ -13560,13 +13560,12 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 });
 
 // The wedged latch is a storage status the runtime reports to the store, the
-// same way onWriteStalled reports a stalled write. A wedged open whose probe
-// also stalls never resolves, so the adapter latches and the store must show
-// it: the Composer's actionable banner reads this field.
-test("the store latches mutationStorageWedged when a wedged adapter cannot reset", async () => {
+// same way onWriteStalled reports a stalled write. A double open timeout never
+// resolves, so the adapter latches and the store must show it: the Composer's
+// actionable banner reads this field.
+test("the store latches mutationStorageWedged when a wedged adapter double-times-out", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.spyOn(globalThis.indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  vi.spyOn(globalThis.indexedDB, "deleteDatabase").mockImplementation(() => neverSettlingRequest());
   const read = readMutationPersistence("ref_a").catch(() => undefined);
   await vi.runAllTimersAsync();
   expect(threadsStore.getState().mutationStorageWedged).toBe(true);

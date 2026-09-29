@@ -28,11 +28,13 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, T
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
 import Session from "../panes/session/Session";
+import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
 import {
+  createPagedOpenSettleTracker,
   createTranscriptSettleTracker,
   describeTranscriptSettleBlocker,
   SETTLE_OVERFLOW_FACTOR,
@@ -137,7 +139,11 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 
 // ?paged=1: the read answers with a page plus an olderCursor, so the paging row
 // mounts - the open-with-history shape the other passes lack.
+// ?readonly=1: render the READ-ONLY transcript pane instead of the live Session.
+// It runs the same useTranscriptScroll coordinator (#2963), so its paging and
+// landing must behave identically - the pass the guard lacked.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
+const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
 const OLDER_CURSOR = "cursor_page_1";
 const OLDER_PAGE_TURNS = 12;
 let olderPageCalls = 0;
@@ -237,7 +243,11 @@ rootEl.style.height = "100%";
 createRoot(rootEl).render(
   <ClientProvider client={fake}>
     <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
-      <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      {READONLY ? (
+        <Transcript params={{ ref: REF }} paneId="transcriptscrollguard" focused={false} />
+      ) : (
+        <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      )}
     </div>
     <Toast />
   </ClientProvider>,
@@ -292,6 +302,13 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    * row mounts only once the model carries an olderCursor).
    */
   pagingRow: boolean;
+  /**
+   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
+   * The read-only Transcript pane passes no footer, so this distinguishes the
+   * two surfaces from the DOM itself: a pass that claims to exercise the
+   * read-only pane while the live Session rendered would read `true` here.
+   */
+  paneFooter: boolean;
   errors: string[];
 }
 
@@ -308,6 +325,7 @@ function metrics(): TranscriptScrollMetrics {
     renderedRows: document.querySelectorAll('[data-testid="transcript-row"]').length,
     listCalls: olderPageCalls,
     pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
+    paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
     errors: pageErrors(),
   };
 }
@@ -349,30 +367,18 @@ const SETTLE_TRIPWIRE_MS = 15_000;
 // mount's own settle and stranding the reader, so this wait cannot assume
 // "the mount landed, that's the end of it" - it has to let any auto-loaded
 // page land and the virtualizer's reconcile finish before it reads the
-// result.
-const PAGED_QUIESCENT_FRAMES = 20;
+// result. Notably ABSENT is the paging row: the regression this pass guards
+// against clears olderCursor and unmounts the row, so waiting on it would spin
+// to the tripwire and report a settle timeout instead of the runner's own
+// "auto-loaded N older page(s)" failure (see createPagedOpenSettleTracker).
 async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
-  let lastHeight = Number.NaN;
-  let lastTop = Number.NaN;
-  let lastTurns = Number.NaN;
-  let quiet = 0;
+  const tracker = createPagedOpenSettleTracker(INITIAL_TURN_COUNT);
   const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
     const m = metrics();
-    // Not ready until the fixture's page has hydrated AND its paging row is
-    // mounted: before that every geometry value is 0 and holds still, so a
-    // quiescence run would "settle" on an empty page and the runner would read
-    // the open as correct without the shape this pass exists for ever
-    // rendering.
-    const ready = m.turns >= INITIAL_TURN_COUNT && m.pagingRow;
-    const standing = ready && m.scrollHeight === lastHeight && m.scrollTop === lastTop && m.turns === lastTurns;
-    lastHeight = m.scrollHeight;
-    lastTop = m.scrollTop;
-    lastTurns = m.turns;
-    quiet = standing ? quiet + 1 : 0;
-    if (quiet >= PAGED_QUIESCENT_FRAMES) return m;
+    if (tracker.observe({ turns: m.turns, geometry: m })) return m;
     if (performance.now() > deadline) {
       throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(m)}`);
     }

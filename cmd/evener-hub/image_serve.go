@@ -3,6 +3,7 @@ package hub
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -123,7 +124,9 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 	reader := bufio.NewReaderSize(f, 64*1024)
-	headerRead := false
+	if _, err := transcript.ReadHeader(context.Background(), reader, maxRecordBytes); err != nil {
+		return nil, "", false, err
+	}
 	var matchedData []byte
 	var matchedMediaType string
 	// Compare raw sums rather than re-encoding every candidate to hex: an image
@@ -167,13 +170,6 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 		if len(line) == 0 {
 			continue
 		}
-		if !headerRead {
-			if _, err := transcript.DecodeHeader(line); err != nil {
-				return nil, "", false, fmt.Errorf("parse transcript header: %w", err)
-			}
-			headerRead = true
-			continue
-		}
 		rec, err := transcript.DecodeEntry(line)
 		if err != nil {
 			return nil, "", false, fmt.Errorf("parse transcript entry: %w", err)
@@ -194,9 +190,6 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 				return nil, "", false, nil
 			}
 		}
-	}
-	if !headerRead {
-		return nil, "", false, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return matchedData, matchedMediaType, matchedData != nil, nil
 }
@@ -282,7 +275,7 @@ func sessionImageBySha(cfg hubcore.WebConfig, sessionID, sha string) (appwire.Se
 
 // sessionImageByPath answers the file-backed form: a session-relative path
 // inside the session's own working directory, refused on any escape and bounded
-// by outputImageMaxBytes at stat time (readOutputImageFile).
+// by outputImageMaxBytes at stat time (readOutputImageInRoot).
 func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.SessionImageResponse, error) {
 	// Path is session-relative by contract: an absolute path is refused even
 	// when it happens to resolve inside the session root.
@@ -300,7 +293,7 @@ func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.S
 		}
 		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
 	}
-	data, info, ok := readOutputImageFile(abs)
+	data, info, ok := readOutputImageInRoot(cwd, abs)
 	if !ok {
 		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
 	}

@@ -5,8 +5,7 @@ import { openDocumentInSession } from "./openDocument";
 const trail = {
 	sessionRef: "local:fix",
 	path: "docs/superpowers/plans/settle-race.md",
-	reviewRef: "local:coord",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Fix race",
 	updatedAt: "2026-09-26T11:39:00.000Z",
 };
 
@@ -16,20 +15,18 @@ it("opens the document inside its session, so Back lands in the session", () => 
 		hubId: "studio",
 		sessionRef: trail.sessionRef,
 		path: trail.path,
-		reviewRef: trail.reviewRef,
-		reviewTitle: trail.reviewTitle,
+		sessionTitle: trail.sessionTitle,
 		updatedAt: trail.updatedAt,
 	});
 	expect(pushed).toEqual([
-		["Conversation", { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" }],
+		["Conversation", { hubId: "studio", ref: "local:fix", title: "Fix race" }],
 		[
 			"Reader",
 			{
 				hubId: "studio",
 				sessionRef: trail.sessionRef,
 				path: trail.path,
-				reviewRef: trail.reviewRef,
-				reviewTitle: trail.reviewTitle,
+				sessionTitle: trail.sessionTitle,
 				updatedAt: trail.updatedAt,
 			},
 		],

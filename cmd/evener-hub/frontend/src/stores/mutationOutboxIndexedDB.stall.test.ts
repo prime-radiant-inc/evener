@@ -146,8 +146,7 @@ test("a single transient open timeout retries without deleting the database or l
   await vi.advanceTimersByTimeAsync(10_000);
   const committed = await enqueue;
   // The one timeout was transient: the plain retry reopened the existing
-  // database, so the new record committed and the earlier one survived, with
-  // no destructive reset.
+  // database, so the new record committed and the earlier one survived.
   expect(await storage.listOutbox()).toEqual([seeded, committed]);
   expect(deleteDatabase).not.toHaveBeenCalled();
   expect(opens).toBe(2);

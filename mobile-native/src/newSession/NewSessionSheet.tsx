@@ -1,25 +1,26 @@
 // New session (spec 11): a large sheet from the Board's New session button
 // that holds its own stack, so the pickers push inside the sheet and Back
-// returns to the form (ruling 1). The sheet owns the creation store, bound to
-// the hub while it is ready, the hub's hosts and live sessions, and this
-// phone's memory of starts, and hands them to its pages through
-// newSessionContext.tsx. Swiping it down closes it and keeps the draft
+// returns to the form (ruling 1). The sheet binds the hub's creation store
+// (creations.ts) while the hub is ready, holds the hub's hosts and live
+// sessions and this phone's memory of starts, and hands them to its pages
+// through newSessionContext.tsx. Swiping it down closes it and keeps the draft
 // (ruling 18).
 import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
-import { createNewSessionService } from "../../../mobile/src/services/newSession";
+import { hasHub } from "../connection";
+import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
-import { createNewSessionStore } from "../newSession";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
 import { useColors } from "../ui";
 import { BrowseFolders } from "./BrowseFolders";
+import { bindCreation, creationStore } from "./creations";
 import { AccessPicker } from "./AccessPicker";
 import { HostPicker } from "./HostPicker";
 import { ModelPicker } from "./ModelPicker";
@@ -35,12 +36,26 @@ import { useSheetLaunchDefaults } from "./useLaunchDefaults";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
-export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSession">) {
+export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSession">) {
+	const { profiles } = useConnection();
+	const { navigation } = props;
+	// A removed hub has no store to make or show: its sheet closes, whether the
+	// hub went while the sheet was open or on its way here. It closes in a
+	// layout effect, before the empty sheet is ever painted.
+	const removed = !hasHub(profiles, props.route.params.hubId);
+	useLayoutEffect(() => {
+		if (removed) navigation.goBack();
+	}, [removed, navigation]);
+	if (removed) return null;
+	return <NewSessionSheetBody {...props} />;
+}
+
+function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSession">) {
 	const { hubId, hubName, like } = route.params;
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
-	const store = useMemo(() => createNewSessionStore(hubId, () => nativeDrafts().creation), [hubId]);
+	const store = creationStore(hubId, () => nativeDrafts().creation);
 	const memory = useMemo(() => launchMemory(hubId), [hubId]);
 
 	// The form is placed once, as it opens with its draft loaded.
@@ -54,15 +69,18 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	}, [store, memory, like, storageLoaded]);
 	useEffect(() => () => stopOpening.current(), []);
 
-	const service = useMemo(() => (ready && client ? createNewSessionService(client) : null), [ready, client]);
+	const bindTo = ready && client ? client : null;
+	// A new or lost connection rebinds the store, which makes anything in
+	// flight on the old one obsolete. Closing the sheet doesn't: a start the
+	// sheet was swiped away from still lands, so the form can say the session
+	// started and clear its draft rather than leave it to be started twice.
 	useEffect(() => {
-		store.getState().bind(service);
-		if (service) {
+		bindCreation(store, bindTo);
+		if (bindTo) {
 			void store.getState().loadMetadata();
 			void store.getState().loadModels(true);
 		}
-		return () => store.getState().bind(null);
-	}, [store, service]);
+	}, [store, bindTo]);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);

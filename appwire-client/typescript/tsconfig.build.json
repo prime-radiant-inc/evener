@@ -37,6 +37,8 @@
     "entityView.ts",
     "watchRows.ts",
     "watchText.ts",
+    "steeringLabels.ts",
+    "steeringNotifications.ts",
     "activityList.ts",
     "activityMerge.ts",
     "itemFailure.ts",

@@ -42,8 +42,8 @@ func fuzzScenarioRoster_FingerprintMovesWithTheSubagentTally(t *testing.T) {
 
 // fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally: a live root's
 // Live, project and NeedsYou rows carry its tally from one closure, and so does
-// the flat Live row of a live session the past index has no meta for yet; its
-// subagent rows and an ended session carry none.
+// the flat Live row of a live session the past index has no meta for yet;
+// an ended session carries none.
 func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	tally := appwire.SubagentTally{Running: 1, Failed: 1, Done: 2}
@@ -75,9 +75,6 @@ func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 		if row.Subagents != tally {
 			t.Fatalf("%s row tally = %+v, want %+v", name, row.Subagents, tally)
 		}
-	}
-	if len(liveRow.Children) != 1 || liveRow.Children[0].Subagents != (appwire.SubagentTally{}) {
-		t.Fatalf("children = %+v, want one subagent row with no tally", liveRow.Children)
 	}
 	if _, _, ended, found := liveAndProjectRowsFor(tree, "01ENDED"); !found || ended.Subagents != (appwire.SubagentTally{}) {
 		t.Fatalf("ended session's row = %+v (found %v), want no tally", ended, found)

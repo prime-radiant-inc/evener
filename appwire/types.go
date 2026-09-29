@@ -230,15 +230,6 @@ const (
 	// before the clearing write, and the attestation recorded on the original
 	// receipt beside `remnantResolvedAt`. See HostTeardownRecoverParams.
 	MethodEvenerHostTeardownRecover = "evener/host/teardown-recover"
-	// MethodEvenerHostOrphanResolve clears one `orphan-unverified` record
-	// (crash-fencing spec 08c §5/§9): the authenticated operator's resolve of a
-	// local-reap or fencing-quarantine record, on a clean persisted boundary —
-	// or, for a `boundary-unavailable` custody record, on the operator
-	// attestation. It transitions the record to `interrupted` with the
-	// `orphanResolved` marker and clears the quarantine marker in the same
-	// atomic store write, and it is the orphan admission fence's way out. See
-	// HostOrphanResolveParams.
-	MethodEvenerHostOrphanResolve = "evener/host/orphan-resolve"
 	// MethodEvenerHostRunning serves one hub's own running build and health to
 	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
 	// served locally by every hub and admitted only over an attached controller
@@ -1422,6 +1413,13 @@ type ThreadCapabilities struct {
 	// subagents), and from a subagent's own thread: the stop targets the root
 	// that owns the tree.
 	StopSubagent bool `json:"stopSubagent,omitempty"`
+	// PageBefore advertises that thread/turns/list pages this thread from a
+	// before position, with or without a cursor: a client that trimmed rows
+	// from the top of its window can page them back. The hub answers for its
+	// own local and saved threads. A thread on another host stays masked until
+	// the hub can join such a page to its remote paging window (#3176); an
+	// older hub never sends it.
+	PageBefore bool `json:"pageBefore,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -1750,11 +1748,12 @@ type TurnError struct {
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a
-// warning/error notification. Today the only Kind is "provider" (an HTTP
-// failure from an LLM adapter); consumers can typed-branch on Kind
-// instead of substring-matching the message (kata cmfz). The agent's
-// events.ErrorCause projects to this shape; absence is signaled by an
-// omitted/nil pointer on the carrying envelope.
+// warning/error notification. Kinds today are "provider" (an HTTP failure
+// from an LLM adapter) and "signInRequired" (the user must sign in to a
+// provider instance again); consumers can typed-branch on Kind instead of
+// substring-matching the message (kata cmfz). The agent's events.ErrorCause
+// projects to this shape; absence is signaled by an omitted/nil pointer on
+// the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
@@ -2150,6 +2149,12 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	// Before, when set, ends the page just before this position. With a
+	// Cursor it moves the cursor's boundary, keeping the cursor's identity
+	// fence; with none the source mints a cursor there under the thread's
+	// current identity. A client that dropped rows from the top of its window
+	// names the oldest row it kept and pages the dropped rows back.
+	Before *ThreadItemPosition `json:"before,omitempty"`
 }
 
 // ThreadTurnsListResponse is one backfill page. It carries no request
@@ -4917,11 +4922,11 @@ const (
 	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
 )
 
-// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
-// crash-fencing §9): the controller boot id plus the per-host monotonic op
-// sequence. `evener/host/running` requires it — absent or malformed is a typed
-// `probe-failed` refusal, never an unfenced write — and the fencing spec's
-// remote-fencing boundary carries the same pair.
+// FencingEpoch is the epoch wire shape (deploy pipeline 08b §10): the controller
+// boot id plus the per-host monotonic op sequence. `evener/host/running` requires
+// it — absent or malformed is a typed `probe-failed` refusal, never an unfenced
+// write. The name is retained historical wire vocabulary; a `probeEpoch` rename
+// is a wire-compat follow-up.
 type FencingEpoch struct {
 	BootID string `json:"bootId"`
 	OpSeq  uint64 `json:"opSeq"`
@@ -5056,30 +5061,20 @@ type OperationResult struct {
 // `compacted: true` is present exactly on a replay the operation store
 // answered from a dedup tombstone — the terminal record itself was compacted
 // (§4) — and absent on every retained record.
-// `orphanBoundary` is the crash-fencing spec's §9 per-member `BoundaryEntry[]`
-// union, present exactly on a record whose state is `orphan-unverified`
-// (including an explicit `[]` — verified empty — which is never omitted) and
-// absent on every other state; `orphanResolved` is §5's resolution marker,
-// present exactly on a record resolved through `evener/host/orphan-resolve`;
-// and `attestation` is the operator attestation that resolve persisted, beside
-// the marker.
 type OperationRecord struct {
-	ID                string                        `json:"id"`
-	ClientOperationID string                        `json:"clientOperationId"`
-	Host              string                        `json:"host"`
-	Generation        uint64                        `json:"generation"`
-	IncarnationID     string                        `json:"incarnationId"`
-	Kind              string                        `json:"kind"`
-	State             OperationState                `json:"state"`
-	OrphanBoundary    *[]BoundaryEntry              `json:"orphanBoundary,omitempty"`
-	OrphanResolved    bool                          `json:"orphanResolved,omitempty"`
-	Attestation       *HostOrphanResolveAttestation `json:"attestation,omitempty"`
-	Progress          []OperationProgressEntry      `json:"progress,omitempty"`
-	Result            *OperationResult              `json:"result,omitempty"`
-	CreatedAt         string                        `json:"createdAt"`
-	UpdatedAt         string                        `json:"updatedAt"`
-	HostRemoved       bool                          `json:"hostRemoved"`
-	Compacted         bool                          `json:"compacted,omitempty"`
+	ID                string                   `json:"id"`
+	ClientOperationID string                   `json:"clientOperationId"`
+	Host              string                   `json:"host"`
+	Generation        uint64                   `json:"generation"`
+	IncarnationID     string                   `json:"incarnationId"`
+	Kind              string                   `json:"kind"`
+	State             OperationState           `json:"state"`
+	Progress          []OperationProgressEntry `json:"progress,omitempty"`
+	Result            *OperationResult         `json:"result,omitempty"`
+	CreatedAt         string                   `json:"createdAt"`
+	UpdatedAt         string                   `json:"updatedAt"`
+	HostRemoved       bool                     `json:"hostRemoved"`
+	Compacted         bool                     `json:"compacted,omitempty"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b

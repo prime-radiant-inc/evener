@@ -69,6 +69,7 @@ function valid(value: unknown): value is ReaderAnchor {
 }
 export function readerKey(row: TimelineRow): string {
 	if (row.kind === "details" || row.kind === "time") return row.id;
+	if (row.kind === "assistant" && row.roundKey) return row.roundKey;
 	return row.transcriptKey ?? row.id;
 }
 export function readerPosition(row: TimelineRow) {
@@ -181,6 +182,20 @@ export function readerAnchorAt(
 	};
 }
 
+/** The row a scroll to `y` anchors on: the first one reaching past `y`. A
+ * time marker is passed over, since loading an older page can remove it. */
+export function readerAnchorRow(
+	rows: readonly TimelineRow[],
+	measurements: ReadonlyMap<string, ReaderMeasurement>,
+	y: number,
+): TimelineRow | undefined {
+	return rows.find((row) => {
+		if (row.kind === "time") return false;
+		const measurement = measurements.get(readerKey(row));
+		return measurement && measurement.y + measurement.height > y;
+	});
+}
+
 export function captureReaderAnchor(
 	hubId: string,
 	sessionRef: string,
@@ -259,18 +274,31 @@ export function furthestMeasuredRowBeforeTarget(
 	return furthest;
 }
 
-export function shouldApplyExactRestore(
-	previous: ReaderMeasurement | null,
-	measurement: ReaderMeasurement,
-	previousOffset: number | null,
+/** The exact restore last applied for the reading anchor: its row and that
+ * row's height then, where the list went, and whether a list not yet long
+ * enough cut it short of its target. */
+export interface AppliedRestore {
+	key: string;
+	height: number;
+	offset: number;
+	clamped: boolean;
+}
+
+/** Whether an exact restore of the anchor's row to `offset` is due. Once per
+ * anchor: after one lands, the row's measured y moving (a virtualized list
+ * re-estimating rows it unmounted, which older pages provoke) never moves the
+ * list again, since chasing it made the list ping-pong; the list's own
+ * maintainVisibleContentPosition keeps the first visible row, the anchor, in
+ * place instead. It is due again when the anchor's own row reflows (a
+ * text-size change), or when a restore cut short can now go further. */
+export function exactRestoreDue(
+	applied: AppliedRestore | null,
+	anchorRow: { key: string; height: number },
 	offset: number,
-) {
-	return (
-		previous?.key !== measurement.key ||
-		previous.y !== measurement.y ||
-		previous.height !== measurement.height ||
-		previousOffset !== offset
-	);
+): boolean {
+	if (!applied || applied.key !== anchorRow.key) return true;
+	if (applied.height !== anchorRow.height) return true;
+	return applied.clamped && offset !== applied.offset;
 }
 // A virtualized list may not yet extend far enough to reach the saved position.
 export function reachableReaderOffset(desiredOffset: number, contentHeight: number, viewportHeight: number): number {

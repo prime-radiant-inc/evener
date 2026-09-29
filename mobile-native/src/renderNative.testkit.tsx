@@ -25,13 +25,106 @@ import {
 	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
+	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
+import { expect, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** The device's system glass and its accessibility settings, as the app
+ * reads them: whether the Liquid Glass API is there (expo-glass-effect's
+ * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
+ * Transparency, which a test turns on or off with setReduceTransparency. */
+export const systemGlass = (() => {
+	const listeners = new Set<(value: boolean) => void>();
+	let reduceTransparency = false;
+	let pendingAnswer: (() => void) | null = null;
+	return {
+		/** The next Reduce Transparency read waits until answerRead(). */
+		readPending: false,
+		/** Answers a read readPending held, with the current setting. */
+		answerRead() {
+			pendingAnswer?.();
+			pendingAnswer = null;
+		},
+		read(): Promise<boolean> {
+			if (!this.readPending) return Promise.resolve(reduceTransparency);
+			return new Promise((resolve) => {
+				pendingAnswer = () => resolve(reduceTransparency);
+			});
+		},
+		/** "throws" stands for a binary without the native module, where
+		 * reading it throws. */
+		available: false as boolean | "throws",
+		get reduceTransparency() {
+			return reduceTransparency;
+		},
+		listen(listener: (value: boolean) => void) {
+			listeners.add(listener);
+			return { remove: () => listeners.delete(listener) };
+		},
+		setReduceTransparency(value: boolean) {
+			reduceTransparency = value;
+			for (const listener of listeners) listener(value);
+		},
+		reset() {
+			this.available = false;
+			this.readPending = false;
+			pendingAnswer = null;
+			reduceTransparency = false;
+			listeners.clear();
+		},
+	};
+})();
+
+/** The software keyboard as React Native's Keyboard module reports it: a
+ * screen subscribes through Keyboard.addListener, and a test raises or lowers
+ * it with show() and hide(). */
+export const keyboard = (() => {
+	const listeners = new Map<string, Set<() => void>>();
+	const emit = (event: string) => {
+		for (const listener of listeners.get(event) ?? []) listener();
+	};
+	let visible = false;
+	return {
+		get visible() {
+			return visible;
+		},
+		/** How many listeners are subscribed to `event`. */
+		listening(event: string) {
+			return listeners.get(event)?.size ?? 0;
+		},
+		/** Lowers the keyboard and forgets every listener, so a mount a test
+		 * left behind can't carry keyboard state into the next test. */
+		reset() {
+			visible = false;
+			listeners.clear();
+		},
+		/** Sends one Keyboard event on its own, as a platform would. */
+		emit,
+		addListener(event: string, listener: () => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return { remove: () => set.delete(listener) };
+		},
+		show() {
+			visible = true;
+			emit("keyboardWillShow");
+			emit("keyboardDidShow");
+		},
+		hide() {
+			visible = false;
+			emit("keyboardWillHide");
+			emit("keyboardDidHide");
+		},
+	};
+})();
 
 /** The slice of the `react-native` module the Providers screen and ui.tsx
  * import, as inert host elements: a host string is a valid element type for
@@ -148,9 +241,13 @@ export function nativeModuleMock() {
 
 	return {
 		AccessibilityInfo: {
-			announceForAccessibility: () => {},
+			announceForAccessibility: vi.fn(),
+			// Reduce Motion stays off and never changes here: a suite that
+			// needs it mocks AccessibilityInfo itself.
 			isReduceMotionEnabled: () => Promise.resolve(false),
-			addEventListener: () => ({ remove: () => {} }),
+			isReduceTransparencyEnabled: () => systemGlass.read(),
+			addEventListener: (event: string, listener: (value: boolean) => void) =>
+				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
 		},
 		ActivityIndicator: "ActivityIndicator",
 		// In front the whole test; a test that needs the app to come and go
@@ -161,6 +258,11 @@ export function nativeModuleMock() {
 		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
 		Image: "Image",
+		Keyboard: {
+			addListener: keyboard.addListener,
+			dismiss: vi.fn(() => keyboard.hide()),
+			isVisible: () => keyboard.visible,
+		},
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
@@ -448,11 +550,13 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
-/** Mounts `element` and flushes its effects, returning the test renderer. */
-export function render(element: ReactElement): ReactTestRenderer {
+/** Mounts `element` and flushes its effects, returning the test renderer.
+ * `options.createNodeMock` hands host components' refs a stand-in, such as a
+ * ScrollView whose scrollTo a test records. */
+export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
-		tree = create(element);
+		tree = create(element, options);
 	});
 	return tree;
 }
@@ -508,4 +612,25 @@ export function textOf(node: ReactTestInstance): string {
  * the way VoiceOver finds a button; undefined when there is none. */
 export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
 	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+}
+
+/** The one scrolling body of the dock whose card carries `testID` (spec 8.4),
+ * checked to shrink with its card; `holds` says whether the Pressable
+ * labelled `label` scrolls inside it or stays put outside it. */
+export function dockBody(tree: ReactTestRenderer, testID: string) {
+	const card = tree.root.findByProps({ testID });
+	expect(card.props.style).toMatchObject({ flexShrink: 1 });
+	const [scroller, ...others] = card.findAll((node) => String(node.type) === "ScrollView");
+	if (!scroller) throw new Error(`the dock ${testID} has no scroller`);
+	expect(others).toHaveLength(0);
+	// No floor: the answer controls outside it win whatever room is short.
+	expect(scroller.props.style).toEqual(shrinkingScroller);
+	return {
+		scroller,
+		holds(label: string) {
+			const target = pressable(tree, label);
+			if (!target) throw new Error(`no pressable labelled ${label}`);
+			return scroller.findAll((node) => node === target).length > 0;
+		},
+	};
 }

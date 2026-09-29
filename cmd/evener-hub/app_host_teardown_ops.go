@@ -2,8 +2,9 @@ package hub
 
 // This file owns the two teardown-repair mutations registry spec 08 §6/§11
 // defines: `evener/host/teardown-retry`, which resumes one remnant's pinned
-// teardown, and `evener/host/teardown-recover`, the audited operator clearance
-// for a remnant whose pinned target cannot be resolved.
+// teardown, and `evener/host/teardown-recover`, the operator-attested clearance
+// for a remnant whose pinned target cannot be resolved (its attestation is
+// recorded as given and never verified where the transport names no principal).
 //
 // Spec §6 on the retry: "The new `evener/host/teardown-retry` mutation (params
 // `{remnantId: string}`, response the outcome union in §11) resumes ONLY that
@@ -32,13 +33,14 @@ package hub
 // remnant still open plus its attempt record open for fencing — a stuck remote
 // process therefore surfaces a terminal outcome with a live retry handle, never
 // an indefinitely held gate." And on the later retry: "A later retry
-// try-acquires the freed gate, then fences the timed-out attempt first: it
-// takes over the prior attempt's fencing epoch (kill/wait plus guard advance
-// per the crash-fencing spec §4), marks the prior attempt record fenced-closed
-// in the same atomic `hub.toml` write that claims the remnant under a fresh
-// attempt record, and only then runs the pinned teardown again, so two retries
-// never execute the same cleanup concurrently and a wedged gate never blocks
-// repair."
+// try-acquires the freed gate, then adopts the timed-out attempt first: it
+// marks the prior attempt record fenced-closed in the same atomic `hub.toml`
+// write that claims the remnant under a fresh attempt record, and only then
+// runs the pinned teardown again, so a wedged gate never blocks repair. The
+// fenced-closed mark is a durable claim marker, not a stop signal: the kill/wait
+// and guard advance an earlier revision required here were withdrawn (comp08),
+// so the timed-out run's remote cleanup can still be executing — the accepted
+// residual."
 //
 // Spec §6 on the recover: "the call try-acquires the host's per-host gate first
 // ... and holds it through the clearance. When a timed-out-but-open attempt
@@ -93,14 +95,6 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		return m.alreadyClearedArm(remnant), nil
 	}
 	name := remnant.Host
-	// §8's orphan fence: while the name holds an open orphan-unverified record this
-	// repair call refuses with its own discriminator — orphan-fenced-busy naming
-	// the blocking record, or the quarantine fencing-failure form when the
-	// marker is present — never the generic transient-busy form, because a bare
-	// retry would be silently refused by the fence.
-	if err := m.orphanFenceRefusal(name); err != nil {
-		return appwire.HostTeardownRetryResult{}, err
-	}
 	// Gate first, then the mutation lock (spec §5's fixed order). A held gate —
 	// a live retry attempt holding it, a deploy/restart, an Ensure, a
 	// mutation's own reservation — is the typed busy refusal: "a live attempt
@@ -164,10 +158,10 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	if priorOpen {
 		// The attempt fence: "marks the prior attempt record fenced-closed in the
 		// same atomic `hub.toml` write that claims the remnant under a fresh
-		// attempt record". BOUNDARY (S17-S21): the fencing-epoch takeover itself
-		// — kill/wait of the superseded epoch's lease-tracked entries and the
-		// guard advance (crash-fencing spec §4) — belongs to the crash-fencing
-		// slices; this build records the fenced-closed mark and the fresh epoch.
+		// attempt record". The mark is a durable claim marker, not a stop signal:
+		// the fencing-epoch takeover (kill/wait plus guard advance) was withdrawn
+		// with the crash-fencing program (comp08), so the prior run may still be
+		// executing.
 		fenced := priorAttempt
 		fenced.State = hostAttemptStateFencedClosed
 		fenced.FencedAt = now.UTC().Format(time.RFC3339)
@@ -287,12 +281,6 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return recoveredClearedResult(remnant), nil
 	}
 	name := remnant.Host
-	// §8's orphan fence, before the gate: the quarantined form wins wherever the
-	// marker is present, and an open orphan-unverified record refuses
-	// orphan-fenced-busy naming the blocking record.
-	if err := m.orphanFenceRefusal(name); err != nil {
-		return appwire.HostTeardownRecoverResult{}, err
-	}
 	// Gate first: "failing fast with the typed busy error when a retry attempt
 	// is live, and holds it through the clearance".
 	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "teardown-recover"})
@@ -303,8 +291,9 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 
 	// The attestation is validated before any clearance: the statement must be
 	// exactly the one this build accepts, observedAt an RFC3339 instant, and the
-	// claimed operator the session's authenticated identity (crash-fencing spec
-	// §5). A mismatch refuses validation before any clearance, naming the check.
+	// claimed operator the session identity where the session carries one; where
+	// it carries none the attestation is recorded as given, never verified. A
+	// mismatch refuses validation before any clearance, naming the check.
 	attestation := HostRecoveryAttestation{
 		Operator:   strings.TrimSpace(params.Attestation.Operator),
 		Statement:  strings.TrimSpace(params.Attestation.Statement),
@@ -494,19 +483,13 @@ func isTeardownDeadline(err error) bool {
 }
 
 // validateRecoveryOperator checks the attestation's operator against the
-// session's authenticated identity (crash-fencing spec §5: "The claimed
-// attestation `operator` must equal the session's authenticated identity; a
-// mismatch refuses validation before any clearance"). Where the session carries
-// no identity this build can compare — a controller-local call with no
-// authenticated principal — the check refuses nothing and the attestation is
-// recorded as given, which is what makes the clearance an *explicit audited*
-// operator decision rather than a silent drop.
-// BOUNDARY (S17-S21): the transport's per-session authenticated identity is the
-// crash-fencing spec §5 slices' (the capability token gates the route but names
-// no principal). This build enforces the equality whenever a caller's session
-// carries an identity through withSessionOperator and records the attestation as
-// given otherwise, so the clearance is always an explicit audited operator
-// decision.
+// session's identity when the session carries one (tests and any transport that
+// stamps it through withSessionOperator). This build's transport names no
+// principal, so the check refuses nothing there and the attestation is recorded
+// as given — never verified — which is the unattributed posture the spec
+// amends to (registry spec 08 §6, Amended 2026-09-29): the clearance is still
+// an explicit operator decision recorded on the receipt, just not an attributed
+// one.
 func (m *hubHostManager) validateRecoveryOperator(ctx context.Context, operator string) error {
 	identity := sessionOperator(ctx)
 	if identity == "" {
@@ -559,9 +542,10 @@ func (m *hubHostManager) recoverySafetyCheckLocked(remnantID string, remnant Hos
 func (m *hubHostManager) recoverySafetyCheck(remnantID string, remnant HostTeardownRemnant) error {
 	// "no supervisor or channel binding names the remnant's pinned target": the
 	// channel the manager holds for the name is the observable attachment, and
-	// the supervisor binding lives inside that same hold. BOUNDARY (S17-S21):
-	// the fencing slices' supervisor roster reports the binding by epoch; this
-	// build reads the channel the manager publishes.
+	// the supervisor binding lives inside that same hold. (The epoch-keyed
+	// supervisor roster an earlier revision named here was withdrawn with the
+	// crash-fencing program, comp08; this build reads the channel the manager
+	// publishes.)
 	if m.cfg.manager != nil {
 		if _, attached := m.cfg.manager.ChannelIfAttached(remnant.Host); attached {
 			return appwire.Conflict(fmt.Sprintf(
@@ -719,11 +703,11 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 // second retry off the same cleanup, and the gate it eventually releases is the
 // manager's own.
 //
-// BOUNDARY (S17-S18, crash-fencing spec §4): kill/waiting a superseded run and
-// compare-and-advancing the guard belong to the crash-fencing slices; this build
-// records the attempt's fencing epoch (boot id + op sequence) and the
-// fenced/timed-out state a later retry takes over, which is what those slices
-// will act on when the lease wrapper lands.
+// Kill/waiting a superseded run and compare-and-advancing the guard were
+// withdrawn with the crash-fencing program (comp08), so a step the deadline
+// abandons keeps running: this build records the attempt's epoch (boot id + op
+// sequence) and the fenced/timed-out state a later retry takes over, and the
+// abandoned run's overlap is the accepted residual (§6).
 func (m *hubHostManager) runBoundedTeardown(ctx context.Context, seam string, step func() error) (teardownRunResult, error) {
 	done := make(chan error, 1)
 	go func() { done <- step() }()

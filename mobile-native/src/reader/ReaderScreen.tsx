@@ -5,7 +5,6 @@
 // leave. It never shows a Retry, Refresh or Reconnect: it reads
 // again on its own when it comes back to the front, when the connection
 // returns, and when the document's session ends a turn.
-import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
@@ -78,14 +77,17 @@ function rowsOf(document: LoadedDocument | null): Row[] {
 }
 
 export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Routes, "Reader">) {
-	const { hubId, sessionRef, path, reviewRef, reviewTitle, updatedAt } = route.params;
+	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
 	const key = useMemo(() => ({ sessionRef, path }), [sessionRef, path]);
 	const memory = documentMemory(hubId);
 	const { client } = useConnection();
 	const { document, reload } = useDocument(hubId, sessionRef, path);
 	const inFront = useScreenInFront(route.key);
 	// Banners wait while you read (spec 13.3); Back counts what waits.
-	useHoldAlerts(useIsFocused(), "quiet");
+	// "In front" is the Reader's own notion of reading: it stays true while a
+	// sheet covers the Reader and follows the stack, so a hold ends when the
+	// Reader is actually left even if a fast swipe never delivers a blur.
+	useHoldAlerts(inFront, "quiet");
 	const held = useHeldAlertCount();
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -194,8 +196,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			title: document.title,
 			blocks: blocks?.map((block) => block.hash) ?? [],
 			position: position(),
-			reviewRef,
-			reviewTitle,
+			sessionTitle,
 			...(updatedAt === undefined ? {} : { updatedAt }),
 		});
 	};
@@ -299,7 +300,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 						{
 							type: "action",
 							label: "Open session",
-							onPress: () => returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle }),
+							onPress: () => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }),
 						},
 						{ type: "action", label: "Copy path", onPress: () => void copyText(path) },
 						...(text === null
@@ -324,7 +325,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});
-	}, [navigation, held, hasOutline, hubId, sessionRef, path, reviewRef, reviewTitle, text, titleShown, title, about]);
+	}, [navigation, held, hasOutline, hubId, sessionRef, path, sessionTitle, text, titleShown, title, about]);
 
 	const cellRenderer = useMemo(
 		() =>
@@ -371,7 +372,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
 	const endSelection = useCallback(() => setSelecting(null), []);
-	const sheetParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
+	const sheetParams = { hubId, sessionRef, path, sessionTitle };
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
 	act.current = (action, block, words) => {
@@ -390,8 +391,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				return;
 			case "quote":
 				setSelecting(null);
-				holdQuote(hubId, reviewRef, selected);
-				returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle });
+				holdQuote(hubId, sessionRef, selected);
+				returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle });
 				return;
 			case "copy":
 				void copyText(block.text);

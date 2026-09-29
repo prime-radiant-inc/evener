@@ -51,7 +51,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -171,12 +170,6 @@ async function flush() {
 
 function pressables(tree: ReactTestRenderer) {
 	return tree.root.findAll((node) => String(node.type) === "Pressable");
-}
-
-function pressLabel(tree: ReactTestRenderer, label: string) {
-	const target = pressables(tree).find((node) => node.props.accessibilityLabel === label);
-	if (!target) throw new Error(`no pressable labelled ${label}`);
-	act(() => target.props.onPress());
 }
 
 // The client keeps the conversation read pending: the screen stays connected

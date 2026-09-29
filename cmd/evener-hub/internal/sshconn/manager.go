@@ -391,13 +391,9 @@ type Manager struct {
 	// SetEnsureRestartHook); nil refuses a restart-only attempt before any
 	// mutating command.
 	ensureRestart atomic.Pointer[EnsureRestartHook]
-	// firstContact is the hub's first-contact caller (see SetBootstrapHook);
-	// nil runs no bootstrap, so a Manager with no hub surface (tests,
-	// embedders) launches exactly as it did before the hook existed.
-	firstContact atomic.Pointer[BootstrapHook]
-	reg          *hostreg.Registry
-	opts         Options
-	runner       Runner
+	reg           *hostreg.Registry
+	opts          Options
+	runner        Runner
 	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
 	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
@@ -1848,15 +1844,6 @@ func (m *Manager) clearHostCaches(name string) {
 // which is the only place the first-attach bootstrap start may run; a reconnect
 // passes false so it never starts a hub.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
-	// A scope carried by the caller's context belongs to the caller's operation
-	// record, and this ladder is not that operation: the worker's scoped ctx
-	// reaches here through AttachUnderGate (and Ensure), so without this the
-	// ladder's read-only steps — the preflight, the probes, the post-phase
-	// re-reads — would arm their ssh children against the outer record and a
-	// crash mid-probe would leave it a pending spawn intent no work backs. Only
-	// the attempt's own deploy and restart legs are armed, from the scopes
-	// their hooks return.
-	ctx = WithoutSpawnScope(ctx)
 	// Address the executable this Manager already resolved for the host when the
 	// registry has no evener_path: a deploy target from an earlier attempt (or a
 	// discovered install) is the binary the host actually runs, and probing the
@@ -1951,13 +1938,10 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
-	// The restart leg a deploy plans is armed into that deploy's record, and a
-	// restart-only attempt mints its own record below: ArmSpawnIntent refuses a
-	// terminal record, so the record stays open until the leg's outcome lands
-	// and the leg's ssh subprocesses are armed into it. A deploy-only attempt
-	// finishes at the end of its deploy block, exactly where it always did.
+	// A deploy-only attempt finishes at the end of its deploy block; a planned
+	// restart leg runs under the same durable record, and a restart-only attempt
+	// mints its own record below.
 	var finishEnsureOp func(error)
-	var deployScope, restartScope *SpawnScope
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		// The Ensure-triggered deploy is a durable fenced operation (deploy
@@ -1972,19 +1956,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if hook == nil {
 			return nil, errors.New("sshconn: this Manager has no deploy recorder wired, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
 		}
-		scope, finish, err := hook(host)
+		finish, err := hook(host)
 		if err != nil {
 			return nil, err
 		}
-		if scope == nil {
-			return nil, errors.New("sshconn: the deploy recorder returned no durable record, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
-		}
-		deployScope, finishEnsureOp = scope, finish
+		finishEnsureOp = finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		// §3: the deploy step's ssh subprocesses are armed into the record the
-		// hook just persisted, so a crash between any pre-spawn intent and the
-		// deploy's completion is convergent at the next boot.
-		deployCtx = WithSpawnScope(deployCtx, deployScope)
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
@@ -2046,30 +2023,20 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if hook == nil {
 			return nil, errors.New("sshconn: this Manager has no restart recorder wired, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
 		}
-		scope, finish, err := hook(host)
+		finish, err := hook(host)
 		if err != nil {
 			return nil, err
 		}
-		if scope == nil {
-			return nil, errors.New("sshconn: the restart recorder returned no durable record, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
-		}
-		restartScope, finishEnsureOp = scope, finish
+		finishEnsureOp = finish
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
-		// Every restart leg runs under a durable record it can be armed into:
-		// the deploy's record when a deploy planned the leg, or the restart-only
-		// record the hook above minted (§6's "a reconnect with no durable record
-		// performs no mutating SSH command"). The leg's ssh subprocesses carry
-		// that record's scope, so a crash mid-restart is convergent at the next
-		// boot instead of leaving an unowned ssh child. Both arms refuse when
-		// their recorder is unwired or returns no record, so there is no
-		// restart leg that runs unarmed by omission.
-		if restartScope == nil {
-			restartScope = deployScope
-		}
-		restartCtx = WithSpawnScope(restartCtx, restartScope)
+		// Every restart leg runs under a durable record: the deploy's record
+		// when a deploy planned the leg, or the restart-only record the hook
+		// above minted (§6's "a reconnect with no durable record performs no
+		// mutating SSH command"). Both arms refuse when their recorder is
+		// unwired, so there is no restart leg that runs unrecorded by omission.
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
@@ -2185,19 +2152,6 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		// attempt. An unnamed listener counts too: the port is held even when the
 		// host's probes cannot say by which process.
 		return nil
-	}
-
-	// §6:131's one exempt delivery step, at its one trigger: the first-attach
-	// repair is where a never-provisioned host may receive the fencing helper,
-	// and the hub's first-contact caller decides from its own durable record. It
-	// runs before the launch's first mutating remote command — the identified
-	// supervisor's unit start and the ad hoc launch below are both mutating —
-	// and a refusal starts nothing. A Manager with no hub surface wired runs no
-	// bootstrap (§6:135/:137's fail-closed delivery posture is the caller's).
-	if hook := m.bootstrapHook(); hook != nil {
-		if err := hook(ctx, host); err != nil {
-			return err
-		}
 	}
 
 	set, err := m.detectSupervisor(ctx, host, facts)
@@ -2562,6 +2516,16 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
+	}
+	// A canceled loop no longer owns the host, and standing down needs no gate:
+	// return before contending for it. This covers the teardown ordering this
+	// path exists for — a loop is canceled, then its link is dropped, so the loop
+	// wakes on the drop with its context already canceled — and it stands down
+	// here instead of taking (or parking on) the gate it no longer owns. A loop
+	// canceled while already parked on Lock still takes the gate once, and the
+	// post-acquire check below returns it.
+	if ctx.Err() != nil {
+		return
 	}
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
@@ -3196,16 +3160,15 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 }
 
 // EnsureRestartHook records one restart-only Ensure attempt as a durable
-// operation (deploy pipeline 08b §6, crash-fencing §6: "a reconnect with no
-// durable record performs no mutating SSH command"). It mirrors
-// EnsureDeployHook: called with the host's per-host gate already held and
-// before the restart leg's first remote command, it persists the record
-// carrying the attempt's fencing epoch and returns the finish the leg's
-// outcome is recorded through, plus the spawn scope (crash-fencing §3) the
-// leg's ssh subprocesses are armed under. A non-nil error means no durable
-// record could be persisted, so nothing may be restarted; with no hook wired
-// at all, the attempt is refused for the same reason.
-type EnsureRestartHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
+// operation (deploy pipeline 08b §6: "a reconnect with no durable record
+// performs no mutating SSH command"). It mirrors EnsureDeployHook: called with
+// the host's per-host gate already held and before the restart leg's first
+// remote command, it persists the record carrying the attempt's fencing epoch
+// and returns the finish the leg's outcome is recorded through. A non-nil
+// error means no durable record could be persisted, so nothing may be
+// restarted; with no hook wired at all, the attempt is refused for the same
+// reason.
+type EnsureRestartHook func(host hostreg.Host) (finish func(err error), err error)
 
 // SetEnsureRestartHook wires the deploy pipeline's restart recorder into this
 // Manager's Ensure path. It is a setter for the same reason
@@ -3234,13 +3197,10 @@ func (m *Manager) ensureRestartHook() EnsureRestartHook {
 // (deploy pipeline 08b §6). It is called with the host's per-host gate already
 // held and before any remote write of the deploy step; it mints and persists
 // the operation record carrying the deploy's fencing epoch and returns the
-// finish the step's outcome is recorded through, plus the spawn scope (crash-
-// fencing §3) the deploy step's ssh subprocesses are armed under — the record
-// the hook persisted is the record their pre-spawn intents bind to, so a crash
-// mid-deploy leaves state the boot reap converges. A non-nil error means no
+// finish the step's outcome is recorded through. A non-nil error means no
 // durable record could be persisted, so nothing may be launched; with no hook
 // wired at all, the deploy is refused for the same reason.
-type EnsureDeployHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
+type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error)
 
 // SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
 // Ensure path. It is a setter rather than an Options field because the hub's
@@ -3260,39 +3220,6 @@ func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
 // ensureDeployHook returns the wired hook, if any.
 func (m *Manager) ensureDeployHook() EnsureDeployHook {
 	if hook := m.ensureDeploy.Load(); hook != nil {
-		return *hook
-	}
-	return nil
-}
-
-// BootstrapHook runs the crash-fencing §6 first-contact flow for one host the
-// attach ladder is about to start (the first-attach repair, §6:131): the hub's
-// first-contact caller persists the durable attempt fence, runs the one exempt
-// delivery step through the host-side claim-plus-quiesce gate, and converges
-// helperInstalled — or refuses fail-closed with the typed helper-gate class.
-// It is called with the host's per-host gate already held and before the
-// launch's first mutating remote command, so a non-nil error means nothing may
-// be launched. A nil hook runs no bootstrap: a Manager with no hub surface
-// (tests, embedders) keeps its previous first-attach behavior, while production
-// always wires the hub's caller in newHubHostManager.
-type BootstrapHook func(ctx context.Context, host hostreg.Host) error
-
-// SetBootstrapHook wires the hub's first-contact caller into this Manager's
-// first-attach repair. It is a setter for the same reason SetEnsureDeployHook
-// is: the hub's host surface (which owns the hub.toml record machinery and the
-// operation store the flow reads) is constructed after the Manager, and the
-// wiring runs before the Manager serves any request. A nil hook clears it.
-func (m *Manager) SetBootstrapHook(hook BootstrapHook) {
-	if hook == nil {
-		m.firstContact.Store(nil)
-		return
-	}
-	m.firstContact.Store(&hook)
-}
-
-// bootstrapHook returns the wired first-contact caller, if any.
-func (m *Manager) bootstrapHook() BootstrapHook {
-	if hook := m.firstContact.Load(); hook != nil {
 		return *hook
 	}
 	return nil

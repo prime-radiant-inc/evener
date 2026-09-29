@@ -1,5 +1,6 @@
 import type { EvenerDelegateInfo, ItemModel, ModelRetryState, TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { subagentTally } from "./sessionState";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 
 const NOW = Date.UTC(2026, 8, 26, 14, 0, 0);
@@ -19,7 +20,8 @@ const delegate = (status: string, n: number): EvenerDelegateInfo => ({
 	rootSessionId: "root",
 	childSessionId: `child-${n}`,
 	transcriptRef: `local:child-${n}`,
-	type: "subagent",
+	// Every EvenerDelegateInfo the hub sends is the stable "delegate" shape.
+	type: "delegate",
 	lifecycle: status,
 	phase: status,
 	status,
@@ -95,9 +97,22 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
 	});
 
+	// The tray counts what the Subagents list, its chip and the transcript row
+	// call running (subagentState), so the four never disagree.
+	it("counts the subagents the list counts as running", () => {
+		// Resumable with no ended run, so not terminal: running. An idle
+		// subagent whose run ended is terminal on the wire.
+		const idle = { ...delegate("idle", 2), resumable: true };
+		const stopped = { ...delegate("stopped", 3), terminal: true, outcome: "stopped" };
+		const failed = { ...delegate("failed", 4), terminal: true, outcome: "failed" };
+		const delegates = [delegate("running", 1), idle, stopped, failed];
+		expect(subagentTally(delegates).running).toBe(2);
+		expect(trayLine(session({ delegates }), NOW)?.text).toBe("Waiting on 2 subagents");
+	});
+
 	it("waits on subagents when nothing else runs, or when the step waits on them", () => {
 		const running = Array.from({ length: 12 }, (_, n) => delegate("running", n));
-		const finished = delegate("completed", 99);
+		const finished = { ...delegate("completed", 99), terminal: true, outcome: "completed" };
 		expect(trayLine(session({ delegates: [...running, finished] }), NOW)?.text).toBe("Waiting on 12 subagents");
 		expect(trayLine(session({ delegates: [delegate("running", 1)] }), NOW)?.text).toBe("Waiting on 1 subagent");
 		const watching = item({ toolName: "job_watch", description: "Watching the jobs", status: "inProgress" });

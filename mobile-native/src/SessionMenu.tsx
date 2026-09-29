@@ -3,7 +3,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { Action, Copy, styles, useColors } from "./ui";
 
-export type SessionDestination = "session" | "tasks" | "notes" | "subagents" | "pin" | "delete";
+export type SessionDestination = "find" | "session" | "tasks" | "notes" | "subagents" | "pin" | "delete";
 
 export function SessionMenu({
 	title,
@@ -46,6 +46,7 @@ export function SessionMenu({
 					<ScrollView contentContainerStyle={{ padding: 20, gap: 8 }}>
 						<Copy>{title}</Copy>
 						<Copy muted>{hubName}</Copy>
+						<Action onPress={() => choose("find")}>Find in session</Action>
 						<Action onPress={() => choose("session")}>Session details</Action>
 						<Action onPress={() => choose("pin")}>Pin to section</Action>
 						<Action disabled={!connected} onPress={() => choose("tasks")}>

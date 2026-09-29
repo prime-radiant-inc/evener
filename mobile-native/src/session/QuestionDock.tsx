@@ -9,7 +9,8 @@
 // canonical ref.
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useRef } from "react";
+import { AccessibilityInfo, Keyboard, Pressable, Text, View } from "react-native";
 import { boundQuestion } from "../projectedRows";
 import {
 	boundQuestionText,
@@ -19,8 +20,10 @@ import {
 	questionAdvanceTarget,
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useKeyboardShown } from "../useKeyboardShown";
 import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
+import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
 import { SymbolButton } from "./SymbolButton";
 import type { QuestionDraft } from "./useQuestionDraft";
@@ -42,6 +45,10 @@ export interface QuestionDockProps {
 	onSend(selections: QuestionSelections): void;
 	/** Why the last send didn't go, as one line. */
 	error?: string | null;
+	/** The composer is back beneath the dock ("Other answer…"). While the
+	 * keyboard is up for it, the dock shows only its header and the question:
+	 * the room is short, and the composer's Send is the answer. */
+	composerUp?: boolean;
 }
 
 export function QuestionDock({
@@ -55,7 +62,10 @@ export function QuestionDock({
 	onOtherAnswer,
 	onSend,
 	error = null,
+	composerUp = false,
 }: QuestionDockProps) {
+	const typing = useKeyboardShown() && composerUp;
+	useOptionsReturnAnnounced(typing, folded);
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const face = useReadingFace();
@@ -141,7 +151,10 @@ export function QuestionDock({
 		})),
 	);
 	return (
-		<View style={{ ...card, paddingTop: 4, paddingBottom: 8 }}>
+		// The question and its options scroll when the screen has less room than
+		// they need; the header and the answer controls stay on screen, so every
+		// question can be answered.
+		<View testID="question-dock" style={{ ...card, paddingTop: 4, paddingBottom: 8 }}>
 			<View
 				style={{ flexDirection: "row", alignItems: "center", paddingLeft: activeIndex > 0 ? 4 : 16, paddingRight: 4 }}
 			>
@@ -153,112 +166,60 @@ export function QuestionDock({
 				<Text allowFontScaling={allowFontScaling} style={{ ...caption, flex: 1, fontVariant: ["tabular-nums"] }}>
 					{questionHeader(activeIndex, questions.length)}
 				</Text>
+				{typing ? (
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel="Show options"
+						accessibilityHint="Hides the keyboard"
+						onPress={Keyboard.dismiss}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							paddingHorizontal: 8,
+							justifyContent: "center",
+							opacity: pressed ? 0.6 : 1,
+						})}
+					>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}
+						>
+							Show options
+						</Text>
+					</Pressable>
+				) : null}
 				<SymbolButton label="Fold" onPress={() => onFold(true)}>
 					<SymbolView name="chevron.down" tintColor={palette.inkMid} size={15 * scale} />
 				</SymbolButton>
 			</View>
-			<View style={{ paddingHorizontal: 16, gap: 4 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{
-						...face.semibold,
-						fontSize: 17 * scale,
-						lineHeight: 24 * scale,
-						color: palette.prose,
-					}}
-				>
-					{display.question}
-				</Text>
-				{display.why ? (
+			<DockBody
+				// Keyed by the question, so each question opens at its top.
+				key={question.key}
+			>
+				<View style={{ paddingHorizontal: 16, gap: 4 }}>
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+						style={{
+							...face.semibold,
+							fontSize: 17 * scale,
+							lineHeight: 24 * scale,
+							color: palette.prose,
+						}}
 					>
-						{display.why}
+						{display.question}
 					</Text>
-				) : null}
-			</View>
-			<View style={{ marginTop: 8 }}>
-				{options.map((option, index) => {
-					const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
-					const mark = question.multiSelect
-						? checked
-							? "checkmark.square.fill"
-							: "square"
-						: checked
-							? "largecircle.fill.circle"
-							: "circle";
-					return (
-						<Pressable
-							// Keyed by where the agent offered the option: labels are the
-							// agent's and can repeat.
-							key={`${question.key}:${option.position}`}
-							accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
-							// The caption and the detail sit inside the row, which VoiceOver
-							// reads by its label alone, so both go into what it reads.
-							accessibilityLabel={
-								option.recommended
-									? `${option.shown?.label ?? option.label}, Recommended`
-									: (option.shown?.label ?? option.label)
-							}
-							accessibilityHint={option.shown?.detail || undefined}
-							accessibilityState={{ checked, disabled: !editable }}
-							disabled={!editable}
-							onPress={() => {
-								const labels =
-									question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
-								const next =
-									question.multiSelect && checked
-										? labels.filter((label) => label !== option.label)
-										: question.multiSelect
-											? [...labels, option.label]
-											: [option.label];
-								select(next.length ? { kind: "option", labels: next } : null);
-							}}
-							style={({ pressed }) => ({
-								minHeight: 44,
-								flexDirection: "row",
-								alignItems: "flex-start",
-								gap: 12,
-								paddingLeft: 16,
-								opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-							})}
+					{display.why ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 						>
-							<View style={{ paddingTop: 12 }}>
-								<SymbolView name={mark} tintColor={checked ? palette.accentInk : palette.inkMid} size={20 * scale} />
-							</View>
-							<View
-								style={{
-									flex: 1,
-									paddingVertical: 10,
-									paddingRight: 16,
-									// Hairlines inset to the label divide the rows.
-									borderTopWidth: index === 0 ? 0 : 0.5,
-									borderTopColor: palette.edge,
-								}}
-							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
-								>
-									{option.shown?.label ?? option.label}
-									{option.recommended ? (
-										<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
-									) : null}
-								</Text>
-								{option.shown?.detail ? (
-									<Text
-										allowFontScaling={allowFontScaling}
-										style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
-									>
-										{option.shown.detail}
-									</Text>
-								) : null}
-							</View>
-						</Pressable>
-					);
-				})}
-			</View>
+							{display.why}
+						</Text>
+					) : null}
+				</View>
+				{typing ? null : (
+					<QuestionOptions question={question} options={options} answer={answer} editable={editable} select={select} />
+				)}
+			</DockBody>
 			{error || draft.error ? (
 				<Text
 					allowFontScaling={allowFontScaling}
@@ -268,67 +229,226 @@ export function QuestionDock({
 					{error ?? draft.error}
 				</Text>
 			) : null}
-			<View
-				style={{
-					flexDirection: "row",
-					alignItems: "center",
-					justifyContent: "space-between",
-					paddingHorizontal: 8,
-					marginTop: 4,
-				}}
-			>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel="Other answer…"
-					accessibilityState={{ disabled: !editable }}
-					disabled={!editable}
-					onPress={onOtherAnswer}
-					style={({ pressed }) => ({
-						minHeight: 44,
-						paddingHorizontal: 8,
-						justifyContent: "center",
-						opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-					})}
-				>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}
-					>
-						Other answer…
-					</Text>
-				</Pressable>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel={primaryAccessibility}
-					accessibilityState={{ disabled: primaryOff }}
-					disabled={primaryOff}
-					onPress={() => {
-						if (primaryOff) return;
+			{typing ? null : (
+				<AnswerBar
+					editable={editable}
+					onOtherAnswer={onOtherAnswer}
+					primary={primary}
+					primaryAccessibility={primaryAccessibility}
+					primaryOff={primaryOff}
+					filled={filled}
+					onPrimary={() => {
 						if (advanceTarget !== undefined) draft.setActiveIndex(advanceTarget);
 						else onSend(selections);
 					}}
-					style={({ pressed }) => ({
-						minHeight: 44,
-						paddingHorizontal: 16,
-						justifyContent: "center",
-						borderRadius: 22,
-						backgroundColor: filled ? palette.accentFill : "transparent",
-						opacity: primaryOff ? 0.4 : pressed ? 0.6 : 1,
-					})}
-				>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{
-							fontSize: 17 * scale,
-							lineHeight: 22 * scale,
-							fontWeight: "600",
-							color: filled ? palette.onFill : palette.accentInk,
+				/>
+			)}
+		</View>
+	);
+}
+
+/** When the options come back on the open dock after you typed with the
+ * keyboard up, VoiceOver says so: they return below where you were. A folded
+ * dock shows no options, so the keyboard going down there says nothing. */
+function useOptionsReturnAnnounced(typing: boolean, folded: boolean) {
+	const wasHiddenByTyping = useRef(typing && !folded);
+	useEffect(() => {
+		if (wasHiddenByTyping.current && !typing && !folded) AccessibilityInfo.announceForAccessibility("Options shown");
+		wasHiddenByTyping.current = typing && !folded;
+	}, [typing, folded]);
+}
+
+/** An option as the dock shows it: where the agent offered it, and its
+ * bounded copy. */
+interface ShownOption {
+	position: number;
+	label: string;
+	recommended?: boolean;
+	shown: ReturnType<typeof boundQuestion>["options"][number] | undefined;
+}
+
+/** One question's options, recommended first: radio rows for a single
+ * answer, checkboxes for several. */
+function QuestionOptions({
+	question,
+	options,
+	answer,
+	editable,
+	select,
+}: {
+	question: AskQuestionRef;
+	options: ShownOption[];
+	answer: QuestionSelections[string] | undefined;
+	editable: boolean;
+	select(resolution: AskResolution | null): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ marginTop: 8 }}>
+			{options.map((option, index) => {
+				const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
+				const mark = question.multiSelect
+					? checked
+						? "checkmark.square.fill"
+						: "square"
+					: checked
+						? "largecircle.fill.circle"
+						: "circle";
+				return (
+					<Pressable
+						// Keyed by where the agent offered the option: labels are the
+						// agent's and can repeat.
+						key={`${question.key}:${option.position}`}
+						accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
+						// The caption and the detail sit inside the row, which VoiceOver
+						// reads by its label alone, so both go into what it reads.
+						accessibilityLabel={
+							option.recommended
+								? `${option.shown?.label ?? option.label}, Recommended`
+								: (option.shown?.label ?? option.label)
+						}
+						accessibilityHint={option.shown?.detail || undefined}
+						accessibilityState={{ checked, disabled: !editable }}
+						disabled={!editable}
+						onPress={() => {
+							const labels =
+								question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
+							const next =
+								question.multiSelect && checked
+									? labels.filter((label) => label !== option.label)
+									: question.multiSelect
+										? [...labels, option.label]
+										: [option.label];
+							select(next.length ? { kind: "option", labels: next } : null);
 						}}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							flexDirection: "row",
+							alignItems: "flex-start",
+							gap: 12,
+							paddingLeft: 16,
+							opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
+						})}
 					>
-						{primary}
-					</Text>
-				</Pressable>
-			</View>
+						<View style={{ paddingTop: 12 }}>
+							<SymbolView name={mark} tintColor={checked ? palette.accentInk : palette.inkMid} size={20 * scale} />
+						</View>
+						<View
+							style={{
+								flex: 1,
+								paddingVertical: 10,
+								paddingRight: 16,
+								// Hairlines inset to the label divide the rows.
+								borderTopWidth: index === 0 ? 0 : 0.5,
+								borderTopColor: palette.edge,
+							}}
+						>
+							<Text
+								allowFontScaling={allowFontScaling}
+								style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
+							>
+								{option.shown?.label ?? option.label}
+								{option.recommended ? (
+									<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
+								) : null}
+							</Text>
+							{option.shown?.detail ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+								>
+									{option.shown.detail}
+								</Text>
+							) : null}
+						</View>
+					</Pressable>
+				);
+			})}
+		</View>
+	);
+}
+
+/** The dock's answer controls: "Other answer…", and the primary button that
+ * moves to the next question or sends every answer. */
+function AnswerBar({
+	editable,
+	onOtherAnswer,
+	primary,
+	primaryAccessibility,
+	primaryOff,
+	filled,
+	onPrimary,
+}: {
+	editable: boolean;
+	onOtherAnswer(): void;
+	primary: string;
+	primaryAccessibility: string;
+	primaryOff: boolean;
+	filled: boolean;
+	onPrimary(): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			style={{
+				flexDirection: "row",
+				alignItems: "center",
+				justifyContent: "space-between",
+				paddingHorizontal: 8,
+				marginTop: 4,
+			}}
+		>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel="Other answer…"
+				accessibilityState={{ disabled: !editable }}
+				disabled={!editable}
+				onPress={onOtherAnswer}
+				style={({ pressed }) => ({
+					minHeight: 44,
+					paddingHorizontal: 8,
+					justifyContent: "center",
+					opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
+				})}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}
+				>
+					Other answer…
+				</Text>
+			</Pressable>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={primaryAccessibility}
+				accessibilityState={{ disabled: primaryOff }}
+				disabled={primaryOff}
+				onPress={() => {
+					if (!primaryOff) onPrimary();
+				}}
+				style={({ pressed }) => ({
+					minHeight: 44,
+					paddingHorizontal: 16,
+					justifyContent: "center",
+					borderRadius: 22,
+					backgroundColor: filled ? palette.accentFill : "transparent",
+					opacity: primaryOff ? 0.4 : pressed ? 0.6 : 1,
+				})}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						fontSize: 17 * scale,
+						lineHeight: 22 * scale,
+						fontWeight: "600",
+						color: filled ? palette.onFill : palette.accentInk,
+					}}
+				>
+					{primary}
+				</Text>
+			</Pressable>
 		</View>
 	);
 }
