@@ -33,6 +33,7 @@ import {
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { expect, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
@@ -694,4 +695,11 @@ export function dockBody(tree: ReactTestRenderer, testID: string) {
 			return scroller.findAll((node) => node === target).length > 0;
 		},
 	};
+}
+
+/** The composer's focus as the Composer would report it: `focused` or not. */
+export function composerFocusedAs(focused: boolean): ComposerFocus {
+	const focus = new ComposerFocus();
+	focus.set(focused);
+	return focus;
 }
