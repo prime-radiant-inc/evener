@@ -359,10 +359,11 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
-	// Search is bound only while the Board is in view (the plugin poll's rule):
-	// a reconnect while another screen is on top must not send one
-	// `evener/search` for the query the field still holds.
-	const search = useSearch(connected && focused ? client : null);
+	// Search is bound only while the Board is in view (the plugin poll's
+	// rule): a reconnect while a pushed screen covers the Board must not send
+	// one `evener/search` for the query the field still holds. A sheet over
+	// the Board is still the Board (ruling 28), so it stays bound then.
+	const search = useSearch(connected && inFront ? client : null);
 	const searchInput = useRef<TextInput>(null);
 	const [searchText, setSearchText] = useState("");
 	// Searching from the moment the field takes focus until Cancel.

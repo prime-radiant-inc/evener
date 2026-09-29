@@ -1276,14 +1276,15 @@ it("doesn't search while the Board is out of view, and asks again when it return
 	bar.focus();
 	await bar.type("ship");
 	expect(fake.searches).toEqual(["ship"]);
-	// Another screen on top: a reconnect must not send the query.
-	setFocused(false);
+	// A pushed screen covers the Board: a reconnect must not send the query.
+	harness.stack = screenOverBoard;
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settle();
 	expect(fake.searches).toEqual(["ship"]);
 	// Back in view, the field's query asks again.
-	setFocused(true);
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	rerender(tree, nav);
 	await settle();
 	expect(fake.searches).toEqual(["ship", "ship"]);
 	act(() => tree.unmount());
