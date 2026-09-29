@@ -30,7 +30,9 @@ it("builds expo-camera's QR scanner from source, alongside the camera it plugs i
 	// buildFromSource (package.json) builds ExpoCamera static, and dyld stopped
 	// the app at launch. Built from source, both link the same way.
 	const lock = readFileSync(join(__dirname, "..", "Podfile.lock"), "utf8");
-	const pods = lock.slice(lock.indexOf("EXTERNAL SOURCES:"), lock.indexOf("SPEC CHECKSUMS:"));
+	const [, afterSources] = lock.split("EXTERNAL SOURCES:");
+	if (!afterSources) throw new Error("Podfile.lock has no EXTERNAL SOURCES section");
+	const pods = afterSources.split("SPEC CHECKSUMS:")[0] ?? "";
 	expect(pods).toMatch(/ExpoCamera:\n {4}:path: "..\/node_modules\/expo-camera\/ios"/);
 	expect(pods).toMatch(/ExpoCameraBarcodeScanning:\n {4}:path: "..\/node_modules\/expo-camera\/ios"/);
 });

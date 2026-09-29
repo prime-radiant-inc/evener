@@ -143,6 +143,13 @@ it("asks for the camera once on mount when it hasn't asked yet", () => {
 	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
 });
 
+it("says it's waiting for camera access while the request is out", () => {
+	mocks.permission.value = { granted: false, canAskAgain: true, status: "undetermined" };
+	mocks.request.mockReturnValue(new Promise(() => {}));
+	const { tree } = mount("scan");
+	expect(renderedText(tree)).toContain("Waiting for camera access…");
+});
+
 it("doesn't ask for a camera it already has", () => {
 	mount("scan");
 	expect(mocks.request).not.toHaveBeenCalled();

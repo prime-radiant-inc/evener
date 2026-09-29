@@ -35,6 +35,15 @@ export function AddHub({
 	const [review, setReview] = useState<Review | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [refused, setRefused] = useState(false);
+	// Leaving mid-save (first run's Back) keeps the hub saved, but the page
+	// that finishes must not act for a screen that's gone.
+	const mounted = useRef(true);
+	useEffect(
+		() => () => {
+			mounted.current = false;
+		},
+		[],
+	);
 
 	// The first pairing link wins: the camera keeps reporting codes until it
 	// unmounts, and a later one must not replace the hub being reviewed.
@@ -54,11 +63,11 @@ export function AddHub({
 				origin: review.target.origin,
 				token: review.target.token,
 			});
-			onConnected();
+			if (mounted.current) onConnected();
 		} catch {
-			setRefused(true);
+			if (mounted.current) setRefused(true);
 		} finally {
-			setSaving(false);
+			if (mounted.current) setSaving(false);
 		}
 	}
 
@@ -132,7 +141,12 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 		return () => subscription.remove();
 	}, [getPermission]);
 
-	if (permission === null || (canAsk && !answered)) return <GroupedPage>{null}</GroupedPage>;
+	if (permission === null || (canAsk && !answered))
+		return (
+			<GroupedPage>
+				<GroupFooter>Waiting for camera access…</GroupFooter>
+			</GroupedPage>
+		);
 	if (!permission.granted)
 		return (
 			<GroupedPage>

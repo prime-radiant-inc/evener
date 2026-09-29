@@ -113,6 +113,26 @@ it("pastes a pairing link, connects, and opens the Board", async () => {
 	expect(renderedText(tree)).toContain("Connect to your hub");
 });
 
+it("stays where Back left it when a save it started finishes afterwards", async () => {
+	mocks.getStringAsync.mockResolvedValue(LINK);
+	let finish!: (selected: boolean) => void;
+	mocks.connection.saveHub.mockReturnValue(
+		new Promise<boolean>((resolve) => {
+			finish = resolve;
+		}),
+	);
+	const { tree, navigation } = mount();
+	await press(tree, "Paste pairing link");
+	await press(tree, "Paste");
+	await press(tree, "Connect");
+	await press(tree, "Back");
+	await act(async () => {
+		finish(true);
+	});
+	expect(navigation.navigate).not.toHaveBeenCalled();
+	expect(renderedText(tree)).toContain("Connect to your hub");
+});
+
 it("lists saved hubs when none is selected, and opens the one chosen", async () => {
 	mocks.connection.profiles = [MAGIC, PARADISE];
 	const { tree, navigation } = mount();
