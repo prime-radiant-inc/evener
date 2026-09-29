@@ -439,12 +439,10 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 }
 
 // TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied covers step
-// 10's sidecar-mark-removed error branch (the survives, not-deleted arm): the
-// metadata DIRECTORY is made read-only, so UpdateSidecar's read succeeds but
-// its atomic replace cannot create the temporary file it renames over the
-// target. (A read-only sidecar FILE no longer forces a failure: the atomic
-// replace renames over it, which directory write permission allows — the
-// permission that actually gates the replace is the directory's.)
+// 10's sidecar-mark-removed error branch (the survives, not-deleted arm):
+// the sidecar FILE itself (not its directory) is made read-only, so
+// UpdateSidecar's read succeeds but its atomic replace refuses the
+// write-permission check on the unwritable target.
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	sr := newScriptedLaneRepo(t)
@@ -453,13 +451,20 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(t, canonicalMain)
-	chmodReadOnly(t, metaDir)
+	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
+	if os.Getuid() == 0 {
+		t.Skip("running as root: file permissions do not restrict writes")
+	}
+	if err := os.Chmod(sidecarPath, 0o444); err != nil {
+		t.Fatalf("chmod sidecar read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sidecarPath, 0o644) })
 
 	// No delete_branch: the worktree itself is removed cleanly (step 8), but
 	// marking the surviving sidecar worktree_removed (step 10) fails.
 	_, err := r.removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "marking sidecar removed") {
-		t.Fatalf("remove with a read-only metaDir: err = %v, want the marking-sidecar-removed error", err)
+		t.Fatalf("remove with a read-only sidecar file: err = %v, want the marking-sidecar-removed error", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(path, ".git")); !os.IsNotExist(statErr) {
 		t.Errorf("worktree survived despite step 8 succeeding: err=%v", statErr)

@@ -163,31 +163,42 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 	return replaceSidecar(sidecarPath(metaDir, name), raw)
 }
 
-// replaceSidecar atomically replaces the file at path with raw: it writes a
-// temporary file in the destination directory, fsyncs it, closes it, and
-// renames it over path. os.Rename replaces an existing target atomically within
-// a directory, so a reader sees either the old bytes or the new ones, never a
-// torn mix, and the file fsync makes the new bytes durable before the rename so
-// a crash cannot land the name on a zero-length or partial inode. The directory
-// is then fsynced where the platform supports it, so the rename itself survives
-// power loss (mirroring writeFileDurably in agent/schema). The replacement
-// keeps the target's existing permission bits (a systematic os.WriteFile would
-// too); only a missing target falls back to 0o644. The temporary name carries a
-// non-".json" suffix so ListSidecars, which only considers ".json" files,
-// ignores it while it exists; a crash between the create and the rename leaves
-// one such inert file behind — it reserves no name and is invisible to every
-// listing, so it needs no in-band cleanup.
+// replaceSidecar atomically replaces the file at path with raw. It first checks
+// that the target is writable by this process, preserving the plain-write
+// contract a systematic os.WriteFile has: rename needs only directory write
+// permission, so without the check a read-only sidecar could be replaced where
+// os.WriteFile would refuse. It then writes a temporary file beside the target,
+// fsyncs it, closes it, and renames it over path. os.Rename replaces an existing
+// target atomically within a directory, so a reader sees either the old bytes or
+// the new ones, never a torn mix, and the file fsync makes the new bytes durable
+// before the rename so a crash cannot land the name on a zero-length or partial
+// inode. The containing directory is then fsynced where the platform supports
+// it, so the rename itself survives power loss (mirroring writeFileDurably in
+// agent/schema); a filesystem that cannot sync a directory at all is tolerated,
+// since the rename has already committed. The replacement keeps the target's
+// existing permission bits; only a missing target falls back to 0o644. The temp
+// name ends in ".tmp" (never ".json"), so the listing ignores it, and it derives
+// from the target path: a crash between the write and the rename leaves one
+// inert file that the next update to the same lane reuses and clears, so temp
+// files do not accumulate one per interruption.
 func replaceSidecar(path string, raw []byte) error {
+	// Preserve os.WriteFile's write-permission enforcement on the target; the
+	// open (without truncation) is the probe. A missing target is not an error.
+	if target, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+		_ = target.Close()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	mode := os.FileMode(0o644)
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".sidecar-tmp-*")
+	tmp, err := os.OpenFile(path+".tmp", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
+	tmpPath := path + ".tmp"
 	committed := false
 	defer func() {
 		if !committed {

@@ -819,3 +819,51 @@ func TestUpdateSidecarPreservesFileMode(t *testing.T) {
 		t.Fatalf("sidecar mode after update = %o, want 600", got)
 	}
 }
+
+// TestUpdateSidecarRefusesReadOnlyTarget: the atomic replace must keep the
+// plain-write contract — a target this process cannot write is not silently
+// replaced by the rename, which needs only directory write permission. The
+// previous record must survive the refused update.
+func TestUpdateSidecarRefusesReadOnlyTarget(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: file permissions do not restrict writes")
+	}
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	path := sidecarPath(dir, sc.Name)
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err == nil {
+		t.Fatal("UpdateSidecar over a read-only target = nil, want a permission error")
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("read-only target changed: got %+v, %v; want the original %+v", got, err, sc)
+	}
+}
+
+// TestUpdateSidecarReusesOrphanedTemp: a crash-orphaned temp file beside the
+// target is reused and cleared by the next update, so interrupted updates do
+// not accumulate temp files forever.
+func TestUpdateSidecarReusesOrphanedTemp(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	tmpPath := sidecarPath(dir, sc.Name) + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte("orphaned partial temp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("UpdateSidecar: %v", err)
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Fatalf("orphaned temp survived a successful update (stat err = %v); it must be reused and renamed away", err)
+	}
+}
