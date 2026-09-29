@@ -1327,7 +1327,7 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
     // ...reported as the change it is, in the form and as a warning, never as
     // the store's own words or a "Save failed" toast...
-    await waitFor(() => expect(screen.getAllByText(/connection was replaced/).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText(/connection changed/).length).toBeGreaterThan(0));
     expect(screen.queryByText(/credentials store/)).toBeNull();
     expect(screen.queryByText(/Save failed/)).toBeNull();
     // ...the draft is kept, so the retry is the save the user typed...
