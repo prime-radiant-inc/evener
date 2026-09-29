@@ -274,13 +274,23 @@ export function useSkillSummary(step: ToolStep): string {
 
 // --- tasks ----------------------------------------------------------------------
 
-/** Whether a task_list call asked for a change: a bare call (or an empty add
- * and update, or the historical action "view") only reads the list. */
+/** Whether a task_list call asked for a change: a bare call, an empty add and
+ * update, or a historical action with nothing in it ("view", an empty
+ * "append" or "update", an action this build doesn't know) only reads the
+ * list. */
 export function taskListChanges(step: Pick<ToolStep, "argumentsJSON">): boolean {
   const args = parseArgs(step.argumentsJSON);
-  const action = str(args, "action") ?? "";
-  if (action !== "") return action !== "view";
-  return [args.add, args.update].some((list) => Array.isArray(list) && list.length > 0);
+  const nonEmpty = (list: unknown) => Array.isArray(list) && list.length > 0;
+  switch (str(args, "action") ?? "") {
+    case "":
+      return nonEmpty(args.add) || nonEmpty(args.update);
+    case "append":
+      return nonEmpty(args.tasks);
+    case "update":
+      return nonEmpty(args.updates);
+    default:
+      return false;
+  }
 }
 
 // The latest task the call touched ("☑ Reproduce the race", "→ Fix the
@@ -314,7 +324,6 @@ export function mcpToolParts(toolName: string): { server: string; tool: string }
 
 /** A tool no summary covers, in words: "Used github: create issue" for an MCP
  * tool, "Used compact context" for any other. Never its raw name. */
-
 export function fallbackToolSummary(step: Pick<ToolStep, "toolName">): string {
   return `Used ${toolInWords(step.toolName ?? "")}`;
 }

@@ -55,6 +55,17 @@ test("says a task_list update that changed no status as updating the list", () =
   expect(toolStepSummary(noted)).toBe("Updated the task list");
 });
 
+// The historical action form: "append" with tasks, "update" with updates.
+test("says a historical task_list action changed the list only when it carried a change", () => {
+  const called = (args: Record<string, unknown>) =>
+    toolStepSummary({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
+  expect(called({ action: "append", tasks: [] })).toBe("Checked the task list");
+  expect(called({ action: "update", updates: [] })).toBe("Checked the task list");
+  expect(called({ action: "view" })).toBe("Checked the task list");
+  expect(called({ action: "rename" })).toBe("Checked the task list");
+  expect(called({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] })).toBe("Updated the task list");
+});
+
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
     "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
