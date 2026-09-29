@@ -289,6 +289,16 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		expect(announced).toHaveBeenCalledWith("Options shown");
 	});
 
+	it("says nothing about options when you fold the dock while typing, or the keyboard goes down on it folded", () => {
+		const { tree } = typing();
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		press(tree, "Fold");
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("Answer 2 questions");
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
 	it("keeps the options while the keyboard is up for something else, or down under the composer", () => {
 		const other = mount(two);
 		act(() => keyboard.show());
