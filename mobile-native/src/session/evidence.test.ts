@@ -1,3 +1,4 @@
+import { type ToolWireCall, toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it } from "vitest";
 import type { RunStep } from "../timeline";
 import { stepEvidence } from "./evidence";
@@ -41,7 +42,8 @@ describe("what a step has to show (spec 8.2)", () => {
 	it("shows a command's output with its line count", () => {
 		const shell = step("shell", { command: "go test" });
 		shell.detail = { ...shell.detail, output: "ok\nPASS\n" };
-		expect(stepEvidence(shell)).toEqual([{ kind: "output", text: "ok\nPASS\n", lines: 2 }]);
+		// Its trailing newline goes with the shell tool's exit footer.
+		expect(stepEvidence(shell)).toEqual([{ kind: "output", text: "ok\nPASS", lines: 2 }]);
 	});
 
 	it("shows a failed step's error with its exit code", () => {
@@ -65,5 +67,80 @@ describe("what a step has to show (spec 8.2)", () => {
 		// An edit whose arguments carry neither side has no diff to draw.
 		expect(stepEvidence(step("edit_file", {}))).toEqual([]);
 		expect(stepEvidence(step("edit_file", { file_path: "a.go" }))).toEqual([]);
+	});
+});
+
+// What each core tool's evidence reads as, from what the daemon actually sends
+// (agent/testdata/toolwire): the words, not the envelope around them.
+describe("each tool's evidence, as the tools print it", () => {
+	const real = (call: ToolWireCall) => {
+		const item = toolWireStep(call);
+		return stepEvidence({
+			label: item.toolName ?? "",
+			detail: {
+				arguments: item.argumentsJSON,
+				output: item.output,
+				error: item.error,
+				exitCode: item.exitCode,
+			},
+		});
+	};
+
+	it("shows a command's output without the shell tool's exit footer", () => {
+		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
+	});
+
+	it("says a command exited nonzero, when that is all it printed", () => {
+		expect(real("call_shell_failed")).toEqual([{ kind: "exit", code: 1 }]);
+	});
+
+	it("shows a fetched page's answer, where it came from and its size, not its JSON", () => {
+		expect(real("call_web_fetch")).toEqual([
+			{
+				kind: "page",
+				text: "The release notes list three fixes to the tree settle pass.",
+				url: "https://example.com/release-notes",
+				bytes: 48213,
+			},
+		]);
+	});
+
+	it("shows the instructions a skill loaded, as markdown", () => {
+		expect(real("call_use_skill")).toEqual([
+			{
+				kind: "markdown",
+				title: "systematic-debugging",
+				markdown: "# Systematic debugging\n\nFind the root cause first.\n",
+			},
+		]);
+	});
+
+	it("pretty-prints an MCP tool's arguments and result", () => {
+		expect(real("call_mcp")).toEqual([
+			{
+				kind: "json",
+				label: "Arguments",
+				text: '{\n  "body": "Seen in go test -race.",\n  "title": "Tree settle races the drain"\n}',
+			},
+			{
+				kind: "json",
+				label: "Result",
+				text: '{\n  "number": 3210,\n  "url": "https://github.com/prime-radiant-inc/evener/issues/3210"\n}',
+			},
+		]);
+	});
+
+	it("shows an uncovered tool's arguments, and its output as it printed it", () => {
+		expect(real("call_unknown")).toEqual([
+			{ kind: "json", label: "Arguments", text: '{\n  "note_to_self": "Next: run the race detector."\n}' },
+			{ kind: "output", text: "compacted", lines: 1 },
+		]);
+	});
+
+	it("leaves a read's, a search's and a listing's output as the tool printed it", () => {
+		for (const call of ["call_read_file", "call_grep", "call_list_dir", "call_web_search"] as const) {
+			const output = toolWireStep(call).output ?? "";
+			expect(real(call)).toEqual([{ kind: "output", text: output, lines: expect.any(Number) }]);
+		}
 	});
 });

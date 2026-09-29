@@ -2,10 +2,12 @@
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
 // with the web's add and delete washes, the file a write wrote, an error, and
 // the images the step produced.
+import { formatTokenCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import { AnsiOutputLine } from "../AnsiOutputLine";
+import { MarkdownResponse } from "../MarkdownResponse";
 import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
@@ -132,6 +134,72 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 					<Text style={{ ...machineText(scale), color: palette.inkMid }}>{evidence.path}</Text>
 				</Text>
 			);
+		case "exit":
+			return (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.dangerInk }}
+				>
+					{`Exited ${evidence.code}`}
+				</Text>
+			);
+		case "page":
+			return (
+				<View style={{ gap: 4 }}>
+					{evidence.url || evidence.bytes !== undefined ? (
+						<View style={{ flexDirection: "row", gap: 8, alignItems: "baseline" }}>
+							{evidence.url ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									numberOfLines={1}
+									style={{ ...machineText(scale), color: palette.inkMid, flexShrink: 1 }}
+								>
+									{evidence.url}
+								</Text>
+							) : null}
+							{evidence.bytes !== undefined ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+								>
+									{`${formatTokenCount(evidence.bytes)}B`}
+								</Text>
+							) : null}
+						</View>
+					) : null}
+					<Text
+						allowFontScaling={allowFontScaling}
+						selectable
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					>
+						{evidence.text}
+					</Text>
+				</View>
+			);
+		case "markdown":
+			return (
+				<View style={{ gap: 4 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.inkHi }}
+					>
+						{evidence.title}
+					</Text>
+					<MarkdownResponse markdown={evidence.markdown} />
+				</View>
+			);
+		case "json":
+			return (
+				<View style={{ gap: 4 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+					>
+						{evidence.label}
+					</Text>
+					<Output text={evidence.text} lines={lineCount(evidence.text)} title={`${title}: ${evidence.label}`} />
+				</View>
+			);
 		case "error":
 			return (
 				<View style={{ gap: 2 }}>
@@ -168,8 +236,11 @@ export function StepEvidence({
 	const title = step.detail.description || stepWords(step);
 	return (
 		<View style={{ gap: 8 }}>
-			{evidence.map((item) => (
-				<EvidenceView key={item.kind} evidence={item} title={title} />
+			{evidence.map((item, index) => (
+				// Two pieces can share a kind (a tool's arguments and result),
+				// and a step's evidence is a fixed list, so its place is its key.
+				// biome-ignore lint/suspicious/noArrayIndexKey: fixed list, see above
+				<EvidenceView key={`${item.kind}:${index}`} evidence={item} title={title} />
 			))}
 			{step.images?.length ? <TranscriptImages images={step.images} hubId={hubId} /> : null}
 		</View>
