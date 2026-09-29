@@ -928,3 +928,25 @@ it("retires only its own hub's failed-start alert when it comes into focus (#310
 	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-2", hubName: "paradise-park" });
 	form.dispose();
 });
+
+it("says once why Start holds a draft whose last start may have worked (#3104)", async () => {
+	const held =
+		"This draft's last start may have worked. Check the Board before starting it again, or change the draft.";
+	const restored = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go", unconfirmed: true } });
+	expect(restored.header("headerRight").props.disabled).toBe(true);
+	expect(restored.text()).toContain(held);
+	expect(restored.text()).not.toContain("An earlier creation could not be confirmed");
+	restored.dispose();
+
+	const rebound = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void rebound.header("headerRight").props.onPress());
+	await rebound.setReady(false);
+	await rebound.setReady(true);
+	expect(rebound.text()).toContain(held);
+	expect(rebound.text()).not.toContain("Creation could not be confirmed");
+	// Changed, the draft is a new start, and the store's own line shows again.
+	await act(async () => rebound.prompt().props.onChangeText("go, and fix the docs"));
+	expect(rebound.text()).toContain("Creation could not be confirmed");
+	await act(async () => rebound.releaseStart());
+	rebound.dispose();
+});

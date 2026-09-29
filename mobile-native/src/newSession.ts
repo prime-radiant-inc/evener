@@ -23,6 +23,13 @@ import {
 	withOwnedOverrides,
 } from "./newSession/launchSetup";
 
+/** The store's own words when a start may exist but couldn't be confirmed:
+ * a new connection took over mid-start, or a draft reopened with such a start. */
+export const START_UNCONFIRMED =
+	"Creation could not be confirmed. Check the session list before trying again; the session may exist.";
+export const EARLIER_START_UNCONFIRMED =
+	"An earlier creation could not be confirmed. Check the session list before trying again; the session may exist.";
+
 type Outcome = { status: "created"; hubId: string; thread: Thread } | { status: "blocked" | "failed" | "obsolete" };
 interface Form {
 	storageLoaded: boolean;
@@ -224,8 +231,7 @@ export function createNewSessionStore(
 				submitting: false,
 				...(uncertainCreation
 					? {
-							error:
-								"Creation could not be confirmed. Check the session list before trying again; the session may exist.",
+							error: START_UNCONFIRMED,
 						}
 					: {}),
 			});
@@ -650,9 +656,7 @@ export function createNewSessionStore(
 					// (ruling 28).
 					source: source || LOCAL_HOST,
 					unconfirmedCreation: unconfirmed,
-					error: unconfirmed
-						? "An earlier creation could not be confirmed. Check the session list before trying again; the session may exist."
-						: null,
+					error: unconfirmed ? EARLIER_START_UNCONFIRMED : null,
 				});
 			}
 			if (draft?.unconfirmed) unconfirmedContent = draftContent();

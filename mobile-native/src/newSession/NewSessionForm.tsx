@@ -17,7 +17,7 @@ import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { ImageAttachments } from "../ImageAttachments";
 import { ImageSelection } from "../imageSelection";
 import { nativeImagePicker } from "../nativeImagePicker";
-import { creationModel, startedSetup } from "../newSession";
+import { creationModel, EARLIER_START_UNCONFIRMED, START_UNCONFIRMED, startedSetup } from "../newSession";
 import { Group, GroupedPage, GroupFooter, Row, RowValue, Segmented } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
@@ -36,6 +36,9 @@ const PROMPT_LINE_HEIGHT = 22;
 
 /** The project's current branch, or null outside a repository. */
 const readBranch = (service: NewSessionService, host: string, cwd: string) => service.branch(host, cwd);
+
+/** The store's sentences that only say a start may exist. */
+const UNCERTAINTY: ReadonlySet<string> = new Set([START_UNCONFIRMED, EARLIER_START_UNCONFIRMED]);
 
 /** The launch settings More options sets. */
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
@@ -70,6 +73,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				? { sub: "Couldn't list this host's plugins", subTone: "danger" }
 				: { value: "…" };
 	const access = knownAccess(form.launchOverrides.sandbox, launchDefaults);
+	const startMayRepeat = form.startMayRepeat();
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
@@ -80,7 +84,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		pluginIssues: pluginsChosen.issues,
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
-		startMayRepeat: form.startMayRepeat(),
+		startMayRepeat,
 	});
 	const offerAlert = useOfferAlert();
 	const startFailureSeen = useStartFailureSeen(hubId);
@@ -156,6 +160,13 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		]);
 	}, [store, close]);
 	const blocked = block !== null;
+	// While Start holds a draft whose last start may have worked, its reason
+	// says it; the store's own sentence about that uncertainty would say it
+	// twice. A hub's own words are still shown.
+	// (The gate's reason is that one whenever it says anything while
+	// startMayRepeat holds, since it comes right after readiness.)
+	const heldForRepeat = startMayRepeat && !!block?.message;
+	const shownError = form.error && heldForRepeat && UNCERTAINTY.has(form.error) ? null : form.error;
 	const starting = form.submitting;
 	useLayoutEffect(() => {
 		navigation.setOptions({
@@ -219,7 +230,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 			</Group>
 			{imageState.error ? <GroupFooter tone="danger">{imageState.error}</GroupFooter> : null}
 			{block?.message ? <GroupFooter tone="danger">{block.message}</GroupFooter> : null}
-			{form.error ? <GroupFooter tone="danger">{form.error}</GroupFooter> : null}
+			{shownError ? <GroupFooter tone="danger">{shownError}</GroupFooter> : null}
 			{form.storageError ? (
 				<>
 					<GroupFooter tone="danger">{form.storageError}</GroupFooter>
