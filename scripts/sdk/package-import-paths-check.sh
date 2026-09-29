@@ -2,17 +2,24 @@
 # package-import-paths-check.sh fails if any file in the app trees names the
 # AppWire TypeScript package by path instead of by its package name.
 #
-# It is a substring grep, not a parser. A quoted literal anywhere in a swept
-# file that contains `appwire-client/typescript` (the package by path) or
-# `/protocol/` (the directory the package used to live behind) fails the gate.
-# The rewriter's TypeScript reader is precise about which quoted strings are
-# imports; this gate is deliberately broader, because the cost of missing one
-# is a path import that typechecks and that nothing else in the tree notices.
-# The price of the breadth: a quoted path in a COMMENT -- a commented-out
-# import, an example in a doc comment -- is refused too, since grep cannot tell
-# it from a live import. Spell the package name, or move the string out of the
-# swept trees, or (for a config or a test that legitimately names the path) add
-# it to the exact-path exemptions below.
+# It is a line grep, not a parser. A quoted literal that begins with a relative
+# path -- `./` or `../` -- and contains `appwire-client/typescript` (the package
+# by path) or `/protocol/` (the directory the package used to live behind) fails
+# the gate. The package is never a bare specifier -- it resolves by name through
+# tsconfig and Metro, not node_modules -- so every offending import is a
+# relative path, and that shape is what the gate keys on. Reading the literal
+# itself rather than the keyword before it also reaches a specifier wrapped onto
+# its own line inside a multiline `vi.mock(`/`require(` call, and every mocking
+# form, with no per-form list. Ordinary string data -- an absolute docs URL, a
+# fixture label, prose -- does not begin with `.` and passes. The rewriter's
+# TypeScript reader is precise about which quoted strings are imports; this gate
+# is deliberately broader, because the cost of missing one is a path import that
+# typechecks and that nothing else in the tree notices. It cannot tell a live
+# import from a commented-out one, so a quoted path in a COMMENT -- a
+# commented-out import, an example in a doc comment -- is refused too. Spell the
+# package name, or move the string out of the swept trees, or (for a config or a
+# test that legitimately names the path) add it to the exact-path exemptions
+# below.
 #
 # --root points the sweep at a fixture tree instead of this checkout; only the
 # gate's own Go test passes it.
@@ -60,14 +67,22 @@ exempt_configs=(
 	mobile-native/src/metroResolver.test.ts
 )
 
-# `/protocol/` rather than `protocol`: the seam is only ever reached through a
-# relative path, and a bare `protocol` substring matches @modelcontextprotocol
-# and the "protocol" terminal-reason literal the app really does use. The
-# closing quote is an alternative to the slash so that a specifier naming the
-# directory itself -- `"../../protocol"` -- is caught too, and for the same
-# reason the package directory needs no trailing slash.
-seam='/protocol(/|["'"'"'`])'
+# `protocol` without a leading slash: the literal-shape anchor already requires
+# a `./`/`../` relative path, which is what excludes @modelcontextprotocol and
+# the "protocol" terminal-reason literal the app really does use. The closing
+# quote is an alternative to the slash so that a specifier naming the directory
+# itself -- `"../../protocol"` -- is caught too, and for the same reason the
+# package directory needs no trailing slash.
+seam='protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
+
+# A quoted literal naming the package by path is a relative path: the package is
+# never a bare specifier, so every offending import begins with `./` or `../`.
+# Requiring the slash, not just a leading dot, keeps dot-prefixed string data
+# (`.config/...`) out. Keying on the literal's own shape rather than the keyword
+# that precedes it reaches a specifier the formatter wrapped onto its own line,
+# and needs no list of the module-loading forms.
+relative='["'"'"'`]\.\.?/'
 
 status=0
 
@@ -102,7 +117,7 @@ for config in "${exempt_configs[@]}"; do
 	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
 	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
 done
-if found="$(grep "${sources[@]}" -rnE "[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
+if found="$(grep "${sources[@]}" -rnE "${relative}[^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
 	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then

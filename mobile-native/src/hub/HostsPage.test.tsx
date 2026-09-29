@@ -175,10 +175,11 @@ it("reads the live sessions again when the connection comes back", async () => {
 	page.dispose();
 });
 
-it("says it is connecting before the hub has listed its hosts", async () => {
+it("waits quietly, connected, before the hub has listed its hosts (spec 14)", async () => {
 	const fleet = scriptedFleet([]);
 	fleet.client.request = (() => new Promise(() => {})) as never;
 	const page = await mount(fleet);
-	expect(renderedText(page.tree)).toContain("Connecting to magic-kingdom…");
+	expect(renderedText(page.tree)).not.toContain("Connecting");
+	expect(page.tree.root.findAllByProps({ accessibilityLabel: "Loading hosts" })).not.toHaveLength(0);
 	page.dispose();
 });

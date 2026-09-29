@@ -21,7 +21,7 @@ import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
 import { Group, GroupedPage, GroupFooter, Row, SwitchRow } from "../sheet/Grouped";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { useHubSheet } from "./hubSheetContext";
 
@@ -83,7 +83,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={hubName} />
+				<FirstLoad hubName={hubName} label="Loading the default detail level" />
 			</GroupedPage>
 		);
 	}

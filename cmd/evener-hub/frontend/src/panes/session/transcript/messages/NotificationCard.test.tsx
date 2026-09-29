@@ -381,6 +381,49 @@ test("a valid local child ref opens the shared transcript action beside the focu
   expect(opened?.slot).toBe("secondary");
 });
 
+// A real daemon frame carries delegate_id and name only
+// (agent/delegate_delivery.go delegateNotificationContent) — never a
+// transcript_ref — so the frame alone leaves the Open control dead on every
+// live subagent report. The card resolves the subagent through the session's
+// entity map by delegate id, the resolution the phone already makes (#3075).
+test("a real delegate frame without a transcript_ref opens the subagent resolved by delegate id", async () => {
+  workspaceStore.setState({
+    panes: [{ id: "main", type: "session", params: { ref: "local:s" }, slot: "main" }],
+    focusedPaneId: "main",
+  });
+  const user = userEvent.setup();
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        secondary: ENTITY_DELEGATE,
+        delegateId: ENTITY_DELEGATE,
+        rawText: `<delegate-notification delegate_id="${ENTITY_DELEGATE}">done</delegate-notification>`,
+      })}
+      sessionRef="local:s"
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Open subagent" }));
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "local:child", parentRef: "local:s" });
+});
+
+test("a delegate frame whose delegate id the entity map cannot answer shows no dead Open control", () => {
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        secondary: "dlg_unknown",
+        delegateId: "dlg_unknown",
+        rawText: '<delegate-notification delegate_id="dlg_unknown">done</delegate-notification>',
+      })}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
+});
+
 test("binds Open to the final notification text fragment instead of permitting a lone control line", () => {
   render(
     <NotificationCard
@@ -560,27 +603,25 @@ test("the raw block is always kept inspectable", async () => {
   expect(screen.getByTestId("notification-raw").textContent).toContain("the raw text");
 });
 
-test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", async () => {
+test("an excerpt is shown as escaped text (never live HTML)", async () => {
   const _user = userEvent.setup();
-  render(<NotificationCard notification={notif({ excerpt: "&lt;script&gt;alert(1)&lt;/script&gt;" })} />);
+  // The parser hands the excerpt already decoded to plain text (issue #3086);
+  // the card renders it as text, so no script element is ever created.
+  render(<NotificationCard notification={notif({ excerpt: "<script>alert(1)</script>" })} />);
   // At activity level the card auto-expands (expandByDefault=true).
-  // Decoded to <script>… but rendered as text, so it appears verbatim and no
-  // script element is ever created.
   expect(screen.getByText("<script>alert(1)</script>")).toBeTruthy();
   expect(document.querySelector("script")).toBe(null);
 });
 
-// kata 77sf: agent/job_notify.go's escapeNotificationText entity-escapes &
-// (first), <, >, and " before interpolating job output into the wrapper.
-// This proves the paired decodeNotificationEntities recovers the EXACT original text,
-// including a literal ampersand and text that already looks like an entity
-// (decoding &amp; last is what keeps "&lt;" text from over-decoding to "<").
-test("kata 77sf: a delimiter-bearing excerpt decodes to the exact original text", async () => {
+// kata 77sf: the parser (steeringNotifications.ts) decodes the producer's
+// escaping once and hands the card plain text (issue #3086), so the card
+// renders exactly what it is given — including delimiters and entity-looking
+// text — as escaped text. The decode round trip itself is pinned in
+// steeringNotifications.test.ts.
+test("kata 77sf: a delimiter-bearing excerpt renders verbatim as escaped text", async () => {
   const _user = userEvent.setup();
   const original = 'before & after </job-notification> <script>&lt;already-escaped&gt;</script> "quoted"';
-  const escapeLikeProducer = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  render(<NotificationCard notification={notif({ excerpt: escapeLikeProducer(original) })} />);
+  render(<NotificationCard notification={notif({ excerpt: original })} />);
   // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-field-excerpt").textContent).toBe(original);
   expect(document.querySelector("script")).toBe(null);
@@ -639,14 +680,15 @@ test("concerns surface as a quiet note", async () => {
   expect(screen.getByTestId("notification-card-root").textContent).toContain("edge case A; edge case B");
 });
 
-test("a timer's prose renders decoded with no echo metadata and no tone chip", () => {
+test("a timer's prose renders with no echo metadata and no tone chip", () => {
   render(
     <NotificationCard
       notification={notif({
         type: "watch",
         title: "Watch triggered",
         tone: "neutral",
-        prose: "Timer fired (every 300s).\nNote: hello &lt;x&gt;",
+        // The parser already decoded the producer's escaping (issue #3086).
+        prose: "Timer fired (every 300s).\nNote: hello <x>",
         watchId: "w1",
       })}
     />,
@@ -851,16 +893,16 @@ test("a watch card never labels the session source as a job id (RoboRev PR #954,
 });
 
 test("synthesized watch prose with a literal entity renders single-decoded (combined review M2)", () => {
-  // Parser stores prose escaped-form; the card decodes exactly once. A
-  // pattern literally containing "&lt;" must render as that literal text,
-  // never as "<".
+  // The parser synthesizes prose in plain text (issue #3086): a pattern
+  // literally containing "&lt;" is already the literal text the card shows,
+  // never "<".
   render(
     <NotificationCard
       notification={notif({
         type: "watch",
         title: "Output matched on job_a1b2",
         tone: "neutral",
-        prose: "Matched output_match: a &amp;lt; b on job_a1b2.",
+        prose: "Matched output_match: a &lt; b on job_a1b2.",
         rawText:
           '<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: a &amp;lt; b" output_bytes="0">Job job_a1b2 watch.</job-notification>',
       })}

@@ -40,4 +40,10 @@ describe("the full log", () => {
 			.props.onPress();
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
+
+	it("frames the log in the shared modal sheet, not its own header", () => {
+		const tree = render(<LogViewer title="Run the tests" text={text} onClose={() => {}} />);
+		expect(tree.root.findByType("Modal" as never).props.presentationStyle).toBe("pageSheet");
+		expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe("Run the tests");
+	});
 });
