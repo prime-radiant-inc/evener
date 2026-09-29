@@ -202,6 +202,45 @@ describe("what alerts at all", () => {
 		expect(shown(alerts)).toEqual(["s"]);
 	});
 
+	it("brings a started session back after a banner that replaced it", () => {
+		const { alerts } = center();
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		expect(shown(alerts)).toEqual(["s"]);
+		alerts.offer(session("q"));
+		expect(shown(alerts)).toEqual(["q"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+		alerts.offer(hostOffline);
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("brings a started session back after sessions that waited replace it together", () => {
+		const { alerts } = center();
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		const release = alerts.hold("quiet");
+		alerts.offer(session("q1"));
+		alerts.offer(session("q2"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q1", "q2"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("lets a banner that isn't about sessions needing you finish before a started session that waited", () => {
+		const { alerts } = center();
+		alerts.offer(hostOffline);
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
 	it("keeps every started session that waits, and shows them in turn", () => {
 		const { alerts } = center();
 		let release = alerts.hold("quiet");

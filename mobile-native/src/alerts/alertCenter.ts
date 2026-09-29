@@ -316,8 +316,7 @@ export class AlertCenter {
 					: [...current.alerts, alert],
 			};
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts: [alert] };
+			this.replaceBanner([alert]);
 			if (!quiet(alert)) this.buzz(alert.kind === "failed" ? "warning" : "light");
 		}
 		this.shownAt = now;
@@ -345,7 +344,9 @@ export class AlertCenter {
 				return;
 			}
 			if (this.afterBanner.length > 0) {
-				this.showAfterBanner();
+				// A session you started waits for any banner that is up to end.
+				if (current !== null) this.publish();
+				else this.showAfterBanner();
 				return;
 			}
 			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
@@ -369,8 +370,7 @@ export class AlertCenter {
 			this.show(only);
 			return;
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts };
+			this.replaceBanner(alerts);
 			this.buzz(alerts.some((alert) => alert.kind === "failed") ? "warning" : "light");
 		}
 		this.shownAt = this.timer.now();
@@ -402,6 +402,23 @@ export class AlertCenter {
 		}
 		this.banner = null;
 		this.showAfterBanner();
+	}
+
+	/** Puts up a new banner in place of any that is up. A session you started
+	 * leaves only when its own banner ends or you look at it, so one the new
+	 * banner replaces goes back to the front of the queue, to show again when
+	 * this banner ends. */
+	private replaceBanner(alerts: readonly Alert[]): void {
+		const interrupted = (this.banner?.alerts ?? []).filter(
+			(other) => other.kind === "started" && !alerts.some((alert) => subject(alert) === subject(other)),
+		);
+		if (interrupted.length > 0)
+			this.afterBanner = [
+				...interrupted,
+				...this.afterBanner.filter((waiting) => !interrupted.some((other) => subject(other) === subject(waiting))),
+			];
+		this.stopBanner();
+		this.banner = { id: this.nextId++, alerts };
 	}
 
 	private queueAfterBanner(alerts: readonly Alert[]): void {
