@@ -1,4 +1,5 @@
 import { Text } from "react-native";
+import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
 import { FloatingStack } from "./FloatingStack";
@@ -21,6 +22,17 @@ describe("what floats above the transcript's end", () => {
 		expect(slots.map((slot) => slot.findByType("Text" as never).props.children)).toEqual(["toast", "next", "pill"]);
 		expect(slots.map((slot) => slot.props.style.alignItems)).toEqual(["center", "flex-end", "center"]);
 		expect(slots[1].props.style).toMatchObject({ paddingHorizontal: 16 });
+	});
+
+	it("says how tall it stands, so the transcript can keep its end clear of it", () => {
+		const heights: number[] = [];
+		const tree = render(
+			<FloatingStack toast={null} next={<Text>next</Text>} pill={null} onHeight={(height) => heights.push(height)} />,
+		);
+		act(() => {
+			column(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 44 } } });
+		});
+		expect(heights).toEqual([44]);
 	});
 
 	it("leaves out what doesn't show, so what does keeps its 10pt", () => {

@@ -140,6 +140,25 @@ describe("the model chip (spec 8.5)", () => {
 			),
 		).toBe("GLM 5.3 Vision · XHigh");
 	});
+	it("names the model as the hub's session row does while the catalog is away (S17)", () => {
+		// The catalog clears while it reloads, and after a failed load; the
+		// Board row's model_name is the same name model/list gives.
+		const session = {
+			modelProvider: "deepseek/deepseek-4.1-flash",
+			reasoningEffort: "xhigh",
+			reasoningEffortLevels: ["high", "xhigh"],
+			supportsReasoning: true,
+		};
+		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe("DeepSeek 4.1 Flash · XHigh");
+		// The catalog, when it has the model, still wins.
+		expect(
+			modelChipLabel(
+				session,
+				[{ provider: "deepseek", model: "deepseek-4.1-flash", displayName: "DS Flash" }],
+				"Stale",
+			),
+		).toBe("DS Flash · XHigh");
+	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(
 			modelChipLabel(
