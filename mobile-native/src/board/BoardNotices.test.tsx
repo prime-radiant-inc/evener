@@ -73,12 +73,17 @@ it("labels each action with its notice and gives it a 44pt target", () => {
 	}
 });
 
-it("opens Providers for a sign-in, Hub settings for a host and Plugins for a plugin", () => {
+it("opens Providers for a sign-in, the Hub at that host for a host, and Plugins for a plugin", () => {
 	const { tree, navigation } = mount(list);
 	act(() => actionButton(tree, "Sign in, openai sign-in expired").props.onPress());
 	expect(navigation.navigate).toHaveBeenLastCalledWith("Providers", { hubId: "hub-1" });
 	act(() => actionButton(tree, "Details, Studio Mac is offline · 3 sessions").props.onPress());
-	expect(navigation.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: "hub-1" });
+	// Ruling 25: the Hub opens at that host, with its home under the page.
+	expect(navigation.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Hosts",
+		params: { hubId: "hub-1", focus: "studio" },
+		initial: false,
+	});
 	act(() => actionButton(tree, "Plugins, superpowers is broken").props.onPress());
 	expect(navigation.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: "hub-1" });
 });

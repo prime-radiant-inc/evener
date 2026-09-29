@@ -2427,11 +2427,12 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	var stdout, stderr bytes.Buffer
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	config := commandRuntimeConfig{
-		Dir:     dir,
-		Env:     env,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-		Wrapper: e.Wrapper,
+		Dir:              dir,
+		Env:              env,
+		Stdout:           &stdout,
+		Stderr:           &stderr,
+		Wrapper:          e.Wrapper,
+		TerminationGrace: e.terminationGraceDuration(),
 	}
 	if args := cmd.Args(); len(args) > 0 {
 		if resolved, ok := lookPathInEnv(args[0], env); ok {
@@ -2478,6 +2479,21 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 			case <-done:
 			case <-time.After(e.terminationGraceDuration()):
 			}
+		}
+	}
+
+	// Completion barrier: reading the buffers is only safe once Wait has
+	// returned, because Wait is what joins os/exec's own copier (or the runtime's
+	// owned one). When Wait is still outstanding after the bounded termination
+	// waits — a writer outside the process group can hold the output pipe open —
+	// force-close and join the runtime's owned copier first, so the read below
+	// neither races a live copier nor releases PID ownership before the command's
+	// output has drained.
+	select {
+	case <-done:
+	default:
+		if drainer, ok := cmd.(bufferedOutputDrainer); ok {
+			_ = drainer.drainBufferedOutput()
 		}
 	}
 

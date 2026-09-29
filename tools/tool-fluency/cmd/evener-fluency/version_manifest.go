@@ -117,7 +117,14 @@ func buildVersionFromManifest(ctx context.Context, repo, cacheDir, sha, pkg stri
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(holder) }()
-	wt := filepath.Join(holder, "worktree")
+	// git names a worktree's admin directory under .git/worktrees/ after the
+	// basename of its path, so a constant basename makes concurrent calls race
+	// on the same admin directory: two `git worktree add` both creating
+	// .git/worktrees/worktree corrupt each other's read of its commondir
+	// ("failed to read .git/worktrees/worktree/commondir"). The holder already
+	// carries a per-call unique suffix from MkdirTemp, so reuse it as the
+	// basename to keep each call's admin directory unique.
+	wt := filepath.Join(holder, filepath.Base(holder))
 	if _, err := runGit(ctx, repo, "worktree", "add", "--detach", "--force", wt, sha); err != nil {
 		return "", err
 	}
