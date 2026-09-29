@@ -75,13 +75,14 @@ interface HostsStoreState {
    * owned the publish). `refresh` coalesces on the in-flight promise, and that
    * response was captured before the caller's refusal proved the snapshot
    * stale - a retry that waited on it would echo the same stale answer (the
-   * deploy/restart stale-entry retry is the caller; the guarded update/remove
-   * re-read through quietReRead directly for the same reason). Still a quiet read: no loading
+   * deploy/restart stale-entry retry is the caller; the guarded remove's retry
+   * re-reads through quietReRead directly for the same reason). Still a quiet read: no loading
    * flip, and a failure keeps the last snapshot.
    */
   reReadForced: () => Promise<boolean>;
   add: (entry: HostEntry) => Promise<HostRow>;
-  update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
+  /** expected is the pair of the row the edit dialog opened on. */
+  update: (params: { name: string; entry: HostEntry; expected: HostMutationPair }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;
@@ -593,9 +594,9 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   update: async (params) => {
     // The host being edited is named by the request's own field: name is
     // immutable, so it is the target rather than a value here (spec §3.1).
-    // The guarded pair travels with it: the row the store holds is what the
-    // user saw, and a refusal means that row moved (the shared mutation
-    // retries once with the re-read pair).
+    // The guarded pair travels with it as params.expected, the pair of the row
+    // the edit dialog opened on; a stale-entry refusal rejects unretried, so
+    // an edit someone else made meanwhile is never overwritten.
     const row = await hostMutations.update(params);
     await reReadAfterMutation();
     return row;

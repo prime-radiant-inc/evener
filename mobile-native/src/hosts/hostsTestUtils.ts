@@ -72,9 +72,17 @@ export function scriptedFleet(hosts: HostRow[], sessions: ReturnType<typeof live
 					const refusal = fleet.refuse.update;
 					fleet.refuse.update = undefined;
 					if (refusal) throw refusal;
-					const { name, entry } = params as { name: string; entry: Partial<HostRow> };
+					const { name, entry, expectedGeneration, expectedIncarnationId } = params as {
+						name: string;
+						entry: Partial<HostRow>;
+						expectedGeneration: number;
+						expectedIncarnationId: string;
+					};
 					const current = fleet.hosts.find((row) => row.name === name);
 					if (!current) throw new WireError(`host "${name}" is not listed`, -32602);
+					// The registry's guard: only the current pair changes the entry.
+					if (current.generation !== expectedGeneration || current.incarnationId !== expectedIncarnationId)
+						throw new WireError(`host "${name}": the entry moved`, -32013, { evenerErrorInfo: "stale-entry" });
 					const updated = { ...current, ...entry, generation: current.generation + 1 };
 					fleet.hosts = fleet.hosts.map((row) => (row.name === name ? updated : row));
 					return { outcome: "committed", host: updated };

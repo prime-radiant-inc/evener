@@ -191,13 +191,13 @@ describe("editing and removing a host (spec 12)", () => {
 		return () => `m${++next}`;
 	};
 
-	it("edits the host it holds with that row's pair, then reads the hub's hosts again", async () => {
+	it("edits a host with the pair its form opened on, then reads the hub's hosts again", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client, ids());
 		const read = hosts.read();
 		h.take("evener/host/list").resolve({ hosts: [row("attic", { generation: 4 })] });
 		await read;
-		const edit = hosts.update("attic", { address: "attic.lan" });
+		const edit = hosts.update("attic", { address: "attic.lan" }, { generation: 4, incarnationId: "incarnation-1" });
 		await settle();
 		const sent = h.take("evener/host/update");
 		expect(sent.params).toEqual({
@@ -215,24 +215,20 @@ describe("editing and removing a host (spec 12)", () => {
 		expect(hosts.getSnapshot().rows?.[0]?.address).toBe("attic.lan");
 	});
 
-	it("retries an edit the hub found stale with the pair its own re-read brings", async () => {
+	it("hands an edit the hub found stale back to its form, never retried", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client, ids());
 		const read = hosts.read();
-		h.take("evener/host/list").resolve({ hosts: [row("attic")] });
-		await read;
-		const edit = hosts.update("attic", { address: "attic.lan" });
-		await settle();
-		h.take("evener/host/update").reject(new WireError("the entry moved", -32013, { evenerErrorInfo: "stale-entry" }));
-		await settle();
 		h.take("evener/host/list").resolve({ hosts: [row("attic", { generation: 2 })] });
+		await read;
+		const edit = hosts.update("attic", { address: "attic.lan" }, { generation: 1, incarnationId: "incarnation-1" });
 		await settle();
-		const retry = h.take("evener/host/update");
-		expect(retry.params).toMatchObject({ expectedGeneration: 2, mutationId: "m2" });
-		retry.resolve({ outcome: "committed", host: row("attic", { generation: 3 }) });
-		await settle();
-		h.take("evener/host/list").resolve({ hosts: [row("attic", { generation: 3 })] });
-		await edit;
+		const sent = h.take("evener/host/update");
+		expect(sent.params).toMatchObject({ expectedGeneration: 1 });
+		sent.reject(new WireError("the entry moved", -32013, { evenerErrorInfo: "stale-entry" }));
+		await expect(edit).rejects.toThrow("the entry moved");
+		expect(h.count("evener/host/update")).toBe(0);
+		expect(h.count("evener/host/list")).toBe(0);
 	});
 
 	it("hands a refused edit back to the page that asked", async () => {
@@ -241,7 +237,7 @@ describe("editing and removing a host (spec 12)", () => {
 		const read = hosts.read();
 		h.take("evener/host/list").resolve({ hosts: [row("attic")] });
 		await read;
-		const edit = hosts.update("attic", { address: "" });
+		const edit = hosts.update("attic", { address: "" }, { generation: 1, incarnationId: "incarnation-1" });
 		await settle();
 		h.take("evener/host/update").reject(
 			new WireError("missing ssh destination", -32602, { evenerErrorInfo: "invalidHostField", field: "address" }),

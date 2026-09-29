@@ -6,10 +6,12 @@
 import {
 	type EditableHostField,
 	friendlyErrorMessage,
+	HOST_CHANGED_MESSAGE,
 	HOST_ENTRY_FIELD_ORDER,
 	HOST_ENTRY_FIELD_TEXT,
 	type HostEntry,
 	type HostRow,
+	hostChangedSinceOpened,
 	hostFieldError,
 	rootsFromText,
 	rootsToText,
@@ -66,6 +68,10 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	const { name } = route.params;
 	const { ready } = useHubSheet();
 	const [fields, setFields] = useState(() => fieldsFrom(row));
+	// The pair of the row the form opened on: the edit speaks for what the
+	// person saw, so a host changed since then refuses instead of being
+	// overwritten.
+	const [opened] = useState(() => ({ generation: row.generation, incarnationId: row.incarnationId }));
 	const [saving, setSaving] = useState(false);
 	// Two taps land before the header re-renders disabled; one update goes.
 	const inFlight = useRef(false);
@@ -77,7 +83,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 			setSaving(true);
 			setError(null);
 			try {
-				await hosts.update(name, entryFrom(fields));
+				await hosts.update(name, entryFrom(fields), opened);
 				// A host gone from the re-read is useLeavesWithHost's to leave with,
 				// and a page already swiped away has left: going back here too
 				// would pop the page beneath.
@@ -87,7 +93,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 				const field = hostFieldError(refusal);
 				setError({
 					field: HOST_ENTRY_FIELD_ORDER.find((candidate) => candidate === field) ?? null,
-					message: friendlyErrorMessage(refusal),
+					message: hostChangedSinceOpened(refusal) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(refusal),
 				});
 			} finally {
 				inFlight.current = false;
@@ -100,7 +106,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 			headerLeft: () => <HeaderButton label="Cancel" disabled={saving} onPress={() => navigation.goBack()} />,
 			headerRight: () => <HeaderButton label="Save" strong disabled={saving || !ready} onPress={() => void save()} />,
 		});
-	}, [navigation, name, hosts, fields, saving, ready]);
+	}, [navigation, name, hosts, fields, saving, ready, opened]);
 	return (
 		<GroupedPage>
 			<SheetStatus />

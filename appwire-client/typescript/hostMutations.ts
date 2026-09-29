@@ -1,8 +1,11 @@
 // The guarded host mutations the web's Settings -> Hosts and the phone's Hub
 // share (registry spec 08 §11-§12): Edit and Remove echo the (generation,
-// incarnation id) pair of the row the user saw, and a `stale-entry` refusal
-// earns one re-read and one retry. Which rows a client holds and how it
-// re-reads them are its own, so both are ports; so is the mutation id's
+// incarnation id) pair of the row the user saw. An Edit's pair is the one its
+// form opened on, and a `stale-entry` refusal goes back to the form: only add
+// and update advance a generation, so it means someone else edited the host,
+// and sending the edit again would overwrite theirs. A Remove echoes the row
+// it holds and earns one re-read and one retry. Which rows a client holds and
+// how it re-reads them are its own, so both are ports; so is the mutation id's
 // randomness, like every host API the package touches. Pure logic.
 
 import type { AppwireClientLike } from "./clientLike";
@@ -19,6 +22,16 @@ export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
  * appwire/errors.go, spec 08 §12). The retry path matches this string, never
  * the numeric code - siblings share the code. */
 export const ErrorStaleEntry = "stale-entry";
+
+/** Whether a refusal is the hub's `stale-entry`: for an edit, the host
+ * changed after its form opened. */
+export function hostChangedSinceOpened(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === ErrorStaleEntry;
+}
+
+/** What an edit form says when the host changed after it opened. */
+export const HOST_CHANGED_MESSAGE =
+  "This host changed since you opened it. Cancel, then open it again to see the change.";
 
 /** HostMutationPair is the (generation, incarnationId) pair a guarded mutation
  * echoes back to the hub. */
@@ -41,9 +54,11 @@ export interface HostMutationPorts {
 }
 
 export interface HostMutations {
-  /** Sends a guarded update and returns the committed row. The host is named
-   * by `name`: a name is immutable, so it is the target, not a value. */
-  update(params: { name: string; entry: HostEntry }): Promise<HostRow>;
+  /** Sends a guarded update against `expected`, the pair of the row the edit
+   * form opened on, and returns the committed row. The host is named by
+   * `name`: a name is immutable, so it is the target, not a value. A
+   * `stale-entry` refusal rejects as it is, never retried. */
+  update(params: { name: string; entry: HostEntry; expected: HostMutationPair }): Promise<HostRow>;
   /** Sends a guarded remove and returns the committed removed row. */
   remove(name: string): Promise<RemovedRow>;
 }
@@ -133,7 +148,7 @@ export function createHostMutations(ports: HostMutationPorts): HostMutations {
     try {
       return await send(await pairForMutation(name), ports.newMutationId());
     } catch (error) {
-      if (!(error instanceof WireError) || error.evenerErrorInfo !== ErrorStaleEntry) throw error;
+      if (!hostChangedSinceOpened(error)) throw error;
       // The held row is exactly what the refusal just proved stale, so the
       // retry re-reads before it echoes anything, then echoes that read's row
       // or refuses locally when the registry no longer lists the name. One
@@ -144,21 +159,20 @@ export function createHostMutations(ports: HostMutationPorts): HostMutations {
   }
 
   return {
-    update: (params) =>
-      guardedMutation(params.name, async (pair, mutationId) => {
-        const result = await ports.client().request(
-          "evener/host/update",
-          {
-            name: params.name,
-            entry: params.entry,
-            mutationId,
-            expectedGeneration: pair.generation,
-            expectedIncarnationId: pair.incarnationId,
-          },
-          { timeoutMs: HOST_GATE_TIMEOUT_MS },
-        );
-        return committedMutationRow(result, "evener/host/update");
-      }),
+    update: async (params) => {
+      const result = await ports.client().request(
+        "evener/host/update",
+        {
+          name: params.name,
+          entry: params.entry,
+          mutationId: ports.newMutationId(),
+          expectedGeneration: params.expected.generation,
+          expectedIncarnationId: params.expected.incarnationId,
+        },
+        { timeoutMs: HOST_GATE_TIMEOUT_MS },
+      );
+      return committedMutationRow(result, "evener/host/update");
+    },
     remove: (name) =>
       guardedMutation(name, async (pair, mutationId) => {
         const result = await ports.client().request(
