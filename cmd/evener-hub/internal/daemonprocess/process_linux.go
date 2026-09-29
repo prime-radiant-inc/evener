@@ -79,6 +79,16 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err := unix.Stat(root, &procStat); err != nil {
 		return identity{}, p.inspectionError(err)
 	}
+	// The read order is load-bearing: cmdline before stat. In do_exit the
+	// kernel sets PF_EXITING (exit_signals) before it releases the memory
+	// the command line is read from (exit_mm), so a command line read empty
+	// here guarantees the stat read below reports the process exiting. Read
+	// the other way round, a daemon that began exiting between the two reads
+	// would show an empty command line and exiting=false (#3339).
+	argv, err := os.ReadFile(filepath.Join(root, "cmdline"))
+	if err != nil {
+		return identity{}, p.inspectionError(err)
+	}
 	raw, err := os.ReadFile(filepath.Join(root, "stat"))
 	if err != nil {
 		return identity{}, p.inspectionError(err)
@@ -106,14 +116,11 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	}
 	base := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano()))
 	started, startedLower := base.Add(upper), base.Add(lower)
-	argv, err := os.ReadFile(filepath.Join(root, "cmdline"))
-	if err != nil {
-		return identity{}, p.inspectionError(err)
-	}
-	// A retiring daemon mid-exit is closing its files, so its descriptors
-	// are no evidence, and a retiring target doesn't need log ownership.
+	// A retiring target never needs log ownership (judge doesn't read it),
+	// and a retiring daemon is closing its files, so scanning them could
+	// only add failures.
 	owns := false
-	if !exiting || !t.Retiring {
+	if !t.Retiring {
 		owns, err = linuxOwnsLog(root, t)
 		if err != nil {
 			return identity{}, p.inspectionError(err)

@@ -326,7 +326,6 @@ func TestRetiringTargetBindsAnExitingDaemon(t *testing.T) {
 	target.Retiring = true
 	k := &kernelProcess{facts: validIdentity()}
 	k.facts.argv = []string{""}
-	k.facts.ownsLog = false
 	k.facts.exiting = true
 	p, err := testController(k).Open(target)
 	if err != nil {
