@@ -9,9 +9,31 @@
 // import, as notificationWireFixtures loads its own.
 
 import subagentCalls from "../../../agent/testdata/subagentwire/calls.json?raw";
-import type { ThreadItem } from "../types.gen";
+import type { ItemModel, ThreadModel } from "../model";
+import { hydrateThread } from "../reducer";
+import type { Thread, ThreadItem } from "../types.gen";
+import { wireThread } from "./notifications";
 
 /** The recorded call and result items, in the order history carries them. */
 export function subagentCallItems(): ThreadItem[] {
   return (JSON.parse(subagentCalls) as { items: ThreadItem[] }).items;
+}
+
+let model: ThreadModel | undefined;
+
+/** One settled step: the recorded call merged with its result, as a client
+ * holds it. Hydrated once; treat it as read-only. */
+export function subagentWireStep(callId: string): ItemModel {
+  model ??= hydrateThread(
+    {
+      thread: wireThread("ref-subagents", {
+        turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: subagentCallItems() }],
+      } as Partial<Thread>),
+    },
+    "ref-subagents",
+    0,
+  );
+  const item = model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === callId);
+  if (!item) throw new Error(`no ${callId} step in agent/testdata/subagentwire/calls.json`);
+  return item;
 }
