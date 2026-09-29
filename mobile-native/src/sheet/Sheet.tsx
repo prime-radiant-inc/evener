@@ -21,6 +21,8 @@ export interface SheetButton {
 	/** "Done" unless the sheet names its own verb, such as "Add" or "Send". */
 	label?: string;
 	disabled?: boolean;
+	/** Its action is running: VoiceOver hears it's busy. */
+	busy?: boolean;
 	onPress(): void;
 }
 
@@ -71,7 +73,13 @@ export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory
 					) : null}
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
 						{done ? (
-							<HeaderButton label={done.label ?? "Done"} strong disabled={done.disabled} onPress={done.onPress} />
+							<HeaderButton
+								label={done.label ?? "Done"}
+								strong
+								disabled={done.disabled}
+								busy={done.busy}
+								onPress={done.onPress}
+							/>
 						) : null}
 					</View>
 				</View>
