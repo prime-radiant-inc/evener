@@ -65,6 +65,9 @@ exempt_configs=(
 	mobile-native/vitest.config.mts
 	mobile-native/metro.config.js
 	mobile-native/src/metroResolver.test.ts
+	# Generated vendored bundle (mermaid + DOMPurify); its minified internals can
+	# carry a string shaped like the seam, and it is regenerated on mermaid bumps.
+	mobile-native/src/generated/mermaidPage.ts
 )
 
 # `protocol` without a leading slash: the literal-shape anchor already requires
