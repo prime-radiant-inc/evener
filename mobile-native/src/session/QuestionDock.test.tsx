@@ -251,6 +251,16 @@ describe("a question taller than the room the screen gives the dock", () => {
 		expect(inScroller("Other answer…")).toBe(false);
 		expect(inScroller("Next question")).toBe(false);
 	});
+
+	it("starts the next question at its top, wherever the last one was scrolled to", () => {
+		const { tree } = mount(two);
+		const scroller = () => tree.root.findAll((node) => String(node.type) === "ScrollView")[0];
+		const first = scroller();
+		press(tree, "Next question");
+		expect(renderedText(tree)).toContain("Tests?");
+		// A new scroller, so no offset carries over from the question before.
+		expect(scroller()).not.toBe(first);
+	});
 });
 
 describe("saved answers that couldn't be read", () => {

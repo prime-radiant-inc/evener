@@ -161,7 +161,12 @@ export function QuestionDock({
 					<SymbolView name="chevron.down" tintColor={palette.inkMid} size={15 * scale} />
 				</SymbolButton>
 			</View>
-			<ScrollView style={{ flexGrow: 0, flexShrink: 1 }} keyboardShouldPersistTaps="handled">
+			<ScrollView
+				// Keyed by the question, so each question opens at its top.
+				key={question.key}
+				style={{ flexGrow: 0, flexShrink: 1 }}
+				keyboardShouldPersistTaps="handled"
+			>
 				<View style={{ paddingHorizontal: 16, gap: 4 }}>
 					<Text
 						allowFontScaling={allowFontScaling}
