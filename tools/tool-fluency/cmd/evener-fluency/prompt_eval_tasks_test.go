@@ -274,6 +274,12 @@ func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 			if ok, _ := runCheck(exited, check, checkTimeout); ok {
 				t.Errorf("a new TestMain that exits early passed %q with no fix", check.Name)
 			}
+
+			initExit := fresh()
+			mustWrite(t, filepath.Join(initExit, dir, "zz_init.go"), pkgLine+"\n\nimport \"os\"\n\nfunc init() { os.Exit(0) }\n")
+			if ok, _ := runCheck(initExit, check, checkTimeout); ok {
+				t.Errorf("an init that exits before any test runs passed %q with no fix", check.Name)
+			}
 		})
 	}
 }
