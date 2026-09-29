@@ -6,7 +6,7 @@
 // host mutations.
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Alert } from "react-native";
 import { whenReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
@@ -16,7 +16,7 @@ import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../s
 import { SheetStatus } from "../sheet/SheetStatus";
 import { HostsNotListed } from "./HostsPage";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
-import { useHostsOnScreen } from "./useHostsOnScreen";
+import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
 export function HostDetailPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "HostDetail">) {
 	const { name } = route.params;
@@ -25,13 +25,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 	const [removeError, setRemoveError] = useState<string | null>(null);
 	const { state, loadError, liveCount, hubVersion } = useHostsOnScreen();
 	const row = state?.rows?.find((candidate) => candidate.name === name);
-	// A host removed elsewhere leaves the list: its page goes with it, once.
-	const left = useRef(false);
-	useEffect(() => {
-		if (!state || row || left.current) return;
-		left.current = true;
-		navigation.goBack();
-	}, [state, row, navigation]);
+	useLeavesWithHost(state ? !!row : null, navigation.goBack);
 	if (!state || !row || !hosts) return <HostsNotListed hubName={hubName} error={loadError} />;
 	const connecting = state.connecting.has(name);
 	const status = hostStatus(row, connecting);

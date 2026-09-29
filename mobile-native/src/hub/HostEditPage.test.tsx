@@ -25,15 +25,15 @@ const settle = () =>
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 
-async function mount(fleet: ScriptedFleet, name: string) {
+async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boolean } = {}) {
 	const hosts = new HostsController(fleet.client, fleet.newMutationId);
 	const live = new LiveSessionsReader(fleet.client);
 	const context: HubSheetContextValue = {
 		hubId: "hub-1",
 		hubName: "magic-kingdom",
 		client: null,
-		ready: true,
-		canUseConnection: () => true,
+		ready: options_.ready ?? true,
+		canUseConnection: () => options_.ready ?? true,
 		updates: createHubUpdateController({
 			client: () => {
 				throw new Error("not in this test");
@@ -172,5 +172,33 @@ it("goes back without saving on Cancel", async () => {
 	await act(async () => page.header("headerLeft").props.onPress());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
 	expect(fleet.calls.some((call) => call.method === "evener/host/update")).toBe(false);
+	page.dispose();
+});
+
+it("holds Save while the phone's connection is down", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic", { ready: false });
+	expect(page.header("headerRight").props.disabled).toBe(true);
+	page.dispose();
+});
+
+it("sends one update however fast Save is pressed twice", async () => {
+	const fleet = scriptedFleet([attic]);
+	const page = await mount(fleet, "attic");
+	const save = page.header("headerRight").props.onPress;
+	await act(async () => {
+		save();
+		save();
+	});
+	await settle();
+	expect(fleet.calls.filter((call) => call.method === "evener/host/update")).toHaveLength(1);
+	page.dispose();
+});
+
+it("goes back when its host leaves the hub's list while it is open", async () => {
+	const fleet = scriptedFleet([attic]);
+	const page = await mount(fleet, "attic");
+	fleet.hosts = [];
+	await act(async () => page.hosts.read());
+	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
 	page.dispose();
 });
