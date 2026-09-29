@@ -128,6 +128,8 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	// so it always finds the delegate running.
 	select {
 	case <-childRunning:
+	// TRIPWIRE: a hang guard only; the child reaches its model call within
+	// milliseconds, and the receive above is what orders the send.
 	case <-time.After(30 * time.Second):
 		t.Fatal("the delegate's child never reached its first model call")
 	}
