@@ -917,9 +917,7 @@ test("a focused pane focuses its composer on mount (desktop)", async () => {
 
 test("an unfocused pane never focuses its composer on mount", async () => {
   await mountComposer("ref_a", {}, { focused: false });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(document.activeElement).not.toBe(textarea());
 });
 
@@ -927,9 +925,7 @@ test("a focused pane never focuses its composer on mount on mobile", async () =>
   const restoreViewport = installMobileViewport();
   try {
     await mountComposer("ref_a", {}, { focused: true });
-    await act(async () => {
-      await flushPendingTurnsProjectionForTests();
-    });
+    await flushPendingTurnsProjectionForTests();
     expect(document.activeElement).not.toBe(textarea());
   } finally {
     restoreViewport();
@@ -1076,9 +1072,7 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   act(() => {
     requestQuoteInsert("ref_other", "> quoted line\n\n");
   });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("");
 });
 
@@ -1148,9 +1142,7 @@ test("a composer-focus request for a DIFFERENT ref never focuses this composer",
   act(() => {
     requestComposerFocus("ref_other");
   });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(document.activeElement).not.toBe(textarea());
 });
 
@@ -2457,8 +2449,8 @@ test("an uncertain own send still routes the next message to queue", async () =>
     });
     await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await user.type(textarea(), "second");
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
@@ -2510,8 +2502,8 @@ test("a canceled own send no longer routes the next message to queue", async () 
     });
     await storage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await user.type(textarea(), "second");
   await user.click(submitButton());
   // The route shows in what was sent: once the daemon's receipt reflects the
@@ -3575,8 +3567,8 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
     });
     await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
     await refreshPendingTurnsProjection(ref);
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
@@ -5261,9 +5253,7 @@ test.each(["before render", "before subscription"] as const)(
         <ObserveFirstCommit />
       </>,
     );
-    await act(async () => {
-      await flushPendingTurnsProjectionForTests();
-    });
+    await flushPendingTurnsProjectionForTests();
     expect(textarea().textContent).toBe("");
     expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
     // First-commit state covers the lazy initializer independently of the
