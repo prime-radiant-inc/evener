@@ -217,8 +217,9 @@ export function nativeModuleMock() {
 	};
 
 	// KeyboardAvoidingView only shifts layout; the test tree renders its
-	// children unchanged, and keeps its props for a test to read.
-	const KeyboardAvoidingView = (props: { children?: ReactNode }) => createElement("KeyboardAvoidingView", props);
+	// children unchanged.
+	const KeyboardAvoidingView = (props: { children?: ReactNode }) =>
+		createElement("KeyboardAvoidingView", null, props.children);
 
 	// Animated keeps its values observable: a Value holds the number the
 	// screen last drove it to, and timing lands on its target at once, so a
