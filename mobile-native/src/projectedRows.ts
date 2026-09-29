@@ -49,6 +49,7 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
+	parseTaskState,
 	pendingTextJoined,
 	projectThread,
 	steeringLabel,
@@ -62,6 +63,7 @@ import type {
 	ItemModel,
 	ProjectedEntry,
 	SteeringFragment,
+	TaskRow,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	Turn,
@@ -123,6 +125,10 @@ export interface ActivityDetail {
 	// parse.
 	startedAtMs?: number;
 	endedAtMs?: number;
+	// A task_list step's task list as the call returned it (the item's raw
+	// state), read once here like summary. Absent for every other tool, and
+	// for a call from a daemon that didn't return one.
+	tasks?: readonly TaskRow[];
 }
 
 export interface ActivityMember {
@@ -561,6 +567,7 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 
 function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
+	const tasks = it.toolName === "task_list" ? parseTaskState(it.raw) : null;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
@@ -571,6 +578,7 @@ function activityDetail(it: ItemModel): ActivityDetail {
 		callId: it.callId,
 		startedAtMs: start,
 		endedAtMs: end,
+		...(tasks ? { tasks } : {}),
 	};
 }
 

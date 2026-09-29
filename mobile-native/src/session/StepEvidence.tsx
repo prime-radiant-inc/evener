@@ -1,13 +1,14 @@
 // A step's evidence, open under its line in a run (spec 8.2): command output
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
-// with the web's add and delete washes, the file a write wrote, an error, and
-// the images the step produced.
+// with the web's add and delete washes, the file a write wrote, a task list,
+// an error, and the images the step produced.
 import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
+import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "../taskStatus";
 import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
@@ -195,6 +196,32 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 						{evidence.title}
 					</Text>
 					<MarkdownResponse markdown={evidence.markdown} />
+				</View>
+			);
+		case "tasks":
+			// Each task as the Tasks sheet draws it, the note this call added
+			// under it.
+			return (
+				<View style={{ gap: 6 }}>
+					{evidence.tasks.map((task) => (
+						<View key={task.id} style={{ gap: 2 }}>
+							<Text
+								allowFontScaling={allowFontScaling}
+								accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+								style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+							>
+								{`${TASK_STATUS_GLYPH[task.status]} ${task.description}`}
+							</Text>
+							{task.note ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+								>
+									{task.note}
+								</Text>
+							) : null}
+						</View>
+					))}
 				</View>
 			);
 		case "json":
