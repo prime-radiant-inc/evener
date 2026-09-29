@@ -37,8 +37,14 @@ const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
 export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSession">) {
 	const { profiles } = useConnection();
-	// A hub removed while its sheet was on its way here has no store to make.
-	if (!profiles.some((profile) => profile.id === props.route.params.hubId)) return null;
+	const { navigation } = props;
+	// A removed hub has no store to make or show: its sheet closes, whether the
+	// hub went while the sheet was open or on its way here.
+	const removed = !profiles.some((profile) => profile.id === props.route.params.hubId);
+	useEffect(() => {
+		if (removed) navigation.goBack();
+	}, [removed, navigation]);
+	if (removed) return null;
 	return <NewSessionSheetBody {...props} />;
 }
 
