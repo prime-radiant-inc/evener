@@ -88,7 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
-import { navBarGlassOptions, useSystemGlass } from "./design/systemGlass";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -963,12 +963,11 @@ export function ConversationScreen({
 	// The block's measured height, and whether it was measured on the glass,
 	// where it includes the nav bar's room.
 	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
-	// The block's rows (the connection line, the chips, the note): its height
-	// less the bar's room it measured with.
-	const headerRows = Math.max(0, sessionHeader.height - (sessionHeader.onGlass ? headerHeight : 0));
 	// What the list's top keeps clear: the bar where the screen runs under it,
 	// and the rows.
-	const reservedTop = underNavBar + headerRows;
+	const reservedTop = reservedUnderGlass(headerHeight, sessionHeader, navGlass);
+	// The block's rows (the connection line, the chips, the note).
+	const headerRows = reservedTop - underNavBar;
 	const listOffset = useRef(0);
 	const reservedRows = useRef(0);
 	// When the rows grow or shrink (the connection line comes or goes), the
@@ -2864,56 +2863,51 @@ export function ConversationScreen({
 							// the composer's placeholder invites.
 							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
-						<View
-							pointerEvents="box-none"
-							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+						<SessionHeader
+							glassTop={navGlass ? headerHeight : undefined}
 							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
-						>
-							<SessionHeader
-								glassTop={navGlass ? headerHeight : undefined}
-								status={connectionText}
-								chips={chips}
-								find={
-									find ? (
-										<FindBar
-											query={find.query}
-											label={
-												find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
-											}
-											searchingOlder={find.seeking && snapshot.loadingOlder}
-											settled={!find.seeking}
-											onQuery={(query) => setFind(newFind(query))}
-											onStep={stepFind}
-											onDone={() => {
-												Keyboard.dismiss();
-												setFind(null);
-											}}
-											onGlass={navGlass}
-										/>
-									) : undefined
-								}
-								hidden={headerHiding.hidden}
-								composerKeyboard={composerKeyboard}
-								onChip={openChip}
-								notes={
-									notesPreview ? (
-										<NotesBar
-											onGlass={navGlass}
-											preview={notesPreview}
-											onPress={() => {
-												Keyboard.dismiss();
-												// Showing your note, the editor opens with the caret at its end.
-												navigation.navigate("NotesSheet", {
-													hubId: route.params.hubId,
-													ref: route.params.ref,
-													focusEditor: notesPreview.glyph === "person",
-												});
-											}}
-										/>
-									) : undefined
-								}
-							/>
-						</View>
+							status={connectionText}
+							chips={chips}
+							find={
+								find ? (
+									<FindBar
+										query={find.query}
+										label={
+											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
+										}
+										searchingOlder={find.seeking && snapshot.loadingOlder}
+										settled={!find.seeking}
+										onQuery={(query) => setFind(newFind(query))}
+										onStep={stepFind}
+										onDone={() => {
+											Keyboard.dismiss();
+											setFind(null);
+										}}
+										onGlass={navGlass}
+									/>
+								) : undefined
+							}
+							hidden={headerHiding.hidden}
+							composerKeyboard={composerKeyboard}
+							onChip={openChip}
+							notes={
+								notesPreview ? (
+									<NotesBar
+										onGlass={navGlass}
+										preview={notesPreview}
+										onPress={() => {
+											Keyboard.dismiss();
+											// Showing your note, the editor opens with the caret at its end.
+											navigation.navigate("NotesSheet", {
+												hubId: route.params.hubId,
+												ref: route.params.ref,
+												focusEditor: notesPreview.glyph === "person",
+											});
+										}}
+									/>
+								) : undefined
+							}
+						/>
 						<FloatingStack
 							toast={toaster.toast ? <Toast toast={toaster.toast} dismiss={toaster.dismiss} /> : null}
 							next={
