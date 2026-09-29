@@ -44,12 +44,12 @@ it.each([
 		revealRef: "child",
 	});
 });
-const locationClient = (fields: Record<string, unknown>) =>
+const locationClient = (fields: Record<string, unknown>, session: Record<string, unknown> = {}) =>
 	({
 		request: async () => {
 			const v2 = wireV2({ representationVersion: 2, resource: "location", ref: "child" } as never, {
 				ref: "child",
-				session: { ref: "child", project: "Project" },
+				session: { ref: "child", project: "Project", ...session },
 				...fields,
 			});
 			return {
@@ -70,7 +70,19 @@ it.each([
 		"cluster-row",
 	],
 ])("reveals a subagent by %s, not by the subagent itself", async (_name, fields, revealRef) => {
-	expect(await locateSession(locationClient(fields), "child")).toMatchObject({ ref: "child", revealRef });
+	expect(await locateSession(locationClient(fields, { kind: "subagent" }), "child")).toMatchObject({
+		ref: "child",
+		revealRef,
+	});
+});
+it("reveals a nested fork original's own row, not its parent (it has one)", async () => {
+	// The hub marks every child non-top-level, but a fork original keeps its own
+	// row in roots-only navigation, so /project must land on it, not the root.
+	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "current" };
+	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+		ref: "child",
+		revealRef: "child",
+	});
 });
 it.each(["local:orphan", "host:remote-subagent"])(
 	"shows the existing could-not-be-located message for a gone ref: %s",

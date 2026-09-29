@@ -28,7 +28,7 @@ import {
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { sessionSubagentChip } from "./board/BoardRow";
+import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -71,12 +71,16 @@ export function PageList<T>({
 	organizationHubId,
 	revealRef,
 	chip,
+	chipLabel,
 }: {
 	header?: ReactElement;
 	organizationHubId?: string;
 	revealRef?: string;
 	/** A row's trailing chip, beside its title (the subagent count). */
 	chip?: (row: T) => ReactNode;
+	/** The chip's text, for the row's accessibilityLabel: a Pressable override
+	 * hides the chip's own text from VoiceOver. Undefined when there is none. */
+	chipLabel?: (row: T) => string | undefined;
 	pages: NavigationPages<T>;
 	ready: boolean;
 	rowKey: (row: T) => string;
@@ -349,7 +353,7 @@ export function PageList<T>({
 						<View style={styles.row}>
 							<Pressable
 								accessibilityRole="button"
-								accessibilityLabel={`Open ${title(item)}`}
+								accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
 								accessibilityState={{ selected: rowKey(item) === revealRef }}
 								disabled={!ready}
 								onPress={() => open(item)}
@@ -631,6 +635,7 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 					childRows={(row) => row.children ?? []}
 					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) =>
 						`${row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state}${row.branch ? ` · ${row.branch}` : ""}`
@@ -684,6 +689,7 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					childRows={sessionChildren}
 					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty="No sessions in this location."

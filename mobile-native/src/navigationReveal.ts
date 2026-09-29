@@ -39,9 +39,11 @@ export async function locateSession(
 	}
 	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
 		throw new Error("This session could not be located. Try again.");
-	// A subagent's location names the row that owns it in top_level_ref (D5); a
-	// top-level session is its own row.
-	const revealRef = location.top_level ? ref : (location.top_level_ref ?? ref);
+	// A subagent has no row of its own: the hub answers its location with
+	// top_level_ref = the row that owns it (D5). Every other ref -- a root, a
+	// fork original or a cluster member -- has its own row, even when the hub
+	// marks it non-top-level, so reveal it directly.
+	const revealRef = location.session?.kind === "subagent" ? (location.top_level_ref ?? ref) : ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");

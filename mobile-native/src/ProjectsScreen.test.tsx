@@ -114,5 +114,14 @@ it("renders a live tally's chip in the shared list and none without one", async 
 	expect(renderedText(tree)).toContain("2 running");
 	// Only the row with a tally gets a chip, not the one without.
 	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	// The row's own label speaks it too: a Pressable override hides the chip's
+	// text from VoiceOver.
+	const labels = tree.root
+		.findAll(
+			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("Open "),
+		)
+		.map((node) => node.props.accessibilityLabel);
+	expect(labels).toContain("Open Alpha, 2 running");
+	expect(labels).toContain("Open Beta");
 	tree.unmount();
 });

@@ -334,6 +334,14 @@ const chipTally = (session: NavigationSessionSummary) => (isTopLevel(session) ? 
 export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
 	chipTally(session) ? <SubagentChip session={session} /> : null;
 
+/** The chip's text for the row's own accessibilityLabel: a Pressable override
+ * hides the chip's text from VoiceOver, so the list row has to speak it.
+ * Undefined when the row has no chip. */
+export const sessionSubagentChipLabel = (session: NavigationSessionSummary): string | undefined => {
+	const tally = chipTally(session);
+	return tally ? subagentChipText(tally) : undefined;
+};
+
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):
  * it is a fade, and with rows jumping it is the only cue to where one landed.
