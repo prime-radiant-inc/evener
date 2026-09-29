@@ -50,6 +50,17 @@ describe("closing a sheet (spec 6)", () => {
 		expect(navigation.dispatch).toHaveBeenCalledWith(swipeDown);
 	});
 
+	it("waits out a write in flight without asking, unless the write finishes the sheet", () => {
+		const sheet = renderHook(() => useSheet({ dirty: true, busy: true }));
+		expect(guard.prevented).toBe(true);
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(alertRequests).toEqual([]);
+		expect(navigation.dispatch).not.toHaveBeenCalled();
+		sheet.result.current.finish();
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(navigation.dispatch).toHaveBeenCalledWith(swipeDown);
+	});
+
 	it("leaves without asking when it finishes on purpose", () => {
 		const sheet = renderHook(() => useSheet({ dirty: true }));
 		sheet.result.current.finish();
