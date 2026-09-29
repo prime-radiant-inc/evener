@@ -208,7 +208,7 @@ describe("a step's evidence", () => {
 				sessionRef="ref-recorded"
 			/>,
 		);
-		act(() => line(tree.root, "shell, go test, done").props.onPress());
+		act(() => line(tree.root, "Ran go test, done").props.onPress());
 		expect(shown(tree.root)).toHaveLength(1);
 		act(() =>
 			tree.update(
