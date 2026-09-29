@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import { AccessibilityInfo } from "react-native";
 
+type SettingEvent = "reduceMotionChanged" | "reduceTransparencyChanged";
+
+// The last value each setting was known to have, so a later mount (another
+// session's bar) starts from it rather than from unknown.
+const lastKnown = new Map<SettingEvent, boolean>();
+
 /** An on/off accessibility setting, read at mount and followed as it
  * changes (reanimated's useReducedMotion reads Reduce Motion once, at
- * launch). Null until the first read or change says, and still null if the
- * read fails. */
-function useAccessibilitySetting(
-	read: () => Promise<boolean>,
-	event: "reduceMotionChanged" | "reduceTransparencyChanged",
-): boolean | null {
-	const [on, setOn] = useState<boolean | null>(null);
+ * launch). Until this mount's read or a change says, it is the last value
+ * known this launch, or null; still so if the read fails. */
+function useAccessibilitySetting(read: () => Promise<boolean>, event: SettingEvent): boolean | null {
+	const [on, setOn] = useState<boolean | null>(() => lastKnown.get(event) ?? null);
 	useEffect(() => {
 		let live = true;
 		// A change that arrives before the mount-time read answers is newer
@@ -17,7 +20,9 @@ function useAccessibilitySetting(
 		let changed = false;
 		read().then(
 			(value) => {
-				if (live && !changed) setOn(value);
+				if (changed) return;
+				lastKnown.set(event, value);
+				if (live) setOn(value);
 			},
 			// A read that fails leaves the setting unknown; a later change
 			// still says.
@@ -25,6 +30,7 @@ function useAccessibilitySetting(
 		);
 		const subscription = AccessibilityInfo.addEventListener(event, (value) => {
 			changed = true;
+			lastKnown.set(event, value);
 			setOn(value);
 		});
 		return () => {

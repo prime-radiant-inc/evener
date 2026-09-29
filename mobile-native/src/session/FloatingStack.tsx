@@ -7,6 +7,7 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import type { Palette } from "../design/tokens";
+import { FLOAT_GAP } from "../design/underBar";
 
 /** The capsule every floating control wears, so Next and "↓ 3 new" read as
  * one family and restyle together. */
@@ -39,17 +40,20 @@ export function FloatingStack({
 	toast,
 	next,
 	pill,
-	above = 0,
+	barHeight = 0,
 }: {
 	toast: ReactNode;
 	next: ReactNode;
 	pill: ReactNode;
 	/** How tall the bar under the transcript's end stands; the stack floats
-	 * 10pt above it. */
-	above?: number;
+	 * FLOAT_GAP above it. */
+	barHeight?: number;
 }) {
 	return (
-		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: above + 10, gap: 8 }}>
+		<View
+			pointerEvents="box-none"
+			style={{ position: "absolute", left: 0, right: 0, bottom: barHeight + FLOAT_GAP, gap: 8 }}
+		>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
 					{toast}

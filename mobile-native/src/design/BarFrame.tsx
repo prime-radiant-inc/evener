@@ -48,7 +48,8 @@ export function BarFrame({
 	const reduceTransparency = useReduceTransparency();
 	// Glass waits for Reduce Transparency to be known to be off, so a reader
 	// with it on never sees a flash of glass.
-	const glass = systemGlassAvailable() && reduceTransparency === false;
+	const hasGlass = systemGlassAvailable();
+	const glass = hasGlass && reduceTransparency === false;
 	// The screen's layout goes first, so it can't undo what the frame owns:
 	// the home indicator's room, the hairline and the fill.
 	const frame: StyleProp<ViewStyle> = [
@@ -60,10 +61,18 @@ export function BarFrame({
 			backgroundColor: glass ? "transparent" : palette.page,
 		},
 	];
-	return glass ? (
-		// The glass follows the window's appearance, which the app's own light or
-		// dark choice sets (Appearance.setColorScheme), as its colors do.
-		<GlassView testID={testID} glassEffectStyle="regular" colorScheme="auto" style={frame} onLayout={onLayout}>
+	// Where the device has the glass, the bar is always a GlassView, its
+	// effect "none" (over the opaque fill) until Reduce Transparency is known
+	// to be off: a GlassView swapped for a View would remount the bar's
+	// content, and the composer would lose its focus.
+	return hasGlass ? (
+		<GlassView
+			testID={testID}
+			glassEffectStyle={glass ? "regular" : "none"}
+			colorScheme="auto"
+			style={frame}
+			onLayout={onLayout}
+		>
 			{children}
 		</GlassView>
 	) : (

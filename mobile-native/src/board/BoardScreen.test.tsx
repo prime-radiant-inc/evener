@@ -645,21 +645,47 @@ async function mountWithInstances(nav: Navigation) {
 const boardScroller = (tree: ReactTestRenderer) =>
 	tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
 
-it("runs the Board under its toolbar, keeping room at the end and floating the toast above it", async () => {
+/** Lays the Board's toolbar out `height` tall; the toolbar is the bar
+ * itself, laid over the Board's end. */
+function layOutToolbar(tree: ReactTestRenderer, height: number) {
+	const flat = (node: ReactTestInstance) => Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+	const toolbar = tree.root.find((node) => node.props.testID === "board-toolbar" && String(node.type) === "View");
+	expect(flat(toolbar)).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0, borderTopWidth: 0.5 });
+	act(() => toolbar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 700, width: 390, height } } }));
+	const toastSlot = tree.root.find((node) => node.props.testID === "board-toast" && String(node.type) === "View");
+	return { scroller: boardScroller(tree), toastBottom: flat(toastSlot).bottom };
+}
+
+it("runs the Board under its toolbar, insetting its end by the toolbar and floating the toast above it", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	const flat = (node: ReactTestInstance) => Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
-	const toolbar = tree.root.find((node) => node.props.testID === "board-toolbar" && String(node.type) === "View");
-	expect(flat(toolbar)).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
-	act(() => toolbar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 700, width: 390, height: 84 } } }));
-	const scroller = boardScroller(tree);
-	expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 + 84 });
-	expect(scroller.props.scrollIndicatorInsets).toMatchObject({ bottom: 84 });
-	const toastSlot = tree.root.find((node) => node.props.testID === "board-toast" && String(node.type) === "View");
-	expect(flat(toastSlot)).toMatchObject({ bottom: 84 + 10 });
+	const { scroller, toastBottom } = layOutToolbar(tree, 84);
+	expect(scroller.props.contentInset).toEqual({ bottom: 84 });
+	expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 });
+	expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+	expect(toastBottom).toBe(84 + 10);
 	act(() => tree.unmount());
+});
+
+it("pads the Board's end by its toolbar on Android, which has no content inset", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	Platform.OS = "android";
+	try {
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub(fleet).client, "ready");
+		const tree = await mount(navigation());
+		const { scroller, toastBottom } = layOutToolbar(tree, 84);
+		expect(scroller.props.contentInset).toBeUndefined();
+		expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 + 84 });
+		expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+		expect(toastBottom).toBe(84 + 10);
+		act(() => tree.unmount());
+	} finally {
+		Platform.OS = "ios";
+	}
 });
 
 it("keeps the chips fixed above the Board's scroller, and jumps a chip's section to the top", async () => {

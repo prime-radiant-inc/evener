@@ -63,6 +63,9 @@ it("reads Reduce Transparency at mount and follows it when it changes", async ()
 });
 
 it("says Reduce Transparency is unknown until its read answers, so glass waits for it", async () => {
+	// A fresh launch: nothing known yet.
+	vi.resetModules();
+	const { useReduceTransparency } = await import("./accessibilitySettings");
 	let answer!: (value: boolean) => void;
 	accessibility.transparencyRead = new Promise((resolve) => {
 		answer = resolve;
@@ -79,12 +82,33 @@ it("says Reduce Transparency is unknown until its read answers, so glass waits f
 });
 
 it("stays unknown when the read fails, and says nothing of the failure", async () => {
+	vi.resetModules();
+	const { useReduceTransparency } = await import("./accessibilitySettings");
 	accessibility.transparencyRead = Promise.reject(new Error("no accessibility manager"));
 	try {
 		const hook = renderHook(() => useReduceTransparency());
 		await act(async () => {});
 		expect(hook.result.current).toBeNull();
 		hook.unmount();
+	} finally {
+		accessibility.transparencyRead = null;
+	}
+});
+
+it("starts a later mount from the last Reduce Transparency value it knew", async () => {
+	const first = renderHook(() => useReduceTransparency());
+	await act(async () => {});
+	first.unmount();
+	let answer!: (value: boolean) => void;
+	accessibility.transparencyRead = new Promise((resolve) => {
+		answer = resolve;
+	});
+	try {
+		const later = renderHook(() => useReduceTransparency());
+		// Known at once, before its own read answers.
+		expect(later.result.current).toBe(true);
+		await act(async () => answer(true));
+		later.unmount();
 	} finally {
 		accessibility.transparencyRead = null;
 	}
