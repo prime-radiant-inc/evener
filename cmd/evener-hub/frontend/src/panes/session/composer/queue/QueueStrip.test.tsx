@@ -1636,6 +1636,11 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("", undefined, ["probe"]);
+    // Settle the removal this click started before the test ends. Left in
+    // flight, its asynchronous completion lands during the next test's
+    // resetThreadsStoreForTests and surfaces as the queue-edit failure toast
+    // this file asserts on.
+    await flushPendingTurnsProjectionForTests();
   });
 
   // The restore runs after the row is locked, so a failure there owes the row

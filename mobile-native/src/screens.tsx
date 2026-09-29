@@ -23,7 +23,6 @@ import {
 	AppState,
 	FlatList,
 	Keyboard,
-	KeyboardAvoidingView,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -31,6 +30,7 @@ import {
 	TextInput,
 	View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
@@ -44,7 +44,7 @@ import {
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
-import { type ConversationState, createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
@@ -188,6 +188,8 @@ import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
+/** The most of its room the Session's bottom bar may take (spec 8.1). */
+const BAR_MAX_SHARE = 0.8;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
 /** Find in session while it's open: what you typed, the current match's
@@ -419,6 +421,9 @@ export function ConversationScreen({
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
 	const snapshot = store();
+	// The next older page, or null: past the cursor, or above rows the cap
+	// trimmed (the store names the oldest row kept).
+	const olderPage = olderPageKey(snapshot);
 	const timeline = useRef<FlatList>(null);
 	const readerMeasurements = useRef(new Map<string, ReaderMeasurement>());
 	const readerContentHeight = useRef(0);
@@ -437,7 +442,20 @@ export function ConversationScreen({
 	const openedFor = useRef<string | null>(null);
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
-	const follow = useLiveEndFollow();
+	// The store trims the 500-row cap only while the reader follows the end.
+	// It hears a reader leave the end at once, and a return (the "↓ new" pill,
+	// a drag or a coast to the end) only once the list is there: trimming the
+	// top while the list still travels would move what it passes.
+	const returningToEnd = useRef(false);
+	const follow = useLiveEndFollow((following) => {
+		returningToEnd.current = following;
+		if (!following) store.getState().setFollowingLiveEnd(false);
+	});
+	function settleAtEnd(end: boolean) {
+		if (!end || !returningToEnd.current) return;
+		returningToEnd.current = false;
+		store.getState().setFollowingLiveEnd(true);
+	}
 	// Rows keep their open state in one app-wide store, scoped by session, so a
 	// row the list remounts keeps it. Leaving the session drops its scope, which
 	// keeps the store bounded.
@@ -895,6 +913,11 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
+	// The room the bottom bar sits over (useBarHeight measures any view's
+	// height). The bar is capped at BAR_MAX_SHARE of it in points, so the cap
+	// follows every re-layout of the room: a percentage cap could keep a height
+	// from before a push's header inset landed (#3248).
+	const bottomBarRoom = useBarHeight();
 	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
@@ -1190,10 +1213,10 @@ export function ConversationScreen({
 			// Your answers to a question show beneath the question itself.
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
-					olderToLoad: !!snapshot.olderCursor,
+					olderToLoad: olderPage !== null,
 				}),
 			),
-		[presentation.items, conversation?.turns, snapshot.olderCursor],
+		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row opens the subagent's own session, under this session as
@@ -1328,16 +1351,18 @@ export function ConversationScreen({
 	// resets, so a failing page never loops. Both a reading position restored
 	// above the loaded rows and a scroll near the top ask for it.
 	function loadOlderPage() {
-		const cursor = snapshot.olderCursor;
+		// Which page this is, for guarding repeat attempts; the store asks for it
+		// from its own cursor and trim boundary.
+		const pageKey = olderPage;
 		const pageAttempts = readerPageAttempts.current;
-		if (!service || !connected || !cursor || snapshot.loadingOlder || pageAttempts.has(cursor)) return;
-		pageAttempts.add(cursor);
+		if (!service || !connected || !pageKey || snapshot.loadingOlder || pageAttempts.has(pageKey)) return;
+		pageAttempts.add(pageKey);
 		void store
 			.getState()
 			.loadOlder(service)
 			.then((result) => {
 				if (result.status === "ignored" || (result.status === "loaded" && result.itemKeys.length > 0))
-					pageAttempts.delete(cursor);
+					pageAttempts.delete(pageKey);
 			})
 			.catch(() => {
 				// Keep failed page attempts guarded until a binding or route reset.
@@ -1375,15 +1400,15 @@ export function ConversationScreen({
 			return;
 		}
 		if (snapshot.loadingOlder) return;
-		const cursor = snapshot.olderCursor;
-		if (!cursor) {
+		const pageKey = olderPage;
+		if (!pageKey) {
 			// Stepped past the oldest match: say so. With none at all, the
 			// label already reads "No matches".
 			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
 			return;
 		}
 		// Offline, or this page already failed: stop, and the next step asks again.
-		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
+		if (!service || !connected || readerPageAttempts.current.has(pageKey)) {
 			setFind({ ...find, seeking: false });
 			return;
 		}
@@ -1531,7 +1556,7 @@ export function ConversationScreen({
 		bindingInstance,
 		layoutRevision,
 		snapshot.status,
-		snapshot.olderCursor,
+		olderPage,
 		snapshot.loadingOlder,
 		conversation?.items,
 		timelineRows,
@@ -2621,7 +2646,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View style={styles.fill}>
+				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2684,6 +2709,7 @@ export function ConversationScreen({
 								const end = atEnd(event.nativeEvent);
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
+								settleAtEnd(end && follow.state.current.touch === "none");
 								if (captureSuppressed.current) return;
 								// Older history loads as you near the top (spec 8.2) once you
 								// move the list. With no finger on it, and the app neither
@@ -2735,6 +2761,7 @@ export function ConversationScreen({
 							// under the finger.
 							onScrollEndDrag={(event) => {
 								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+								settleAtEnd(atEnd(event.nativeEvent));
 								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
@@ -2745,6 +2772,7 @@ export function ConversationScreen({
 							}}
 							onMomentumScrollEnd={(event) => {
 								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+								settleAtEnd(atEnd(event.nativeEvent));
 								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
@@ -2873,10 +2901,20 @@ export function ConversationScreen({
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
 					    over the transcript's end so the transcript runs under its glass,
-					    and never taller than four fifths of the screen. */}
+					    and never taller than four fifths of its room. */}
 					<BarFrame
 						testID="session-bottom-bar"
-						style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "80%", paddingTop: 8 }}
+						style={{
+							position: "absolute",
+							left: 0,
+							right: 0,
+							bottom: 0,
+							maxHeight:
+								bottomBarRoom.height === null
+									? (`${BAR_MAX_SHARE * 100}%` as const)
+									: bottomBarRoom.height * BAR_MAX_SHARE,
+							paddingTop: 8,
+						}}
 						onLayout={bottomBar.onLayout}
 					>
 						<ScrollView

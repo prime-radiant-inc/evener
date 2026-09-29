@@ -14,18 +14,22 @@
 // but close enough (bare +/-/space-prefixed hunk lines) that DiffBlock's
 // line classifier still colors it usefully, exactly as the legacy
 // patchRenderer rendered from state.args.patch through the same
-// classifier it uses for real diffs.
+// classifier it uses for real diffs. Their summaries are
+// @evener/appwire-client's toolSummaries, which the phone's step lines read
+// too.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { diffStats, editDiffText, parseArgs, str } from "@evener/appwire-client";
+import {
+  applyPatchSummary,
+  editDiffText,
+  editFileSummary,
+  filePathArg,
+  parseArgs,
+  str,
+  writeFileSummary,
+} from "@evener/appwire-client";
 import { DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-
-function diffResultText(text: string): string {
-  const { added, removed } = diffStats(text);
-  return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
-}
 
 function EditFileBody({ item }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
@@ -35,24 +39,11 @@ function EditFileBody({ item }: ToolRenderProps) {
   return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
 }
 
-// filePathArg reads the single-file arg the file tools share (file_path, or the
-// legacy `path` alias) - the path the "open beside" affordance references.
-function filePathArg(item: ItemModel): string | undefined {
-  const args = parseArgs(item.argumentsJSON);
-  return str(args, "file_path") ?? str(args, "path");
-}
-
 registerToolRenderer({
   match: "edit_file",
   icon: "edit",
   fold: "consequential", // a mutation: it names the run it folds into
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const path = str(args, "file_path") ?? str(args, "path") ?? "";
-    const oldString = str(args, "old_string") ?? "";
-    const newString = str(args, "new_string") ?? "";
-    return `Edited ${path} · ${diffResultText(editDiffText(path, oldString, newString))}`;
-  },
+  summary: editFileSummary,
   body: EditFileBody,
   openBesidePath: filePathArg, // single-file mutation (floor §3.7)
 });
@@ -67,36 +58,14 @@ registerToolRenderer({
   match: "write_file",
   icon: "edit",
   fold: "consequential",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const path = str(args, "file_path") ?? str(args, "path") ?? "";
-    return `Wrote ${path}`;
-  },
+  summary: writeFileSummary,
   body: WriteFileBody,
   openBesidePath: filePathArg, // single-file write (floor §3.7)
 });
 
 // apply_patch is deliberately NOT given openBesidePath: it can touch several
-// files in one call (patchTargets), so there is no single file to open beside
-// (floor §3.7 excludes multi-target tools).
-
-// patchTargets extracts unique file paths from v4a section headers
-// ("*** Add/Update/Delete File: <path>"), preserving first-seen order -
-// mirrors renderer-tools.js's patchTargets.
-const PATCH_FILE_HEADER_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/;
-
-function patchTargets(patch: string): string[] {
-  const seen = new Set<string>();
-  const targets: string[] = [];
-  for (const line of patch.split("\n")) {
-    const match = PATCH_FILE_HEADER_RE.exec(line);
-    if (match?.[1] !== undefined && !seen.has(match[1])) {
-      seen.add(match[1]);
-      targets.push(match[1]);
-    }
-  }
-  return targets;
-}
+// files in one call, so there is no single file to open beside (floor §3.7
+// excludes multi-target tools).
 
 function ApplyPatchBody({ item }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
@@ -109,10 +78,6 @@ registerToolRenderer({
   match: "apply_patch",
   icon: "edit",
   fold: "consequential",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const patch = str(args, "patch") ?? "";
-    return `Patched ${patchTargets(patch).join(", ")} · ${diffResultText(patch)}`;
-  },
+  summary: applyPatchSummary,
   body: ApplyPatchBody,
 });

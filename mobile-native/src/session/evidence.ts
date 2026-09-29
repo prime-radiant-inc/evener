@@ -1,7 +1,7 @@
 // What a step in a run has to show when you tap it (spec 8.2): an edit's
 // diff, the file a write wrote, a command's output, and an error. Pure, so
 // the rules live apart from how StepEvidence draws them.
-import { diffStats, editDiffText, lineCount, parseArgs, str } from "@evener/appwire-client";
+import { diffStats, editDiffText, filePathOf, lineCount, parseArgs, str, toolFamily } from "@evener/appwire-client";
 import type { ActivityDetail } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -15,8 +15,9 @@ export type Evidence =
 export const EVIDENCE_PREVIEW_LINES = 40;
 
 // A file tool's output is a confirmation ("edited a.go: 1 replacement(s)",
-// "wrote 12 bytes to a.go") that only repeats what its diff or path says.
-const FILE_TOOLS = new Set(["edit_file", "apply_patch", "write_file"]);
+// "wrote 12 bytes to a.go") that only repeats what its diff or path says. The
+// file tools are the package's edit family.
+const isFileTool = (label: string) => toolFamily(label) === "edit";
 
 function diff(text: string): Evidence {
 	return { kind: "diff", text, ...diffStats(text) };
@@ -32,9 +33,9 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 	if (step.summaryOnly) return [];
 	const { detail } = step;
 	const evidence: Evidence[] = [];
-	if (FILE_TOOLS.has(step.label)) {
+	if (isFileTool(step.label)) {
 		const args = parseArgs(detail.arguments);
-		const path = str(args, "file_path") ?? str(args, "path");
+		const path = filePathOf(args);
 		if (step.label === "edit_file") {
 			const oldString = str(args, "old_string");
 			const newString = str(args, "new_string");

@@ -7,7 +7,7 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { ProviderEditor } from "./ProviderEditor";
-import { render, renderedText } from "./renderNative.testkit";
+import { alertRequests, render, renderedText } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -164,7 +164,16 @@ it("adds a provider in a grouped form: a base picker, field rows, Save and Cance
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onCreate).toHaveBeenCalledOnce();
+	// With fields typed, Cancel asks first (spec 6).
 	pressLabel(tree, "Cancel");
+	expect(onCancel).not.toHaveBeenCalled();
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Discard")
+			?.onPress?.(),
+	);
 	expect(onCancel).toHaveBeenCalledOnce();
 });
 
@@ -291,4 +300,13 @@ it("answers a return key on an unfinished form with the reason, and sends nothin
 	});
 	expect(onCreate).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Select an available base provider.");
+});
+
+it("cancels an untouched editor at once", () => {
+	alertRequests.length = 0;
+	const onCancel = vi.fn();
+	const tree = mountCreate({ onCancel });
+	pressLabel(tree, "Cancel");
+	expect(onCancel).toHaveBeenCalledOnce();
+	expect(alertRequests).toHaveLength(0);
 });
