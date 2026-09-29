@@ -987,26 +987,26 @@ func localDaemonDialError(err error) error {
 
 func localDaemonCallError(err error) error {
 	var wire appwire.WireError
-	if errors.As(err, &wire) && wire.Code != appwire.CodeInternalError {
-		return err
-	}
 	if !errors.As(err, &wire) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		return localDaemonDialError(err)
 	}
-	msg := strings.ToLower(wire.Message)
-	if strings.Contains(msg, "failed to get reader") ||
-		strings.Contains(msg, "websocket") ||
-		strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "i/o timeout") {
-		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
+	if wire.Code != appwire.CodeInternalError {
+		return err
 	}
-	return err
+	// Only a failure the client synthesized because its read loop is gone is a
+	// transport failure; the client marks it with TransportFailureError. An
+	// InternalError that arrived intact is the daemon's own application verdict
+	// and is preserved. Guessing from message text reclassified errors such as
+	// "cannot parse transcript: unexpected EOF" (or, with a bare "eof"
+	// substring, "eoffice validation failed") as response loss and drove an
+	// automatic mutation retry for a failure that was never a transport loss.
+	if !appwire.IsTransportFailure(err) {
+		return err
+	}
+	return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {

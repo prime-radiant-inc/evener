@@ -365,13 +365,19 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		case msg = <-ch:
 		default:
 			c.removePending(id)
-			msg = ErrorMessage(id, InternalError(c.closedError().Error()))
+			msg = ErrorMessage(id, transportFailure(c.closedError().Error()))
 		}
 	}
 
 	if msg.Error != nil {
 		wire := msg.Error.Error
 		wire.Message = fmt.Sprintf("appwire %s: %s", method, wire.Message)
+		if wire.transportFailure {
+			// The client made this failure; the peer never answered. Wrap it so
+			// adapters can tell a lost response from an InternalError that
+			// arrived intact (see TransportFailureError).
+			return TransportFailureError{WireError: wire}
+		}
 		return wire
 	}
 	if msg.Response == nil {
@@ -439,8 +445,18 @@ func (c *Client) failPending(err error) {
 	defer c.pendingMu.Unlock()
 	for id, pending := range c.pending {
 		delete(c.pending, id)
-		pending.ch <- ErrorMessage(pending.id, InternalError(err.Error()))
+		pending.ch <- ErrorMessage(pending.id, transportFailure(err.Error()))
 	}
+}
+
+// transportFailure builds the InternalError frame the client synthesizes for a
+// request the peer never answered, marked so request wraps it as a
+// TransportFailureError. The message text is the transport failure's own, kept
+// for the caller's diagnostic.
+func transportFailure(message string) WireError {
+	wire := InternalError(message)
+	wire.transportFailure = true
+	return wire
 }
 
 // ProtocolVersionMismatchError is returned by Client.Initialize when a hub

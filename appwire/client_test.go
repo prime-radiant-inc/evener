@@ -488,6 +488,48 @@ func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	}
 }
 
+func TestClientFailPendingMarksTransportFailure(t *testing.T) {
+	client := NewClient(newMemoryTransport())
+	id := NewIntID(7)
+	ch := make(chan Message, 1)
+	client.pending[id.String()] = pendingRequest{id: id, ch: ch}
+
+	client.failPending(errors.New("websocket: unexpected eof"))
+
+	msg := <-ch
+	if msg.Error == nil || !msg.Error.Error.transportFailure {
+		t.Fatalf("failPending message = %+v, want a WireError marked transportFailure", msg)
+	}
+}
+
+// A request that finds the read loop already gone gets a synthesized failure
+// the peer never sent. It is wrapped as TransportFailureError so an adapter can
+// tell it from an InternalError that arrived intact, while errors.As still
+// reaches the CodeInternalError WireError generic callers match.
+func TestClientRequestSynthesizedFailureIsTransportFailure(t *testing.T) {
+	transport := &deadPeerTransport{recvErr: errors.New("websocket: unexpected eof")}
+	client := NewClient(transport)
+	client.Start(t.Context())
+	for range client.Notifications() {
+	}
+
+	err := client.Request(context.Background(), "turn/start", EmptyParams{}, nil)
+	if err == nil {
+		t.Fatal("request returned nil error on a dead connection")
+	}
+	tf, ok := errors.AsType[TransportFailureError](err)
+	if !ok {
+		t.Fatalf("error = %T=%v, want appwire.TransportFailureError", err, err)
+	}
+	var wire WireError
+	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+		t.Fatalf("wrapped error = %+v, want an InternalError WireError via errors.As", wire)
+	}
+	if !strings.Contains(tf.Message, "unexpected eof") {
+		t.Fatalf("message = %q, want the transport failure text retained", tf.Message)
+	}
+}
+
 // An ordered-frame handler sees every response the connection carries, so a
 // caller whose correctness depends on its own response being the cut has to
 // know which frame that is. WithRequestIDObserver reports the id before the

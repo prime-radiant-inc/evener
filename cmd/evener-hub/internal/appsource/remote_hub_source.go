@@ -307,10 +307,17 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if wire.Code != appwire.CodeInternalError {
 		return err
 	}
-	if remoteHubTransportText(strings.ToLower(wire.Message)) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
+	// Only a failure the client synthesized because its read loop is gone is a
+	// transport failure; the client marks it with TransportFailureError. An
+	// InternalError that arrived intact is the remote hub's own application
+	// verdict and is preserved: reconstructing transport provenance from the
+	// message text reclassified an intact "unexpected eof" as host
+	// unavailability, which then became mutationOutcomeUnknown with an
+	// automatic retry.
+	if !appwire.IsTransportFailure(err) {
+		return err
 	}
-	return err
+	return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
 }
 
 // mapConnectError mirrors localDaemonDialError for the attach step: a timeout
