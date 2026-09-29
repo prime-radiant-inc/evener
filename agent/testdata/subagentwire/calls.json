@@ -1,5 +1,5 @@
 {
-  "note": "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript.",
+  "note": "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate receipt comes from the tool's own marshaller; the other outputs are hand-written text.",
   "items": [
     {
       "type": "commandExecution",

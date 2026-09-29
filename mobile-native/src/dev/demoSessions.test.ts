@@ -9,7 +9,7 @@ import type { ContentLevel } from "@evener/appwire-client";
 import { liveAsksFor, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
-import { configForLevel } from "../session/detailLevels.js";
+import { displayForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
@@ -38,9 +38,13 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 function open(slug: string, level: ContentLevel = "intent") {
 	const thread = threadOf(slug);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
-	const config = configForLevel(level, null) ?? undefined;
+	const display = displayForLevel(level, null);
+	const config = display.config ?? undefined;
 	const conversation = projectConversation(model, liveAsksFor(model), config);
-	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	const presentation = projectNativeTranscript(conversation, config, {
+		justTheConversation: display.justTheConversation,
+	});
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
 	return { thread, model, conversation, rows };
 }
 

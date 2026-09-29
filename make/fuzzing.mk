@@ -121,8 +121,7 @@ fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
-	@sh -c "cd agent && go test -run '^TestSteeringNotificationWireFixtures' . -update-notificationwire"
-	@sh -c "cd agent && go test -run '^TestSubagentCallWireFixtures' . -update-subagentwire"
+	@sh -c "cd agent && go test -run 'WireFixtures\$$' . -update-wire"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

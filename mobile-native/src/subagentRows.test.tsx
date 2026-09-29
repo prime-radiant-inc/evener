@@ -4,12 +4,14 @@
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
 import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { subagentCallItems } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
-import { configForLevel } from "./session/detailLevels";
+import { displayForLevel } from "./session/detailLevels";
+import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
@@ -25,6 +27,9 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
 const T0 = Date.parse("2026-09-28T20:00:00Z");
+
+// The delegate call's id, as the recorded corpus carries it.
+const DELEGATE_CALL_ID = subagentCallItems().find((item) => item.toolName === "delegate")?.callId;
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -43,7 +48,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 		needsAttention: false,
 		projectionRevision: 1,
 		description: "Fix race in tree settle",
-		originToolCallId: "call_delegate_1",
+		originToolCallId: DELEGATE_CALL_ID,
 		originItemId: "fc_provider_item_1",
 		transcriptRef: "local:child1",
 		runStartedAt: new Date(T0).toISOString(),
@@ -60,11 +65,21 @@ const FAILED = subagent({
 	runEndedAt: new Date(T0 + 360_000).toISOString(),
 });
 
-function thread(delegate: EvenerDelegateInfo): Thread {
+interface Extra {
+	/** The coordinator's calls, in place of the recorded ones. */
+	calls?: ThreadItem[];
+	/** More items at the end of the first turn. */
+	items?: ThreadItem[];
+	/** Turns after the first. */
+	turns?: unknown[];
+}
+
+function thread(delegate: EvenerDelegateInfo, extra: Extra = {}): Thread {
 	const items: ThreadItem[] = [
 		{ id: "u1", turnId: "turn_1", type: "userMessage", text: "Fix the flaky test" } as ThreadItem,
-		...subagentCallItems(),
+		...(extra.calls ?? subagentCallItems()),
 		{ id: "a1", turnId: "turn_1", type: "agentMessage", text: "Waiting on the subagent." } as ThreadItem,
+		...(extra.items ?? []),
 	];
 	return {
 		id: "thread-1",
@@ -78,16 +93,19 @@ function thread(delegate: EvenerDelegateInfo): Thread {
 		cwd: "/tmp",
 		cliVersion: "1.0.0",
 		source: "local",
-		turns: [{ id: "turn_1", itemsView: "full", status: "completed", startedAt: T0, completedAt: T0 + 60_000, items }],
+		turns: [
+			{ id: "turn_1", itemsView: "full", status: "completed", startedAt: T0, completedAt: T0 + 60_000, items },
+			...(extra.turns ?? []),
+		],
 		evener: { ref: "ref-1", queue: { revision: 0 }, diagnostics: { delegates: [delegate] } },
 	} as unknown as Thread;
 }
 
-function rowsAt(level: Level, delegate = subagent()) {
-	const model = hydrateThread({ thread: thread(delegate) }, "ref-1", 0);
-	const config = configForLevel(level, null);
+function rowsAt(level: Level, delegate = subagent(), extra: Extra = {}) {
+	const model = hydrateThread({ thread: thread(delegate, extra) }, "ref-1", 0);
+	const { config, justTheConversation } = displayForLevel(level, null);
 	const conversation = projectConversation(model, undefined, config ?? undefined);
-	const presentation = projectNativeTranscript(conversation, config, { justTheConversation: level === "chat" });
+	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
 		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
 		delegates: conversation.delegates,
@@ -96,8 +114,8 @@ function rowsAt(level: Level, delegate = subagent()) {
 
 const isSubagent = (row: TimelineRow) => row.kind === "activity" && row.label === "delegate";
 
-function subagentRow(level: Level, delegate = subagent()) {
-	const { rows, delegates } = rowsAt(level, delegate);
+function subagentRow(level: Level, delegate = subagent(), extra: Extra = {}) {
+	const { rows, delegates } = rowsAt(level, delegate, extra);
 	const found = rows.filter(isSubagent);
 	expect(found).toHaveLength(1);
 	const openSubagent = vi.fn();
@@ -129,6 +147,54 @@ describe("a subagent row", () => {
 	});
 });
 
+// A subagent a stop ended is stopped, never failed (the transcript rows
+// ruling): its row keeps the low-emphasis rail and ink a finished one has.
+const stoppedBy = (status: "stopped" | "cancelled") =>
+	subagent({
+		phase: "settled",
+		status,
+		outcome: status,
+		terminal: true,
+		runEndedAt: new Date(T0 + 90_000).toISOString(),
+	});
+const DANGER = "#E3474C";
+const rail = (tree: ReturnType<typeof subagentRow>["tree"]) =>
+	tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
+
+describe("a stopped subagent", () => {
+	it.each([
+		["a parent's stop", "stopped"],
+		["the user's stop", "cancelled"],
+	] as const)("reads as stopped after %s, at every level", (_why, status) => {
+		for (const level of LEVELS) {
+			const { tree } = subagentRow(level, stoppedBy(status));
+			expect(renderedText(tree)).toMatch(/stopped · \d+/);
+			expect(renderedText(tree)).not.toMatch(/failed/);
+			expect(rail(tree)).not.toBe(DANGER);
+		}
+	});
+});
+
+// In inline mode the delegate call stays open while its subagent runs, and
+// settles when the subagent ends; the row still reads the subagent.
+describe("an inline subagent", () => {
+	const [call, ...rest] = subagentCallItems();
+	const result = rest.find((item) => item.callId === call?.callId);
+
+	it.each(LEVELS)("reads as running while its call is still open, at %s", (level) => {
+		const calls = subagentCallItems().filter((item) => item !== result);
+		const { tree } = subagentRow(level, subagent(), { calls });
+		expect(renderedText(tree)).toMatch(/running · \d+/);
+	});
+
+	it.each(LEVELS)("reads as stopped when its call settled as a tool error, at %s", (level) => {
+		const failed = { ...result, status: "failed", error: "stopped by parent", output: undefined } as ThreadItem;
+		const calls = subagentCallItems().map((item) => (item === result ? failed : item));
+		const { tree } = subagentRow(level, stoppedBy("stopped"), { calls });
+		expect(renderedText(tree)).toMatch(/stopped · \d+/);
+	});
+});
+
 describe("a message sent to a subagent", () => {
 	it.each(["intent", "tools", "full"] as const)("is a step in the run at %s, never a subagent row", (level) => {
 		const { rows } = rowsAt(level);
@@ -139,12 +205,115 @@ describe("a message sent to a subagent", () => {
 });
 
 describe("Chat", () => {
-	it("shows the conversation and its subagents, and no steps", () => {
+	// Ids follow the wire's convention (apptranscript: item_tool_<entry>_<part>
+	// and item_tool_result_<entry>_<part>), which is how the reducer folds a
+	// result into its call.
+	const shell = (id: string, entry: number, status: "completed" | "failed", image: string): ThreadItem[] => [
+		{
+			id: `item_tool_${entry}_0`,
+			turnId: "turn_1",
+			type: "commandExecution",
+			toolName: "shell",
+			callId: id,
+			description: `Run ${id}`,
+			argumentsJson: JSON.stringify({ command: "go test ./...", intent: `Run ${id}` }),
+			status: "inProgress",
+		} as ThreadItem,
+		{
+			id: `item_tool_result_${entry + 1}_0`,
+			turnId: "turn_1",
+			type: "commandExecution",
+			toolName: "shell",
+			callId: id,
+			status,
+			...(status === "failed" ? { error: "exit status 1", exitCode: 1 } : { output: "ok" }),
+			outputImages: [{ source: "screenshot", name: image, url: `http://hub/${image}` }],
+		} as ThreadItem,
+	];
+	const question: ThreadItem = {
+		id: "ask-1",
+		turnId: "turn_1",
+		type: "commandExecution",
+		toolName: "ask_user",
+		callId: "ask-1",
+		argumentsJson: JSON.stringify({
+			questions: [{ header: "Store", question: "Which store?", options: [{ label: "SQLite" }, { label: "Postgres" }] }],
+		}),
+		status: "completed",
+		output: "SQLite",
+	} as ThreadItem;
+	const notice: ThreadItem = {
+		id: "steer-1",
+		turnId: "turn_1",
+		type: "steering",
+		source: "",
+		steeringKind: "interrupted",
+		text: "The user interrupted.",
+		status: "completed",
+	} as ThreadItem;
+	const failedTurn = {
+		id: "turn_2",
+		itemsView: "full",
+		status: "failed",
+		startedAt: T0 + 120_000,
+		completedAt: T0 + 130_000,
+		error: { message: "Provider exploded" },
+		items: [{ id: "u2", turnId: "turn_2", type: "userMessage", text: "Go on" }],
+	};
+	const extra: Extra = {
+		items: [
+			...shell("passed", 5, "completed", "passed.png"),
+			...shell("broke", 7, "failed", "broke.png"),
+			question,
+			notice,
+		],
+		turns: [failedTurn],
+	};
+	// Every image the transcript shows: an attachments row's, and those a step
+	// carries itself (sessionRows seats a step's images on the step).
+	const images = (rows: TimelineRow[]) =>
+		rows.flatMap((row) =>
+			row.kind === "attachments"
+				? row.items.map((image) => image.name)
+				: row.kind === "run"
+					? row.steps.flatMap((step) => (step.images ?? []).map((image) => image.name))
+					: [],
+		);
+
+	it("drops settled steps and keeps its subagents", () => {
 		const { rows } = rowsAt("chat");
-		expect(rows.filter((row) => row.kind === "run")).toEqual([]);
-		expect(
-			rows.filter((row) => row.kind === "activity").map((row) => (row.kind === "activity" ? row.label : "")),
-		).toEqual(["delegate"]);
+		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
+		expect(steps).toEqual([]);
+		expect(rows.filter(isSubagent)).toHaveLength(1);
 		expect(rows.map((row) => row.kind)).toEqual(expect.arrayContaining(["user", "assistant"]));
+	});
+
+	it("keeps a failed step, with its image, and drops a successful one with its image", () => {
+		const { rows } = rowsAt("chat", subagent(), extra);
+		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
+		expect(steps.map((step) => [step.label, step.state])).toEqual([["shell", "failed"]]);
+		expect(images(rows)).toEqual(["broke.png"]);
+	});
+
+	it("keeps a question, a steering notice and the turn's failure", () => {
+		const { rows } = rowsAt("chat", subagent(), extra);
+		expect(rows.some((row) => row.kind === "activity" && row.label === "ask_user")).toBe(true);
+		expect(rows.some((row) => row.kind === "notice" && row.id === "steer-1")).toBe(true);
+		expect(rows.some((row) => row.kind === "failure" && row.title === "Provider exploded")).toBe(true);
+	});
+
+	it("keeps a delegate notification's card", () => {
+		const report = { ...notificationWireItem("delegate-reported"), turnId: "turn_1" };
+		const { rows } = rowsAt("chat", subagent(), { items: [report] });
+		expect(rows.find((row) => row.id === report.id)).toMatchObject({
+			kind: "notice",
+			notifications: [{ kind: "notification" }],
+		});
+	});
+
+	it("finds a subagent by its title", () => {
+		const { rows, delegates } = rowsAt("chat");
+		const hits = findMatches(rows, "fix race in tree settle", delegates);
+		expect(hits.map((index) => rows[index]?.kind)).toContain("activity");
 	});
 });

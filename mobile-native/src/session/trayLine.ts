@@ -40,6 +40,10 @@ interface Step {
 	waitsOnSubagents: boolean;
 }
 
+// The steps that wait on subagents while they run: delegating, sending to a
+// subagent (delegate_send can wait for its reply, max_wait_ms), and watching
+// or reading jobs. delegate_send is an ordinary step in the transcript's runs,
+// but while it is open the tray still says what it waits on.
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
 export function trayLine(session: TraySource, now: number): TrayLine | null {

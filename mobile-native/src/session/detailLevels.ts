@@ -34,35 +34,34 @@ export function detailLevel(level: ContentLevel): DetailLevel {
 	return found;
 }
 
-// The level this session shows: the one chosen here, else the hub's Chat
-// default, which means just the conversation on the phone too (ruling 8);
-// null leaves the hub's config as it is.
-function resolvedLevel(chosen: ContentLevel | null, hubConfig: TranscriptDisplayConfigV1 | null): ContentLevel | null {
+/** What a session's transcript shows: the config it projects at, and whether
+ * the screen then keeps just the conversation (Chat). They come together so
+ * no caller can take one without the other. */
+export interface TranscriptDisplay {
+	config: TranscriptDisplayConfigV1 | null;
+	justTheConversation: boolean;
+}
+
+export function displayForLevel(
+	chosen: ContentLevel | null,
+	hubConfig: TranscriptDisplayConfigV1 | null,
+): TranscriptDisplay {
+	// Chat means just the conversation on the phone whether this session or
+	// the hub's default chose it (ruling 8).
 	const hubChat = hubConfig?.content.kind === "preset" && hubConfig.content.level === "chat";
-	return chosen ?? (hubChat ? "chat" : null);
-}
-
-/** Chat: the transcript shows just the conversation and its subagents, so the
- * screen drops every tool step from what configForLevel projects. */
-export function showsJustTheConversation(
-	chosen: ContentLevel | null,
-	hubConfig: TranscriptDisplayConfigV1 | null,
-): boolean {
-	return resolvedLevel(chosen, hubConfig) === "chat";
-}
-
-export function configForLevel(
-	chosen: ContentLevel | null,
-	hubConfig: TranscriptDisplayConfigV1 | null,
-): TranscriptDisplayConfigV1 | null {
-	const level = resolvedLevel(chosen, hubConfig);
+	const level = chosen ?? (hubChat ? "chat" : null);
 	// Nothing chosen here: the session shows exactly what the hub says.
-	if (!level) return hubConfig;
+	if (!level) return { config: hubConfig, justTheConversation: false };
 	const base = hubConfig ?? shippedConfig("mobile");
-	// Chat projects at Intent, where a subagent's call survives as its own row
-	// (a no-intent vector hides it), and the screen then drops every tool step
-	// (showsJustTheConversation). The shared Chat preset keeps a line per step.
-	return makeTranscriptDisplayConfig({ kind: "preset", level: level === "chat" ? "intent" : level }, base.advanced);
+	// Chat projects at Intent on purpose: there a subagent's call survives as
+	// its own row (a no-intent vector hides it), and the screen then drops the
+	// settled and running steps (projectNativeTranscript's justTheConversation).
+	// The shared Chat preset keeps a line per step.
+	const chat = level === "chat";
+	return {
+		config: makeTranscriptDisplayConfig({ kind: "preset", level: chat ? "intent" : level }, base.advanced),
+		justTheConversation: chat,
+	};
 }
 
 export function currentLevel(

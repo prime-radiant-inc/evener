@@ -179,6 +179,17 @@ function accountingFor(
 	return { derived, cumulative, cost };
 }
 
+// Chat is just the conversation and its subagents (spec 8.2; the transcript
+// rows rulings, 2026-09-29). A settled step goes, and so does a running one,
+// which the tray already shows. A failed step stays, with its images, since a
+// failure is something the reader should see at every level. A subagent and a
+// question are rows of their own, never steps, so they stay. No dropped step
+// leaves images behind: a settled step at Intent is summary-only, which drops
+// them, and the hub attaches a step's images only when it settles.
+function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
+	return items.filter((item) => !isStep(item) || item.state === "failed");
+}
+
 export function projectNativeTranscript(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1 | null | undefined,
@@ -187,10 +198,7 @@ export function projectNativeTranscript(
 	const source = conversation?.items ?? [];
 	const projected = projectTimeline(source, config);
 	const { activityPresentation } = projected;
-	// Chat is just the conversation and its subagents (spec 8.2; the transcript
-	// rows ruling, 2026-09-29): every step goes, while a subagent and a
-	// question stay, being rows of their own.
-	const items = justTheConversation ? projected.items.filter((item) => !isStep(item)) : projected.items;
+	const items = justTheConversation ? conversationOnly(projected.items) : projected.items;
 	if (!config)
 		return {
 			items,

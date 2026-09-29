@@ -275,9 +275,12 @@ function unhandledEntryKind(_entry: never): null {
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
-// detail, at every level): a failed or still-running call the projector routed
-// through its intent entry keeps everything, so the reader can always see why
-// a call failed — the ruling covers the settled row.
+// detail): a failed or still-running call the projector routed through its
+// intent entry keeps everything, so the reader can always see why a call
+// failed — the ruling covers the settled row. A failed call shows at every
+// level, Chat included; a running one shows at every level but Chat, whose
+// screen drops it because the status tray already shows the live step
+// (transcriptPresentation.ts, conversationOnly).
 function intentRow(
 	entry: Extract<ProjectedEntry, { kind: "intent" }>,
 	context: ProjectedRowContext,

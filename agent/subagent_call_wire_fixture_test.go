@@ -10,21 +10,17 @@ package agent
 //
 // This test is the corpus for those rows. It announces the calls and returns
 // their results the way a session records them (one ASSISTANT entry, one
-// TOOL_RESULTS entry), with the delegate receipt from the tool's own
-// marshaller, and projects both turns through apptranscript the way history
-// reaches the wire. The phone's transcript row tests read the file this test
+// TOOL_RESULTS entry) and projects both turns through apptranscript the way
+// history reaches the wire. The delegate receipt comes from the tool's own
+// marshaller; the delegate_send, shell and task_list outputs are hand-written
+// text, since those rows read only their calls' intents and states. The phone's transcript row tests read the file this test
 // pins.
 //
-// Regenerate after an intentional change with:
-//
-//	go test ./agent -run TestSubagentCallWireFixtures -update-subagentwire
+// Regenerate after an intentional change with `make fuzz-goldens`
+// (wire_fixture_test.go).
 
 import (
-	"bytes"
 	"encoding/json"
-	"flag"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -33,9 +29,6 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
-
-var updateSubagentWire = flag.Bool("update-subagentwire", false,
-	"rewrite agent/testdata/subagentwire/calls.json from the current tool projection")
 
 // subagentWireFixturePath is the committed corpus the phone reads.
 const subagentWireFixturePath = "testdata/subagentwire/calls.json"
@@ -109,36 +102,14 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 		})
 	}
 	reg := apptranscript.NewToolCallRegistry()
-	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: notificationWireStart}, reg, nil, nil)
-	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: notificationWireStart.Add(2 * time.Second)}, reg, nil, nil)...)
+	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
+	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
 
-	encoded, err := json.MarshalIndent(struct {
+	checkWireFixture(t, subagentWireFixturePath, struct {
 		Note  string               `json:"note"`
 		Items []appwire.ThreadItem `json:"items"`
 	}{
-		Note:  "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript.",
+		Note:  "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate receipt comes from the tool's own marshaller; the other outputs are hand-written text.",
 		Items: items,
-	}, "", "  ")
-	if err != nil {
-		t.Fatalf("encode corpus: %v", err)
-	}
-	encoded = append(encoded, '\n')
-
-	if *updateSubagentWire {
-		if err := os.MkdirAll(filepath.Dir(subagentWireFixturePath), 0o755); err != nil {
-			t.Fatalf("create fixture dir: %v", err)
-		}
-		if err := os.WriteFile(subagentWireFixturePath, encoded, 0o644); err != nil {
-			t.Fatalf("write fixtures: %v", err)
-		}
-		return
-	}
-	want, err := os.ReadFile(subagentWireFixturePath)
-	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with -update-subagentwire)", subagentWireFixturePath, err)
-	}
-	if !bytes.Equal(want, encoded) {
-		t.Fatalf("the subagent call items drifted from %s.\n got: %s\nwant: %s\nRegenerate with `go test ./agent -run TestSubagentCallWireFixtures -update-subagentwire`, then re-run the mobile-native tests that read it.",
-			subagentWireFixturePath, encoded, want)
-	}
+	}, "the mobile-native tests that read it")
 }
