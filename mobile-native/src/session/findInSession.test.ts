@@ -70,7 +70,11 @@ describe("finding words in a delegate or job notification", () => {
 		const unnamed: TimelineRow = { ...row, notifications: parseSteeringNotifications(text) };
 		const delegates = [{ delegateId: "dlg_2", description: "Split the retry loop" }] as EvenerDelegateInfo[];
 		expect(findMatches([unnamed], "split the retry loop failed", delegates)).toEqual([0]);
-		expect(findMatches([unnamed], "split the retry loop")).toEqual([]);
+		// The frame names no subagent, so without the session's subagents the
+		// card (and so its search text) says "Subagent failed".
+		const withoutDelegates = undefined;
+		expect(findMatches([unnamed], "split the retry loop", withoutDelegates)).toEqual([]);
+		expect(findMatches([unnamed], "subagent failed", withoutDelegates)).toEqual([0]);
 	});
 
 	it("reads a truncated frame as its neutral line", () => {

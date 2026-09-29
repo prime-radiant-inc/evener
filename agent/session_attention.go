@@ -477,10 +477,6 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	return s.appendDelegateAttentionMessageDurably(attentionID, llm.User(content))
 }
 
-// appendDelegateAttentionMessageDurably is the message-preserving core of
-// appendDelegateNotificationDurably. Escalation of a fenced delegate's
-// attention transfers the exact original message under its original identity,
-// so both the resident and the cold writers stay byte-identical on replay.
 // delegateAttentionTurn is the steering turn an attention message appends
 // as: a subagent's report or quiet watchdog, or a stable shell job's
 // completion. It carries its attention identity and a fresh stable turn id,
@@ -493,6 +489,10 @@ func delegateAttentionTurn(attentionID string, message llm.Message, now time.Tim
 	return turn
 }
 
+// appendDelegateAttentionMessageDurably is the message-preserving core of
+// appendDelegateNotificationDurably. Escalation of a fenced delegate's
+// attention transfers the exact original message under its original identity,
+// so both the resident and the cold writers stay byte-identical on replay.
 func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, message llm.Message) (appended bool, err error) {
 	if s == nil {
 		return false, errors.New("delegate attention session is nil")
