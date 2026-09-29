@@ -240,16 +240,12 @@ describe("native demonstration hub", () => {
 			await client.connect();
 			const creation = createNewSessionService(client);
 			const projects = await creation.recentProjects();
-			const harnesses = await creation.harnesses();
-			const harness = harnesses[0]?.id;
 			expect(projects).toContain("/demonstration");
-			expect(harness).toBe("demonstration");
-			const models = await creation.models({ cwd: "/demonstration", harness });
+			const models = await creation.models({ cwd: "/demonstration" });
 			const model = models.data[0];
 			expect(model).toBeDefined();
 			const first = await creation.start({
 				cwd: "/demonstration",
-				harness,
 				modelProvider: model?.provider,
 				model: model?.model,
 				input: [{ type: "text", text: "  native opening\n🦋  " }],
