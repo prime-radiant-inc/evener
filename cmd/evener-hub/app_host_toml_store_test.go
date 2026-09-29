@@ -704,7 +704,7 @@ presence_epoch = 7
 bootstrap_attempted = true
 bootstrap_epoch_boot = "boot-1"
 bootstrap_epoch_op_seq = 3
-bootstrap_attempt_token = "0123456789abcdef"
+bootstrap_attempt_token = "deadbeef"
 helper_installed = true
 helper_version = 1
 `
