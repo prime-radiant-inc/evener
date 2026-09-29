@@ -201,6 +201,9 @@ export type MobileTimelineItem =
 		| { kind: "attachments"; id: string; items: AttachmentRef[] }
 	) & {
 		transcriptKey?: string;
+		// The key a reply keeps from its first streamed frame through its
+		// recording (see roundKey), where it has one.
+		roundKey?: string;
 		sourceTranscriptKey?: string;
 		position?: { entry: number; item: number };
 		// The turn this row's item belongs to (ItemModel.turnId), or the failing
@@ -863,13 +866,15 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
+	const keyedRounds = new Set<string>();
 	for (const entry of projected.entries) {
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const row = projectedRow(entry, { turnStatus: turn.status, asks });
-		if (row === null) continue;
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		if (plain === null) continue;
+		const row = withRoundKey(plain, entry.item, keyedRounds);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -904,6 +909,24 @@ function rowsForProjectedTurn(
 		if (oldest !== undefined) slots.delete(oldest);
 	}
 	return entries;
+}
+
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id and
+// a transcript key. Both carry the round's id, so the reply keys by its round
+// and keeps one key through the change: the list doesn't remount it, and a
+// reading position or a "new below" count taken on it still finds it. Only the
+// round's first reply takes the round's key, since a round can record two
+// replies (text before and after a tool call); the later one keeps its own.
+function roundKey(item: ItemModel): string | undefined {
+	return item.type === "agentMessage" && item.roundId ? `round:${item.roundId}:agentMessage` : undefined;
+}
+
+function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
+	const key = row.kind === "assistant" ? roundKey(item) : undefined;
+	if (key === undefined || keyedRounds.has(key)) return row;
+	keyedRounds.add(key);
+	return { ...row, roundKey: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.
