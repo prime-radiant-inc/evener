@@ -31,7 +31,7 @@ import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { type IDBDatabase, IDBFactory, IDBVersionChangeEvent } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   refreshPendingTurnsProjection,
@@ -12376,6 +12376,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // during this tab's connection setup leaves its bump where the enqueue's own
   // comparison reads it.
   test("an enqueue whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    // close() is terminal now, so "drop the live connection" uses the adapter's
+    // own versionchange path: dispatch versionchange on the live connection and
+    // the adapter's retire listener drops it (adapter stays usable).
+    const indexedDB = globalThis.indexedDB;
+    const open = indexedDB.open.bind(indexedDB);
+    const connections: IDBDatabase[] = [];
+    vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      const request = open(name, version);
+      request.addEventListener("success", () => connections.push(request.result));
+      return request;
+    });
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
@@ -12390,7 +12401,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The cold tab: THIS store's connection is closed at the click, so the
     // capture read must reopen it before it can run — the finding's opening
     // wait, however long the engine takes to satisfy it.
-    storage.close();
+    connections[connections.length - 1]?.dispatchEvent(new IDBVersionChangeEvent("versionchange"));
+    await nextMacrotask();
 
     // The click. queue()'s synchronous prefix must request the capture read —
     // and with it the reopen — before yielding to the event loop.
@@ -12632,6 +12644,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // equal, and the release resurrects the row into the session the other
   // tab just stopped.
   test("a Retry whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    // close() is terminal now, so "drop the live connection" uses the adapter's
+    // own versionchange path: dispatch versionchange on the live connection and
+    // the adapter's retire listener drops it (adapter stays usable).
+    const indexedDB = globalThis.indexedDB;
+    const open = indexedDB.open.bind(indexedDB);
+    const connections: IDBDatabase[] = [];
+    vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      const request = open(name, version);
+      request.addEventListener("success", () => connections.push(request.result));
+      return request;
+    });
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
@@ -12648,7 +12671,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The cold tab: THIS store's connection is closed at the click, so the
     // capture read must reopen it before it can run — the finding's opening
     // wait, however long the engine takes to satisfy it.
-    storage.close();
+    connections[connections.length - 1]?.dispatchEvent(new IDBVersionChangeEvent("versionchange"));
+    await nextMacrotask();
 
     // The click. retryBlockedMutation's synchronous prefix must request the
     // capture read — and with it the reopen — before yielding to the event
