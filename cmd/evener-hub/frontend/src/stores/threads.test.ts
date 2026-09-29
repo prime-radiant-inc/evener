@@ -13408,6 +13408,168 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // The rule is unconditional: ANY change to a ref's durable outbox state
+  // advances its read invalidation, not only changes to ids this tab happens to
+  // hold. Harness for the two tests below: a row written straight to storage
+  // (never committed here, so it is never an id the guard holds) and held
+  // non-dispatchable, so the drain attempts nothing; the post-drain refresh's
+  // outbox read then parks until the test releases it, so that read is in
+  // flight across whatever change the test lands.
+  function parkPostDispatchRefreshRead(storage: MutationOutboxIndexedDB): {
+    release: (rows: MutationOutboxRecord[]) => void;
+    held: () => number;
+    restore: () => void;
+  } {
+    let releaseRead: (rows: MutationOutboxRecord[]) => void = () => {};
+    const readGate = new Promise<MutationOutboxRecord[]>((resolve) => {
+      releaseRead = resolve;
+    });
+    const realOutbox = storage.listOutbox.bind(storage);
+    const realNextDispatchable = storage.nextDispatchable.bind(storage);
+    let armed = false;
+    let held = 0;
+    // The drain's own read is what precedes the refresh; arming here keeps the
+    // drain's other storage calls real.
+    storage.nextDispatchable = (ref) =>
+      realNextDispatchable(ref).then((record) => {
+        armed = true;
+        return record;
+      });
+    storage.listOutbox = (ref) => {
+      if (!armed) return realOutbox(ref);
+      held += 1;
+      return readGate;
+    };
+    return {
+      release: releaseRead,
+      held: () => held,
+      restore: () => {
+        storage.listOutbox = realOutbox;
+        storage.nextDispatchable = realNextDispatchable;
+      },
+    };
+  }
+
+  test("a settle of a row this tab never registered is not undone by a parked read", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-unregistered-settle";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // A store commit arms the ref for dispatch, then settles away, leaving the
+    // ref with nothing the guard holds.
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // A durable queued row this tab never committed and never registered, held
+    // non-dispatchable so the drain attempts nothing.
+    const persisted = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(persisted.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const preSettlement = await probe.listOutbox("ref_a");
+    expect(preSettlement.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    const parked = parkPostDispatchRefreshRead(storage);
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 20 && parked.held() === 0; i += 1) await nextMacrotask();
+    expect(parked.held()).toBeGreaterThan(0);
+
+    // The settled record is the authority on which ref's state changed.
+    expect(await storage.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    // The parked read lands with its pre-settlement snapshot.
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual([]);
+    parked.release(preSettlement);
+    parked.restore();
+
+    // Every later read fails from here, so only the parked read's snapshot can
+    // decide the guard - and it must not reinstate the row the change resolved.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the settle");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  test("a cancel that lands during a parked read is not undone by its snapshot", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-unregistered-cancel";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    fake.on("thread/shutdown", () => ({}));
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // The same unregistered, non-dispatchable row - and unattempted, so the
+    // Stop's cancel reaches it.
+    const persisted = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(persisted.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const preCancel = await probe.listOutbox("ref_a");
+    expect(preCancel.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    const parked = parkPostDispatchRefreshRead(storage);
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 20 && parked.held() === 0; i += 1) await nextMacrotask();
+    expect(parked.held()).toBeGreaterThan(0);
+
+    // The Stop's cancel write is a state change the guard must invalidate reads
+    // for, registered id or not.
+    await threadsStore.getState().shutdown("ref_a");
+    // The parked read lands with its pre-cancel snapshot.
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+    parked.release(preCancel);
+    parked.restore();
+
+    // Every later read fails from here, so only the parked read's snapshot can
+    // decide the guard - and it must not reinstate the row the change resolved.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The rebuilt guard's seeding rule: a successful read is the authoritative
   // snapshot of the ref, so the non-canceled rows it observes ARE the ref's
   // committed rows - including a row this tab never committed, as a reload or
