@@ -15,10 +15,11 @@ import { AgentMarkdown } from "./AgentMarkdown";
 const markdownHtml = vi.hoisted(() => ({ current: "" }));
 
 vi.mock("../../../../widgets/markdown", async () => {
-  const { createElement, forwardRef } = await import("react");
+  const { forwardRef } = await import("react");
   return {
     Markdown: forwardRef<HTMLDivElement, Record<string, unknown>>(function MockMarkdown(_props, ref) {
-      return createElement("div", { ref, dangerouslySetInnerHTML: { __html: markdownHtml.current } });
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: test-only mock standing in for the Markdown widget's sanitized DOM - production sanitization is justified at the widgets/markdown call sites.
+      return <div ref={ref} dangerouslySetInnerHTML={{ __html: markdownHtml.current }} />;
     }),
   };
 });

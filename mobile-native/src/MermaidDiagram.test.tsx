@@ -452,3 +452,26 @@ it("does not fail on an error reply from a superseded source", () => {
 	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
 	expect(renderedText(tree)).not.toContain("Couldn't render this diagram.");
 });
+
+it("caps the height cache so a long session's distinct diagrams cannot grow it without bound", () => {
+	// Each fresh mount's first render is id 1, so a height reply for it is accepted
+	// and stored under that source.
+	function cache(source: string, value: number) {
+		const tree = render(<MermaidDiagram source={source} />);
+		act(() => {
+			tree.root
+				.findByType("WebView" as never)
+				.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "height", value, id: 1 }) } });
+		});
+	}
+	// One more distinct diagram than the cache may hold.
+	for (let index = 0; index <= 100; index += 1) cache(`graph TD; cap-${index}`, 100 + index);
+
+	// The oldest source's entry is evicted, so a remount falls back to the
+	// uncached placeholder rather than a stale measurement...
+	const evicted = render(<MermaidDiagram source="graph TD; cap-0" />);
+	expect(wrapper(evicted, "Diagram").props.style.height).toBe(120);
+	// ...and the newest is still cached, so the bound keeps the useful tail.
+	const retained = render(<MermaidDiagram source="graph TD; cap-100" />);
+	expect(wrapper(retained, "Diagram").props.style.height).toBe(200);
+});
