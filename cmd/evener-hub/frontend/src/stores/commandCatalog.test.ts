@@ -68,6 +68,36 @@ test("a response landing after a swap to a not-yet-ready client is dropped, not 
   expect(useCommandCatalog.getState().error).toBeNull();
 });
 
+// The rejection arm of the case above: when the outgoing client's in-flight
+// read FAILS after the swap (its socket closed, failing the request), the
+// same silent-supersede contract holds - no error publishes for an expected
+// internal cancellation. A failure on the CURRENT connection still surfaces.
+test("a rejection landing after a swap to a not-yet-ready client stays silent too", async () => {
+  const first = new FakeClient("ready");
+  let failFirst!: (error: unknown) => void;
+  first.on(
+    "evener/command/list",
+    () =>
+      new Promise<CommandListResponse>((_resolve, reject) => {
+        failFirst = reject;
+      }),
+  );
+  connectionStore.getState().connect(first as never);
+  await vi.waitFor(() => expect(first.calls).toHaveLength(1));
+
+  const second = new FakeClient("connecting");
+  second.on("evener/command/list", () => ({ commands: [{ name: "release", source: "user" }] }));
+  connectionStore.getState().connect(second as never);
+
+  failFirst(new Error("socket closed"));
+  await vi.waitFor(() => expect(useCommandCatalog.getState().loading).toBe(false));
+  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], error: null });
+
+  second.emitStateChange("ready");
+  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
+  expect(useCommandCatalog.getState().error).toBeNull();
+});
+
 test("refresh reads the catalog through the connection's client, and a failed re-read keeps the last one", async () => {
   connectionStore.setState({ client: catalogClient(["review", "standup"]) as never });
   await useCommandCatalog.getState().refresh();

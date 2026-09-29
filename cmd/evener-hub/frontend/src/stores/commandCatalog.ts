@@ -15,21 +15,33 @@ const connectionClient: CommandCatalogClient = {
   request: (method, params, opts) => {
     const client = connectionStore.getState().client;
     if (!client) return Promise.reject(new Error("Not connected to the hub"));
-    return client.request(method, params, opts).then((response) => {
-      // A response whose client the connection has since left describes THAT
-      // connection's catalog, not this one's. The loop's dirty coalescing
-      // already supersedes an in-flight read when a re-read is triggered, but
-      // a swap to a not-yet-ready client triggers none, so a late response
-      // would publish over the replacement connection here. Answer it with
-      // the catalog the store already holds instead: the supersede stays
-      // silent (no technical error flash for an expected internal
-      // cancellation), the last catalog is kept, and the new connection's
-      // own ready-transition load replaces it.
-      if (connectionStore.getState().client !== client) {
-        return { ...response, commands: store.getState().commands };
-      }
-      return response;
-    });
+    return client.request(method, params, opts).then(
+      (response) => {
+        // A response whose client the connection has since left describes THAT
+        // connection's catalog, not this one's. The loop's dirty coalescing
+        // already supersedes an in-flight read when a re-read is triggered, but
+        // a swap to a not-yet-ready client triggers none, so a late response
+        // would publish over the replacement connection here. Answer it with
+        // the catalog the store already holds instead: the supersede stays
+        // silent (no technical error flash for an expected internal
+        // cancellation), the last catalog is kept, and the new connection's
+        // own ready-transition load replaces it.
+        if (connectionStore.getState().client !== client) {
+          return { ...response, commands: store.getState().commands };
+        }
+        return response;
+      },
+      (error) => {
+        // The rejection arm of the guard above: a request the old client
+        // failed while closing is the same expected internal cancellation -
+        // only a failure on the CURRENT connection is a real read failure
+        // worth the error state.
+        if (connectionStore.getState().client !== client) {
+          return { commands: store.getState().commands };
+        }
+        throw error;
+      },
+    );
   },
   onNotification: (handler) => {
     let unwire = connectionStore.getState().client?.onNotification(handler);
