@@ -71,7 +71,6 @@ vi.mock("react-native", async () => {
 		...native,
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
-		Keyboard: { dismiss: () => {} },
 		AccessibilityInfo: {
 			announceForAccessibility: (...args: unknown[]) => harness.announce(...args),
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
