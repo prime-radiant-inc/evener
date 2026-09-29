@@ -927,10 +927,25 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
     const generation = mutationCommitGenerations.get(targetRef) ?? 0;
-    const [outbox, optimistic] = await Promise.all([
-      runtime.storage.listOutbox(targetRef),
-      runtime.storage.listOptimistic(targetRef),
-    ]);
+    let outbox: MutationOutboxRecord[];
+    let optimistic: MutationOptimisticRecord[];
+    try {
+      [outbox, optimistic] = await Promise.all([
+        runtime.storage.listOutbox(targetRef),
+        runtime.storage.listOptimistic(targetRef),
+      ]);
+    } catch (error) {
+      // The read could not prove undelivered work. Do NOT preserve a stale
+      // true: the post-dispatch clearing refresh is fire-and-forget and its
+      // failure is swallowed (scheduleMutationDispatch's .catch), so a true left
+      // from a settled row would refuse the fallback exactly when storage is
+      // unavailable - the outage this feature exists to cover. An unprovable
+      // read means "nothing proven", so it clears.
+      undeliveredMutationRefs.delete(targetRef);
+      // Rethrow so a caller that relied on the read's rejection (the hydration
+      // reconciliation aborts on it) keeps that flow; only the marker changes.
+      throw error;
+    }
     if (!isCurrentMutationRuntime(runtime)) return;
     // A durable commit for this ref since the read began means this snapshot
     // predates it: discard rather than clobber the commit's own markers.
@@ -969,10 +984,19 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
   const generation = mutationCommitGenerations.get(targetRef) ?? 0;
-  const [outbox, optimistic] = await Promise.all([
-    runtime.storage.listOutbox(targetRef),
-    runtime.storage.listOptimistic(targetRef),
-  ]);
+  let outbox: MutationOutboxRecord[];
+  let optimistic: MutationOptimisticRecord[];
+  try {
+    [outbox, optimistic] = await Promise.all([
+      runtime.storage.listOutbox(targetRef),
+      runtime.storage.listOptimistic(targetRef),
+    ]);
+  } catch (error) {
+    // As in refreshMutationPins: an unprovable read clears rather than
+    // preserving a stale true that would refuse the fallback.
+    undeliveredMutationRefs.delete(targetRef);
+    throw error;
+  }
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
   if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) return;
@@ -2551,9 +2575,12 @@ function isStorageUnavailable(error: unknown): boolean {
 }
 
 // The imperative transport for a mutation whose durable write could not be
-// made: the same plain RPC the non-durable operations issue. The client mints
-// the clientMutationId exactly as those operations do, so the daemon still
-// dedups a replay; a rejection maps a conflict the same way they do.
+// made: the same plain RPC the non-durable operations issue. Delivery here is
+// at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
+// holds it, so if this RPC lands but its response is lost, a retry of the same
+// action mints a different id and the daemon cannot recognise the duplicate
+// (the same gap Jesse's ruling documents in issue #3313). A rejection maps a
+// conflict the same way the non-durable operations do.
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
   try {

@@ -13039,6 +13039,68 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // Round-13 Medium: the guard's own marker must not disable the fallback. A
+  // settled send's clearing refresh is fire-and-forget and swallows failures,
+  // so a marker left true with nothing undelivered behind it would refuse every
+  // later send for the ref once storage wedges - the outage this feature exists
+  // to cover. An unprovable read now clears instead of preserving the true.
+  test("a settled send whose clearing refresh cannot read does not block the fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stale-marker";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // After the durable send's row settles, make the clearing refresh's read
+    // fail. listOptimistic is the refresh's read that the dispatcher's own
+    // nextDispatchable does not use, so the drain still ends cleanly and the
+    // refresh runs - then fails.
+    let settled = false;
+    const realSettle = storage.settleReceipt.bind(storage);
+    storage.settleReceipt = async (id, state) => {
+      const result = await realSettle(id, state);
+      settled = true;
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return result;
+    };
+
+    await threadsStore.getState().send("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !settled; i += 1) await probe.listOutbox();
+    // Let the after-drain clearing refresh run (and fail).
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+    probe.close();
+    expect(settled).toBe(true);
+
+    // Storage wedges; the next send must still take the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      // A's settled dispatch plus B's fallback dispatch.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The fallback discards the RPC response. What projects the turn, then? The
   // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
   // has NO turn/started case; the only case that builds turns and items is
