@@ -7,7 +7,8 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
-import { bindCreation, type DraftStorage, creationStore } from "./newSession/creations";
+import type { DraftStorage } from "./newSession";
+import { bindCreation, creationStore } from "./newSession/creations";
 import { render } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({

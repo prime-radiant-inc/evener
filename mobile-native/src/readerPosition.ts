@@ -69,6 +69,7 @@ function valid(value: unknown): value is ReaderAnchor {
 }
 export function readerKey(row: TimelineRow): string {
 	if (row.kind === "details" || row.kind === "time") return row.id;
+	if (row.kind === "assistant" && row.roundKey) return row.roundKey;
 	return row.transcriptKey ?? row.id;
 }
 export function readerPosition(row: TimelineRow) {
@@ -179,6 +180,20 @@ export function readerAnchorAt(
 		touchedAt,
 		...(turnsSeen ? { turnsSeen } : {}),
 	};
+}
+
+/** The row a scroll to `y` anchors on: the first one reaching past `y`. A
+ * time marker is passed over, since loading an older page can remove it. */
+export function readerAnchorRow(
+	rows: readonly TimelineRow[],
+	measurements: ReadonlyMap<string, ReaderMeasurement>,
+	y: number,
+): TimelineRow | undefined {
+	return rows.find((row) => {
+		if (row.kind === "time") return false;
+		const measurement = measurements.get(readerKey(row));
+		return measurement && measurement.y + measurement.height > y;
+	});
 }
 
 export function captureReaderAnchor(

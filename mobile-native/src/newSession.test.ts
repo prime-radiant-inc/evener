@@ -971,25 +971,73 @@ describe("a start that lands clears only the draft it started", () => {
 		expect(store.getState()).toMatchObject({ cwd: "", prompt: "" });
 	});
 
-	it("keeps a newer draft another form saved while the start was on its way", async () => {
-		const storage = repository();
+	/** A repository whose clear or write fails once `failing` says so. */
+	function failingRepository(failing: { clear?: boolean; write?: boolean }) {
+		const drafts = repository();
+		return () => ({
+			read: (hubId: string) => drafts().read(hubId),
+			write: (hubId: string, draft: CreationDraft) => {
+				if (failing.write) throw new Error("disk full");
+				drafts().write(hubId, draft);
+			},
+			clear: (hubId: string) => {
+				if (failing.clear) throw new Error("disk full");
+				drafts().clear(hubId);
+			},
+		});
+	}
+
+	it("keeps the draft, held, when the device won't clear it after the start lands", async () => {
+		const failing = { clear: false };
+		const storage = failingRepository(failing);
 		const { service, starts } = heldHub();
-		const first = createNewSessionStore("hub-a", storage);
-		first.getState().bind(service);
-		await first.getState().setCwd("/project", false);
-		first.getState().setPrompt("fix the flaky test");
-		const started = first.getState().submit();
+		const store = createNewSessionStore("hub-a", storage);
+		store.getState().bind(service);
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("fix the flaky test");
+		const started = store.getState().submit();
 		await flush();
-		// Another form on this hub reads the draft and edits it.
-		const second = createNewSessionStore("hub-a", storage);
-		second.getState().setPrompt("something else entirely");
+		failing.clear = true;
 		starts[0]?.resolve(landed);
 		expect(await started).toMatchObject({ status: "created" });
-		// The newer draft stays, and since the start is now known to have
-		// worked, it no longer says one may exist.
-		expect(storage().read("hub-a")).toMatchObject({ prompt: "something else entirely", unconfirmed: false });
-		expect(second.getState().prompt).toBe("something else entirely");
-		expect(first.getState().unconfirmedCreation).toBe(false);
+		// The session exists: the draft stays, and Start can't send it again.
+		expect(storage().read("hub-a")).toMatchObject({ prompt: "fix the flaky test", unconfirmed: true });
+		expect(store.getState()).toMatchObject({
+			prompt: "fix the flaky test",
+			error: expect.stringContaining("The session was created"),
+		});
+		expect(store.getState().startMayRepeat()).toBe(true);
+		expect(await store.getState().submit()).toEqual({ status: "blocked" });
+		expect(starts).toHaveLength(1);
+	});
+
+	it("keeps the draft, held, when saving the host's fill-ins failed while the start was out", async () => {
+		const failing = { write: false };
+		const storage = failingRepository(failing);
+		let models: unknown[] = [model];
+		const start = deferred();
+		const store = createNewSessionStore("hub-a", storage);
+		store.getState().bind(
+			createNewSessionService({
+				request: (method: string) => (method === "model/list" ? Promise.resolve({ data: models }) : start.promise),
+			} as unknown as ConversationClientLike),
+		);
+		await store.getState().setCwd("/project");
+		store.getState().selectModel(model);
+		store.getState().setReasoning("high");
+		store.getState().setPrompt("go");
+		const started = store.getState().submit();
+		await flush();
+		// The host drops the effort, and the device won't save the change.
+		failing.write = true;
+		models = [{ ...model, reasoningEffortLevels: ["low"] }];
+		await store.getState().loadModels(true);
+		start.resolve(landed);
+		expect(await started).toMatchObject({ status: "created" });
+		// What's stored is this start's draft before the fill-in: it stays, held.
+		expect(storage().read("hub-a")).toMatchObject({ prompt: "go", reasoning: "high", unconfirmed: true });
+		expect(store.getState()).toMatchObject({ prompt: "go", error: expect.stringContaining("The session was created") });
+		expect(store.getState().startMayRepeat()).toBe(true);
 	});
 });
 
@@ -1189,4 +1237,51 @@ it("clears the draft it sent even when the host's models change it while the sta
 	expect(saved.has("hub-a")).toBe(false);
 	expect(store.getState()).toMatchObject({ prompt: "", unconfirmedCreation: false });
 	expect(store.getState().startMayRepeat()).toBe(false);
+});
+
+it("refuses to start a draft whose start may exist, whatever a form shows (#3104)", async () => {
+	const { store, requests } = restored({ unconfirmed: true }, []);
+	await store.getState().loadModels(true);
+	expect(store.getState().startMayRepeat()).toBe(true);
+	expect(await store.getState().submit()).toEqual({ status: "blocked" });
+	expect(requests.map((request) => request.method)).not.toContain("thread/start");
+	// Changed, it is a new draft, and starts.
+	store.getState().setPrompt("go, and fix the docs");
+	expect(await store.getState().submit()).toMatchObject({ status: "created" });
+});
+
+describe("a start the hub answers with an error (#3104)", () => {
+	function refusing(error: Error) {
+		const { saved, storage } = memoryDrafts();
+		const store = createNewSessionStore("hub-a", storage);
+		store.getState().bind(
+			createNewSessionService({
+				request: async (method: string) => {
+					if (method === "thread/start") throw error;
+					return { data: [] };
+				},
+			} as unknown as ConversationClientLike),
+		);
+		return { store, saved };
+	}
+
+	it("isn't held when the hub refused it before running it: no session exists", async () => {
+		const { store, saved } = refusing(new WireError("cwd is not a directory", -32602));
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("go");
+		expect(await store.getState().submit()).toEqual({ status: "failed" });
+		expect(store.getState().startMayRepeat()).toBe(false);
+		expect(store.getState().error).toBe("cwd is not a directory\n\nNo session was started. Your input is kept.");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: false });
+	});
+
+	it("is held when the hub failed it in a way that leaves open whether it ran", async () => {
+		const { store, saved } = refusing(new WireError("the hub is shutting down", -32000));
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("go");
+		expect(await store.getState().submit()).toEqual({ status: "failed" });
+		expect(store.getState().startMayRepeat()).toBe(true);
+		expect(store.getState().error).toContain("It may have started");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
+	});
 });

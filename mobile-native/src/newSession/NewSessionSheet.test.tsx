@@ -35,6 +35,7 @@ const client = {
 	},
 	onNotification: () => () => {},
 };
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ profiles: harness.profiles }) }));
 vi.mock("../retainedScreen", () => ({
 	useRetainedScreenConnection: () => ({
 		activeProfile: { id: "hub-1", name: "magic-kingdom" },
@@ -43,7 +44,6 @@ vi.mock("../retainedScreen", () => ({
 		renderClient: client,
 	}),
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ profiles: harness.profiles }) }));
 vi.mock("../nativeDrafts", () => ({ nativeDrafts: () => ({ creation: harness.drafts }) }));
 vi.mock("./nativeLaunchMemory", () => ({ launchMemory: () => harness.memory }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "sheet-uuid" }));
@@ -260,5 +260,23 @@ it("closes when its hub is removed while it is open (#3104)", async () => {
 	harness.profiles = [];
 	await sheet.rerender();
 	expect(sheet.goBack).toHaveBeenCalledTimes(1);
+	sheet.tree.unmount();
+});
+
+it("makes no store for a hub that has been removed (#3104)", async () => {
+	harness.profiles = [];
+	// A store made for the hub would read its draft first.
+	let reads = 0;
+	harness.drafts = {
+		read: () => {
+			reads++;
+			return null;
+		},
+		write: () => {},
+		clear: () => {},
+	} as unknown as CreationDraftRepository;
+	const sheet = await mount();
+	expect(harness.context).toBeNull();
+	expect(reads).toBe(0);
 	sheet.tree.unmount();
 });

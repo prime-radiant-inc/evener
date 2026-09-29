@@ -13,7 +13,8 @@ import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
-import { creationStore, forgetCreationForHub, formFront } from "./creations";
+import { creationStore, forgetCreationForHub } from "./creations";
+import { formFront } from "./formFront";
 import { NewSessionForm } from "./NewSessionForm";
 import type { NewSessionRoutes } from "./newSessionContext";
 import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
@@ -860,7 +861,7 @@ it("holds Start after a new connection leaves its start unconfirmed, until the d
 	await form.setReady(true);
 	expect(form.header("headerRight").props).toMatchObject({ label: "Start", disabled: true });
 	expect(form.text()).toContain(
-		"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
+		"Creation could not be confirmed. It may have started: check the Board before starting this draft again, or change the draft.",
 	);
 	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
 	expect(form.header("headerRight").props.disabled).toBe(false);
@@ -930,25 +931,51 @@ it("retires only its own hub's failed-start alert when it comes into focus (#310
 });
 
 it("says once why Start holds a draft whose last start may have worked (#3104)", async () => {
-	const held =
-		"This draft's last start may have worked. Check the Board before starting it again, or change the draft.";
+	const once = (text: string, line: string) => text.split(line).length - 1;
+	const why = "It may have started: check the Board before starting this draft again, or change the draft.";
 	const restored = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go", unconfirmed: true } });
 	expect(restored.header("headerRight").props.disabled).toBe(true);
-	expect(restored.text()).toContain(held);
-	expect(restored.text()).not.toContain("An earlier creation could not be confirmed");
+	expect(once(restored.text(), why)).toBe(1);
+	expect(restored.text()).toContain("An earlier creation could not be confirmed");
 	restored.dispose();
 
 	const rebound = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
 	await act(async () => void rebound.header("headerRight").props.onPress());
 	await rebound.setReady(false);
 	await rebound.setReady(true);
-	expect(rebound.text()).toContain(held);
-	expect(rebound.text()).not.toContain("Creation could not be confirmed");
-	// Changed, the draft is a new start, and the store's own line shows again.
+	expect(once(rebound.text(), why)).toBe(1);
+	// Changed, the draft is a new start: Start opens, and the store's line stays.
 	await act(async () => rebound.prompt().props.onChangeText("go, and fix the docs"));
-	expect(rebound.text()).toContain("Creation could not be confirmed");
+	expect(rebound.header("headerRight").props.disabled).toBe(false);
+	expect(once(rebound.text(), why)).toBe(1);
 	await act(async () => rebound.releaseStart());
 	rebound.dispose();
+
+	// A start that failed after it was sent says so in the same one line.
+	const failed = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => failed.header("headerRight").props.onPress());
+	await settle();
+	expect(failed.header("headerRight").props.disabled).toBe(true);
+	expect(once(failed.text(), why)).toBe(1);
+	expect(failed.text()).toContain("the hub is shutting down");
+	failed.dispose();
+});
+
+it("leaves Start open, with the hub's one reason, when the hub refused the start before running it", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		refuseStart: new WireError("cwd is not a directory", -32602),
+	});
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	expect(form.text()).toContain("cwd is not a directory\n\nNo session was started. Your input is kept.");
+	expect(form.text()).not.toContain("may have started");
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: false });
+	form.dispose();
 });
 
 it("stops being the store's form in front once it unmounts (#3104)", async () => {

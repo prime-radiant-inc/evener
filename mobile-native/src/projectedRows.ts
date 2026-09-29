@@ -156,7 +156,9 @@ export type MobileTimelineItem =
 		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		// roundKey: the key a reply keeps from its first streamed frame through
+		// its recording (see withRoundKey), where it has one.
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
 		| {
 				kind: "activity";
 				id: string;
@@ -863,13 +865,15 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
+	const keyedRounds = new Set<string>();
 	for (const entry of projected.entries) {
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const row = projectedRow(entry, { turnStatus: turn.status, asks });
-		if (row === null) continue;
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		if (plain === null) continue;
+		const row = withRoundKey(plain, entry.item, keyedRounds);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -904,6 +908,25 @@ function rowsForProjectedTurn(
 		if (oldest !== undefined) slots.delete(oldest);
 	}
 	return entries;
+}
+
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id and
+// a transcript key. Both carry the round's id, so the reply keys by its round
+// and keeps one key through the change: the list doesn't remount it, and a
+// reading position or a "new below" count taken on it still finds it. Only the
+// round's first reply takes the round's key, since a round can record two
+// replies (text before and after a tool call); the later one keeps its own. A
+// communicate preview carries the round too, but its message is recorded with
+// no round id, so it has nothing to share a key with and takes none. The key
+// is for display and reading positions only: timelineIdentity, which the
+// store's merges use, stays transcriptKey-first.
+function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
+	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
+	const key = `round:${item.roundId}:agentMessage`;
+	if (keyedRounds.has(key)) return row;
+	keyedRounds.add(key);
+	return { ...row, roundKey: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.
