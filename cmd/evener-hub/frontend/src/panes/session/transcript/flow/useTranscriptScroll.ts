@@ -42,6 +42,7 @@ import {
   isAtBottom,
   isEndBelowFold,
   isNearTop,
+  portGeometryTargets,
   readScrollMetrics,
   type ScrollMetrics,
 } from "./scrollMetrics";
@@ -1557,13 +1558,11 @@ export function useTranscriptScroll({
         .catch(() => {});
     }
     let geometryObserver: ResizeObserver | undefined;
-    const content = el.firstElementChild;
-    if (typeof ResizeObserver !== "undefined" && content) {
+    if (typeof ResizeObserver !== "undefined") {
       geometryObserver = new ResizeObserver(() => {
         if (!disposed) reanchorIfEndLeftView();
       });
-      geometryObserver.observe(content);
-      geometryObserver.observe(el);
+      for (const target of portGeometryTargets(el)) geometryObserver.observe(target);
     }
 
     el.addEventListener("scroll", handleScroll);

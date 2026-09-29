@@ -96,3 +96,19 @@ export function shouldAutoLoadOlder(el: HTMLElement): boolean {
   if (el.clientHeight <= 0 && el.offsetHeight <= 0) return false;
   return el.scrollHeight <= el.clientHeight;
 }
+
+/**
+ * The nodes a transcript paging trigger observes to re-check its geometry
+ * whenever it changes: the scroll port itself (a pane resize) and the port's
+ * content (the rows settling, or the transcript shrinking below the port).
+ *
+ * Both the scroll coordinator and the paging row need exactly these, and both
+ * depend on the VirtualList's `root > sizer` shape to find the second, so that
+ * assumption lives here rather than in two observers that could drift apart.
+ */
+export function portGeometryTargets(el: HTMLElement): HTMLElement[] {
+  const targets = [el];
+  const content = el.firstElementChild;
+  if (content instanceof HTMLElement) targets.push(content);
+  return targets;
+}

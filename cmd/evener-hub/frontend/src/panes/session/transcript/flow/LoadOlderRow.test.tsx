@@ -81,8 +81,10 @@ test("loads older turns when the port is not full", () => {
   const onLoad = vi.fn();
   render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
 
-  // The mount check (a browser's ResizeObserver delivers this same one as its
-  // initial notification for the observed targets).
+  // The stub stands in for a browser's initial notification for each observed
+  // target.
+  latestObserver().resize();
+
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
@@ -146,6 +148,10 @@ test("re-points the observation at a port that appears on a later render", () =>
   );
 
   expect(latestObserver().observed).toEqual([port.el, port.el.firstElementChild]);
+  // The port the row just started watching is short, so the check it gets now
+  // is what fills the page.
+  latestObserver().resize();
+  expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
 // A transcript can hand back a different scroll element; watching the old one

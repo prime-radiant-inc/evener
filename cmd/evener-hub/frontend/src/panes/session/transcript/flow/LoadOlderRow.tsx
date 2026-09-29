@@ -30,7 +30,7 @@
 import { useEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./loadolderrow.module.css";
-import { shouldAutoLoadOlder } from "./scrollMetrics";
+import { portGeometryTargets, shouldAutoLoadOlder } from "./scrollMetrics";
 
 export interface LoadOlderRowProps {
   // Fetches the next older page. Called automatically by the geometry check
@@ -73,6 +73,10 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
   // Re-points the observation at whatever the transcript hands back now. Kept
   // in a ref so the render effect below can call the mounted effect's closure.
   const syncTargetsRef = useRef<() => void>(() => {});
+  // The geometry check itself, for the render effect's no-observer fallback
+  // (jsdom): without an observer, a port that appears on a later render would
+  // otherwise never be checked.
+  const maybeLoadRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const maybeLoad = () => {
@@ -81,50 +85,38 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
       if (el === null || !shouldAutoLoadOlder(el)) return;
       onLoadRef.current();
     };
-    // jsdom has no ResizeObserver at all; a test that cares stubs it the way
-    // DockHost.test.tsx stubs it for dockview. Without one there is still the
-    // one geometry check to make; with one, its initial notification for each
-    // observed target is that check, and it runs again on every later change.
-    if (typeof ResizeObserver !== "function") {
-      maybeLoad();
-      return undefined;
-    }
+    maybeLoadRef.current = maybeLoad;
     let observer: ResizeObserver | null = null;
-    let port: HTMLElement | null = null;
-    let content: HTMLElement | null = null;
-    // Both halves of the geometry the decision reads are observed: the port's
-    // (a pane resize) and its content's (the rows settling, or the transcript
-    // shrinking below the port). Re-resolving on every call matters because a
+    let observed: HTMLElement[] = [];
+    // Both halves of the geometry the decision reads are observed
+    // (portGeometryTargets). Re-resolving on every call matters because a
     // transcript can swap either node, and observing the new one is what makes
     // its initial notification fire the next check.
     const syncTargets = () => {
       if (observer === null) return;
       const el = scrollElementRef.current();
-      if (el !== port) {
-        if (port !== null) observer.unobserve(port);
-        if (content !== null) observer.unobserve(content);
-        port = el;
-        content = null;
-        if (port !== null) observer.observe(port);
-      }
-      if (port !== null) {
-        const child = port.firstElementChild;
-        if (child !== content) {
-          if (content !== null) observer.unobserve(content);
-          content = child instanceof HTMLElement ? child : null;
-          if (content !== null) observer.observe(content);
-        }
-      }
+      const next = el === null ? [] : portGeometryTargets(el);
+      if (next.length === observed.length && next.every((target, index) => target === observed[index])) return;
+      for (const target of observed) observer.unobserve(target);
+      observed = next;
+      for (const target of next) observer.observe(target);
     };
     syncTargetsRef.current = syncTargets;
-    observer = new ResizeObserver(() => {
-      syncTargets();
-      maybeLoad();
-    });
+    // jsdom has no ResizeObserver at all; a test that cares stubs it the way
+    // DockHost.test.tsx stubs it for dockview.
+    if (typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(() => {
+        syncTargets();
+        maybeLoad();
+      });
+    }
     syncTargets();
-    maybeLoad();
+    // The check itself: with an observer, its initial notification for each
+    // observed target delivers it; without one, the render effect below does
+    // (this effect cannot call it directly without checking twice on mount).
     return () => {
       syncTargetsRef.current = () => {};
+      maybeLoadRef.current = () => {};
       observer?.disconnect();
     };
   }, []);
@@ -132,10 +124,11 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
   // A swapped port, or a port's first content child appearing after the first
   // check, changes no observed border box - so the observer alone could never
   // notice it and the row would sit watching a detached node. Any render that
-  // brings either node re-points the observation here (only an identity
-  // compare; the new target's own initial notification does the check).
+  // brings either node re-points the observation here (an identity compare
+  // only; the new node's own initial notification does the check).
   useEffect(() => {
     syncTargetsRef.current();
+    if (typeof ResizeObserver !== "function") maybeLoadRef.current();
   });
 
   return (
