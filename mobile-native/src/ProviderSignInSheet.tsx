@@ -47,7 +47,10 @@ export function ProviderSignInSheet({
 	useEffect(() => {
 		// The sign-in landed while the page may still be open over the app.
 		// With no browser open the call rejects, which is nothing to report.
-		if (authorized) WebBrowser.dismissBrowser().catch(() => {});
+		if (!authorized) return;
+		WebBrowser.dismissBrowser().catch(() => {});
+		// A copy or open that failed earlier doesn't matter once signed in.
+		setLocalError(null);
 	}, [authorized]);
 	async function copy(flowId: string, code: string) {
 		try {
@@ -153,7 +156,6 @@ export function ProviderSignInSheet({
 									{device.userCode}
 								</Text>
 								<Action
-									label="Copy code"
 									onPress={() => {
 										setLocalError(null);
 										void copy(device.flowId, device.userCode);

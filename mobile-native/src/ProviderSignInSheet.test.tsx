@@ -150,6 +150,8 @@ it("copies the code with Copy code, and says when the copy fails", async () => {
 	await press(tree, "Copy code");
 	expect(edges.events).toEqual([`copy ${device.userCode}`]);
 	expect(renderedText(tree)).toContain("Code copied");
+	// VoiceOver hears the confirmation too.
+	expect(pressable(tree, "Code copied")).toBeDefined();
 
 	edges.copies = false;
 	const failing = await mount(deviceFlow);
@@ -190,6 +192,21 @@ it("closes the page and says Signed in when the hub's poll comes back authorized
 	expect(pressable(tree, "Done")).toBeDefined();
 	expect(pressable(tree, "Cancel")).toBeUndefined();
 	expect(pressable(tree, "Open sign-in page")).toBeUndefined();
+});
+
+it("drops a copy failure once the sign-in lands", async () => {
+	edges.copies = false;
+	const { tree } = await mount({
+		...deviceFlow,
+		"evener/auth/device/poll": () => ({ state: "authorized", status: authorizedStatus }),
+	});
+	await press(tree, "Copy code");
+	expect(renderedText(tree)).toContain("Could not copy the code. Select it to copy manually.");
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(2000);
+	});
+	expect(renderedText(tree)).toContain(`Signed in to ${PROVIDER}`);
+	expect(renderedText(tree)).not.toContain("Could not copy the code.");
 });
 
 it("offers Check again after a failed poll, which polls again", async () => {
