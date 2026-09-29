@@ -1291,12 +1291,12 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 			// t.TempDir sits under /var, a symlink to /private/var; the lexical
 			// spelling never settles through a grant. Resolve both temp roots so
 			// the boundary is the supported one on every platform.
-			home := resolvedTempDir(t)
+			home := resolvedPath(t, t.TempDir())
 			workdir := filepath.Join(home, "work")
 			if err := os.Mkdir(workdir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			outside := filepath.Join(resolvedTempDir(t), "original.txt")
+			outside := filepath.Join(resolvedPath(t, t.TempDir()), "original.txt")
 			originalBytes := []byte("original escalation content")
 			if err := os.WriteFile(outside, originalBytes, 0o600); err != nil {
 				t.Fatal(err)
@@ -1456,21 +1456,6 @@ func retirementEvidenceController(t *testing.T, root *Session) *RetirementContro
 		t.Fatal(err)
 	}
 	return c
-}
-
-// resolvedTempDir returns a fresh test temp directory resolved to its physical
-// path. A test that establishes a sandbox path boundary must name the resolved
-// location: the file sandbox refuses to traverse a symlinked component even
-// with an invocation grant for the lexical path, and on macOS t.TempDir sits
-// under /var, a symlink to /private/var.
-func resolvedTempDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("resolve temp dir %q: %v", dir, err)
-	}
-	return resolved
 }
 
 func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, category string) {
