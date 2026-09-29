@@ -491,8 +491,10 @@ describe("a run's questions", () => {
 		// Questions, not calls: one call can ask several.
 		expect(texts([asking("a", ["Deploy", "Notify"])])).toEqual(["asked 2 questions"]);
 		expect(texts([asking("a", ["Deploy"]), asking("b", ["Notify", "Tag"])])).toEqual(["asked 3 questions"]);
-		// A call whose questions don't parse still asked something.
+		// A call whose questions don't parse, or that lists none, still asked
+		// something: parseAskUserQuestions gives no list rather than an empty one.
 		expect(texts([step("a", "ask_user")])).toEqual(["asked a question"]);
+		expect(texts([asking("a", [])])).toEqual(["asked a question"]);
 	});
 });
 

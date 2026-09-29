@@ -186,6 +186,15 @@ test("words a job list's filter and a job tool it doesn't know", () => {
       output: "[delegate dlg_1 · stopped · stop_completed · stopped_by_parent · was running]\nrequested by: parent",
     }),
   ).toBe("Stopped dlg_1 · stopped");
+  // The footer's reason, its fourth segment after the outcome, words the
+  // status as every other job surface does.
+  expect(
+    toolStepSummary({
+      toolName: "job_stop",
+      argumentsJSON: JSON.stringify({ target: "job_x" }),
+      output: "[shell job_x · failed · already_terminal · exit_nonzero]",
+    }),
+  ).toBe("Stopped job_x · Command failed");
   // The legacy name reads as job_status does.
   expect(step("job_read_output", { job_id: "job_x" })).toBe("Checked job_x");
 });

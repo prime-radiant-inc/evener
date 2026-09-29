@@ -42,15 +42,19 @@ export function jobListWords(step: JobStep): StepWords {
 }
 
 // A stop's result opens with its footer (agent/session_tools_jobs.go's
-// formatJobStop): "[<kind> <id> · <status> · <outcome> · …]", a subagent's
-// followed by lines of its own. The status is the line's word for it; the
-// kind, the repeated id and the reason codes stay in the evidence.
-const STOP_FOOTER_RE = /^\[\S+ \S+ · ([^·\]]+?) ·/;
+// formatJobStop): "[<kind> <id> · <status> · <outcome> · <reason> · …]", a
+// subagent's followed by lines of its own. The line words the status as every
+// job surface does, with the reason that can change it ("failed" with
+// exit_nonzero is "Command failed"); the kind, the repeated id and the codes
+// stay in the evidence.
+const STOP_FOOTER_RE = /^\[([^\]\n]*)\]/;
 
 /** "Stopped job_x · cancelled": the status its result reports. */
 export function jobStopWords(step: JobStep): StepWords {
-  const status = STOP_FOOTER_RE.exec(step.output ?? "")?.[1];
-  return withDetail(onJob("Stopped", namedJob(step)), status ? jobStatusDisplay(status) : undefined);
+  const segments = STOP_FOOTER_RE.exec(step.output ?? "")?.[1]?.split(" · ") ?? [];
+  const status = segments[1];
+  const reason = segments[3]?.startsWith("was ") ? undefined : segments[3];
+  return withDetail(onJob("Stopped", namedJob(step)), status ? jobStatusDisplay(status, reason) : undefined);
 }
 
 export const jobStatusSummary = summaryOf(jobStatusWords);
