@@ -1321,6 +1321,9 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 		maxLineBytes = 128 << 20
 	}
 	reader := bufio.NewReaderSize(f, 64*1024)
+	if err := ctx.Err(); err != nil {
+		return transcript.Header{}, err
+	}
 	header, err := transcript.ReadHeader(reader, maxLineBytes)
 	if err != nil {
 		return transcript.Header{}, err

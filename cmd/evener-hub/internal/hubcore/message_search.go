@@ -439,8 +439,9 @@ func candidateItems(candidates []appitempaging.TranscriptItemCandidate) []appwir
 	return items
 }
 
-// checkTranscriptHeader reads only a transcript's first line and returns
-// transcript.ErrUnsupportedFormat (wrapped) unless it is a format-2 header.
+// checkTranscriptHeader reads the transcript's leading header line (skipping
+// blank lines) and returns transcript.ErrUnsupportedFormat (wrapped) unless it
+// is a format-2 header.
 func checkTranscriptHeader(transcriptPath string) error {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
