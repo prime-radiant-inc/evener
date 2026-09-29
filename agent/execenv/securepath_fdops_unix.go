@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,12 +22,13 @@ import (
 // the operations on platforms without a supported enforcement primitive.
 
 var (
-	secureOpenat         = unix.Openat
-	secureWrite          = unix.Write
-	secureClose          = unix.Close
-	secureRenameat       = unix.Renameat
-	secureUnlinkat       = unix.Unlinkat
-	secureReadDirEntries = readDirEntries
+	secureOpenat       = unix.Openat
+	secureWrite        = unix.Write
+	secureClose        = unix.Close
+	secureRenameat     = unix.Renameat
+	secureUnlinkat     = unix.Unlinkat
+	secureReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
+	secureDupDirFd     = func(fd int) (int, error) { return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0) }
 )
 
 // close releases every cached root fd. Safe to call more than once.
@@ -465,22 +467,33 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	return st.Mode&unix.S_IFMT != unix.S_IFLNK
 }
 
-// listDir returns the entries beneath abs, recursing up to depth levels, using
-// only fd-anchored operations: the top directory is resolved beneath the correct
-// root, and each subdirectory is re-opened beneath its parent's fd with
+// listDirBudget returns the entries beneath abs, recursing up to depth levels,
+// using only fd-anchored operations: the top directory is resolved beneath the
+// correct root, and each subdirectory is re-opened beneath its parent's fd with
 // O_NOFOLLOW — never re-resolved from the root by a joined path. Masked entries
 // are skipped so a denylisted subtree is never enumerated.
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+//
+// It observes ctx before each directory it reads and before each entry it
+// retains, and stops once the walk has spent its listing or entry budget,
+// returning the entries gathered so far; budget.Truncated then reports the
+// result is a prefix of the full listing. A nil budget is unbounded.
+func (s *sandboxFS) listDirBudget(ctx context.Context, tool, abs string, depth int, budget *ListDirBudget) ([]DirEntry, error) {
+	if budget == nil {
+		budget = &ListDirBudget{}
+	}
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
 	if err != nil {
 		return nil, err
 	}
 	var out []DirEntry
-	if err := s.walkDirFd(fd, "", abs, depth, &out); err != nil { // walkDirFd closes fd
+	if err := s.walkDirFd(ctx, fd, "", abs, depth, budget, &out); err != nil { // walkDirFd closes fd
 		return nil, err
 	}
 	return out, nil
@@ -490,18 +503,43 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // closes), appends them to out, and recurses into real subdirectories beneath
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
 // absolute path of dirFd, used only to skip masked entries.
-func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
+func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs string, depth int, budget *ListDirBudget, out *[]DirEntry) error {
 	defer func() { _ = unix.Close(dirFd) }()
-	ents, err := secureReadDirEntries(dirFd)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !budget.chargeListing() {
+		return nil
+	}
+	// Stream the directory in chunks, keeping only the smallest entries the page
+	// can still use, so a one-entry page never materializes a whole huge
+	// directory yet still returns the true sorted prefix. Masked entries are
+	// dropped before selection so they cannot evict a visible entry from the page.
+	res, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries(), budget.scanBudget(), func(ent os.DirEntry) bool {
+		return !s.underMasked(filepath.Join(baseAbs, ent.Name()))
+	})
 	if err != nil {
 		return err
 	}
+	if res.incomplete {
+		budget.incomplete = true
+		budget.truncated = true
+	}
+	ents := res.entries
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := ent.Name()
 		childAbs := filepath.Join(baseAbs, name)
 		if s.underMasked(childAbs) {
 			continue
+		}
+		// Charge only entries the listing retains: a masked or unreadable entry
+		// must not consume a page slot that a visible entry could fill.
+		if !budget.chargeEntry() {
+			return nil
 		}
 		relName := name
 		if relPrefix != "" {
@@ -520,17 +558,28 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			}
 		}
 		*out = append(*out, de)
-		if ent.IsDir() && depth > 1 {
+		// Do not descend when no entry budget remains: the child's contents
+		// could not be retained, and listing it would only mark the page
+		// incomplete without adding anything.
+		if ent.IsDir() && depth > 1 && budget.remainingEntries() != 0 {
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
 			childFd, cerr := secureOpenat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
-			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, out); err != nil {
+			if err := s.walkDirFd(ctx, childFd, relName, childAbs, depth-1, budget, out); err != nil {
 				return err
 			}
+			// Abort remaining siblings when a child spent the budget; a scan-cap
+			// trip (incomplete) leaves room, so keep descending.
+			if budget.spent {
+				return nil
+			}
 		}
+	}
+	if res.more {
+		budget.truncated = true
 	}
 	return nil
 }
@@ -593,17 +642,22 @@ func writeAllFd(fd int, data []byte) error {
 	return nil
 }
 
-// readDirEntries reads all directory entries from dirFd without consuming it: it
-// dups the fd (F_DUPFD_CLOEXEC), reads through the dup, and closes only the dup,
-// leaving dirFd valid for subsequent openat recursion.
-func readDirEntries(dirFd int) ([]os.DirEntry, error) {
-	dup, err := unix.FcntlInt(uintptr(dirFd), unix.F_DUPFD_CLOEXEC, 0)
+// readDirEntriesPrefix reads directory entries from dirFd without consuming it:
+// it dups the fd (F_DUPFD_CLOEXEC), streams through the dup, and closes only the
+// dup, leaving dirFd valid for subsequent openat recursion. It returns the
+// lexically smallest limit entries (limit < 0 returns them all) and whether the
+// directory held more, delegating to readDirPrefix so the fd path and the
+// path-based walk share one chunked-selection loop. keep, when non-nil, drops
+// entries the caller will not return (masked names) before they can consume a
+// prefix slot.
+func readDirEntriesPrefix(ctx context.Context, dirFd, limit, scanCap int, keep func(os.DirEntry) bool) (dirPrefixResult, error) {
+	dup, err := secureDupDirFd(dirFd)
 	if err != nil {
-		return nil, err
+		return dirPrefixResult{}, err
 	}
 	f := os.NewFile(uintptr(dup), "")
 	defer func() { _ = f.Close() }()
-	return f.ReadDir(-1)
+	return readDirPrefix(ctx, f, secureReadDirChunk, limit, scanCap, keep)
 }
 
 // ensureDirsBeneath creates each component of relDir beneath rootFd if missing,

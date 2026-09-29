@@ -184,8 +184,8 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if err := writeAllFd(-1, []byte("data")); err == nil {
 		t.Fatal("writeAllFd invalid fd unexpectedly succeeded")
 	}
-	if _, err := readDirEntries(-1); err == nil {
-		t.Fatal("readDirEntries invalid fd unexpectedly succeeded")
+	if _, err := readDirEntriesPrefix(context.Background(), -1, -1, -1, nil); err == nil {
+		t.Fatal("readDirEntriesPrefix invalid fd unexpectedly succeeded")
 	}
 	if _, err := openat2Retry(-1, "never", &unix.OpenHow{Flags: unix.O_RDONLY}); err == nil {
 		t.Fatal("openat2Retry invalid fd unexpectedly succeeded")
@@ -271,11 +271,11 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if s.exists("edge", filepath.Join(worktree, "missing-parent", "leaf")) {
 		t.Fatal("sandbox exists missing parent unexpectedly returned true")
 	}
-	if _, err := s.listDir("edge", filepath.Join(worktree, "missing-dir"), 1); err == nil {
+	if _, err := s.listDirBudget(context.Background(), "edge", filepath.Join(worktree, "missing-dir"), 1, &ListDirBudget{}); err == nil {
 		t.Fatal("sandbox listDir missing directory unexpectedly succeeded")
 	}
 	entries := []DirEntry{}
-	if err := s.walkDirFd(-1, "", worktree, 1, &entries); err == nil {
+	if err := s.walkDirFd(context.Background(), -1, "", worktree, 1, &ListDirBudget{}, &entries); err == nil {
 		t.Fatal("walkDirFd invalid descriptor unexpectedly succeeded")
 	}
 	if _, _, err := s.openReadBaseFd("edge", filepath.Join(worktree, "missing-dir")); err == nil {

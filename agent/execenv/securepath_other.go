@@ -75,7 +75,7 @@ func (s *sandboxFS) mkdirAll(tool, abs string) error {
 
 func (s *sandboxFS) exists(tool, abs string) bool { return false }
 
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+func (s *sandboxFS) listDirBudget(ctx context.Context, tool, abs string, depth int, budget *ListDirBudget) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 

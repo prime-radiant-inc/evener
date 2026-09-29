@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -1437,7 +1438,8 @@ var (
 	shellStat              = os.Stat
 	grepReadFile           = fs.ReadFile
 	grepWalk               = fs.WalkDir
-	listReadDir            = os.ReadDir
+	listOpenDir            = os.Open
+	listReadDirChunk       = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
 	streamOutputCopyStart  = func() {}
@@ -1922,26 +1924,240 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 // by name within each directory, nested names are prefixed with their relative
 // path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.ListDirectoryBudget(context.Background(), path, depth, &ListDirBudget{})
+}
+
+// listDirChunk is how many directory entries one chunked listing reads per call.
+// A var, not a const, so a test can shrink it below a fixture's size to see the
+// chunk loop's bounds without building a directory large enough to matter.
+var listDirChunk = 512
+
+// maxListDirScanEntries caps how many entries a chunked listing may scan for one
+// directory before it stops and reports the listing incomplete, so a finite page
+// cannot drive an unbounded scan of a pathological directory. The read bound is
+// this many entries plus at most one boundary probe that tells a directory
+// ending exactly at the cap from one with more. It is far above any real
+// directory, so an ordinary listing still scans to EOF and returns the true
+// sorted prefix. A var, not a const, so a test can shrink it.
+var maxListDirScanEntries = 200_000
+
+// listDirReadPrefix opens dir and returns the lexically smallest limit of its
+// entries (limit < 0 returns them all), reporting whether the directory held
+// more than the returned prefix. It reads through the listReadDirChunk seam so
+// tests can drive the chunk loop.
+func listDirReadPrefix(ctx context.Context, dir string, limit, scanCap int) (dirPrefixResult, error) {
+	f, err := listOpenDir(dir)
+	if err != nil {
+		return dirPrefixResult{}, err
+	}
+	defer func() { _ = f.Close() }()
+	return readDirPrefix(ctx, f, listReadDirChunk, limit, scanCap, nil)
+}
+
+// dirPrefixResult is what a chunked directory read yielded: the smallest
+// entries it kept (sorted), whether the directory held entries beyond them
+// (more), and whether the scan budget stopped the read before the directory
+// ended (incomplete), in which case the kept prefix is sorted only among the
+// entries scanned and cannot be continued by offset.
+type dirPrefixResult struct {
+	entries    []os.DirEntry
+	more       bool
+	incomplete bool
+}
+
+// readDirPrefix streams a directory's entries in chunks and returns the
+// lexically smallest limit of them, reporting whether the directory held more
+// than the returned prefix (a negative limit returns every entry and reports
+// false). Keeping only the smallest limit while streaming is what lets a tiny
+// page avoid materializing a whole huge directory yet still return the true
+// sorted prefix the tool promises. keep, when non-nil, drops entries the caller
+// will not return (a confined walk's masked names) before they can consume a
+// prefix slot. scanCap (>= 0) bounds how many entries are read before the walk
+// gives up and reports the listing incomplete, so a finite page cannot drive an
+// unbounded scan. ctx is observed between chunks, so a cancelled walk stops
+// mid-listing. It is shared by the path-based and fd-based walks so they cannot
+// drift apart.
+func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit, scanCap int, keep func(os.DirEntry) bool) (dirPrefixResult, error) {
+	var kept dirNameHeap
+	dropped := false
+	scanned := 0
+	if limit >= 0 {
+		heap.Init(&kept)
+	}
+	sortedPrefix := func() []os.DirEntry {
+		if limit < 0 {
+			return kept
+		}
+		out := make([]os.DirEntry, len(kept))
+		for i := len(out) - 1; i >= 0; i-- {
+			out[i] = heap.Pop(&kept).(os.DirEntry)
+		}
+		return out
+	}
+	// nextKept reports whether another entry the caller would keep remains,
+	// stepping over filtered entries. It reads at most probeMax raw entries
+	// (probeMax < 0 = unbounded) so a long run of filtered names cannot outrun
+	// the scan bound: found is true when a kept entry was seen, ended when the
+	// directory ended first, and both false when the probe budget ran out.
+	nextKept := func(probeMax int) (found, ended bool, err error) {
+		for n := 0; probeMax < 0 || n < probeMax; n++ {
+			if err := ctx.Err(); err != nil {
+				return false, false, err
+			}
+			batch, rerr := read(f, 1)
+			if len(batch) > 0 {
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return false, false, rerr
+				}
+				if keep == nil || keep(batch[0]) {
+					return true, false, nil
+				}
+				continue
+			}
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return false, false, rerr
+			}
+			return false, true, nil
+		}
+		return false, false, nil
+	}
+	if limit == 0 {
+		// No room to keep anything: probe for a kept entry to report whether the
+		// directory holds more, bounded by the scan cap and skipping filtered
+		// names so a masked run cannot outrun it.
+		found, ended, err := nextKept(scanCap)
+		if err != nil {
+			return dirPrefixResult{}, err
+		}
+		return dirPrefixResult{more: found || !ended, incomplete: !found && !ended}, nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return dirPrefixResult{}, err
+		}
+		if scanCap >= 0 && scanned >= scanCap {
+			// We stopped with entries read. A directory that ended exactly at the
+			// cap is complete, not incomplete, so spend one more raw read to tell
+			// EOF from "there is more". That single entry bounds the total work at
+			// scanCap+1 reads; a filtered entry at the boundary is reported
+			// incomplete rather than stepped over, because proving the visible
+			// listing complete can require reading a masked run past the bound.
+			batch, rerr := read(f, 1)
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return dirPrefixResult{}, rerr
+			}
+			if len(batch) > 0 {
+				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
+			}
+			return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
+		}
+		// Never read past the scan cap: bound the chunk to what is left.
+		want := listDirChunk
+		if scanCap >= 0 {
+			if rem := scanCap - scanned; rem < want {
+				want = max(rem, 1)
+			}
+		}
+		batch, rerr := read(f, want)
+		for _, ent := range batch {
+			scanned++
+			if keep != nil && !keep(ent) {
+				continue
+			}
+			switch {
+			case limit < 0:
+				kept = append(kept, ent)
+			case len(kept) < limit:
+				heap.Push(&kept, ent)
+			default:
+				// The buffer holds limit entries already; keep ent only if it
+				// sorts before the largest currently held.
+				dropped = true
+				if limit > 0 && ent.Name() < kept[0].Name() {
+					heap.Pop(&kept)
+					heap.Push(&kept, ent)
+				}
+			}
+		}
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if rerr != nil {
+			return dirPrefixResult{}, rerr
+		}
+	}
+	return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
+}
+
+// dirNameHeap is a max-heap of directory entries ordered by name, used to keep
+// the lexically smallest limit entries of a directory while streaming it.
+type dirNameHeap []os.DirEntry
+
+func (h dirNameHeap) Len() int           { return len(h) }
+func (h dirNameHeap) Less(i, j int) bool { return h[i].Name() > h[j].Name() }
+func (h dirNameHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *dirNameHeap) Push(x any)        { *h = append(*h, x.(os.DirEntry)) }
+func (h *dirNameHeap) Pop() any {
+	old := *h
+	n := len(old)
+	ent := old[n-1]
+	*h = old[:n-1]
+	return ent
+}
+
+// ListDirectoryBudget is the DirBudgeter capability: ListDirectory bounded by
+// ctx and budget. It observes ctx before each directory it reads and before
+// each entry it retains, and stops once the walk has spent its listing or entry
+// budget, returning the entries gathered so far; budget.Truncated then reports
+// that the result is a prefix of the full listing rather than the whole subtree.
+// A nil budget is unbounded, matching ListDirectory.
+func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, path string, depth int, budget *ListDirBudget) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
+	}
+	if budget == nil {
+		budget = &ListDirBudget{}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDir("list_dir", e.resolve(path), depth)
+		return sfs.listDirBudget(ctx, "list_dir", e.resolve(path), depth, budget)
 	}
 	root := e.resolve(path)
 
 	var out []DirEntry
 	var walk func(absDir string, relPrefix string, d int) error
 	walk = func(absDir string, relPrefix string, d int) error {
-		ents, err := listReadDir(absDir)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !budget.chargeListing() {
+			return nil
+		}
+		// Stream the directory in chunks, keeping only the smallest entries the
+		// page can still use, so a one-entry page never materializes a whole huge
+		// directory yet still returns the true sorted prefix.
+		res, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries(), budget.scanBudget())
 		if err != nil {
 			return err
 		}
+		if res.incomplete {
+			budget.incomplete = true
+			budget.truncated = true
+		}
+		ents := res.entries
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !budget.chargeEntry() {
+				return nil
+			}
 			name := ent.Name()
 			relName := name
 			if relPrefix != "" {
@@ -1960,11 +2176,22 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 				}
 			}
 			out = append(out, de)
-			if ent.IsDir() && d > 1 {
+			// Do not descend when no entry budget remains: the child's contents
+			// could not be retained, and listing it would only mark the page
+			// incomplete without adding anything.
+			if ent.IsDir() && d > 1 && budget.remainingEntries() != 0 {
 				if err := walk(filepath.Join(absDir, name), relName, d-1); err != nil {
 					return err
 				}
+				// Abort remaining siblings when a child spent the budget; a
+				// scan-cap trip (incomplete) leaves room, so keep descending.
+				if budget.spent {
+					return nil
+				}
 			}
+		}
+		if res.more {
+			budget.truncated = true
 		}
 		return nil
 	}

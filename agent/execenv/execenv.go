@@ -197,3 +197,118 @@ type GlobExcluder interface {
 type GlobBudgeter interface {
 	GlobWithBudget(ctx context.Context, pattern, basePath string, includeIgnored bool, budget *GlobBudget) (matches []string, excluded int, err error)
 }
+
+// maxListDirWalkListings and maxListDirWalkEntries cap how much work one
+// ListDirectoryBudget walk may spend no matter how large a page its caller
+// asked for: the number of directories it reads and the total entries it
+// accumulates across them. They exist for the same reason GlobBudget's bounds
+// do — a model-controlled depth over a huge tree costs unbounded work even when
+// the requested page is tiny — and, like GlobBudget, the walk reads each
+// directory in chunks so one oversized directory cannot materialize past the
+// remaining budget.
+const (
+	maxListDirWalkListings = 200_000
+	maxListDirWalkEntries  = 200_000
+)
+
+// ListDirBudget bounds one ListDirectoryBudget walk's work. Callers supply it
+// and read afterwards whether the walk had to stop early; its fields stay
+// unexported for the same reason GlobBudget's do. A budget belongs to one call
+// and must not be shared across goroutines.
+type ListDirBudget struct {
+	maxListings int
+	maxEntries  int
+	listings    int
+	entries     int
+	truncated   bool
+	incomplete  bool
+	spent       bool
+}
+
+// NewListDirBudget constructs a budget for one list_dir call. maxEntries is the
+// number of entries the caller still needs — the requested page (offset+limit)
+// plus one, so the walk can tell a complete listing from a truncated one. It is
+// clamped up to at least one and down to maxListDirWalkEntries so neither a
+// caller's tiny page nor a huge one can drive the walk past the hard ceiling.
+func NewListDirBudget(maxEntries int) *ListDirBudget {
+	if maxEntries < 1 {
+		maxEntries = 1
+	}
+	if maxEntries > maxListDirWalkEntries {
+		maxEntries = maxListDirWalkEntries
+	}
+	return &ListDirBudget{maxEntries: maxEntries, maxListings: maxListDirWalkListings}
+}
+
+// Truncated reports whether the walk stopped at its budget rather than
+// exhausting the subtree. The entries it returned are then a prefix of the full
+// listing, with more beyond, so their count is a floor rather than a total.
+func (b *ListDirBudget) Truncated() bool { return b.truncated }
+
+// Incomplete reports whether the walk hit its per-directory scan budget before
+// a directory ended, so that directory's returned prefix is sorted only among
+// the entries it managed to scan rather than the whole directory. It is a
+// stronger condition than Truncated: the page cannot be continued by offset
+// because entries past the scan were never considered.
+func (b *ListDirBudget) Incomplete() bool { return b.incomplete }
+
+// chargeListing records one directory the walk is about to read, reporting
+// false once the listing budget is spent. A non-positive cap is unlimited, so
+// the zero ListDirBudget an internal caller uses is unbounded.
+func (b *ListDirBudget) chargeListing() bool {
+	if b.maxListings > 0 && b.listings >= b.maxListings {
+		b.truncated = true
+		b.spent = true
+		return false
+	}
+	b.listings++
+	return true
+}
+
+// chargeEntry records one entry the walk is about to retain, reporting false
+// once the entry budget is spent. A non-positive cap is unlimited.
+func (b *ListDirBudget) chargeEntry() bool {
+	if b.maxEntries > 0 && b.entries >= b.maxEntries {
+		b.truncated = true
+		b.spent = true
+		return false
+	}
+	b.entries++
+	return true
+}
+
+// remainingEntries reports how many more entries the walk may still retain
+// before the entry budget is spent, or -1 when the budget is unbounded. A
+// chunked listing uses it to keep only the smallest entries the page can still
+// use, so a one-entry page never materializes a whole huge directory.
+func (b *ListDirBudget) remainingEntries() int {
+	if b.maxEntries <= 0 {
+		return -1
+	}
+	if rem := b.maxEntries - b.entries; rem > 0 {
+		return rem
+	}
+	return 0
+}
+
+// scanBudget reports how many entries one directory's chunked listing may scan
+// before it stops and reports the listing incomplete, or -1 when the budget is
+// unbounded. It bounds the work of a finite page over a pathological directory,
+// which remainingEntries alone does not: keeping the smallest prefix still has
+// to look at the entries it is choosing among.
+func (b *ListDirBudget) scanBudget() int {
+	if b.maxEntries <= 0 {
+		return -1
+	}
+	return maxListDirScanEntries
+}
+
+// DirBudgeter is an optional capability an ExecutionEnvironment may implement,
+// modelled on GlobBudgeter for the same reason: ListDirectory's signature is
+// shared by every implementation, including test doubles with no budget
+// accounting, so a caller that needs to cancel and bound a directory walk uses
+// this instead. The caller supplies the budget and reads what the walk had to
+// cut off it through ListDirBudget.Truncated afterwards.
+type DirBudgeter interface {
+	ListDirectoryBudget(ctx context.Context, path string, depth int, budget *ListDirBudget) ([]DirEntry, error)
+}
