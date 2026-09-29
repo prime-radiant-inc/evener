@@ -513,8 +513,11 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 	}
 	// Stream the directory in chunks, keeping only the smallest entries the page
 	// can still use, so a one-entry page never materializes a whole huge
-	// directory yet still returns the true sorted prefix.
-	ents, more, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries())
+	// directory yet still returns the true sorted prefix. Masked entries are
+	// dropped before selection so they cannot evict a visible entry from the page.
+	ents, more, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries(), budget.scanBudget(), func(ent os.DirEntry) bool {
+		return !s.underMasked(filepath.Join(baseAbs, ent.Name()))
+	})
 	if err != nil {
 		return err
 	}
@@ -634,15 +637,17 @@ func writeAllFd(fd int, data []byte) error {
 // dup, leaving dirFd valid for subsequent openat recursion. It returns the
 // lexically smallest limit entries (limit < 0 returns them all) and whether the
 // directory held more, delegating to readDirPrefix so the fd path and the
-// path-based walk share one chunked-selection loop.
-func readDirEntriesPrefix(ctx context.Context, dirFd, limit int) ([]os.DirEntry, bool, error) {
+// path-based walk share one chunked-selection loop. keep, when non-nil, drops
+// entries the caller will not return (masked names) before they can consume a
+// prefix slot.
+func readDirEntriesPrefix(ctx context.Context, dirFd, limit, scanCap int, keep func(os.DirEntry) bool) ([]os.DirEntry, bool, error) {
 	dup, err := secureDupDirFd(dirFd)
 	if err != nil {
 		return nil, false, err
 	}
 	f := os.NewFile(uintptr(dup), "")
 	defer func() { _ = f.Close() }()
-	return readDirPrefix(ctx, f, secureReadDirChunk, limit)
+	return readDirPrefix(ctx, f, secureReadDirChunk, limit, scanCap, keep)
 }
 
 // ensureDirsBeneath creates each component of relDir beneath rootFd if missing,

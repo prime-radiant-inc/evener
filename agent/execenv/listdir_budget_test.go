@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 )
 
@@ -144,12 +143,22 @@ func TestListDirectoryBudget_ListingBudgetBoundsWalk(t *testing.T) {
 	}
 }
 
-// A chunked listing must return the true lexically smallest prefix even when
-// the underlying read hands entries back in a different order — a reader that
-// merely kept the first entries it saw would return the wrong page.
+// dirNames returns the entries' names in order, for asserting a listing.
+func dirNames(entries []DirEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names
+}
+
+// A chunked listing must return the true lexically smallest prefix when it has
+// to merge several non-empty read batches and replace a held entry with a
+// smaller one arriving later. The read hands entries back in a deliberately
+// wrong order, in batches small enough that the heap must merge across chunks.
 func TestListDirectoryBudget_SelectsSortedPrefix(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"alpha", "bravo", "mike", "zeta"} {
+	for _, name := range []string{"alpha", "bravo", "delta", "mike", "zeta"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -157,33 +166,117 @@ func TestListDirectoryBudget_SelectsSortedPrefix(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	t.Cleanup(env.Cleanup)
 
-	read, err := os.ReadDir(dir)
+	byName := map[string]os.DirEntry{}
+	all, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reversed := slices.Clone(read)
-	slices.Reverse(reversed)
-	orig := listReadDirChunk
-	served := false
-	listReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) {
-		if served {
-			return nil, io.EOF
-		}
-		served = true
-		return reversed, nil
+	for _, e := range all {
+		byName[e.Name()] = e
 	}
-	defer func() { listReadDirChunk = orig }()
+	batch := func(names ...string) []os.DirEntry {
+		out := make([]os.DirEntry, len(names))
+		for i, n := range names {
+			out[i] = byName[n]
+		}
+		return out
+	}
 
-	budget := NewListDirBudget(10)
+	restoreChunk := listDirChunk
+	listDirChunk = 2
+	defer func() { listDirChunk = restoreChunk }()
+	origRead := listReadDirChunk
+	defer func() { listReadDirChunk = origRead }()
+	// serve hands back the given batches in order, then EOF.
+	serve := func(batches ...[]os.DirEntry) {
+		i := 0
+		listReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) {
+			if i >= len(batches) {
+				return nil, io.EOF
+			}
+			b := batches[i]
+			i++
+			return b, nil
+		}
+	}
+
+	// Unsorted batches, two entries at a time, so cross-chunk merging and heap
+	// replacement both run.
+	t.Run("merges out-of-order chunks", func(t *testing.T) {
+		serve(
+			batch("zeta", "mike"),
+			batch("delta", "bravo"),
+			batch("alpha"),
+		)
+		budget := NewListDirBudget(10)
+		got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
+		if err != nil {
+			t.Fatalf("ListDirectoryBudget: %v", err)
+		}
+		if want := []string{"alpha", "bravo", "delta", "mike", "zeta"}; !reflect.DeepEqual(dirNames(got), want) {
+			t.Fatalf("listing = %v, want ascending %v", dirNames(got), want)
+		}
+	})
+
+	t.Run("replaces held entries with smaller ones", func(t *testing.T) {
+		serve(
+			batch("zeta", "mike"),
+			batch("delta", "bravo"),
+			batch("alpha"),
+		)
+		budget := NewListDirBudget(3)
+		got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
+		if err != nil {
+			t.Fatalf("ListDirectoryBudget: %v", err)
+		}
+		if !budget.Truncated() {
+			t.Fatal("truncated read did not report truncation")
+		}
+		if want := []string{"alpha", "bravo", "delta"}; !reflect.DeepEqual(dirNames(got), want) {
+			t.Fatalf("listing = %v, want the three smallest %v", dirNames(got), want)
+		}
+	})
+}
+
+// A finite page must not drive an unbounded scan of a pathological directory:
+// the scan cap stops the chunked read and reports the listing incomplete.
+func TestListDirectoryBudget_ScanCapBoundsScan(t *testing.T) {
+	dir := t.TempDir()
+	seedListDirTree(t, dir, 10)
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	restoreChunk := listDirChunk
+	listDirChunk = 2
+	defer func() { listDirChunk = restoreChunk }()
+	restoreCap := maxListDirScanEntries
+	maxListDirScanEntries = 3
+	defer func() { maxListDirScanEntries = restoreCap }()
+
+	origRead := listReadDirChunk
+	scanned := 0
+	listReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) {
+		batch, rerr := origRead(f, n)
+		scanned += len(batch)
+		return batch, rerr
+	}
+	defer func() { listReadDirChunk = origRead }()
+
+	budget := NewListDirBudget(100)
 	got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
 	if err != nil {
 		t.Fatalf("ListDirectoryBudget: %v", err)
 	}
-	names := make([]string, len(got))
-	for i, e := range got {
-		names[i] = e.Name
+	if !budget.Truncated() {
+		t.Fatal("scan-capped walk did not report truncation")
 	}
-	if want := []string{"alpha", "bravo", "mike", "zeta"}; !reflect.DeepEqual(names, want) {
-		t.Fatalf("listing = %v, want the sorted prefix %v regardless of read order", names, want)
+	if scanned >= 10 {
+		t.Fatalf("scan-capped walk read the whole 10-entry directory despite a %d-entry cap", maxListDirScanEntries)
+	}
+	if scanned > maxListDirScanEntries+listDirChunk {
+		t.Fatalf("scan-capped walk read %d entries, want at most the cap %d plus one chunk", scanned, maxListDirScanEntries)
+	}
+	if len(got) == 0 {
+		t.Fatal("scan-capped walk returned no entries though the directory had some")
 	}
 }

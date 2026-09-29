@@ -1932,17 +1932,24 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // chunk loop's bounds without building a directory large enough to matter.
 var listDirChunk = 512
 
+// maxListDirScanEntries caps how many entries a chunked listing may scan for one
+// directory before it stops and reports the listing incomplete, so a finite page
+// cannot drive an unbounded scan of a pathological directory. It is far above
+// any real directory, so an ordinary listing still scans to EOF and returns the
+// true sorted prefix. A var, not a const, so a test can shrink it.
+var maxListDirScanEntries = 200_000
+
 // listDirReadPrefix opens dir and returns the lexically smallest limit of its
 // entries (limit < 0 returns them all), reporting whether the directory held
 // more than the returned prefix. It reads through the listReadDirChunk seam so
 // tests can drive the chunk loop.
-func listDirReadPrefix(ctx context.Context, dir string, limit int) ([]os.DirEntry, bool, error) {
+func listDirReadPrefix(ctx context.Context, dir string, limit, scanCap int) ([]os.DirEntry, bool, error) {
 	f, err := listOpenDir(dir)
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
-	return readDirPrefix(ctx, f, listReadDirChunk, limit)
+	return readDirPrefix(ctx, f, listReadDirChunk, limit, scanCap, nil)
 }
 
 // readDirPrefix streams a directory's entries in chunks and returns the
@@ -1950,21 +1957,43 @@ func listDirReadPrefix(ctx context.Context, dir string, limit int) ([]os.DirEntr
 // than the returned prefix (a negative limit returns every entry and reports
 // false). Keeping only the smallest limit while streaming is what lets a tiny
 // page avoid materializing a whole huge directory yet still return the true
-// sorted prefix the tool promises; observing ctx between chunks lets a
-// cancelled walk stop mid-listing. It is shared by the path-based and fd-based
-// walks so they cannot drift apart.
-func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit int) ([]os.DirEntry, bool, error) {
+// sorted prefix the tool promises. keep, when non-nil, drops entries the caller
+// will not return (a confined walk's masked names) before they can consume a
+// prefix slot. scanCap (>= 0) bounds how many entries are read before the walk
+// gives up and reports the listing incomplete, so a finite page cannot drive an
+// unbounded scan. ctx is observed between chunks, so a cancelled walk stops
+// mid-listing. It is shared by the path-based and fd-based walks so they cannot
+// drift apart.
+func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit, scanCap int, keep func(os.DirEntry) bool) ([]os.DirEntry, bool, error) {
 	var kept dirNameHeap
 	dropped := false
+	scanned := 0
 	if limit >= 0 {
 		heap.Init(&kept)
+	}
+	sortedPrefix := func() []os.DirEntry {
+		if limit < 0 {
+			return kept
+		}
+		out := make([]os.DirEntry, len(kept))
+		for i := len(out) - 1; i >= 0; i-- {
+			out[i] = heap.Pop(&kept).(os.DirEntry)
+		}
+		return out
 	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
+		if scanCap >= 0 && scanned >= scanCap {
+			return sortedPrefix(), true, nil
+		}
 		batch, rerr := read(f, listDirChunk)
 		for _, ent := range batch {
+			scanned++
+			if keep != nil && !keep(ent) {
+				continue
+			}
 			switch {
 			case limit < 0:
 				kept = append(kept, ent)
@@ -1987,14 +2016,7 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 			return nil, false, rerr
 		}
 	}
-	if limit < 0 {
-		return kept, false, nil
-	}
-	out := make([]os.DirEntry, len(kept))
-	for i := len(out) - 1; i >= 0; i-- {
-		out[i] = heap.Pop(&kept).(os.DirEntry)
-	}
-	return out, dropped, nil
+	return sortedPrefix(), dropped, nil
 }
 
 // dirNameHeap is a max-heap of directory entries ordered by name, used to keep
@@ -2049,7 +2071,7 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 		// Stream the directory in chunks, keeping only the smallest entries the
 		// page can still use, so a one-entry page never materializes a whole huge
 		// directory yet still returns the true sorted prefix.
-		ents, more, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries())
+		ents, more, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries(), budget.scanBudget())
 		if err != nil {
 			return err
 		}

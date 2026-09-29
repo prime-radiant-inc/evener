@@ -280,6 +280,18 @@ func (b *ListDirBudget) remainingEntries() int {
 	return 0
 }
 
+// scanBudget reports how many entries one directory's chunked listing may scan
+// before it stops and reports the listing incomplete, or -1 when the budget is
+// unbounded. It bounds the work of a finite page over a pathological directory,
+// which remainingEntries alone does not: keeping the smallest prefix still has
+// to look at the entries it is choosing among.
+func (b *ListDirBudget) scanBudget() int {
+	if b.maxEntries <= 0 {
+		return -1
+	}
+	return maxListDirScanEntries
+}
+
 // DirBudgeter is an optional capability an ExecutionEnvironment may implement,
 // modelled on GlobBudgeter for the same reason: ListDirectory's signature is
 // shared by every implementation, including test doubles with no budget
