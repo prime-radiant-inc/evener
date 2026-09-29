@@ -44,8 +44,7 @@ export function useSheet({
 			leave();
 			return;
 		}
-		const alert = discardAlert(discardTitle, leave);
-		Alert.alert(alert.title, undefined, alert.buttons);
+		confirmDiscard(leave, discardTitle);
 	});
 	const closed = useRef(onClosed);
 	closed.current = onClosed;
@@ -61,4 +60,11 @@ export function useSheet({
 		}),
 		[navigation],
 	);
+}
+
+/** Asks before unsaved input goes: "Discard your changes?" (or `title`),
+ * Keep editing first, and only Discard runs `discard`. */
+export function confirmDiscard(discard: () => void, title = DISCARD_TITLE): void {
+	const alert = discardAlert(title, discard);
+	Alert.alert(alert.title, undefined, alert.buttons);
 }
