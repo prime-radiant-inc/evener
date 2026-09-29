@@ -61,6 +61,12 @@ paths = [
   # agree on it. Not a credential; the generic API-key rule cannot tell a
   # schema fixture's identifier from a secret.
   '''cmd/evener-hub/testdata/navigation/value-records\.json''',
+  # The regression test for the built frontend dist exclusion embeds the exact
+  # minified snippet gitleaks mis-flags plus an unallowlisted-key control
+  # fixture, so the generic-api-key rule fires on the test source itself.
+  # Path-allowlisted like the redaction tests above, not by chasing a
+  # value-regex per fixture.
+  '''gitleaks_dist_allowlist_test\.go''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
   # committed, but `make secret-scan` walks the whole working tree.
@@ -87,6 +93,15 @@ paths = [
   # force-added .env would pass this scan — it stays gitignored, so
   # committing it requires explicit override.
   '''(^|/)\.env$''',
+  # A web build leaves minified chunks under the hub's frontend dist/
+  # (gitignored build output; only PLACEHOLDER is committed). gitleaks'
+  # generic-api-key rule fires on minified property assignments there
+  # (observed: Settings-BUbGPRbt.js:23, match `r.token,s=r.operationId;`), so a
+  # bare `make lint` after make test-web / make build-web failed while the
+  # lint-before-build gate order never saw the chunks and CI stayed green.
+  # Scoped to the built output path: tracked frontend sources, including
+  # anything beside the dist, remain scanned.
+  '''cmd/[^/]*/frontend/dist/''',
   # CocoaPods' ignored framework code-signature manifests contain public
   # resource digests that the generic-api-key rule mistakes for credentials.
   # Keep the exclusion to these generated manifests; tracked native sources
