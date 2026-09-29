@@ -301,10 +301,10 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 }
 
 /** A session row's subagent chip, for the lists that render their own rows
- * (Projects, Project and Pin sections) rather than a BoardRow. */
-export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null => (
-	<SubagentChip session={session} />
-);
+ * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
+ * row has no chip, so a list can tell whether it has one. */
+export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
+	subagentChip(session) ? <SubagentChip session={session} /> : null;
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):

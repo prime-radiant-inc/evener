@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render } from "../renderNative.testkit";
 import type { BoardState, ClassifiedRow } from "./attention";
-import { BoardRow, type BoardRowProps } from "./BoardRow";
+import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
 
@@ -242,6 +242,14 @@ describe("a Board row (spec 7.2)", () => {
 		]) {
 			expect(mount({ item: settled }).root.findAll((node) => node.props.testID === "subagent-chip")).toEqual([]);
 		}
+	});
+
+	it("the shared chip renderer answers null when a row has nothing to show", () => {
+		// The lists gate their title row on this, so a row with no tally (or a
+		// done-only history) must not look like it has a chip.
+		expect(sessionSubagentChip(row())).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 0, failed: 0, done: 3 } }))).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 1, failed: 0, done: 0 } }))).not.toBeNull();
 	});
 
 	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {

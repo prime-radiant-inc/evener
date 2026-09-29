@@ -355,14 +355,12 @@ export function PageList<T>({
 								onPress={() => open(item)}
 								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
 							>
-								{chip?.(item) ? (
-									<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+								<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+									<View style={{ flex: 1, minWidth: 0 }}>
 										<Copy>{title(item)}</Copy>
-										{chip(item)}
 									</View>
-								) : (
-									<Copy>{title(item)}</Copy>
-								)}
+									{chip?.(item)}
+								</View>
 								<Copy muted>{detail(item)}</Copy>
 							</Pressable>
 							{actions && organization(item, depth) ? (

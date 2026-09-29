@@ -41,7 +41,7 @@ export async function locateSession(
 		throw new Error("This session could not be located. Try again.");
 	// A subagent's location names the row that owns it in top_level_ref (D5); a
 	// top-level session is its own row.
-	const revealRef = location.top_level ? ref : location.top_level_ref;
+	const revealRef = location.top_level ? ref : (location.top_level_ref ?? ref);
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");
