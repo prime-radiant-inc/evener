@@ -19,6 +19,7 @@ type kernelProcess struct {
 	gone       bool
 	signalErr  error
 	inspectErr error
+	laterErr   error // what inspect fails with once snapshots run out
 }
 
 func (k *kernelProcess) inspect(Target) (identity, error) {
@@ -29,6 +30,9 @@ func (k *kernelProcess) inspect(Target) (identity, error) {
 		v := k.snapshots[0]
 		k.snapshots = k.snapshots[1:]
 		return v, nil
+	}
+	if k.laterErr != nil {
+		return identity{}, k.laterErr
 	}
 	return k.facts, nil
 }
@@ -395,6 +399,28 @@ func TestKillStillRefusesAnUnverifiedProcess(t *testing.T) {
 	k.facts.generation = "generation-b"
 	if err := p.Kill(); err == nil {
 		t.Fatal("an exiting process of another generation was treated as stopped")
+	}
+	if k.signals != 0 {
+		t.Fatal("an unverified process was signaled")
+	}
+}
+
+// When the re-inspect after a failed verify itself fails, nothing says the
+// process is exiting: Kill keeps the verify's error rather than calling the
+// stop done.
+func TestKillKeepsTheVerifyErrorWhenReinspectFails(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	unverified := validIdentity()
+	unverified.argv = []string{""}
+	k.snapshots = []identity{unverified}
+	k.laterErr = errors.New("process stat unreadable")
+	if err := p.Kill(); err == nil || err.Error() != "daemon process is not a serve command" {
+		t.Fatalf("Kill = %v, want the verify error", err)
 	}
 	if k.signals != 0 {
 		t.Fatal("an unverified process was signaled")

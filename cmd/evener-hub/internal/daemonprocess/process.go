@@ -230,6 +230,8 @@ func (p *process) Kill() error {
 		// reads empty. When it is still the generation Open bound, it is the
 		// process this handle was asked to stop and it is already stopping:
 		// there is nothing to signal, and Wait confirms the exit (#3383).
+		// Generation plus exiting is enough: the OS handle (a pidfd on Linux)
+		// is bound to the process Open verified, so a reused PID can't answer.
 		if v, inspectErr := p.handle.inspect(p.target); inspectErr == nil && v.exiting && v.generation == p.generation {
 			return nil
 		}
