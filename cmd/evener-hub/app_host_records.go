@@ -1,14 +1,10 @@
 package hub
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"maps"
 	"unicode/utf8"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -44,57 +40,36 @@ type HostRecord struct {
 	// PresenceEpoch is the name's presence counter (spec §1): advanced on
 	// every add, remove, re-add and expiry purge.
 	PresenceEpoch uint64 `toml:"presence_epoch"`
-	// BootstrapAttempted is crash-fencing §6:133's durable bootstrap-attempt
-	// fence: a first-contact delivery started, written in its own atomic
-	// hub.toml write before the attempt's first remote side effect. It is never
-	// cleared — a host carrying it without HelperInstalled takes the fenced path
-	// on every later attempt (§6:137).
-	BootstrapAttempted bool `toml:"bootstrap_attempted,omitempty"`
-	// HelperInstalled is §6:137's converged flag: the pinned fencing helper was
-	// delivered to the host and the finalizing atomic write recorded it.
-	HelperInstalled bool `toml:"helper_installed,omitempty"`
-	// HelperVersion is §6:131's "prior helper version record": the helper
-	// version the finalize recorded. Zero means no version record. It is present
-	// exactly with HelperInstalled.
-	HelperVersion uint64 `toml:"helper_version,omitempty"`
-	// BootstrapEpochBoot and BootstrapEpochOpSeq are the fencing epoch the
-	// attempt fence was minted under (crash-fencing §6:131, "under the worker's
-	// persisted epoch"), stored in the same shape the teardown attempts use.
-	// §6:139's recovery re-probe names the crashed attempt by this epoch after
-	// any restart; a fence without it cannot identify the crashed attempt.
-	BootstrapEpochBoot  string `toml:"bootstrap_epoch_boot,omitempty"`
-	BootstrapEpochOpSeq uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
-	// BootstrapAttemptToken is the durable ownership token the fence write minted
-	// for the attempt that won it (crash-fencing §6:135). Delivery revalidates it
-	// immediately before its first delivery step, and recovery retires it on the
-	// verified-gone path, so a paused owner cannot deliver after recovery
-	// concluded while a fresh attempt can never win the fence again.
-	BootstrapAttemptToken string `toml:"bootstrap_attempt_token,omitempty"`
+	// The six fields below are the retired crash-fencing bootstrap keys. They
+	// are decoded only so that a hub.toml written by the build that carried the
+	// bootstrap stack still loads: the reserved-record rule refuses a reserved
+	// field this build does not decode, and the removed first-contact caller
+	// persisted the attempt fence (bootstrap_attempted plus its epoch and token)
+	// before it refused, so existing files carry them. No behavior reads them:
+	// decodeConfig strips them from every loaded document, so the next rewrite
+	// drops the keys instead of preserving them. Their numeric halves are
+	// pointers because BurntSushi's omitempty does not omit numeric zeros, so a
+	// stripped zero would otherwise re-emit itself as a fresh key. They go away
+	// with the rest of the fencing removal.
+	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty"`
+	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty"`
+	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty"`
+	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty"`
+	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
+	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty"`
 }
 
-// provisioning projects the record's bootstrap half (crash-fencing §6) into the
-// fencing package's shape. It is the one conversion between the file's flat
-// record fields and the bootstrap rule.
-func (r HostRecord) provisioning() hostfence.Provisioning {
-	return hostfence.Provisioning{
-		AttemptFenced:   r.BootstrapAttempted,
-		AttemptEpoch:    hostfence.Epoch{BootID: r.BootstrapEpochBoot, OpSeq: r.BootstrapEpochOpSeq},
-		AttemptToken:    r.BootstrapAttemptToken,
-		HelperInstalled: r.HelperInstalled,
-		HelperVersion:   r.HelperVersion,
-	}
-}
-
-// withProvisioning returns r carrying p's bootstrap flags, leaving the identity
-// fields alone: the record machinery owns the identity, the bootstrap flow owns
-// the flags.
-func (r HostRecord) withProvisioning(p hostfence.Provisioning) HostRecord {
-	r.BootstrapAttempted = p.AttemptFenced
-	r.BootstrapEpochBoot = p.AttemptEpoch.BootID
-	r.BootstrapEpochOpSeq = p.AttemptEpoch.OpSeq
-	r.BootstrapAttemptToken = p.AttemptToken
-	r.HelperInstalled = p.HelperInstalled
-	r.HelperVersion = p.HelperVersion
+// withoutRetiredFencingFields returns r with the retired bootstrap keys
+// cleared. decodeConfig applies it to every loaded document, so the in-memory
+// record carries none of them and every rewrite derived from it re-emits the
+// record without them.
+func (r HostRecord) withoutRetiredFencingFields() HostRecord {
+	r.RetiredBootstrapAttempted = false
+	r.RetiredHelperInstalled = false
+	r.RetiredHelperVersion = nil
+	r.RetiredBootstrapEpochBoot = ""
+	r.RetiredBootstrapEpochOpSeq = nil
+	r.RetiredBootstrapAttemptToken = ""
 	return r
 }
 
@@ -164,18 +139,6 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 		IncarnationID: entry.IncarnationID,
 		PresenceEpoch: entry.PresenceEpoch,
 	}
-}
-
-// hostProvisioningRecords projects the file's per-host records onto the
-// bootstrap record set the store carries (crash-fencing §6:131-137). A name
-// whose record carries no flag contributes the zero value, so the store's set
-// is exactly the file's flags.
-func hostProvisioningRecords(records map[string]HostRecord) map[string]hostfence.Provisioning {
-	provisioning := make(map[string]hostfence.Provisioning, len(records))
-	for name, record := range records {
-		provisioning[name] = record.provisioning()
-	}
-	return provisioning
 }
 
 // resolveHostIdentity maps the records a hub.toml file carries onto the
@@ -299,7 +262,7 @@ func fileOnlyHostEntries(cfg Config, known, entries []hostreg.Host) []HostConfig
 // eviction, a live-name purge): their file generations entry is superseded by
 // the advanced mark the derivation is writing, so the older copy must not ride
 // back in through preservation.
-func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, provisioning map[string]hostfence.Provisioning, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
+func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
 	preserve := known != nil
 	owned := make(map[string]struct{}, len(known)+len(entries))
 	if preserve {
@@ -311,20 +274,6 @@ func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater ma
 		}
 	}
 	records, generations := hostFileRecordSet(entries, highWater)
-	// The bootstrap flags (crash-fencing §6) ride the derived record: the write
-	// carries the store's projection where it has one, and otherwise preserves
-	// the flag the file already holds for the same name. The derived record
-	// mints only the identity triple, so without this overlay an unrelated
-	// rewrite would drop the attempt fence or the helperInstalled convergence.
-	for name, record := range records {
-		if p, ok := provisioning[name]; ok {
-			records[name] = record.withProvisioning(p)
-			continue
-		}
-		if fileRecord, ok := cfg.HostRecords[name]; ok {
-			records[name] = record.withProvisioning(fileRecord.provisioning())
-		}
-	}
 	if preserve {
 		for name, record := range cfg.HostRecords {
 			if _, ok := owned[name]; ok {
@@ -364,9 +313,6 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 			}
 			return fmt.Errorf("host_records[%q] carries an incomplete record (%q, %d)", name, record.IncarnationID, record.PresenceEpoch)
 		}
-		if err := validateHostProvisioning(record); err != nil {
-			return fmt.Errorf("host_records[%q]: %w", name, err)
-		}
 	}
 	for name, mark := range generations {
 		if !mark.complete() {
@@ -390,36 +336,6 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 		if mark.PresenceEpoch != record.PresenceEpoch {
 			return fmt.Errorf("host %q carries two presence epochs: host_records has %d, generations has %d",
 				name, record.PresenceEpoch, mark.PresenceEpoch)
-		}
-	}
-	return nil
-}
-
-// validateHostProvisioning checks the bootstrap flags crash-fencing §6 puts on
-// the machine record. The flag pair is written whole by the finalizing write
-// (§6:137) and the attempt fence always precedes it (§6:133), so a version
-// record without the installed flag, an installed flag without a version
-// record, or an installed flag without its attempt fence is a shape no writer
-// of this build emits — a reserved value whose shape cannot be decoded, refused
-// loudly rather than silently reinterpreted on the next rewrite.
-func validateHostProvisioning(record HostRecord) error {
-	epoch := hostfence.Epoch{BootID: record.BootstrapEpochBoot, OpSeq: record.BootstrapEpochOpSeq}
-	switch {
-	case record.HelperVersion != 0 && !record.HelperInstalled:
-		return fmt.Errorf("carries a helper_version record (%d) without helper_installed", record.HelperVersion)
-	case record.HelperInstalled && record.HelperVersion == 0:
-		return errors.New("carries helper_installed without a helper_version record")
-	case record.HelperInstalled && !record.BootstrapAttempted:
-		return errors.New("carries helper_installed without the bootstrap-attempt fence")
-	case record.BootstrapAttempted && epoch.IsZero():
-		return errors.New("carries the bootstrap-attempt fence without the attempt's fencing epoch")
-	case !record.BootstrapAttempted && !epoch.IsZero():
-		return errors.New("carries a bootstrap-attempt epoch without the attempt fence")
-	case !record.BootstrapAttempted && record.BootstrapAttemptToken != "":
-		return errors.New("carries a bootstrap-attempt token without the attempt fence")
-	case !epoch.IsZero():
-		if err := epoch.Validate(); err != nil {
-			return fmt.Errorf("carries an invalid bootstrap-attempt epoch: %w", err)
 		}
 	}
 	return nil
@@ -575,184 +491,6 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 		out[name] = marker
 	}
 	return out
-}
-
-// hostBootstrapStore is hostfence.BootstrapStore over the manager's hub.toml
-// record machinery: the read of one host's bootstrap record and the two atomic
-// writes crash-fencing §6:133/:137 pins — the attempt fence in its own write
-// before the attempt's first remote side effect, and the finalizing write that
-// converges helperInstalled with the delivered version. Each write goes through
-// the record machinery's one derive-then-install path, so the file and the
-// store cannot disagree about the flags.
-//
-// The first-contact caller is wired: hubHostManager.BootstrapFirstContact
-// drives the flow for a host at first contact, reached from the attach ladder's
-// first-attach repair through sshconn's BootstrapHook. bootstrapStore therefore
-// serves a production caller beside the tests that pin both crash windows.
-type hostBootstrapStore struct{ m *hubHostManager }
-
-// bootstrapStore returns the bootstrap record seam the first-contact flow
-// writes through.
-func (m *hubHostManager) bootstrapStore() hostfence.BootstrapStore { return hostBootstrapStore{m: m} }
-
-// Provisioning reads the host's current bootstrap record, bound to identity: a
-// changed registration or a host that is no longer live refuses with the typed
-// stale-attempt error before the flow takes any host-side step.
-func (s hostBootstrapStore) Provisioning(host string, identity hostfence.BootstrapIdentity) (hostfence.Provisioning, error) {
-	s.m.cfg.mu.Lock()
-	defer s.m.cfg.mu.Unlock()
-	return s.m.boundProvisioning(host, identity)
-}
-
-// PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
-// own atomic hub.toml write, with the attempt's fencing epoch §6:139's recovery
-// names the crashed attempt by.
-func (s hostBootstrapStore) PersistAttemptFence(host string, identity hostfence.BootstrapIdentity, epoch hostfence.Epoch) (hostfence.Provisioning, bool, error) {
-	if err := epoch.Validate(); err != nil {
-		return hostfence.Provisioning{}, false, err
-	}
-	token, err := newBootstrapAttemptToken()
-	if err != nil {
-		return hostfence.Provisioning{}, false, err
-	}
-	// won is set under persistProvisioning's mutation lock, together with the
-	// read the conditional write compares against: it is the explicit ownership
-	// signal, never inferred from the epoch.
-	won := false
-	record, err := s.m.persistProvisioning(host, identity, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
-		if p.AttemptFenced {
-			// The conditional write: another attempt already owns the fence, so
-			// this one is returned unchanged — its epoch is what §6:139's recovery
-			// must name — and persistProvisioning writes nothing for it.
-			return p, nil
-		}
-		won = true
-		p.AttemptFenced = true
-		p.AttemptEpoch = epoch
-		p.AttemptToken = token
-		return p, nil
-	})
-	if err != nil {
-		return hostfence.Provisioning{}, false, err
-	}
-	return record, won, nil
-}
-
-// RevalidateAttemptFence reports whether token still stands for the attempt at
-// epoch on host: the record still carries the fence, names that epoch, carries
-// that token, and has not converged helperInstalled.
-func (s hostBootstrapStore) RevalidateAttemptFence(host string, identity hostfence.BootstrapIdentity, epoch hostfence.Epoch, token string) (hostfence.Provisioning, bool, error) {
-	s.m.cfg.mu.Lock()
-	defer s.m.cfg.mu.Unlock()
-	record, err := s.m.boundProvisioning(host, identity)
-	if err != nil {
-		return hostfence.Provisioning{}, false, err
-	}
-	ok := record.AttemptFenced && record.AttemptEpoch == epoch && record.AttemptToken == token && !record.HelperInstalled
-	return record, ok, nil
-}
-
-// InvalidateAttemptFence retires token in the same atomic write discipline as
-// the other record writes, preconditioned on the record still naming that
-// attempt (fence set, same epoch, same token) and not having converged
-// helperInstalled. A failed precondition writes nothing and returns the record
-// as it stands, so a concurrent finalize or a moved fence is never clobbered.
-func (s hostBootstrapStore) InvalidateAttemptFence(host string, identity hostfence.BootstrapIdentity, epoch hostfence.Epoch, token string) (hostfence.Provisioning, error) {
-	return s.m.persistProvisioning(host, identity, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
-		if !p.AttemptFenced || p.AttemptEpoch != epoch || p.AttemptToken != token || p.HelperInstalled {
-			return p, nil
-		}
-		p.AttemptToken = ""
-		return p, nil
-	})
-}
-
-// newBootstrapAttemptToken mints the durable ownership token one fence write
-// records: opaque, random, and never reused.
-func newBootstrapAttemptToken() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("mint the bootstrap-attempt token: %w", err)
-	}
-	return hex.EncodeToString(raw[:]), nil
-}
-
-// FinalizeBootstrap converges helperInstalled with the delivered version in the
-// finalizing atomic write (§6:137). It refuses a host that never carried the
-// attempt fence: the fence-before-install invariant is what closes the unfenced
-// exemption, and an installed-without-fence record is a shape no writer emits.
-func (s hostBootstrapStore) FinalizeBootstrap(host string, identity hostfence.BootstrapIdentity, helperVersion uint64) (hostfence.Provisioning, error) {
-	if helperVersion == 0 {
-		return hostfence.Provisioning{}, errors.New("hostfence: finalize needs the delivered helper version")
-	}
-	return s.m.persistProvisioning(host, identity, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
-		if !p.AttemptFenced {
-			return hostfence.Provisioning{}, fmt.Errorf("host %q has no bootstrap-attempt fence, so helperInstalled is not converged", host)
-		}
-		p.HelperInstalled = true
-		p.HelperVersion = helperVersion
-		return p, nil
-	})
-}
-
-// persistProvisioning applies mutate to one live host's bootstrap record and
-// lands the result in one atomic hub.toml write under the mutation lock. A
-// failed write installs nothing, so the store's record stays exactly as it was
-// and the caller re-reads it; a name that is not a live entry refuses before
-// any write (a bootstrap flag has no meaning for a removed name).
-func (m *hubHostManager) persistProvisioning(host string, identity hostfence.BootstrapIdentity, mutate func(hostfence.Provisioning) (hostfence.Provisioning, error)) (hostfence.Provisioning, error) {
-	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
-	current, err := m.boundProvisioning(host, identity)
-	if err != nil {
-		return hostfence.Provisioning{}, err
-	}
-	entries := m.cfg.store.snapshot()
-	next, err := mutate(current)
-	if err != nil {
-		return hostfence.Provisioning{}, err
-	}
-	if next == current {
-		// A conditional write that found the record already in the requested
-		// state (another attempt owns the fence) writes nothing: the read and the
-		// comparison ran under the mutation lock, so the compare-and-set is
-		// atomic and a lost race leaves hub.toml byte-identical.
-		return next, nil
-	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{
-		provisioning: &pendingHostProvisioning{Name: host, Provisioning: next},
-	}); err != nil {
-		return hostfence.Provisioning{}, err
-	}
-	return next, nil
-}
-
-// boundProvisioning returns the host's bootstrap record after verifying the live
-// entry still carries the identity the attempt was bound to. Every bootstrap
-// write runs it, so a stale attempt that pauses across a remove and re-add can
-// never fence, revalidate, invalidate, or finalize against the new incarnation.
-// Callers hold the mutation lock.
-func (m *hubHostManager) boundProvisioning(host string, identity hostfence.BootstrapIdentity) (hostfence.Provisioning, error) {
-	live, ok := hostfence.BootstrapIdentity{}, false
-	for _, entry := range m.cfg.store.snapshot() {
-		if entry.Name != host {
-			continue
-		}
-		live = hostfence.BootstrapIdentity{Generation: entry.Generation, IncarnationID: entry.IncarnationID, PresenceEpoch: entry.PresenceEpoch}
-		ok = true
-		break
-	}
-	if !ok {
-		// A host that is no longer live is the same class: the attempt's
-		// registration cannot stand, and a zero Live identity says so.
-		return hostfence.Provisioning{}, &hostfence.StaleAttemptError{Host: host, Bound: identity}
-	}
-	if identity.IsZero() || live != identity {
-		// The typed stale-registration refusal: the deploy-pipeline's stale-entry
-		// class, never a helper-gate arm (the helper is not the problem).
-		return hostfence.Provisioning{}, &hostfence.StaleAttemptError{Host: host, Bound: identity, Live: live}
-	}
-	return m.cfg.store.provisioningFor(host), nil
 }
 
 // hubTOMLTeardownRemnantTables derives the teardown-remnant tables a rewrite

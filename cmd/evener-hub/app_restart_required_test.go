@@ -512,8 +512,10 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					childRestart = true
 				}
 			}
-			if childRestart != delegated {
-				t.Errorf("navigation child restart=%v, delegated=%v", childRestart, delegated)
+			// A subagent has no navigation row to carry the restriction, and a
+			// child with no delegate descriptor is not owned by the daemon.
+			if childRestart {
+				t.Errorf("navigation lists the child with restart state, delegated=%v", delegated)
 			}
 			if delegated && !scenario.unreadableSibling {
 				t.Run("canceled ownership check", func(t *testing.T) {
@@ -526,9 +528,6 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					wire, ok := errors.AsType[appwire.WireError](err)
 					if !ok || !strings.Contains(wire.Message, context.Canceled.Error()) {
 						t.Errorf("ownership check ignored cancellation: %v", err)
-					}
-					if snapshot := web.navigationSnapshotInputs(ctx); !errors.Is(snapshot.ownershipErr, context.Canceled) {
-						t.Errorf("navigation ownership error=%v, want cancellation", snapshot.ownershipErr)
 					}
 				})
 			}
