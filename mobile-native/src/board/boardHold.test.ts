@@ -113,6 +113,23 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		expect(hold.getSnapshot()).toEqual([]);
 	});
 
+	it("keeps a record being sent: it can't be cancelled, and a new action on its subject waits behind it", () => {
+		const hold = new BoardHold(memory(), "hub-1");
+		const sending = hold.hold(archive("local:a"), 1);
+		hold.claim(sending.id);
+		expect(hold.cancelable(sending.id)).toBe(false);
+		hold.cancel(sending.id);
+		// The opposite change can't undo a request already on its way, so it
+		// waits its turn.
+		hold.hold(archive("local:a", false), 2);
+		expect(kinds(hold)).toEqual(["archive:local:a", "unarchive:local:a"]);
+		// Released, it is an ordinary held record again.
+		hold.release(sending.id);
+		expect(hold.cancelable(sending.id)).toBe(true);
+		hold.hold(archive("local:a"), 3);
+		expect(kinds(hold)).toEqual(["archive:local:a"]);
+	});
+
 	it("finds what waits for one session", () => {
 		const hold = new BoardHold(memory(), "hub-1");
 		hold.hold(archive("local:a"), 1);

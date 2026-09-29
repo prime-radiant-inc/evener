@@ -769,11 +769,11 @@ function Board({
 			actions: (item, archived) => menuActionsHere(item, rowContext(archived)),
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
+			// What is on its way can't be taken back, so it offers no Cancel.
 			held: (item) =>
-				heldFor(heldNow.current, item.row.ref).map((record) => ({
-					id: record.id,
-					label: `Cancel ${heldVerb(record.action)}`,
-				})),
+				heldFor(heldNow.current, item.row.ref)
+					.filter((record) => hold.cancelable(record.id))
+					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
 			cancel: (id) => hold.cancel(id),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
 			closed: () => list.setInteraction("menu", false),

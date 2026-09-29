@@ -189,6 +189,10 @@ function parse(value: unknown): HeldRecord[] {
 export class BoardHold {
 	private records: readonly HeldRecord[];
 	private listeners = new Set<() => void>();
+	/** Records a replay is sending now. A request on its way can't be taken
+	 * back, so these can't be cancelled, replaced or undone (in memory only:
+	 * after a relaunch nothing is on its way). */
+	private sending = new Set<string>();
 	private forgotten = false;
 	private nextId = 0;
 
@@ -209,11 +213,14 @@ export class BoardHold {
 	};
 
 	/** Holds an action, replacing a held one on the same subject in its place,
-	 * or dropping both when the new one undoes it. */
+	 * or dropping both when the new one undoes it. One being sent stays, and
+	 * the new one waits behind it. */
 	hold(action: HeldAction, now: number): HeldRecord {
 		const record: HeldRecord = { id: `${now}-${this.nextId++}`, heldAt: now, action };
 		if (this.forgotten) return record;
-		const index = this.records.findIndex((held) => subject(held.action) === subject(action));
+		const index = this.records.findLastIndex(
+			(held) => !this.sending.has(held.id) && subject(held.action) === subject(action),
+		);
 		const held = this.records[index];
 		if (held === undefined) this.change([...this.records, record]);
 		else if (undoes(action, held.action)) this.change(this.records.filter((_, at) => at !== index));
@@ -221,13 +228,28 @@ export class BoardHold {
 		return record;
 	}
 
-	/** You took it back. */
+	/** You took it back, unless it is on its way. */
 	cancel(id: string): void {
-		this.remove(id);
+		if (this.cancelable(id)) this.remove(id);
+	}
+
+	cancelable(id: string): boolean {
+		return !this.sending.has(id);
+	}
+
+	/** A replay is sending it. */
+	claim(id: string): void {
+		this.sending.add(id);
+	}
+
+	/** Its send was lost with the connection: it waits for the next one. */
+	release(id: string): void {
+		this.sending.delete(id);
 	}
 
 	/** The hub answered it, or its check confirmed it. */
 	settled(id: string): void {
+		this.sending.delete(id);
 		this.remove(id);
 	}
 
@@ -236,6 +258,7 @@ export class BoardHold {
 	forget(): void {
 		if (this.forgotten) return;
 		this.records = [];
+		this.sending.clear();
 		this.forgotten = true;
 		for (const listener of [...this.listeners]) listener();
 		this.listeners.clear();

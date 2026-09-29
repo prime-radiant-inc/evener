@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { BoardHold, type HeldAction, turnSeen } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
-import type { StopOutcome } from "./boardStops";
+import { type StopOutcome, stopToast } from "./boardStops";
 
 // boardStops (stopToast) reaches the mutation runtime's native modules.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
@@ -159,6 +159,89 @@ it("ends when its hub is forgotten mid-replay, sending nothing more", async () =
 	answer();
 	await running;
 	expect(methods(client)).toEqual(["thread/shutdown"]);
+});
+
+it("keeps a request whose connection dropped and came back while it was out, on the same client", async () => {
+	const { hold, client, toasts, replay } = setup();
+	client.on("evener/thread/name/set", () => {
+		// The socket drops and the client reconnects before the request's
+		// failure arrives: ready again, and the same client.
+		client.emitStateChange("reconnecting");
+		client.emitStateChange("ready");
+		throw new Error("request timed out");
+	});
+	hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
+	await replay.sendImmediate(client, () => client.state === "ready");
+	expect(toasts).toEqual([]);
+	expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["rename"]);
+});
+
+it("says a held Stop that failed couldn't stop, not that it couldn't shut down", async () => {
+	const { hold, client, toasts, isLive } = setup();
+	const failing = new BoardReplay(hold, {
+		stop: async () => {
+			throw new Error("boom");
+		},
+		toast: (text) => toasts.push(text),
+	});
+	hold.hold(stopOf("b"), 1);
+	await failing.sendImmediate(client, isLive);
+	expect(toasts).toEqual([stopToast("unavailable", "b")]);
+	expect(hold.getSnapshot()).toEqual([]);
+});
+
+it("won't cancel a held action while it is being sent", async () => {
+	const { hold, client, replay, isLive } = setup();
+	let answer: () => void = () => {};
+	client.on(
+		"evener/thread/name/set",
+		() =>
+			new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			}) as never,
+	);
+	const held = hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
+	const running = replay.sendImmediate(client, isLive);
+	await vi.waitFor(() => expect(methods(client)).toEqual(["evener/thread/name/set"]));
+	expect(hold.cancelable(held.id)).toBe(false);
+	answer();
+	await running;
+	expect(hold.getSnapshot()).toEqual([]);
+});
+
+it("resolves each ask once its own replay has run", async () => {
+	const { hold, replay } = setup();
+	const old = new FakeClient("ready");
+	let oldLive = true;
+	let answer: () => void = () => {};
+	old.on(
+		"evener/thread/name/set",
+		() =>
+			new Promise((resolve) => {
+				// Answered as the old connection goes.
+				answer = () => {
+					oldLive = false;
+					resolve({} as never);
+				};
+			}) as never,
+	);
+	const fresh = new FakeClient("ready");
+	fresh.on("evener/thread/name/set", () => ({}) as never);
+	hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
+	const first = replay.sendImmediate(old, () => oldLive);
+	await vi.waitFor(() => expect(methods(old)).toEqual(["evener/thread/name/set"]));
+	hold.hold({ kind: "rename", ref: "c", title: "C", name: "D" }, 2);
+	let secondDone = false;
+	const second = replay
+		.sendImmediate(fresh, () => true)
+		.then(() => {
+			secondDone = true;
+		});
+	await Promise.resolve();
+	expect(secondDone).toBe(false);
+	answer();
+	await Promise.all([first, second]);
+	expect(methods(fresh)).toEqual(["evener/thread/name/set"]);
 });
 
 it("runs one replay at a time", async () => {

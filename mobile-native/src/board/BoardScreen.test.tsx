@@ -3672,6 +3672,41 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/thread/name/set", "thread/shutdown"]);
 	});
 
+	it("offers no Cancel for a held action already on its way", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const ref = `local:${OTHER_SESSION_ID}`;
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				{
+					id: "a",
+					heldAt: 1,
+					action: { kind: "shutDown", ref, title: "Write changelog", seen: { turnEndedAt: null, running: false } },
+				},
+			]),
+		);
+		let answer: () => void = () => {};
+		const request = fake.client.request;
+		fake.client.request = ((method: string, params: unknown) => {
+			if (method !== "thread/shutdown") return request(method as never, params as never);
+			fake.mutations.push({ method, params });
+			return new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			});
+		}) as typeof request;
+		connect(id, fake.client, "ready");
+		const tree = await mount(navigation());
+		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
+		const menu = menuHost(id);
+		expect(menu.held(menuItem(menu, ref))).toEqual([]);
+		expect(texts(tree)).toContain("Shut down waits for the connection");
+		answer();
+		await settle();
+		expect(texts(tree)).not.toContain("Shut down waits for the connection");
+	});
+
 	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
 		const fake = hub(swipeFleet());
 		const id = hubId();

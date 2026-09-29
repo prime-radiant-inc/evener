@@ -87,9 +87,13 @@ export class BoardReplay {
 			if (this.#disposed || !actions || !isLive() || !organizationOpen(organization)) return;
 			const record = this.hold.getSnapshot().find((held) => !AT_ONCE.has(held.action.kind));
 			if (!record) return;
+			this.hold.claim(record.id);
 			if (!(await organizationChange(actions, record.action))) {
 				// The Board went away or the connection dropped: it stays held.
-				if (!organization.isCurrent() || !isLive()) return;
+				if (!organization.isCurrent() || !isLive()) {
+					this.hold.release(record.id);
+					return;
+				}
 				// Refused, or its outcome unknown: the journal holds it and
 				// settles it, as it does an online change.
 				void actions.reconcile();
@@ -103,10 +107,18 @@ export class BoardReplay {
 		const { action } = record;
 		if (action.kind !== "stop" && action.kind !== "shutDown" && action.kind !== "rename") return true;
 		const { toast } = this.deps;
+		// A failure while the connection held is the hub's answer; one after it
+		// dropped is unknown, even if the client is ready again by then.
+		let dropped = false;
+		const unwatch = client.onStateChange((state) => {
+			if (state !== "ready") dropped = true;
+		});
+		const lost = () => dropped || !isLive();
+		this.hold.claim(record.id);
 		try {
 			if (action.kind === "stop") {
 				const outcome = await this.deps.stop(client, action.ref, (thread) => turnStillSeen(action.seen, thread));
-				if (outcome === "unavailable" && !isLive()) return false;
+				if (outcome === "unavailable" && lost()) return this.#keep(record);
 				toast(stopToast(outcome, action.title));
 			} else if (action.kind === "shutDown") {
 				const { thread } = await client.request("thread/read", { ref: action.ref, includeTurns: false });
@@ -119,11 +131,20 @@ export class BoardReplay {
 				}
 			} else if (action.kind === "rename" && (await renameSession(client, action.ref, action.name))) toast(RENAMED);
 		} catch (error) {
-			if (!isLive()) return false;
-			toast(action.kind === "rename" ? renameFailed(action.title, error) : shutDownFailed(action.title, error));
+			if (lost()) return this.#keep(record);
+			if (action.kind === "stop") toast(stopToast("unavailable", action.title));
+			else toast(action.kind === "rename" ? renameFailed(action.title, error) : shutDownFailed(action.title, error));
+		} finally {
+			unwatch();
 		}
 		this.hold.settled(record.id);
 		return true;
+	}
+
+	/** A send the connection lost: it waits for the next ready one. */
+	#keep(record: HeldRecord): false {
+		this.hold.release(record.id);
+		return false;
 	}
 }
 
@@ -133,14 +154,19 @@ export class BoardReplay {
  * one's last step. */
 class NewestAsk<Args extends unknown[]> {
 	#waiting: Args | null = null;
-	#running = false;
+	/** The running stream, which every ask made while it runs waits on: it
+	 * ends only once nothing waits. */
+	#running: Promise<void> | null = null;
 
 	constructor(private readonly run: (...args: Args) => Promise<void>) {}
 
-	async ask(...args: Args): Promise<void> {
+	ask(...args: Args): Promise<void> {
 		this.#waiting = args;
-		if (this.#running) return;
-		this.#running = true;
+		this.#running ??= this.#drain();
+		return this.#running;
+	}
+
+	async #drain(): Promise<void> {
 		try {
 			while (this.#waiting) {
 				const next = this.#waiting;
@@ -148,7 +174,9 @@ class NewestAsk<Args extends unknown[]> {
 				await this.run(...next);
 			}
 		} finally {
-			this.#running = false;
+			// Cleared as the loop ends, in the same step, so an ask arriving
+			// after it starts a new stream rather than joining a finished one.
+			this.#running = null;
 		}
 	}
 }
