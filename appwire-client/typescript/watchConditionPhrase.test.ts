@@ -1,6 +1,8 @@
-import { parseConditionText } from "@evener/appwire-client";
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import { watchTriggerPhrases } from "./watchConditionPhrase";
+import { parseConditionText } from "./watchRows";
 
 // The watch list row and the watch card both render these phrases; this table
 // is what keeps the card saying what the list says. The card drifted to

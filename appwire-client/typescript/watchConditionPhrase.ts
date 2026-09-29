@@ -1,5 +1,9 @@
-import { humanizeInterval, humanizeSeconds, type parseConditionText } from "@evener/appwire-client";
-import { watchEventLabel } from "./watchEventLabel";
+import { humanizeInterval, humanizeSeconds, type parseConditionText } from "./watchRows";
+
+// The producer's wildcard reads as words on every watch surface, never as a bare "*".
+export function watchEventLabel(name: string): string {
+  return name === "*" ? "any event" : name;
+}
 
 // The trigger phrases of one parsed watch condition, in the wording the watch
 // list has always used. Both the list row and the watch card render them, so the

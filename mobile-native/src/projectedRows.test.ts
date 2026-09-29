@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
 	ContentLevel,
@@ -608,6 +609,17 @@ describe("projectedRow — intent entries", () => {
 			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 		});
+	});
+
+	// A job_watch step's words come from the watch's state, not its footer
+	// text: a timer's line is its cadence and its note, a clear's the watch.
+	it("words a recorded job_watch step from the watch's state", () => {
+		const words = (call: "call_watch_timer" | "call_watch_clear") => {
+			const row = projectedRow(intentEntry(toolWireStep(call)));
+			return row?.kind === "activity" ? row.detail?.words : undefined;
+		};
+		expect(words("call_watch_timer")).toEqual({ verb: "Remind me in 5m", detail: "Check the deploy finished." });
+		expect(words("call_watch_clear")).toEqual({ verb: "Cleared", target: "watch_fixture_1" });
 	});
 
 	// The native attention rule outranks the projector's summarization (the
@@ -1640,6 +1652,21 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 			expect(out.members?.[0]).toBe(row.members?.[0]);
 			expect(out.members?.[1]).not.toBe(row.members?.[1]);
 		}
+	});
+
+	it("bounds a watch's note like the rest of a step's text", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "job_watch",
+			family: "tool",
+			state: "completed",
+			detail: { watchNote: big },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		if (out.kind === "activity") expect(out.detail?.watchNote?.length).toBeLessThan(big.length);
 	});
 
 	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {

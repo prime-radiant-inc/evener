@@ -10,6 +10,7 @@
 import { parseAskUserQuestions } from "./askShared";
 import { diffStats, editDiffText } from "./editDiff";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
+import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
 import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
@@ -479,6 +480,7 @@ const TOOLS: Record<string, ToolEntry> = {
   job_read_output: { family: "jobs", words: jobStatusWords },
   job_list: { family: "jobs", words: jobListWords },
   job_stop: { family: "jobs", words: jobStopWords },
+  job_watch: { family: "jobs", words: jobWatchWords },
 };
 
 export const readFileSummary = summaryOf(readFileWords);
