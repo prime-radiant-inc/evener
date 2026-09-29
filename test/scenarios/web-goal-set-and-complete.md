@@ -28,8 +28,9 @@
   completion the REST detail's `goal_status` flips to `complete` (step 4).
   The former `Goal: <status>` chip and its popover are gone — Jesse's
   2026-09-28 ruling on the #1339 composer row deleted the production-dead
-  `GoalControl` — so status and iterations are readable from the REST detail
-  and the doctor transcript, not from the page.
+  `GoalControl` — so the goal's status now reads from the row itself
+  (`[data-testid="current-work-goal-status"]`), while iterations remain
+  readable from the REST detail and the doctor transcript, not from the page.
 
 The Go layer covers the gate and persistence with unit tests
 (`cmd/evener-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
@@ -169,6 +170,10 @@ done
      return {
        port: location.port,                        // page-identity check, always
        goalRow: goalRow?.textContent ?? null,      // the Goal label plus the objective, once set
+       // The page's word for the REST detail's raw goal_status: "Active"
+       // while the goal runs, "Complete" (or "Blocked") at the end — it
+       // must agree with step 4's poll.
+       goalStatus: document.querySelector('[data-testid="current-work-goal-status"]')?.textContent ?? null,
        goalNotices: [...document.querySelectorAll('[data-testid="system-notice-line"]')]
          .map((el) => el.textContent)
          .filter((t) => /continuing toward/i.test(t)),
@@ -177,9 +182,11 @@ done
    ```
    The row's value button (`[data-testid="current-work-goal-value"]`) is the
    edit affordance — pressing it reopens the composer with the `/goal` draft
-   (`panes/session/composer/Composer.tsx`'s `editGoal`). Status and
-   iterations are not on the page (the chip that read them is deleted); the
-   authoritative status read is step 4's REST poll.
+   (`panes/session/composer/Composer.tsx`'s `editGoal`). The row's status
+   word (`current-work-goal-status`) is the page's status readout — `Active`
+   while the goal runs, `Complete` (or `Blocked`) at the end, the
+   title-cased page word for step 4's raw `goal_status`; iterations are not
+   on the page, and the authoritative cross-check is step 4's REST poll.
 
    Cross-check against the daemon's authoritative record — the steering turns
    it actually sent the model:
