@@ -976,6 +976,54 @@ func TestStoreLaunchModelsDoesNotClobberANewerEntry(t *testing.T) {
 	}
 }
 
+// TestStoreLaunchModelsEvictsPastTheCap: the user-driven working-dir key space
+// stays bounded, and the entry dropped is the least-recently-filled one.
+func TestStoreLaunchModelsEvictsPastTheCap(t *testing.T) {
+	t.Parallel()
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+	}
+	resp := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	for i := range launchModelsMaxEntries {
+		key := fmt.Sprintf("/seed/%d", i)
+		web.launchModels.entries[key] = &launchModelsEntry{
+			resp:     cloneModelListResponse(resp),
+			gen:      1,
+			filledAt: time.Unix(int64(i), 0),
+		}
+	}
+	web.storeLaunchModels("/new", 1, resp)
+
+	if got := len(web.launchModels.entries); got != launchModelsMaxEntries {
+		t.Fatalf("cache holds %d entries, want the cap %d", got, launchModelsMaxEntries)
+	}
+	if _, ok := web.launchModels.entries["/seed/0"]; ok {
+		t.Fatal("the least-recently-filled entry survived eviction")
+	}
+	if _, ok := web.launchModels.entries["/new"]; !ok {
+		t.Fatal("the newly stored entry is missing")
+	}
+}
+
+// TestEvictOldestLaunchModelsEntryHandlesTheUnscopedKey: "" is a real key (the
+// unscoped list), so the selection must not read it as "nothing seen yet".
+func TestEvictOldestLaunchModelsEntryHandlesTheUnscopedKey(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	entries := map[string]*launchModelsEntry{
+		"":   {gen: 1, filledAt: base.Add(-time.Minute)},
+		"/a": {gen: 1, filledAt: base},
+	}
+	evictOldestLaunchModelsEntry(entries)
+	if _, ok := entries[""]; ok {
+		t.Fatal("the unscoped key was not evicted as the oldest")
+	}
+	if _, ok := entries["/a"]; !ok {
+		t.Fatal("the newer key was evicted")
+	}
+}
+
 // TestWarmLaunchModelsUsesTheConfiguredLoader: the startup warm goes through
 // WebConfig.LaunchModels, so an embedder's own loader is warmed rather than
 // bypassed by a direct evenerLaunchModelList call.
