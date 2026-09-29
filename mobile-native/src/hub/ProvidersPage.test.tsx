@@ -47,6 +47,10 @@ vi.mock("react-native", async () => ({
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo-web-browser", () => ({
+	openBrowserAsync: async () => ({ type: "dismiss" }),
+	dismissBrowser: async () => ({ type: "dismiss" }),
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
@@ -740,7 +744,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	// the sheet the sign-in opens carries the status itself, over the
 	// native modal that covers the screen's banner.
 	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
-	const sheet = modalContaining(tree, "Waiting for the hub");
+	const sheet = modalContaining(tree, "Sign in to work");
 	expect(subtreeText(sheet)).toContain("Reconnecting…");
 	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 

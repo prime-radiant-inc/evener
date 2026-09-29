@@ -23,16 +23,16 @@ export function signInClient(io: ScriptedIO, calls: RecordedCall[]): Conversatio
 	} as ConversationClientLike;
 }
 
-/** One sign-in flow over its own credential store, connected to a scripted
- * client whose default reply per method is `answer`. `connect` does what
+/** One sign-in flow for `provider` over its own credential store, connected
+ * to a scripted client whose default reply per method is `answer`. `connect` does what
  * ProvidersPage's connection effect does: the store's transport and the
  * flow's connected gate move to one client together. */
-export function boundary(answer: (method: string) => unknown) {
+export function boundary(answer: (method: string) => unknown, provider = "work") {
 	const calls: RecordedCall[] = [];
 	const io: ScriptedIO = { request: async (method) => answer(method) };
 	const client = signInClient(io, calls);
 	const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
-	const flow = new ProviderSignIn(store, "work");
+	const flow = new ProviderSignIn(store, provider);
 	const connect = (next: ConversationClientLike | null) => {
 		store.connectionChanged(next, next ? "ready" : "closed");
 		flow.setConnection(next);

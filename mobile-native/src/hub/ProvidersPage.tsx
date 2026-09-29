@@ -167,7 +167,6 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 				<ProviderSignInSheet
 					flow={signIn.flow}
 					name={signIn.name}
-					hubName={activeProfile.name}
 					connected={ready}
 					onClose={() => {
 						signIn.flow.dispose();
