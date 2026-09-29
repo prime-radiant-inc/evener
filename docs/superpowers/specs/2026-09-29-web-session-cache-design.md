@@ -94,7 +94,7 @@ interface CachedSessionRecord {
   imageSessionId?: string;   // sha-addressed image fallbacks rebuild from it
   olderCursor?: string;      // where scroll-back continues from
   savedAt: number;
-  bytes: number;             // estimated JSON length, for the cap
+  bytes: number;             // serialized encoded length, for the cap
   history: {
     bootGeneration: string;
     epoch: number;
@@ -149,9 +149,16 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   sequence is check-then-arm (`threads.has(ref)` short-circuit, then
   `beginThreadHydration`'s synchronous `pendingThreadHydrations.set`). The
   cache lookup therefore carries its own per-ref inflight map, mirroring
-  `inflightHydrates`, and rechecks after the await: the ref may have been
-  released (refcount zero), deleted, or already hydrated by a concurrent
-  holder, and a stale lookup result publishes nothing.
+  `inflightHydrates`: a concurrent `ensureThread` for the same ref joins
+  the shared lookup rather than starting its own, and only the lookup's
+  creator proceeds to publish and arm — joiners return once they see a
+  model or a hydration in flight, so two callers cannot double-arm. After
+  the await the creator rechecks: the ref may have been released
+  (refcount zero), deleted, already hydrated by a concurrent holder, or
+  the lookup may have lost its own deadline race — and in every one of
+  those cases the lookup result publishes nothing and arms nothing,
+  because from the deadline onward the cold path it abandoned is
+  authoritative.
 
 On a hit, the store publishes the cached shell through `putThreadModel`
 immediately, then arms the pending hydration with the shell as its base
@@ -173,13 +180,15 @@ pane's loader clears on the first publication either way. Consequences:
   replaced and admits if it was not; clearing the session record itself is
   the intent either way. The shell carries no `instanceId` and no
   `pendingEscalations`.
-- **A shell never writes back, keyed on the pending hydration's baseModel.**
-  The write hook skips a write while the ref's model is the pending
-  hydration's `baseModel` (the bumped shell) — the same identity
-  `isDiscardedReadResult` already trusts. The first read merge produces a
-  different object and writes resume. A marker field would ride the
-  reducer's bare-cast spreads (`publicModel`) through every merge and
-  freeze the record forever, which is why the design uses object identity.
+- **A shell never writes back, keyed on explicit shell-lineage state.**
+  Publishing the shell sets a per-ref shell flag; the first authoritative
+  read's publish for that arming clears it. The flag — not object
+  identity — is what the write gate reads, because identity covers only
+  the pending window: a failed read dissolves the pending entry, a live
+  notification then folds a new object onto the shell, and that object
+  holds unverified, possibly hole-bearing turns that identity would
+  happily write. The flag stays set through the failure and the fold; the
+  retry's success clears it, and writes resume from a verified model.
 - The reconciling read then merges through `applyReadResponse(base, response, now)`
   or, on the stale-held-snapshot path, replaces history via
   `hydrateThread` after the existing retry-without-held-snapshot. A new
@@ -189,9 +198,9 @@ pane's loader clears on the first publication either way. Consequences:
 - **A failed reconciling read is specified, not left open.** A transport
   failure follows the store's existing retry ladder (retry-forever per
   ref): the shell's content stays visible, capabilities stay empty, and
-  nothing writes — the baseModel skip holds while the ref's model is the
-  hydration's base, and the pending entry's dissolution on failure cannot
-  strand a write because the model has not changed. A
+  nothing writes — the shell flag holds through the failure, so a
+  notification folded onto the shell while the retry is pending cannot
+  write unverified content either. A
   history-failed answer applies the existing one-diagnostic rule to the
   base model (`applyHistoryReadFailure`), and the failed gate refuses
   writes. A fenced deletion takes the existing fence path and deletes the
@@ -221,10 +230,14 @@ through `putThreadModel` (read merges, reconnect invalidations),
 and friends, which is most of a live session's content). A hook on any one
 function would miss the others. The write seam is therefore a **subscription
 to the store's `threads` map** that debounces per ref (1 s trailing, the
-interval injected) and writes the latest model matching all of:
+interval injected). When the debounced callback fires it re-reads the
+store's current model for the ref and applies every gate then — never a
+model captured at scheduling time — so a write scheduled before a clear,
+a delete, or an invalidation evaluates against the state that exists when
+it fires. The gates:
 
 - `history.incarnation` is present (a completed v6 content-bearing read),
-- the model is not the pending hydration's baseModel (the shell skip, above),
+- the ref's shell flag is clear (the shell skip, above),
 - `history.failed` is unset.
 
 The subscription sees every publication, so a `history/updated` that grows
@@ -323,7 +336,11 @@ is involved.
 ### Eviction, cap, and cross-tab
 
 - One IndexedDB database per hub origin (browsers scope IndexedDB to the
-  origin), `evener-session-cache`, one object store keyed by `ref`.
+  origin), `evener-session-cache`, with two object stores: `records`,
+  keyed by `ref`, and `meta`, holding one `{bytes, savedAt}` row per
+  record — the enumeration surface, so the cap never reads a record body —
+  plus the clear-epoch row under a reserved key. Both stores are written
+  in the same transaction as the record they describe.
 - `SESSION_CACHE_MAX_BYTES = 32 MB`, with no per-record cap. A per-record
   ceiling with oldest-page trimming was cut: a trimmed record would keep
   one `olderCursor` naming a boundary below the dropped pages, cursors are
@@ -336,10 +353,10 @@ is involved.
   monster record would evict every neighbor forever and still not fit.
   `bytes` is the serialized record's encoded length — the exact length
   the write stores, and what the cap counts.
-- The cap is enforced atomically per write: the enumeration of keys,
-  `bytes`, and `savedAt` (no record bodies), the insert, and any evictions
-  run in one read-write IndexedDB transaction, which the database
-  serializes across tabs, so no writer evicts against a stale total.
+- The cap is enforced atomically per write: the enumeration of the `meta`
+  store's rows, the insert, and any evictions run in one read-write
+  IndexedDB transaction, which the database serializes across tabs, so no
+  writer evicts against a stale total.
 - Cross-tab: last write wins per ref. A tab holding only the window can
   replace a sibling's deeper record; the dropped pages simply re-fetch on
   a later reload. This design deliberately rejects a no-shrink comparison
@@ -352,21 +369,26 @@ is involved.
 ### The clear-cached-sessions setting
 
 Settings gains a storage row with one action, "Clear cached session
-content", which deletes every record. The row renders a state, not an
-estimate: **empty**, **unavailable** (a failed open, with a retry — never
-shown as empty, so the privacy remedy cannot silently claim to have
-worked), or **cleared**. Clearing suppresses writes for every ref open in
-this tab until the next reload (a non-persisted set the write hook
-respects), and the suppression propagates to sibling tabs through one
-BroadcastChannel message (the crossTabSync pattern the tree already
-uses), so an open pane in another tab cannot undo the remedy within one
-debounce interval either. Without that, any open pane's next publication
-re-creates its record within one debounce. A fresh `ensureThread` of a
-ref the user deliberately re-opens caches again — that is the feature
-working, not the remedy failing. Deletion is the storage adapter's own
-operation so a wedged open degrades to the unavailable state rather than
-a failed button. No per-session management and no cap slider; both are
-YAGNI until someone asks.
+content". The row renders a state, not an estimate: **empty**,
+**unavailable** (a failed open, with a retry — never shown as empty, so
+the privacy remedy cannot silently claim to have worked), or **cleared**.
+The clear is durable against racing writers, in this order, inside one
+read-write transaction: delete every record, cancel every pending
+debounce timer, and increment a durable clear epoch held in the store's
+`meta` row. Every write transaction carries the epoch it was scheduled
+under and skips itself when it sees a newer one — so a sibling tab's
+write that started before the clear cannot commit a record after it.
+The suppression set (every ref open in this tab until the next reload,
+the write gate above) covers publications after the clear, and it
+propagates to sibling tabs through one BroadcastChannel message (the
+crossTabSync pattern the tree already uses) carrying the epoch, so their
+open panes neither re-create records from new publications nor complete
+stale scheduled ones. A fresh `ensureThread` of a ref the user
+deliberately re-opens caches again — that is the feature working, not
+the remedy failing. Deletion is the storage adapter's own operation so a
+wedged open degrades to the unavailable state rather than a failed
+button. No per-session management and no cap slider; both are YAGNI
+until someone asks.
 
 ### Failure and degradation
 
@@ -443,10 +465,12 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    throws; the diagnostic seam records the open failure; a lookup still
    resolves as a miss at its own 250 ms deadline.
 3. Cap: writing past `SESSION_CACHE_MAX_BYTES` evicts the
-   least-recently-saved record; enumeration, insert, and eviction share one
-   transaction (a sibling tab's interleaved write is either fully seen or
-   fully unseen); a record whose own length exceeds the cap is skipped
-   whole; a forced write during quota failure drops silently.
+   least-recently-saved record; the enumeration reads the `meta` store's
+   rows without touching record bodies, and enumeration, insert, and
+   eviction share one transaction (a sibling tab's interleaved write is
+   either fully seen or fully unseen); a record whose own length exceeds
+   the cap is skipped whole; a forced write during quota failure drops
+   silently.
 4. Clear: deletes every record and resets the accounting.
 
 Store integration (`stores/threads.test.ts` additions and a new
@@ -483,8 +507,11 @@ Store integration (`stores/threads.test.ts` additions and a new
    before the authoritative read lands; a Clear from the shell fences on
    the cached `threadId`; the shell and its bumped base publish without a
    write, and the first read merge resumes writes. A failed reconciling
-   read keeps the content visible and writes nothing; a history-failed
-   answer shows the one diagnostic and refuses writes.
+   read keeps the content visible and writes nothing — including after a
+   live notification has folded onto the shell, which is the case the
+   shell flag exists for — and the retry's success resumes writes from a
+   verified model. A history-failed answer shows the one diagnostic and
+   refuses writes.
 10. Watch exclusion: a rich watched upgrade (`includeTurns`) publishes a
     turns-bearing model into `watchedThreads` and produces no cache write.
 11. Live-notification capture: a `history/updated` merge (the notification
@@ -496,16 +523,19 @@ Store integration (`stores/threads.test.ts` additions and a new
     fake client asserts the cursor it received); the pages already held are
     never requested again.
 13. Load-seam races: a never-resolving open with a concurrent second
-    `ensureThread` (which joins, not double-arms), a release during the
-    lookup (publishes nothing), and hydration still completing within the
-    250 ms bound.
+    `ensureThread` (which joins the shared lookup, never double-arms), a
+    release during the lookup (publishes nothing), a lookup that lost its
+    own deadline race resolving late (publishes nothing, arms nothing),
+    and hydration still completing within the 250 ms bound.
 14. Deletion and clearing: a `deleteSession` success removes the record;
     the deletion fence removes the record on a fenced read; the release
     flush skips a ref closed by deletion; the settings clear empties the
-    adapter, suppresses this tab's open refs until reload, the suppression
-    reaches sibling tabs through the channel (their open refs stop writing
-    without a reload), and a re-open of a cleared ref starts caching
-    again.
+    adapter, cancels pending debounce timers, and increments the epoch —
+    a write scheduled under an older epoch skips itself, including a
+    timer armed before the clear and firing after it — the suppression
+    reaches sibling tabs through the channel carrying the epoch (their
+    open refs stop writing without a reload), and a re-open of a cleared
+    ref starts caching again.
 15. Write gating: `failed` history writes nothing; a zero-turn record's
     reload takes the ordinary cold merge (the gap rule's empty case).
 16. Flush: `releaseThread` commits a pending debounced write; the pinned
@@ -539,7 +569,8 @@ transient invalidation fields are reset and the history identity round-trips.
 5. **Open-pane models only**, enforced by the write seam's threads-map-only
    placement; watched/rail reads never load or write.
 6. **32 MB whole-record LRU cap, one atomic read-write transaction per
-   write, cross-tab last-write-wins.** A no-shrink rule was considered and
+   write, a durable clear epoch every write verifies, cross-tab
+   last-write-wins.** A no-shrink rule was considered and
    rejected: its failure modes (LRU inversion, frozen superseded content)
    cost more than the pages it saved. A per-record cap with oldest-page
    trimming was cut with it: trimming dangles the single `olderCursor`
