@@ -518,7 +518,7 @@ function Providers({
 								})}
 							</Group>
 						) : (
-							<GroupFooter>No providers yet.</GroupFooter>
+							<GroupFooter>No providers yet. Add one to start sessions.</GroupFooter>
 						)}
 						{core.diagnostics.map((message) => (
 							<GroupFooter key={message}>{message}</GroupFooter>

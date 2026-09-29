@@ -670,10 +670,13 @@ export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
-/** The first mounted Pressable whose accessibility label is `label`, found
- * the way VoiceOver finds a button; undefined when there is none. */
+/** The first mounted Pressable VoiceOver names `label`: its accessibility
+ * label, or, with none, the text inside it, which iOS reads in its place;
+ * undefined when there is none. */
 export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
-	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	return tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === label,
+	)[0];
 }
 
 /** The one scrolling body of the dock whose card carries `testID` (spec 8.4),

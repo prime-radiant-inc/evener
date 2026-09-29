@@ -164,7 +164,8 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
 		}},
-		// A cursorless before is refused on a remote thread until #3176, so
+		// The source forwards a cursorless before to a remote thread now
+		// (#3176), but the hub does not advertise PageBefore for one yet, so
 		// the capability stays masked.
 		{"PageBefore", map[string]func() error{
 			"ListItemCandidates": func() error {

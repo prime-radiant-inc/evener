@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import {
+	Button,
 	FormError,
 	Group,
 	GroupedPage,
@@ -368,6 +369,17 @@ describe("labels, footers and tags", () => {
 			backgroundColor: light.inset,
 		});
 	});
+
+	it("draws a tag at the prototype's geometry: 11pt semibold on a 16pt line, 6 by 1 padding, 6pt corners (audit L2)", () => {
+		expect(texts(render(<Tag text="1 offline" tone="amber" />))[0]?.props.style).toMatchObject({
+			fontSize: 11,
+			lineHeight: 16,
+			fontWeight: "600",
+			paddingHorizontal: 6,
+			paddingVertical: 1,
+			borderRadius: 6,
+		});
+	});
 });
 
 describe("a row whose label and value can't share a line", () => {
@@ -437,6 +449,11 @@ describe("a row's value with a tag", () => {
 		expect(value?.props.children).toBe("2");
 		expect(tag?.props.style).toMatchObject({ color: light.attentionInk, backgroundColor: light.attentionBg });
 		expect(tag?.props.children).toBe("1 offline");
+	});
+
+	it("sets the value at 15pt, the prototype's .gv, so a value and a tag leave the label room (audit L3)", () => {
+		const tree = render(<Row label="Version" value="0.9.412" />);
+		expect(merged(texts(tree)[1]?.props.style)).toMatchObject({ fontSize: 15, lineHeight: 20 });
 	});
 
 	it("sets a value that needs a human in the attention ink", () => {
@@ -564,5 +581,42 @@ describe("a switch row's text, pressed (audit M13)", () => {
 		const pressed = merged(text.props.style({ pressed: true }));
 		expect(pressed.backgroundColor).toBe(light.pressed);
 		expect(pressed.opacity ?? 1).toBe(1);
+	});
+});
+
+describe("Button", () => {
+	const pressable = (tree: ReturnType<typeof render>) => tree.root.find((node) => node.type === Pressable);
+	const styleOf = (node: ReactTestInstance, pressed = false) =>
+		Object.assign(
+			{},
+			...[typeof node.props.style === "function" ? node.props.style({ pressed }) : node.props.style].flat(),
+		);
+
+	it("draws the primary call to action filled in the accent, full width and 50pt, as the prototype's .btn.primary.big", () => {
+		const onPress = vi.fn();
+		const tree = render(<Button label="Open sign-in page" primary onPress={onPress} />);
+		const button = pressable(tree);
+		expect(button.props.accessibilityRole).toBe("button");
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.accentFill, minHeight: 50, alignSelf: "stretch" });
+		// Pressed, it dims as the app's other buttons do.
+		expect(styleOf(button, true).opacity).toBe(0.65);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.onFill,
+			fontSize: 17,
+			fontWeight: "600",
+		});
+		act(() => button.props.onPress());
+		expect(onPress).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws a plain button as a 36pt capsule on the surface, as the prototype's .btn, touchable over 44pt", () => {
+		const tree = render(<Button label="Copy code" onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.surface, minHeight: 36 });
+		// The capsule is drawn at 36; its touch reaches the 44pt minimum.
+		expect(36 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBeGreaterThanOrEqual(44);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
 	});
 });
