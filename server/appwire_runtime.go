@@ -901,6 +901,17 @@ func cloneGoalState(value *appwire.GoalState) *appwire.GoalState {
 	return &clone
 }
 
+// cloneThreadAccess copies a session's access value so a snapshot owns it
+// rather than aliasing the cached envelope's or a descendant projection's
+// pointer (S15). Access holds only value fields, so one level is enough.
+func cloneThreadAccess(value *appwire.ThreadAccess) *appwire.ThreadAccess {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
 func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpdatedParams) {
 	if threadID == s.appThreadID {
 		s.appEnvelope.Tasks = taskPatch(params)
@@ -1431,6 +1442,7 @@ func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 	thread := projection.thread
 	s.mu.RUnlock()
 	thread.Evener.ActiveTurnID = s.descendantRunningTurnID(threadID)
+	thread.Evener.Access = cloneThreadAccess(thread.Evener.Access)
 	return thread, true
 }
 
@@ -2424,14 +2436,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	visionModel := envelope.VisionModel
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
-	access := envelope.Access
-	// The envelope is shared across every snapshot, so hand out a copy of the
-	// Access value rather than the cached pointer (S15): a caller that mutates
-	// its snapshot must not corrupt the cache or race concurrent readers.
-	if access != nil {
-		clone := *access
-		access = &clone
-	}
+	access := cloneThreadAccess(envelope.Access)
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
