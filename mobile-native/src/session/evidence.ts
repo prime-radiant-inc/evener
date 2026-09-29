@@ -70,7 +70,9 @@ function rawOutput(text: string): Evidence[] {
 // images from their URLs, so each image, inline (![alt](url)), by reference
 // (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
 function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+	// An inline URL may hold balanced parentheses (and a title after it), so
+	// the URL spans non-parenthesis characters or one balanced pair at a time.
+	return markdown.replace(/!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g, "$1");
 }
 
 // What the shell tool's footer says besides the exit.

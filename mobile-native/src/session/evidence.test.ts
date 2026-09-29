@@ -262,6 +262,22 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// An image's URL may hold balanced parentheses, and may carry a title;
+	// either way it reads as exactly its alt text (#3289).
+	it("strips an image whose URL has parentheses or a title", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: '# Diagrams\n\n![a](https://x.test/a_(b).png) and ![b](https://x.test/c_(d).png "t")',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{
+				kind: "markdown",
+				title: "diagrams",
+				markdown: "# Diagrams\n\na and b",
+			},
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
