@@ -3,9 +3,15 @@
 // navigation store. No new activity state anywhere: the store is the truth.
 
 import type { NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
+import {
+  createNavigationStore,
+  keyID,
+  type NavigationStoreState,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { describe, expect, test } from "vitest";
-import { createNavigationStore, keyID, type NavigationStoreState, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { deriveScope, scopeCounts, scopePath } from "./statusScope";
 
 function emptyState(): NavigationStoreState {
@@ -27,7 +33,9 @@ function resource(key: ResourceKey, data: unknown): ResourceState {
   } as ResourceState;
 }
 
-function summary(partial: Partial<NavigationSessionSummary> & { ref: string; title: string }): NavigationSessionSummary {
+function summary(
+  partial: Partial<NavigationSessionSummary> & { ref: string; title: string },
+): NavigationSessionSummary {
   return {
     host_id: "local",
     session_id: partial.ref,

@@ -43,6 +43,7 @@ import { navigate, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
+import { StatusBar } from "./statusbar/StatusBar";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
@@ -945,6 +946,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
               <DockRegion />
             )}
           </div>
+          {/* The activity status bar: the zoom system's glance surface, a
+              full-width strip under the content row. Desktop only; mobile
+              keeps the per-session sheet. */}
+          {!isMobile && route !== null && <StatusBar />}
         </div>
       </MotionProvider>
     </ClientProvider>

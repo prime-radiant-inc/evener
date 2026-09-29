@@ -9,12 +9,8 @@
 // completed/inactive folds never inflate a counter.
 
 import type { NavigationSessionLocation, NavigationSessionSummary } from "@evener/appwire-client";
+import { type NavigationStoreState, selectLocation, selectSessionSummary } from "../../stores/navigation/selectors";
 import { activeWatchCount, subagentIsCurrent } from "../rail/railNodes";
-import {
-  type NavigationStoreState,
-  selectLocation,
-  selectSessionSummary,
-} from "../../stores/navigation/selectors";
 
 export type ActivityTab = "agents" | "jobs" | "watches" | "tasks";
 
@@ -37,10 +33,7 @@ export interface ActivityScope {
   counts: ScopeCounts;
 }
 
-function locationOf(
-  ref: string,
-  navigation: NavigationStoreState,
-): NavigationSessionLocation | undefined {
+function locationOf(ref: string, navigation: NavigationStoreState): NavigationSessionLocation | undefined {
   const resource = selectLocation(ref)(navigation);
   return resource?.data as NavigationSessionLocation | undefined;
 }

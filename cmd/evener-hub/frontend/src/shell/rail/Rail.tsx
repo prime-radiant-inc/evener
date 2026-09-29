@@ -1841,6 +1841,7 @@ function NavigationRail({
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
+      data-testid="rail"
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
       {width !== undefined && onWidthChange && (
