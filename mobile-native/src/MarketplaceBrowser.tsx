@@ -478,7 +478,8 @@ export function MarketplaceDetail({
 				canUseConnection={canUseConnection}
 				retry={() => void state.fetchMarketplaces()}
 			/>
-			<Group label={name} machineLabel>
+			{/* The page's title names the marketplace. */}
+			<Group>
 				{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
 				{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
 				<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
@@ -493,7 +494,7 @@ export function MarketplaceDetail({
 			{segment === "browse" ? (
 				<>
 					{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
-					<View style={{ marginHorizontal: space.margin }}>
+					<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
 						<SearchField label="Filter this catalog" value={query} onChangeText={setQuery} />
 					</View>
 					{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
