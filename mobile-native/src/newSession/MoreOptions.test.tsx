@@ -3,8 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
 import { render, renderedText } from "../renderNative.testkit";
 import { MoreOptions } from "./MoreOptions";
-import { NewSessionProvider } from "./newSessionContext";
-import { sheetContext } from "./newSessionTestUtils";
+import { sheetContext, TestSheet } from "./newSessionTestUtils";
 
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
@@ -34,9 +33,9 @@ async function mount(defaults: Record<string, unknown> | null, launchOverrides: 
 	const store = createNewSessionStore("hub-1");
 	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener", launchOverrides });
 	const tree = render(
-		<NewSessionProvider value={sheetContext(store, { client: client as never })}>
+		<TestSheet value={sheetContext(store, { client: client as never })}>
 			<MoreOptions />
-		</NewSessionProvider>,
+		</TestSheet>,
 	);
 	await settle();
 	/** The segments of the control VoiceOver names `group`, as [label, lit]. */

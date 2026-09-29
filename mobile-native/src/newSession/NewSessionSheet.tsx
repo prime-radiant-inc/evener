@@ -31,6 +31,7 @@ import { openForm } from "./openForm";
 import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
+import { useSheetLaunchDefaults } from "./useLaunchDefaults";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
@@ -66,9 +67,22 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);
 	const plugins = useSheetPlugins(store, renderClient, ready);
+	const launchDefaults = useSheetLaunchDefaults(store, renderClient, ready);
 	const value = useMemo<NewSessionContextValue>(
-		() => ({ store, hubId, hubName, client: renderClient, ready, hosts, live, memory, hostLabel, plugins }),
-		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins],
+		() => ({
+			store,
+			hubId,
+			hubName,
+			client: renderClient,
+			ready,
+			hosts,
+			live,
+			memory,
+			hostLabel,
+			plugins,
+			launchDefaults,
+		}),
+		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins, launchDefaults],
 	);
 	return (
 		<NewSessionProvider value={value}>

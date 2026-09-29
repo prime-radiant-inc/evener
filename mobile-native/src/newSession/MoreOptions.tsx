@@ -9,7 +9,6 @@ import { useStore } from "zustand";
 import { GroupedPage, GroupFooter, GroupLabel, Segmented } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { useNewSession } from "./newSessionContext";
-import { type LaunchDefaults, useLaunchDefaults } from "./useLaunchDefaults";
 
 type Field = "contextStrategy" | "maxSubagentDepth" | "maxRounds";
 
@@ -48,9 +47,8 @@ function footer(value: string | number | undefined, hubDefault: string | number 
 }
 
 export function MoreOptions() {
-	const { store } = useNewSession();
-	const { source, cwd, launchOverrides, submitting, setLaunchOverrides } = useStore(store);
-	const defaults: LaunchDefaults | null = useLaunchDefaults(source, cwd);
+	const { store, launchDefaults: defaults } = useNewSession();
+	const { launchOverrides, submitting, setLaunchOverrides } = useStore(store);
 	const set = (field: Field, value: string | number | null) => {
 		const next: LaunchConfigLayer = { ...launchOverrides };
 		if (value === null) delete next[field];

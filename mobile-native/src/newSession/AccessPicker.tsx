@@ -7,15 +7,13 @@ import { Group, GroupedPage, GroupFooter, GroupGap, Row, SwitchRow } from "../sh
 import { SheetStatus } from "../sheet/SheetStatus";
 import { ACCESS_LEVELS, accessOf, networkApplies } from "./launchSetup";
 import { useNewSession } from "./newSessionContext";
-import { useLaunchDefaults } from "./useLaunchDefaults";
 
 /** The schema's sandbox when the hub sets none: no sandbox. */
 const NO_SANDBOX = "off";
 
 export function AccessPicker() {
-	const { store } = useNewSession();
-	const { source, cwd, launchOverrides, submitting, setLaunchOverrides } = useStore(store);
-	const defaults = useLaunchDefaults(source, cwd);
+	const { store, launchDefaults: defaults } = useNewSession();
+	const { launchOverrides, submitting, setLaunchOverrides } = useStore(store);
 	const access = accessOf(launchOverrides.sandbox, defaults?.sandbox);
 	// Unknown until the hub answers; until then every choice is the session's own.
 	const hubMode = defaults ? defaults.sandbox || NO_SANDBOX : null;

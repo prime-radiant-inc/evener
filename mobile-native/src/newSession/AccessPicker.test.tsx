@@ -3,8 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
 import { render, renderedText } from "../renderNative.testkit";
 import { AccessPicker } from "./AccessPicker";
-import { NewSessionProvider } from "./newSessionContext";
-import { sheetContext } from "./newSessionTestUtils";
+import { sheetContext, TestSheet } from "./newSessionTestUtils";
 
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
@@ -35,9 +34,9 @@ async function mount(defaults: Record<string, unknown>, launchOverrides: Record<
 	const store = createNewSessionStore("hub-1");
 	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener", launchOverrides });
 	const tree = render(
-		<NewSessionProvider value={sheetContext(store, { client: client as never })}>
+		<TestSheet value={sheetContext(store, { client: client as never })}>
 			<AccessPicker />
-		</NewSessionProvider>,
+		</TestSheet>,
 	);
 	await settle();
 	const level = (label: string) =>

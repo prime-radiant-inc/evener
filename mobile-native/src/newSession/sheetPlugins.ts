@@ -12,13 +12,15 @@ import {
 	pluginSelectionIssues,
 	selectedPluginNames,
 } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 import {
 	type PluginPreviewLoadState,
 	usePluginPreview,
 } from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { NewSessionStore } from "./newSessionContext";
+import { useHubRevision } from "./useHostRead";
+
+const PLUGIN_CHANGES = ["evener/plugin/updated", "evener/launch/updated"] as const;
 
 /** Stands in for the client before the sheet has one; the preview is off then,
  * so it is never asked anything. */
@@ -34,15 +36,7 @@ export function useSheetPlugins(
 	const source = useStore(store, (form) => form.source);
 	const cwd = useStore(store, (form) => form.cwd.trim());
 	const launchOverrides = useStore(store, (form) => form.launchOverrides);
-	const [revision, setRevision] = useState(0);
-	useEffect(
-		() =>
-			client?.onNotification((notification) => {
-				if (notification.method === "evener/plugin/updated" || notification.method === "evener/launch/updated")
-					setRevision((current) => current + 1);
-			}),
-		[client],
-	);
+	const revision = useHubRevision(client, PLUGIN_CHANGES);
 	return usePluginPreview({
 		client: client ?? NO_CLIENT,
 		cwd,

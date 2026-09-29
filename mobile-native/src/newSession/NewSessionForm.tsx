@@ -26,7 +26,6 @@ import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
 import { useHostRead } from "./useHostRead";
-import { useLaunchDefaults } from "./useLaunchDefaults";
 
 /** The prompt grows to six lines, then scrolls. */
 const PROMPT_LINES = 6;
@@ -39,7 +38,7 @@ const readBranch = (service: NewSessionService, host: string, cwd: string) => se
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, client, ready, hosts, memory, hostLabel, plugins } = useNewSession();
+	const { store, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -54,9 +53,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const reach = hostReach(form.source, hostRows);
 	const model = creationModel(form.models, form.model, form.launchOverrides);
 	const pluginsChosen = pluginChoice(form.launchOverrides, plugins);
-	const branch = useHostRead(form.source, form.cwd, readBranch);
-	const defaults = useLaunchDefaults(form.source, form.cwd);
-	const access = accessOf(form.launchOverrides.sandbox, defaults?.sandbox);
+	const branch = useHostRead(client, ready, form.source, form.cwd, readBranch);
+	const access = accessOf(form.launchOverrides.sandbox, launchDefaults?.sandbox);
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
