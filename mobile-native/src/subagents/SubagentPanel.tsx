@@ -57,7 +57,15 @@ export function SubagentPanel({
 }: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
 	const connected = state === "ready" && activeProfile?.id === hubId && client !== null;
-	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
+	// The coordinator's state, read while this screen is in front, without
+	// taking the connection's subscription, which the transcript under this
+	// screen follows. Its thread id is the tree's: a coordinator that
+	// restarted since the screen opened runs under a new thread, and
+	// ActivityList refuses a tree whose root isn't the thread asked for.
+	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
+	const treeThreadId =
+		coordinatorState && coordinatorState !== "unreadable" ? coordinatorState.threadId : coordinator.threadId;
+	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, treeThreadId);
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
 	useEffect(() => {
@@ -91,7 +99,6 @@ export function SubagentPanel({
 	// while this screen is in front. "unreadable" when the read failed: the
 	// bar then asks the coordinator, whose sheet reads it again. A hub that
 	// didn't know the direct stop is asked again on the next connection.
-	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
 	const [directUnsupported, setDirectUnsupported] = useState(false);
 	useEffect(() => setDirectUnsupported(false), [client]);
 	const direct =
