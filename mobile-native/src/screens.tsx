@@ -895,14 +895,10 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
-	// The height of the view the bottom bar sits over, which caps the bar at four
-	// fifths of it. The cap is worked out here in points rather than left to a
-	// "80%" maxHeight: arriving by a push, the screen first lays out at the full
-	// window and then shorter once the header's inset lands, and a dock whose
-	// content arrived in that same pass kept a percentage cap resolved against
-	// the old height until the next layout, opening taller than it should
-	// (#3248). A measured cap re-renders whenever the room changes.
-	const [barRoom, setBarRoom] = useState<number | null>(null);
+	// The room the bottom bar sits over. The bar is capped at four fifths of it
+	// in points, so the cap follows every re-layout of the room: a percentage cap
+	// could keep a height from before a push's header inset landed (#3248).
+	const barRoom = useBarHeight();
 	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
@@ -2629,7 +2625,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View style={styles.fill} onLayout={(event) => setBarRoom(event.nativeEvent.layout.height)}>
+				<View style={styles.fill} onLayout={barRoom.onLayout}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2889,7 +2885,7 @@ export function ConversationScreen({
 							left: 0,
 							right: 0,
 							bottom: 0,
-							maxHeight: barRoom === null ? "80%" : barRoom * 0.8,
+							maxHeight: barRoom.height === null ? "80%" : barRoom.height * 0.8,
 							paddingTop: 8,
 						}}
 						onLayout={bottomBar.onLayout}
