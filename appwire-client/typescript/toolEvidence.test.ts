@@ -100,6 +100,22 @@ test("tries a bounded number of cuts, only near the end, however many blank line
   expect(shellOutput(blank).text).toBe(blank.replace(/\n+$/, ""));
 });
 
+// The footer ends the output, so it is looked for only within the last
+// OUTPUT_TAIL_WINDOW characters, however long a running command's output
+// grows. Spaces pad after the footer here because a blank line would give
+// the search a shorter tail that ends at the footer.
+test("finds a footer that starts exactly OUTPUT_TAIL_WINDOW characters from the end", () => {
+  const output = `out\n[exit 0]${" ".repeat(OUTPUT_TAIL_WINDOW - "[exit 0]".length)}`;
+  expect(output.length - output.indexOf("[exit 0]")).toBe(OUTPUT_TAIL_WINDOW);
+  expect(shellOutput(output)).toEqual({ text: "out", exitCode: 0 });
+});
+
+test("reads a footer one character further back as output, the whole text its body", () => {
+  const output = `out\n[exit 0]${" ".repeat(OUTPUT_TAIL_WINDOW - "[exit 0]".length + 1)}`;
+  expect(output.length - output.indexOf("[exit 0]")).toBe(OUTPUT_TAIL_WINDOW + 1);
+  expect(shellOutput(output)).toEqual({ text: output });
+});
+
 test("strips only the environment's whole block, anchored at the end", () => {
   // Not the environment's block (the Go block says "after <N>ms. Partial
   // output is shown above."), so all of it is the command's output.
