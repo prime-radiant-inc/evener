@@ -152,7 +152,7 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 
-	initial, err := store.Provisioning("alpha")
+	initial, err := store.Provisioning("alpha", hubBootstrapIdentity(t, f.m, "alpha"))
 	if err != nil {
 		t.Fatalf("Provisioning: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestHostBootstrapPersistsTheAttemptEpoch(t *testing.T) {
 		t.Fatalf("host_records[alpha] epoch = (%q, %d), want (%q, %d)",
 			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, epoch.BootID, epoch.OpSeq)
 	}
-	readBack, err := store.Provisioning("alpha")
+	readBack, err := store.Provisioning("alpha", hubBootstrapIdentity(t, f.m, "alpha"))
 	if err != nil {
 		t.Fatalf("Provisioning: %v", err)
 	}
@@ -797,11 +797,14 @@ func TestHostBootstrapRefusesAStaleIdentityAfterReAdd(t *testing.T) {
 		t.Fatal("the re-add kept the old identity; the test cannot exercise the stale case")
 	}
 
-	// The paused attempt resumes with its stale expectation.
+	// The paused attempt resumes with its stale expectation: it refuses at the
+	// entry read, before the claim arbiter and before the probe.
 	runner := &hubRunner{}
+	quiesce := bareQuiesce()
+	probe := &hubProbe{live: true}
 	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Identity: stale, Epoch: bootstrapEpoch(), Evidence: hostfence.BootstrapEvidence{},
-		Store: m.bootstrapStore(), Runner: runner, Quiesce: bareQuiesce(),
+		Store: m.bootstrapStore(), Runner: runner, Quiesce: quiesce, Probe: probe,
 	})
 	staleErr, ok := errors.AsType[*hostfence.StaleAttemptError](err)
 	if !ok {
@@ -809,6 +812,12 @@ func TestHostBootstrapRefusesAStaleIdentityAfterReAdd(t *testing.T) {
 	}
 	if len(runner.calls) != 0 {
 		t.Fatalf("remote calls = %v, want none: a stale attempt must not deliver", runner.calls)
+	}
+	if quiesce.calls != 0 {
+		t.Fatalf("the claim primitive was called %d times on the re-added host, want 0", quiesce.calls)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("the probe was called %d times on the re-added host, want 0", probe.calls)
 	}
 	record := liveRecord(t, f.path, "alpha")
 	if record.BootstrapAttempted || record.BootstrapAttemptToken != "" || record.HelperInstalled {
@@ -826,5 +835,55 @@ func TestHostBootstrapRefusesAStaleIdentityAfterReAdd(t *testing.T) {
 	}
 	if wire.Code != appwire.CodeConflict {
 		t.Fatalf("stale refusal code = %d, want the conflict class", wire.Code)
+	}
+
+	// The recovery case: the NEW incarnation starts (and fences) its own attempt,
+	// then the stale attempt resumes into recovery. It must refuse at the entry
+	// read, before the claim arbiter and before the probe, so it never touches
+	// the new incarnation.
+	newIdentity := hubBootstrapIdentity(t, m, "alpha")
+	if _, won, err := m.bootstrapStore().PersistAttemptFence("alpha", newIdentity, hostfence.Epoch{BootID: "boot-new", OpSeq: 1}); err != nil || !won {
+		t.Fatalf("the new incarnation's fence write = (%v, %v), want a won write", won, err)
+	}
+	recoveryQuiesce := bareQuiesce()
+	recoveryProbe := &hubProbe{live: true}
+	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
+		Host: "alpha", Identity: stale, Epoch: bootstrapEpoch(), Evidence: hostfence.BootstrapEvidence{},
+		Store: m.bootstrapStore(), Runner: &hubRunner{}, Quiesce: recoveryQuiesce, Probe: recoveryProbe,
+	})
+	if _, ok := errors.AsType[*hostfence.StaleAttemptError](err); !ok {
+		t.Fatalf("recovery-path err = %v, want a typed StaleAttemptError", err)
+	}
+	if recoveryQuiesce.calls != 0 || recoveryProbe.calls != 0 {
+		t.Fatalf("the stale attempt touched the new incarnation: quiesce=%d probe=%d", recoveryQuiesce.calls, recoveryProbe.calls)
+	}
+	if record := liveRecord(t, f.path, "alpha"); record.BootstrapEpochBoot != "boot-new" {
+		t.Fatalf("the new incarnation's fence was disturbed: %+v", record)
+	}
+
+	// The removed-host case: the same refusal, and the message says the host is
+	// no longer live. Nothing host-side is touched.
+	m.cfg.mu.Lock()
+	err = m.persistHosts(removal, []hostreg.Host{fresh}, hostPersistChange{})
+	m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("second removal write: %v", err)
+	}
+	m.cfg.store.set(removal)
+	goneQuiesce := bareQuiesce()
+	goneProbe := &hubProbe{live: true}
+	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
+		Host: "alpha", Identity: stale, Epoch: bootstrapEpoch(), Evidence: hostfence.BootstrapEvidence{},
+		Store: m.bootstrapStore(), Runner: &hubRunner{}, Quiesce: goneQuiesce, Probe: goneProbe,
+	})
+	goneErr, ok := errors.AsType[*hostfence.StaleAttemptError](err)
+	if !ok {
+		t.Fatalf("removed-host err = %v, want a typed StaleAttemptError", err)
+	}
+	if !strings.Contains(goneErr.Error(), "no longer live") {
+		t.Fatalf("removed-host message = %q, want it to say the host is no longer live", goneErr.Error())
+	}
+	if goneQuiesce.calls != 0 || goneProbe.calls != 0 {
+		t.Fatalf("the removed host was touched host-side: quiesce=%d probe=%d", goneQuiesce.calls, goneProbe.calls)
 	}
 }
