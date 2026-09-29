@@ -197,7 +197,9 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+	// evener/host/add answers the mutation-result union; a clean keyless add is
+	// the committed arm carrying the registered row.
+	addResult, err := clientRequest[appwire.HostMutationResult](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
 		Entry: appwire.HostEntry{
 			Name:       hostName,
 			Address:    dest,
@@ -210,8 +212,12 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q, run target %q): %v", dest, runTarget, err)
 	}
-	if row.Origin != "hub.toml" {
-		t.Fatalf("step evener/host/add: added row origin = %q, want %q (every host lives in the machine-managed hub.toml)", row.Origin, "hub.toml")
+	if addResult.HostMutationCommitted == nil {
+		t.Fatalf("step evener/host/add: the mutation-result union carried no committed arm: %+v", addResult)
+	}
+	row := addResult.HostMutationCommitted.Host
+	if row.Name != hostName || row.Origin != "hub.toml" {
+		t.Fatalf("step evener/host/add: committed row name=%q origin=%q, want %q with origin %q (every host lives in the machine-managed hub.toml)", row.Name, row.Origin, hostName, "hub.toml")
 	}
 
 	// Step 1: the attach that provisions the bare host (the deploy path) and
