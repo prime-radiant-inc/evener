@@ -20,6 +20,7 @@ import type { AppwireClient } from "../../client";
 import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { PluginEntry, PluginListResponse } from "../../types.gen";
+import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
@@ -71,7 +72,7 @@ type PluginRefMethod =
   | "evener/plugin/enable"
   | "evener/plugin/disable";
 
-export function createPluginsStore(client: PluginsClient): PluginsStore {
+export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): PluginsStore {
   // Every mutation, and the notification refetch, replaces the whole list from
   // its own response; see listRevision.ts for the fence.
   const listRevision = createListRevision();
@@ -98,15 +99,21 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
     const set = lifecycle.guard(publish);
 
-    /** Runs one mutation: its response's list is written only if no later
-     * revision has committed since. Rejects as the request does. */
+    /** Runs one mutation under the shared hub write gate: its response's list
+     * is written only if no later revision has committed since. Rejects as the
+     * request does, or with HubWriteBusyError when another plugin or
+     * marketplace write already holds the gate. */
     // The same three fields a read's success writes. A response that owns the
     // list owns the error and the loading flag with it - a read this one
     // outran publishes none of the three, the flag it raised included.
-    const mutate = (request: () => Promise<PluginListResponse>): Promise<void> =>
-      writeRevisioned(listRevision, request, (resp) => () => {
-        set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-      });
+    const mutate = async (request: () => Promise<PluginListResponse>): Promise<void> => {
+      const ran = await gate.run(() =>
+        writeRevisioned(listRevision, request, (resp) => () => {
+          set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+        }),
+      );
+      if (!ran) throw new HubWriteBusyError();
+    };
 
     const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>
       mutate(() => client.request(method, { plugin, marketplace }));

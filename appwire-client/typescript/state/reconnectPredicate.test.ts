@@ -24,6 +24,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../client";
 import { FakeClient } from "../testing/fakeClient";
 import { createCredentialInstancesStore } from "./credentials/instances";
+import { createHubWriteGate } from "./extensions/hubWriteGate";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS } from "./extensions/plugins";
 
 /** One core reduced to what the predicate acts on, over clients this harness
@@ -68,7 +69,7 @@ function extensions(): Encoding {
       // host builds a new store (native) or hands it a port that resolves the
       // current one (web). The first client this harness hands out is the one
       // it is built over.
-      store ??= createPluginsStore(fake);
+      store ??= createPluginsStore(fake, createHubWriteGate());
       store.start();
       return fake;
     },
