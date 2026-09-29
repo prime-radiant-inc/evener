@@ -43,25 +43,30 @@ test("a replaced client's catalog is read on the swap, not only on its later not
 test("a response landing after a swap to a not-yet-ready client is dropped, not published", async () => {
   const first = new FakeClient("ready");
   let answerFirst!: (value: CommandListResponse) => void;
-  first.on(
-    "evener/command/list",
-    () =>
-      new Promise<CommandListResponse>((resolve) => {
-        answerFirst = resolve;
-      }),
-  );
+  let firstReads = 0;
+  first.on("evener/command/list", () => {
+    firstReads += 1;
+    if (firstReads === 1) return { commands: [{ name: "review", source: "user" }] };
+    return new Promise<CommandListResponse>((resolve) => {
+      answerFirst = resolve;
+    });
+  });
   connectionStore.getState().connect(first as never);
-  await vi.waitFor(() => expect(first.calls).toHaveLength(1));
+  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review"]));
+  // A plugin change starts a second read that hangs past the swap below.
+  first.emitNotification({ method: "evener/plugin/updated", params: {} });
+  await vi.waitFor(() => expect(first.calls).toHaveLength(2));
 
   const second = new FakeClient("connecting");
   second.on("evener/command/list", () => ({ commands: [{ name: "release", source: "user" }] }));
   connectionStore.getState().connect(second as never);
 
   answerFirst({ commands: [{ name: "stale-from-first", source: "user" }] });
-  // Let the superseded read settle, then assert: stale commands never
-  // published, and no error flashed for what is an expected cancellation.
+  // Let the superseded read settle, then assert: the LAST catalog is kept -
+  // not the stale payload, and not a reset to the empty initial one - and no
+  // error flashed for what is an expected cancellation.
   await vi.waitFor(() => expect(useCommandCatalog.getState().loading).toBe(false));
-  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], error: null });
+  expect(useCommandCatalog.getState()).toMatchObject({ commands: [{ name: "review", source: "user" }], error: null });
 
   second.emitStateChange("ready");
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
@@ -75,15 +80,18 @@ test("a response landing after a swap to a not-yet-ready client is dropped, not 
 test("a rejection landing after a swap to a not-yet-ready client stays silent too", async () => {
   const first = new FakeClient("ready");
   let failFirst!: (error: unknown) => void;
-  first.on(
-    "evener/command/list",
-    () =>
-      new Promise<CommandListResponse>((_resolve, reject) => {
-        failFirst = reject;
-      }),
-  );
+  let firstReads = 0;
+  first.on("evener/command/list", () => {
+    firstReads += 1;
+    if (firstReads === 1) return { commands: [{ name: "review", source: "user" }] };
+    return new Promise<CommandListResponse>((_resolve, reject) => {
+      failFirst = reject;
+    });
+  });
   connectionStore.getState().connect(first as never);
-  await vi.waitFor(() => expect(first.calls).toHaveLength(1));
+  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review"]));
+  first.emitNotification({ method: "evener/plugin/updated", params: {} });
+  await vi.waitFor(() => expect(first.calls).toHaveLength(2));
 
   const second = new FakeClient("connecting");
   second.on("evener/command/list", () => ({ commands: [{ name: "release", source: "user" }] }));
@@ -91,7 +99,7 @@ test("a rejection landing after a swap to a not-yet-ready client stays silent to
 
   failFirst(new Error("socket closed"));
   await vi.waitFor(() => expect(useCommandCatalog.getState().loading).toBe(false));
-  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], error: null });
+  expect(useCommandCatalog.getState()).toMatchObject({ commands: [{ name: "review", source: "user" }], error: null });
 
   second.emitStateChange("ready");
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
