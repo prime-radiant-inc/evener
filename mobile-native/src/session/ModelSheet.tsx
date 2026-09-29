@@ -7,11 +7,12 @@
 import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
+import { SearchField } from "../sheet/SearchField";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
@@ -94,25 +95,7 @@ function ModelSheetBody({
 	};
 	const pinned = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
-			<TextInput
-				accessibilityLabel="Search models"
-				value={query}
-				onChangeText={setQuery}
-				placeholder="Search models"
-				placeholderTextColor={palette.inkLow}
-				autoCapitalize="none"
-				autoCorrect={false}
-				clearButtonMode="while-editing"
-				allowFontScaling={allowFontScaling}
-				style={{
-					minHeight: 36,
-					paddingHorizontal: 12,
-					borderRadius: 10,
-					backgroundColor: palette.inset,
-					color: palette.inkHi,
-					fontSize: 17 * scale,
-				}}
-			/>
+			<SearchField label="Search models" value={query} onChangeText={setQuery} />
 			{levels.length > 0 ? (
 				<Effort
 					levels={levels}

@@ -46,7 +46,7 @@ describe("the overrides the sheet owns", () => {
 	});
 });
 
-describe("the latest start (spec 11's Same as last time)", () => {
+describe("the newest remembered start (spec 11)", () => {
 	it("opens a new sheet on the newest start", () => {
 		const history = [
 			{ setup: setup({ effort: "high" }), at: 1 },

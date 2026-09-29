@@ -22,7 +22,7 @@ import type { HostsController } from "../hosts/hostsController";
 import { Group, GroupedPage, GroupFooter, GroupLabel, TextFieldRow } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
-import { HostsNotListed } from "./HostsPage";
+import { HostsNotListed } from "../hosts/HostsNotListed";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
