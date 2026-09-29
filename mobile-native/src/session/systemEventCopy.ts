@@ -1,7 +1,7 @@
 // A system event's words (spec 8.2 "System event"), read from the structured
 // detail the hub puts on the item's raw rather than from its prose, which
 // carries engine terms ("Layer: summary") and raw numbers.
-import { compactCount } from "./format";
+import { formatTokenCount } from "@evener/appwire-client";
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -29,7 +29,7 @@ export function contextCompactedText(raw: unknown): string {
 	const tokensBefore = count(pass?.est_tokens_before);
 	const tokensAfter = count(pass?.est_tokens_after);
 	if (tokensBefore > 0 || tokensAfter > 0) {
-		return `Context compacted · ${compactCount(tokensBefore)} → ${compactCount(tokensAfter)} tokens`;
+		return `Context compacted · ${formatTokenCount(tokensBefore)} → ${formatTokenCount(tokensAfter)} tokens`;
 	}
 	const turnsBefore = count(pass?.turns_before);
 	const turnsAfter = count(pass?.turns_after);

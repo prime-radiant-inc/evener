@@ -22,7 +22,7 @@ test("durationMs of exactly 0 is still shown (a real, server-reported zero) - `?
 
 test("tokens render as up/down arrows using formatTokenCount, from a EvenerUsage-shaped usage value", () => {
   const parts = turnMetaParts(turn({ usage: { inputTokens: 1200, outputTokens: 340 } }));
-  expect(parts.tokens).toBe("↑1k ↓340");
+  expect(parts.tokens).toBe("↑1.2K ↓340");
 });
 
 test("usage with only one of inputTokens/outputTokens present treats the other as 0", () => {

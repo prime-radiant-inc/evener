@@ -1,10 +1,24 @@
 // Pure text-formatting helpers shared by the web and native renderers.
 
-// Deliberately never scales past "k" to match the legacy formatter.
+const TOKEN_UNITS = [
+  ["K", 1_000],
+  ["M", 1_000_000],
+  ["B", 1_000_000_000],
+] as const;
+
+// A token count the way both clients print it (spec 5): 999, 1.2K, 39.8K,
+// 412K, 46M, 1.5B. One decimal below 100 of a unit, none from 100 up; a count
+// that would round to 1000 of a unit reads as one of the next; B is the last
+// unit. A negative or non-finite count reads 0.
 export function formatTokenCount(n: number): string {
-  const clamped = Number.isFinite(n) && n > 0 ? n : 0;
-  if (clamped < 1000) return String(Math.round(clamped));
-  return `${Math.round(clamped / 1000)}k`;
+  const value = Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  if (value < 1000) return String(value);
+  for (const [unit, size] of TOKEN_UNITS) {
+    const scaled = value / size;
+    const text = (scaled < 100 ? scaled.toFixed(1) : scaled.toFixed(0)).replace(/\.0$/, "");
+    if (Number(text) < 1000 || unit === "B") return `${text}${unit}`;
+  }
+  return String(value);
 }
 
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.

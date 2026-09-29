@@ -107,8 +107,8 @@ describe("contextWindowLabel", () => {
   });
 
   test("abbreviates thousands with k", () => {
-    expect(contextWindowLabel(entry({ contextWindow: 200000 }))).toBe("200k");
-    expect(contextWindowLabel(entry({ contextWindow: 128000 }))).toBe("128k");
+    expect(contextWindowLabel(entry({ contextWindow: 200000 }))).toBe("200K");
+    expect(contextWindowLabel(entry({ contextWindow: 128000 }))).toBe("128K");
   });
 
   test("abbreviates millions with M", () => {
