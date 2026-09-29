@@ -1,18 +1,24 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-26T19:43:58-07:00",
+  "generatedAt": "2026-09-28T22:25:22-07:00",
   "title": "Design System: Evener Native",
   "extensions": {
     "colorMeta": {
       "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#FAF9F6" },
       "dark-background": { "role": "neutral", "displayName": "Night background", "canonical": "#191918" },
       "light-accent": { "role": "primary", "displayName": "Accent", "canonical": "#0064C2" },
-      "dark-accent": { "role": "primary", "displayName": "Night accent", "canonical": "#459EFF" }
+      "dark-accent": { "role": "primary", "displayName": "Night accent", "canonical": "#459EFF" },
+      "light-canvas": { "role": "neutral", "displayName": "Sheet canvas", "canonical": "#F1F0EB" },
+      "dark-canvas": { "role": "neutral", "displayName": "Night sheet canvas", "canonical": "#1D1D1B" },
+      "light-attention-ink": { "role": "semantic", "displayName": "Attention ink", "canonical": "#AD5209" }
     },
     "typographyMeta": {
       "board-title": { "displayName": "Board title", "purpose": "A row's title, in Live and every section." },
       "why-line": { "displayName": "Why line", "purpose": "The state word and reason, the working activity, or the finished excerpt." },
-      "band-header": { "displayName": "Band header", "purpose": "NEEDS YOU, FINISHED and WORKING section labels." }
+      "band-header": { "displayName": "Band header", "purpose": "NEEDS YOU, FINISHED and WORKING section labels." },
+      "group-label": { "displayName": "Group label", "purpose": "A sheet's section label: WHERE, AGENT, FLEET, SETUP, THIS PHONE, MORE, ABOUT." },
+      "sheet-row": { "displayName": "Sheet row", "purpose": "A grouped row's label and value in New session and the Hub." },
+      "sheet-footer": { "displayName": "Sheet footer", "purpose": "A group's footer, a row's second line, and the calm connection line." }
     },
     "breakpoints": [],
     "shadows": [],
@@ -68,17 +74,42 @@
       "description": "Illustrative documentation preview translated from the Session's question dock: the question, its recommended option first, Other answer, and the primary button.",
       "html": "<div class=\"ds-dock\"><div class=\"ds-dock-count\">Question 1 of 2</div><p class=\"ds-dock-question\">Keep or drop the implied options?</p><div class=\"ds-dock-option\"><span class=\"ds-dock-radio ds-dock-radio--on\" aria-hidden=\"true\"></span><span>Drop them<span class=\"ds-dock-rec\"> · Recommended</span></span></div><div class=\"ds-dock-option\"><span class=\"ds-dock-radio\" aria-hidden=\"true\"></span><span>Keep them and add the flags</span></div><div class=\"ds-dock-actions\"><span class=\"ds-dock-other\">Other answer…</span><span class=\"ds-dock-primary\">Next question</span></div></div>",
       "css": ".ds-dock{margin:0 16px 8px;padding:14px 16px;border:1px solid #E9C598;border-radius:12px;background:#FCFBF8}.ds-dock-count{font:400 13px system-ui;color:#5F5F57}.ds-dock-question{margin:8px 0;font:600 17px/24px 'Source Serif 4',Georgia,serif;color:#252521}.ds-dock-option{display:flex;align-items:center;column-gap:12px;min-height:44px;font:400 17px system-ui;color:#252521}.ds-dock-radio{width:18px;height:18px;border-radius:9px;border:1.5px solid #5F5F57}.ds-dock-radio--on{border-color:#0064C2;background:#0064C2;box-shadow:inset 0 0 0 3px #FCFBF8}.ds-dock-rec{font-size:13px;color:#5F5F57}.ds-dock-actions{display:flex;justify-content:space-between;margin-top:8px;font:400 17px system-ui}.ds-dock-other{color:#0064C2}.ds-dock-primary{font-weight:600;color:#0064C2}"
+    },
+    {
+      "name": "Sheet group",
+      "kind": "custom",
+      "refersTo": "sheet-group",
+      "description": "Illustrative documentation preview translated from New session's WHERE group: bare ink-mid glyphs, values in ink-mid, chevrons in ink-low, an amber Offline tag, hairlines between rows only, and the Start gate's danger footer.",
+      "html": "<div class=\"ds-sheet\"><div class=\"ds-group-label\">Where</div><div class=\"ds-group\"><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#9638;</span><span class=\"ds-row-label\">Host</span><span class=\"ds-row-value\">paradise-park</span><span class=\"ds-tag ds-tag--amber\">Offline</span><span class=\"ds-chevron\" aria-hidden=\"true\">&#8250;</span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#9633;</span><span class=\"ds-row-label\">Project</span><span class=\"ds-row-value\">evener</span><span class=\"ds-chevron\" aria-hidden=\"true\">&#8250;</span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#5833;</span><span class=\"ds-row-label\">Branch</span><span class=\"ds-row-value\">main</span></div></div><p class=\"ds-footer ds-footer--danger\">paradise-park is offline. Connect it or choose another host.</p></div>",
+      "css": ".ds-sheet{padding:8px 0 16px;background:#F1F0EB}.ds-group-label{padding:20px 32px 6px;font:600 12px/16px system-ui;letter-spacing:.72px;text-transform:uppercase;color:#5F5F57}.ds-group{margin:0 16px;border-radius:12px;overflow:hidden;background:#FCFBF8}.ds-row{display:flex;align-items:center;column-gap:12px;min-height:44px;padding:11px 16px;box-sizing:border-box}.ds-glyph{width:22px;text-align:center;color:#5F5F57;font-size:15px}.ds-row-label{flex:1;font:400 17px/22px system-ui;color:#252521}.ds-row-value{font:400 17px system-ui;color:#5F5F57;font-variant-numeric:tabular-nums}.ds-tag{padding:2px 5px;border-radius:4px;font:600 11px/13px system-ui}.ds-tag--amber{color:#AD5209;background:#FCEEDC}.ds-chevron{color:#6D6D64;font-size:17px}.ds-hairline{height:.5px;margin-left:16px;background:#DDDCD4}.ds-footer{margin:0;padding:6px 32px 8px;font:400 13px/18px system-ui;color:#6D6D64}.ds-footer--danger{color:#C51D23}"
+    },
+    {
+      "name": "Segmented control",
+      "kind": "custom",
+      "refersTo": "segmented",
+      "description": "Illustrative documentation preview translated from New session's Effort control: the chosen segment is accent-bg with accent ink, never an ink fill.",
+      "html": "<div class=\"ds-seg\" role=\"radiogroup\" aria-label=\"Effort\"><span>Low</span><span>Med</span><span class=\"ds-seg--on\">High</span><span>XHigh</span><span>Max</span></div>",
+      "css": ".ds-seg{display:flex;column-gap:2px;margin:0 16px;padding:2px;border-radius:22px;background:#F4F3EE}.ds-seg span{flex:1;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:20px;font:400 15px system-ui;color:#252521}.ds-seg .ds-seg--on{background:#DDEBFC;color:#0064C2;font-weight:600}"
+    },
+    {
+      "name": "Sheet status line",
+      "kind": "custom",
+      "refersTo": "sheet-status",
+      "description": "Illustrative documentation preview translated from the calm connection line at the top of a sheet page while the connection is away. It offers no button.",
+      "html": "<p class=\"ds-sheet-status\">Reconnecting…</p>",
+      "css": ".ds-sheet-status{margin:0;padding:6px 16px;text-align:center;font:400 13px/18px system-ui;color:#5F5F57;background:#F1F0EB}"
     }
   ],
   "narrative": {
     "northStar": "Attention is the product",
-    "overview": "This records the shipped Board, the native iPhone app's home. It replaces the project-first Sessions browser: every live session is ordered by who needs you, then the user's own organization follows. The Board uses native navigation, SF Pro typography, semantic light and dark surfaces, and touch sized controls.\n\nThe Board is one native scrolling list: Live's bands, then pinned categories, Projects and Archived as plain section rows that open their own screens until a later PR brings them inline.\n\nA row opens the Session, one conversation with its agent, recorded in DESIGN.md's \"The Session\". The colors, type and shapes serve both.",
+    "overview": "This records the shipped Board, the native iPhone app's home. It replaces the project-first Sessions browser: every live session is ordered by who needs you, then the user's own organization follows. The Board uses native navigation, SF Pro typography, semantic light and dark surfaces, and touch sized controls.\n\nThe Board is one native scrolling list: Live's bands, then pinned categories, Projects and Archived as plain section rows that open their own screens until a later PR brings them inline.\n\nA row opens the Session, one conversation with its agent, recorded in DESIGN.md's \"The Session\". The colors, type and shapes serve both.\n\nThe Board's hub button opens the Hub, and its New session button opens New session: two full-height sheets, each holding its own stack, built from one grouped list. They are recorded in DESIGN.md's \"The Sheets: New session and the Hub\".",
     "keyCharacteristics": ["Every live session in one list, ordered by who needs you, then finished, then working, then idle.", "Calm: a control appears only when it can act, and nothing moves unless its data moved.", "Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded."],
     "rules": [
       { "name": "The Quiet Idle Rule", "body": "Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.", "section": "colors" },
-      { "name": "The Flat Board Rule", "body": "Use background, surface, spacing, and sparse hairlines to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" }
+      { "name": "The Flat Board Rule", "body": "Use background, surface, spacing, and sparse hairlines to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" },
+      { "name": "The Grouped List Rule", "body": "In the sheets, rows sit on the raised surface in 12-unit groups inset 16 over the sheet canvas, with bare ink-mid glyphs, hairlines between rows only, amber only where a human is needed, and a gray tag for version drift.", "section": "components" }
     ],
-    "dos": ["Do order every live session by who needs you, then finished, then working, then idle.", "Do keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away.", "Do use human readable state words, and copy that says exactly what happened.", "Do persist each section's collapsed state per device.", "Session: Do show the tray only while the agent works, and keep Stop there, never in the composer.", "Session: Do keep one meter per view: the tray's. The title's state mark stays still.", "Session: Do keep a queued message where it will land, as a ghost, with what it waits for spelled out beneath it.", "Session: Do let reads retry on their own, and let the skeleton stand in without a spinner, shimmer or sentence about connecting."],
-    "donts": ["Don't show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.", "Don't move or animate a row unless its underlying data moved.", "Don't give a hue more than its one job: only the state word takes a hue, and the reason stays in ink.", "Don't wrap every ordinary row in a rounded card or add decorative shadows.", "Session: Don't show connection controls in the composer, or any Reconnect or Refresh control: a control appears only when it can act, and one that needs the hub hides while the hub is away.", "Session: Don't move what the reader is reading: new content is announced by “↓ 3 new”, and the chips slide away with a transform, never by changing the list's layout.", "Session: Don't show the live step or the live thought in the transcript; the tray says what's happening now.", "Session: Don't offer a redirect on an approval, or the composer while one waits."]
+    "dos": ["Do order every live session by who needs you, then finished, then working, then idle.", "Do keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away.", "Do use human readable state words, and copy that says exactly what happened.", "Do persist each section's collapsed state per device.", "Session: Do show the tray only while the agent works, and keep Stop there, never in the composer.", "Session: Do keep one meter per view: the tray's. The title's state mark stays still.", "Session: Do keep a queued message where it will land, as a ghost, with what it waits for spelled out beneath it.", "Session: Do let reads retry on their own, and let the skeleton stand in without a spinner, shimmer or sentence about connecting.", "Sheets: Do push pickers and details inside the sheet, so Back returns to the form or the Hub's home.", "Sheets: Do keep a sheet's last data and its controls in place while the connection is away, disabled where they need the hub.", "Sheets: Do say \"Hub default\", or leave a value blank, rather than guess one the hub hasn't given."],
+    "donts": ["Don't show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.", "Don't move or animate a row unless its underlying data moved.", "Don't give a hue more than its one job: only the state word takes a hue, and the reason stays in ink.", "Don't wrap every ordinary row in a rounded card or add decorative shadows.", "Session: Don't show connection controls in the composer, or any Reconnect or Refresh control: a control appears only when it can act, and one that needs the hub hides while the hub is away.", "Session: Don't move what the reader is reading: new content is announced by “↓ 3 new”, and the chips slide away with a transform, never by changing the list's layout.", "Session: Don't show the live step or the live thought in the transcript; the tray says what's happening now.", "Session: Don't offer a redirect on an approval, or the composer while one waits.", "Sheets: Don't offer Reconnect, Refresh or pull-to-refresh; the calm line says what the app is doing.", "Sheets: Don't color a row's glyph or draw it on a tile.", "Sheets: Don't discard a draft without asking; only Cancel discards, and swiping the sheet down keeps it."]
   }
 }
