@@ -8,7 +8,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
 import type { QuestionSelections } from "../questionAnswers";
-import { pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
+import { dockBody, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
@@ -229,27 +229,14 @@ describe("the question dock (spec 8.4)", () => {
 describe("a question taller than the room the screen gives the dock", () => {
 	it("scrolls the question and its options, while the header and the answer controls stay put", () => {
 		const { tree } = mount(two);
-		const [scroller, ...others] = tree.root.findAll((node) => String(node.type) === "ScrollView");
-		if (!scroller) throw new Error("the dock has no scroller");
-		expect(others).toHaveLength(0);
-		// The scroller takes only what's left once the controls have their room.
-		expect(scroller.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1 });
-		expect(tree.root.findByProps({ testID: "question-dock" }).props.style).toMatchObject({ flexShrink: 1 });
-		const scrolled = textOf(scroller);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
 		expect(scrolled).toContain("Flags?");
 		expect(scrolled).toContain("Why flags");
-		expect(scrolled).toContain("Keep them");
 		expect(scrolled).toContain("About drop them");
 		expect(scrolled).not.toContain("Question 1 of 2");
-		const inScroller = (label: string) => {
-			const target = pressable(tree, label);
-			if (!target) throw new Error(`no pressable labelled ${label}`);
-			return scroller.findAll((node) => node === target).length > 0;
-		};
-		expect(inScroller("Keep them")).toBe(true);
-		expect(inScroller("Fold")).toBe(false);
-		expect(inScroller("Other answer…")).toBe(false);
-		expect(inScroller("Next question")).toBe(false);
+		expect(body.holds("Keep them")).toBe(true);
+		for (const label of ["Fold", "Other answer…", "Next question"]) expect(body.holds(label)).toBe(false);
 	});
 
 	it("starts the next question at its top, wherever the last one was scrolled to", () => {

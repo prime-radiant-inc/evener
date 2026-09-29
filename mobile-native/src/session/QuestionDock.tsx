@@ -9,7 +9,7 @@
 // canonical ref.
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { boundQuestion } from "../projectedRows";
 import {
 	boundQuestionText,
@@ -21,6 +21,7 @@ import {
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
+import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
 import { SymbolButton } from "./SymbolButton";
 import type { QuestionDraft } from "./useQuestionDraft";
@@ -141,11 +142,10 @@ export function QuestionDock({
 		})),
 	);
 	return (
-		// The card gives up height when the screen has less room than the
-		// question needs (a long question, the largest text sizes, the keyboard
-		// up): the question and its options scroll, and the header and the
-		// answer controls stay on screen, so every question can be answered.
-		<View testID="question-dock" style={{ ...card, flexShrink: 1, paddingTop: 4, paddingBottom: 8 }}>
+		// The question and its options scroll when the screen has less room than
+		// they need; the header and the answer controls stay on screen, so every
+		// question can be answered.
+		<View testID="question-dock" style={{ ...card, paddingTop: 4, paddingBottom: 8 }}>
 			<View
 				style={{ flexDirection: "row", alignItems: "center", paddingLeft: activeIndex > 0 ? 4 : 16, paddingRight: 4 }}
 			>
@@ -161,11 +161,10 @@ export function QuestionDock({
 					<SymbolView name="chevron.down" tintColor={palette.inkMid} size={15 * scale} />
 				</SymbolButton>
 			</View>
-			<ScrollView
+			<DockBody
 				// Keyed by the question, so each question opens at its top.
 				key={question.key}
-				style={{ flexGrow: 0, flexShrink: 1 }}
-				keyboardShouldPersistTaps="handled"
+				scale={scale}
 			>
 				<View style={{ paddingHorizontal: 16, gap: 4 }}>
 					<Text
@@ -269,7 +268,7 @@ export function QuestionDock({
 						);
 					})}
 				</View>
-			</ScrollView>
+			</DockBody>
 			{error || draft.error ? (
 				<Text
 					allowFontScaling={allowFontScaling}

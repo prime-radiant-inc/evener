@@ -6,7 +6,7 @@ import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalControls } from "../approvalControls";
-import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { dockBody, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import { ApprovalDock } from "./ApprovalDock";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -75,21 +75,12 @@ const readable = (tree: ReactTestRenderer) => renderedText(tree).replaceAll("\u2
 describe("the approval dock (spec 8.4)", () => {
 	it("scrolls what the sandbox blocked when the screen has less room, while Allow and Deny stay put", () => {
 		const { tree } = mount(request(), fakeControls());
-		const [scroller, ...others] = tree.root.findAll((node) => String(node.type) === "ScrollView");
-		if (!scroller) throw new Error("the dock has no scroller");
-		expect(others).toHaveLength(0);
-		// The scroller takes only what's left once Allow and Deny have their room.
-		expect(scroller.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1 });
-		expect(tree.root.findByProps({ testID: "approval-dock" }).props.style).toMatchObject({ flexShrink: 1 });
-		const scrolled = textOf(scroller).replaceAll("\u200b", "");
+		const body = dockBody(tree, "approval-dock");
+		const scrolled = textOf(body.scroller).replaceAll("\u200b", "");
 		expect(scrolled).toContain("Wants to write outside the workspace");
 		expect(scrolled).toContain("write_file  /Users/jesse/sites/docs/index.html");
 		expect(scrolled).toContain("This session can only write inside its project folder.");
-		for (const label of ["Allow this file only", "Deny"]) {
-			const target = pressable(tree, label);
-			if (!target) throw new Error(`no pressable labelled ${label}`);
-			expect(scroller.findAll((node) => node === target)).toHaveLength(0);
-		}
+		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
 	});
 
 	it("says what the sandbox blocked, and offers the one file", () => {

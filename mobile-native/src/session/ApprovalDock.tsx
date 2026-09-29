@@ -5,11 +5,12 @@
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { ApprovalControls } from "../approvalControls";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { approvalCard } from "./askDockCopy";
+import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
 
 export interface ApprovalDockProps {
@@ -109,11 +110,11 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (
-		// The card gives up height when the screen has less room than the
-		// request needs (a long target, the largest text sizes): what the sandbox
-		// blocked scrolls, and Allow and Deny stay on screen.
-		<View testID="approval-dock" style={{ ...dockCard(palette), flexShrink: 1, padding: 16, gap: 8 }}>
-			<ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 8 }}>
+		// What the sandbox blocked scrolls when the screen has less room than it
+		// needs (a long target, the largest text sizes); Allow and Deny stay on
+		// screen.
+		<View testID="approval-dock" style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
+			<DockBody scale={scale} contentContainerStyle={{ gap: 8 }}>
 				<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 					<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
 					<Text
@@ -143,7 +144,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 						{`${waiting} more waiting`}
 					</Text>
 				) : null}
-			</ScrollView>
+			</DockBody>
 			{controls && state.error ? (
 				<Text {...body} numberOfLines={1} style={{ ...body.style, color: palette.dangerInk }}>
 					{state.error}
