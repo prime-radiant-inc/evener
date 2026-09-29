@@ -43,6 +43,10 @@ export interface QuestionDockProps {
 	onSend(selections: QuestionSelections): void;
 	/** Why the last send didn't go, as one line. */
 	error?: string | null;
+	/** You're typing your own answer in the composer, keyboard up: the dock
+	 * shows only its header and the question, since the room is short and
+	 * the composer's Send is the answer. */
+	typing?: boolean;
 }
 
 export function QuestionDock({
@@ -56,6 +60,7 @@ export function QuestionDock({
 	onOtherAnswer,
 	onSend,
 	error = null,
+	typing = false,
 }: QuestionDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -186,87 +191,93 @@ export function QuestionDock({
 						</Text>
 					) : null}
 				</View>
-				<View style={{ marginTop: 8 }}>
-					{options.map((option, index) => {
-						const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
-						const mark = question.multiSelect
-							? checked
-								? "checkmark.square.fill"
-								: "square"
-							: checked
-								? "largecircle.fill.circle"
-								: "circle";
-						return (
-							<Pressable
-								// Keyed by where the agent offered the option: labels are the
-								// agent's and can repeat.
-								key={`${question.key}:${option.position}`}
-								accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
-								// The caption and the detail sit inside the row, which VoiceOver
-								// reads by its label alone, so both go into what it reads.
-								accessibilityLabel={
-									option.recommended
-										? `${option.shown?.label ?? option.label}, Recommended`
-										: (option.shown?.label ?? option.label)
-								}
-								accessibilityHint={option.shown?.detail || undefined}
-								accessibilityState={{ checked, disabled: !editable }}
-								disabled={!editable}
-								onPress={() => {
-									const labels =
-										question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
-									const next =
-										question.multiSelect && checked
-											? labels.filter((label) => label !== option.label)
-											: question.multiSelect
-												? [...labels, option.label]
-												: [option.label];
-									select(next.length ? { kind: "option", labels: next } : null);
-								}}
-								style={({ pressed }) => ({
-									minHeight: 44,
-									flexDirection: "row",
-									alignItems: "flex-start",
-									gap: 12,
-									paddingLeft: 16,
-									opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-								})}
-							>
-								<View style={{ paddingTop: 12 }}>
-									<SymbolView name={mark} tintColor={checked ? palette.accentInk : palette.inkMid} size={20 * scale} />
-								</View>
-								<View
-									style={{
-										flex: 1,
-										paddingVertical: 10,
-										paddingRight: 16,
-										// Hairlines inset to the label divide the rows.
-										borderTopWidth: index === 0 ? 0 : 0.5,
-										borderTopColor: palette.edge,
+				{typing ? null : (
+					<View style={{ marginTop: 8 }}>
+						{options.map((option, index) => {
+							const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
+							const mark = question.multiSelect
+								? checked
+									? "checkmark.square.fill"
+									: "square"
+								: checked
+									? "largecircle.fill.circle"
+									: "circle";
+							return (
+								<Pressable
+									// Keyed by where the agent offered the option: labels are the
+									// agent's and can repeat.
+									key={`${question.key}:${option.position}`}
+									accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
+									// The caption and the detail sit inside the row, which VoiceOver
+									// reads by its label alone, so both go into what it reads.
+									accessibilityLabel={
+										option.recommended
+											? `${option.shown?.label ?? option.label}, Recommended`
+											: (option.shown?.label ?? option.label)
+									}
+									accessibilityHint={option.shown?.detail || undefined}
+									accessibilityState={{ checked, disabled: !editable }}
+									disabled={!editable}
+									onPress={() => {
+										const labels =
+											question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
+										const next =
+											question.multiSelect && checked
+												? labels.filter((label) => label !== option.label)
+												: question.multiSelect
+													? [...labels, option.label]
+													: [option.label];
+										select(next.length ? { kind: "option", labels: next } : null);
 									}}
+									style={({ pressed }) => ({
+										minHeight: 44,
+										flexDirection: "row",
+										alignItems: "flex-start",
+										gap: 12,
+										paddingLeft: 16,
+										opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
+									})}
 								>
-									<Text
-										allowFontScaling={allowFontScaling}
-										style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
+									<View style={{ paddingTop: 12 }}>
+										<SymbolView
+											name={mark}
+											tintColor={checked ? palette.accentInk : palette.inkMid}
+											size={20 * scale}
+										/>
+									</View>
+									<View
+										style={{
+											flex: 1,
+											paddingVertical: 10,
+											paddingRight: 16,
+											// Hairlines inset to the label divide the rows.
+											borderTopWidth: index === 0 ? 0 : 0.5,
+											borderTopColor: palette.edge,
+										}}
 									>
-										{option.shown?.label ?? option.label}
-										{option.recommended ? (
-											<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
-										) : null}
-									</Text>
-									{option.shown?.detail ? (
 										<Text
 											allowFontScaling={allowFontScaling}
-											style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+											style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
 										>
-											{option.shown.detail}
+											{option.shown?.label ?? option.label}
+											{option.recommended ? (
+												<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
+											) : null}
 										</Text>
-									) : null}
-								</View>
-							</Pressable>
-						);
-					})}
-				</View>
+										{option.shown?.detail ? (
+											<Text
+												allowFontScaling={allowFontScaling}
+												style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+											>
+												{option.shown.detail}
+											</Text>
+										) : null}
+									</View>
+								</Pressable>
+							);
+						})}
+					</View>
+				)}
 			</DockBody>
 			{error || draft.error ? (
 				<Text
@@ -277,67 +288,69 @@ export function QuestionDock({
 					{error ?? draft.error}
 				</Text>
 			) : null}
-			<View
-				style={{
-					flexDirection: "row",
-					alignItems: "center",
-					justifyContent: "space-between",
-					paddingHorizontal: 8,
-					marginTop: 4,
-				}}
-			>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel="Other answer…"
-					accessibilityState={{ disabled: !editable }}
-					disabled={!editable}
-					onPress={onOtherAnswer}
-					style={({ pressed }) => ({
-						minHeight: 44,
+			{typing ? null : (
+				<View
+					style={{
+						flexDirection: "row",
+						alignItems: "center",
+						justifyContent: "space-between",
 						paddingHorizontal: 8,
-						justifyContent: "center",
-						opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-					})}
-				>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}
-					>
-						Other answer…
-					</Text>
-				</Pressable>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel={primaryAccessibility}
-					accessibilityState={{ disabled: primaryOff }}
-					disabled={primaryOff}
-					onPress={() => {
-						if (primaryOff) return;
-						if (advanceTarget !== undefined) draft.setActiveIndex(advanceTarget);
-						else onSend(selections);
+						marginTop: 4,
 					}}
-					style={({ pressed }) => ({
-						minHeight: 44,
-						paddingHorizontal: 16,
-						justifyContent: "center",
-						borderRadius: 22,
-						backgroundColor: filled ? palette.accentFill : "transparent",
-						opacity: primaryOff ? 0.4 : pressed ? 0.6 : 1,
-					})}
 				>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{
-							fontSize: 17 * scale,
-							lineHeight: 22 * scale,
-							fontWeight: "600",
-							color: filled ? palette.onFill : palette.accentInk,
-						}}
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel="Other answer…"
+						accessibilityState={{ disabled: !editable }}
+						disabled={!editable}
+						onPress={onOtherAnswer}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							paddingHorizontal: 8,
+							justifyContent: "center",
+							opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
+						})}
 					>
-						{primary}
-					</Text>
-				</Pressable>
-			</View>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}
+						>
+							Other answer…
+						</Text>
+					</Pressable>
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={primaryAccessibility}
+						accessibilityState={{ disabled: primaryOff }}
+						disabled={primaryOff}
+						onPress={() => {
+							if (primaryOff) return;
+							if (advanceTarget !== undefined) draft.setActiveIndex(advanceTarget);
+							else onSend(selections);
+						}}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							paddingHorizontal: 16,
+							justifyContent: "center",
+							borderRadius: 22,
+							backgroundColor: filled ? palette.accentFill : "transparent",
+							opacity: primaryOff ? 0.4 : pressed ? 0.6 : 1,
+						})}
+					>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{
+								fontSize: 17 * scale,
+								lineHeight: 22 * scale,
+								fontWeight: "600",
+								color: filled ? palette.onFill : palette.accentInk,
+							}}
+						>
+							{primary}
+						</Text>
+					</Pressable>
+				</View>
+			)}
 		</View>
 	);
 }

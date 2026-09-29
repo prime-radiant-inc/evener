@@ -12,6 +12,7 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	keyboard,
 	alertRequests,
 	dockBody,
 	dropped as droppedConnection,
@@ -78,7 +79,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -611,6 +611,23 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		await press(tree, "Other answer…");
 		expect(field(tree)).toBeDefined();
 		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+	});
+
+	it("shows only the question while the keyboard is up for your own answer, and the options once it goes down", async () => {
+		const { tree } = await mount(thread("ref-question-typing", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(options()).toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Other answer…")).toBeUndefined();
+		expect(field(tree)).toBeDefined();
+		act(() => keyboard.hide());
+		expect(options()).not.toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeDefined();
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {

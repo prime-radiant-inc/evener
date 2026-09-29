@@ -73,7 +73,12 @@ const two = [question("q1", "Flags", ["Keep them", "Drop them"]), question("q2",
 
 function mount(
 	questions: AskQuestionRef[],
-	{ ready = true, folded = false, error = null }: { ready?: boolean; folded?: boolean; error?: string | null } = {},
+	{
+		ready = true,
+		folded = false,
+		error = null,
+		typing = false,
+	}: { ready?: boolean; folded?: boolean; error?: string | null; typing?: boolean } = {},
 ) {
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
@@ -95,6 +100,7 @@ function mount(
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
 				error={error}
+				typing={typing}
 			/>
 		);
 	}
@@ -247,6 +253,20 @@ describe("a question taller than the room the screen gives the dock", () => {
 		expect(renderedText(tree)).toContain("Tests?");
 		// A new scroller, so no offset carries over from the question before.
 		expect(scroller()).not.toBe(first);
+	});
+});
+
+describe("while you type your own answer (spec 8.4, Other answer…)", () => {
+	it("shows only the header and the scrolling question, with no options or answer controls", () => {
+		const { tree } = mount(two, { typing: true });
+		const body = dockBody(tree, "question-dock");
+		expect(textOf(body.scroller)).toContain("Flags?");
+		expect(textOf(body.scroller)).toContain("Why flags");
+		expect(renderedText(tree)).toContain("Question 1 of 2");
+		expect(pressable(tree, "Fold")).toBeDefined();
+		expect(optionLabels(tree)).toEqual([]);
+		for (const label of ["Other answer…", "Next question", "Send answers"])
+			expect(pressable(tree, label)).toBeUndefined();
 	});
 });
 
