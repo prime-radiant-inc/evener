@@ -619,4 +619,19 @@ describe("Button", () => {
 		const label = tree.root.find((node) => String(node.type) === "Text");
 		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
 	});
+
+	it("draws a mini button as the prototype's .mini-btn: accent text, no fill, shaded when pressed, touchable over 44pt (audit M13)", () => {
+		const tree = render(<Button label="Install" mini onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(styleOf(button)).toMatchObject({ paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, minHeight: 30 });
+		expect(styleOf(button).backgroundColor).toBeUndefined();
+		expect(styleOf(button, true).backgroundColor).toBe(light.pressed);
+		expect(30 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBeGreaterThanOrEqual(44);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.accentInk,
+			fontSize: 13,
+			fontWeight: "600",
+		});
+	});
 });
