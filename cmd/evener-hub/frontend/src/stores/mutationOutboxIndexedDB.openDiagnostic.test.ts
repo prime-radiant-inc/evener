@@ -44,6 +44,29 @@ function openRequest(indexedDB: IDBFactory, name: string, version: number): Prom
   });
 }
 
+// A request that never settles on its own (the wedged shape, like
+// neverSettlingRequest) yet exposes the two fields the upgradeneeded handler
+// reads: a settable versionchange `transaction`, and a `result` whose stores all
+// already exist so the handler's schema-creation branch is skipped. This lets a
+// test dispatch a real upgradeneeded at a request the watchdog has abandoned.
+interface AbandonableRequest extends EventTarget {
+  transaction: IDBTransaction | null;
+  result: { objectStoreNames: { contains: (name: string) => boolean } };
+}
+
+function upgradableRequest(): AbandonableRequest {
+  const request = new EventTarget() as AbandonableRequest;
+  Object.defineProperties(request, {
+    transaction: { value: null, writable: true, configurable: true },
+    result: {
+      value: { objectStoreNames: { contains: () => true } },
+      writable: true,
+      configurable: true,
+    },
+  });
+  return request;
+}
+
 // One real macrotask hop, off the faked timers: fake-indexeddb delivers open and
 // versionchange events on such a task, which a timer advance does not reach.
 function nextRealTask(): Promise<void> {
@@ -120,6 +143,36 @@ test("an upgradeneeded for a superseded attempt records the abandoned path, and 
   const record = await reopened.enqueueIntent(intent);
   expect(await reopened.listOutbox()).toEqual([record]);
   reopened.close();
+});
+
+test("a timed-out attempt whose upgrade finally arrives records the abandoned path", async () => {
+  const indexedDB = new IDBFactory();
+  const request = upgradableRequest();
+  vi.spyOn(indexedDB, "open").mockImplementation(() => request as unknown as IDBOpenDBRequest);
+  const { diagnostics, report } = collect();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const storage = new MutationOutboxIndexedDB({ indexedDB, onOpenDiagnostic: report });
+  const failure = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  // The watchdog abandons the attempt. Advancing the clock synchronously leaves
+  // the open promise still the current one - no microtask has run - so the
+  // superseded disjunct is false and only `abandoned` can produce the record.
+  vi.advanceTimersByTime(10_000);
+  expect(diagnostics).toEqual([
+    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: false },
+  ]);
+  // The upgrade finally arrives on the abandoned attempt, with a live
+  // versionchange transaction.
+  request.transaction = {} as IDBTransaction;
+  request.dispatchEvent(new Event("upgradeneeded"));
+  expect(diagnostics).toEqual([
+    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: false },
+    { database: DATABASE_NAME, version: VERSION, path: "upgrade-abandoned", versionchangeTransaction: true },
+  ]);
+  expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
+  storage.close();
 });
 
 test("a blocked upgrade request records the blocked path", async () => {
