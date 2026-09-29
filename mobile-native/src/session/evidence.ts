@@ -67,23 +67,35 @@ function rawOutput(text: string): Evidence[] {
 }
 
 // The index of the ")" that closes the "(" at start, counting nested balanced
-// pairs; undefined when the "(" never closes. Only a parenthesis outside an
-// escaped character, an angle-bracket destination, or a quoted title (which a
-// quote after whitespace opens, and only its own delimiter closes) is
-// structural; the rest are literal (CommonMark).
+// pairs; undefined when the "(" never closes. A backslash escapes the next
+// character; a destination that opens with "<" runs to its unescaped ">"; and a
+// quote after whitespace opens a title whose only close is its own delimiter.
+// Parentheses inside any of those are literal (CommonMark).
 function balancedClose(markdown: string, start: number): number | undefined {
-	let depth = 0;
+	let depth = 1;
 	let quote: string | undefined;
-	for (let i = start; i < markdown.length; i++) {
+	let started = false;
+	for (let i = start + 1; i < markdown.length; i++) {
 		const ch = markdown[i];
 		if (ch === "\\") {
 			i++;
+			started = true;
 		} else if (quote !== undefined) {
 			if (ch === quote) quote = undefined;
-		} else if (ch === "<") {
-			const close = markdown.indexOf(">", i + 1);
-			if (close === -1) return undefined;
-			i = close;
+		} else if (!started) {
+			if (/\s/.test(ch)) continue;
+			started = true;
+			if (ch === "<") {
+				for (i = i + 1; i < markdown.length; i++) {
+					if (markdown[i] === "\\") i++;
+					else if (markdown[i] === ">") break;
+				}
+				if (i >= markdown.length) return undefined;
+			} else if (ch === "(") {
+				depth++;
+			} else if (ch === ")" && --depth === 0) {
+				return i;
+			}
 		} else if ((ch === '"' || ch === "'") && /\s/.test(markdown[i - 1] ?? "")) {
 			quote = ch;
 		} else if (ch === "(") {
