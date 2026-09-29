@@ -190,33 +190,53 @@ export function Row({
 			) : icon ? (
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
-			<View style={{ flex: 1, gap: 2 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{
-						color: labelColor,
-						...scaledType(uiType.listRow, scale),
-						...(machineLabel ? { fontFamily: fonts.mono } : null),
-					}}
-				>
-					{label}
-				</Text>
-				{sub ? (
+			{/* The label and value share one wrapping line. The label is sized by
+			    its own text and grows into the free space, so a value that
+			    doesn't fit beside it moves under it: the label's words never
+			    break apart to make room ("paradise-/park"). */}
+			<View
+				testID="row-line"
+				style={{
+					flex: 1,
+					flexDirection: "row",
+					flexWrap: "wrap",
+					alignItems: "center",
+					columnGap: space.rowGap,
+					rowGap: 4,
+				}}
+			>
+				<View testID="row-label" style={{ flexGrow: 1, flexShrink: 1, gap: 2 }}>
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={[
-							{
-								color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
-								...scaledType(uiType.footnote, scale),
-							},
-							machineSub ? { fontFamily: fonts.mono } : null,
-						]}
+						style={{
+							color: labelColor,
+							...scaledType(uiType.listRow, scale),
+							...(machineLabel ? { fontFamily: fonts.mono } : null),
+						}}
 					>
-						{sub}
+						{label}
 					</Text>
-				) : null}
+					{sub ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={[
+								{
+									color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+									...scaledType(uiType.footnote, scale),
+								},
+								machineSub ? { fontFamily: fonts.mono } : null,
+							]}
+						>
+							{sub}
+						</Text>
+					) : null}
+				</View>
+				{value === undefined || value === null ? null : (
+					<View testID="row-value" style={{ flexShrink: 1 }}>
+						{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+					</View>
+				)}
 			</View>
-			{plainValue !== undefined ? <RowValue text={plainValue} /> : (value ?? null)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
@@ -542,11 +562,12 @@ export function RowValue({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+		<View style={{ flexShrink: 1, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
 			{text ? (
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
+						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
 						fontSize: uiType.listRow.fontSize * scale,
 						fontVariant: ["tabular-nums"],
