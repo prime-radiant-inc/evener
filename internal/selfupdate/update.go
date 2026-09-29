@@ -33,10 +33,9 @@ var defaultUpgradeTimeout = 5 * time.Minute
 // the checksum ever runs. A var so tests can shrink it.
 var defaultMaxArchiveBytes = int64(128 << 20)
 
-// installBinaries are the binaries an upgrade installs from the release
-// archive. evener-dev is dev tooling and is not installed; release archives
-// still carry it for now, so versions that required it can upgrade into this
-// one, and extraction skips it.
+// installBinaries is the binary an upgrade installs from the release archive.
+// evener-dev, the dev tooling binary, is not installed and no longer rides in
+// the archive; versions that required it have aged out.
 var installBinaries = []string{"evener"}
 
 var (

@@ -346,11 +346,11 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
 	}
 
-	// Round 22: release archives still carry evener-dev, but it is the development
-	// tooling binary and can never serve a hub, so it is not a run target the
-	// installer may be pointed at (component-04 criterion 17). The refusal is
-	// the terminal run-target sentinel the installer shares with the push path
-	// (checkRunTarget), so no retry of the install can change it.
+	// Round 22: evener-dev is the development tooling binary and can never
+	// serve a hub, so it is not a run target the installer may be pointed at
+	// (component-04 criterion 17). The refusal is the terminal run-target
+	// sentinel the installer shares with the push path (checkRunTarget), so no
+	// retry of the install can change it.
 	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
 		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
 	} else if bindir != "" || share != "" || target != "" {

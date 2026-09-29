@@ -142,7 +142,7 @@ jobs:
             mkdir -p "$work"
             tar -xzf "$archive" -C "$work"
 
-            for binary in "$work/$root/evener" "$work/$root/evener-dev"; do
+            for binary in "$work/$root/evener"; do
               test -f "$binary" || { echo "Missing binary: $binary" >&2; exit 1; }
               codesign --force --options runtime --timestamp \
                 --sign "$MACOS_DEVELOPER_ID_APPLICATION" "$binary"
@@ -173,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           for archive in dist/evener_darwin_*.tar.gz; do
-            tar -tzf "$archive" | grep -Eq '/evener(-dev)?$'
+            tar -tzf "$archive" | grep -Eq '/evener$'
             verify_dir="$RUNNER_TEMP/verify-${archive##*/}"
             rm -rf "$verify_dir"
             mkdir -p "$verify_dir"
@@ -181,7 +181,6 @@ jobs:
             verify_root="$verify_dir/${archive##*/}"
             verify_root="${verify_root%.tar.gz}"
             codesign --verify --strict --verbose=2 "$verify_root/evener"
-            codesign --verify --strict --verbose=2 "$verify_root/evener-dev"
           done
           (cd dist && shasum -a 256 -c checksums.txt)
 
