@@ -32,6 +32,7 @@ import {
 	screenConnection,
 	swipeableCalls,
 	swipeRowFully,
+	systemGlass,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -89,6 +90,7 @@ vi.mock("react-native", async () => {
 	};
 });
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
+vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -181,6 +183,7 @@ const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
 	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	vi.useRealTimers();
+	systemGlass.reset();
 });
 
 // Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
@@ -5211,4 +5214,71 @@ it("drops the Continue reading row when its two hours run out, even on an idle B
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+// Where the device has Liquid Glass (iOS 26 and later), one glass spans the
+// nav bar and the section chips under it (spec 16.3), as on the Session: the
+// Board scrolls under both, its content inset by them, and every scroll it
+// makes itself lands clear of them. Elsewhere, and while Reduce Transparency
+// is on, the bar is opaque and the chips sit above the scroller as before.
+describe("the nav bar's glass (spec 16.3)", () => {
+	const glassBlock = (tree: ReactTestRenderer) => tree.root.find((node) => node.props.testID === "board-glass");
+	const measureGlass = (tree: ReactTestRenderer, height: number) =>
+		act(() => glassBlock(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+
+	it("runs the Board under one glass spanning the bar and the chips, and scrolls clear of it", async () => {
+		systemGlass.available = true;
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+		const nav = navigation();
+		const { tree, scrollTo } = await mountWithInstances(nav);
+		await act(async () => {});
+		expect(headerOptions(nav)).toMatchObject({
+			headerTransparent: true,
+			headerStyle: { backgroundColor: "transparent" },
+			scrollEdgeEffects: { top: "hidden" },
+		});
+		// The chips sit on the glass, clear, below the bar's room.
+		const block = glassBlock(tree);
+		expect(block.props.style).toMatchObject({ position: "absolute", top: 0, left: 0, right: 0 });
+		expect(block.findAll((node) => String(node.type) === "GlassView")).toHaveLength(1);
+		expect(block.find((node) => node.props.testID === "nav-bar-room").props.style.height).toBe(64);
+		expect(block.find((node) => node.props.testID === "chips").props.style.backgroundColor).toBe("transparent");
+		const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+		// Before the glass has measured, the Board is inset by the bar's room,
+		// and the field it keeps tucked stays tucked just under the glass.
+		expect(boardScroller(tree).props.contentInset).toMatchObject({ top: 64 });
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: height - 64, animated: false });
+		measureGlass(tree, 64 + 48);
+		expect(boardScroller(tree).props.contentInset).toMatchObject({ top: 112 });
+		expect(boardScroller(tree).props.scrollIndicatorInsets).toMatchObject({ top: 112 });
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: height - 112, animated: false });
+		// A chip's section lands just under the glass.
+		act(() =>
+			tree.root
+				.find((node) => node.props.testID === "project-section:projects" && node.props.onLayout)
+				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 752, width: 390, height: 48 } } }),
+		);
+		pressChip(tree, "Projects, 4 projects");
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 752 - 112, animated: true });
+		// Search brings the field down under the glass.
+		act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -112, animated: true });
+	});
+
+	it("keeps the opaque bar and the chips above the scroller without the glass, following Reduce Transparency", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub(fleet).client, "ready");
+		const nav = navigation();
+		const tree = await mount(nav);
+		await act(async () => {});
+		expect(headerOptions(nav)).toMatchObject({ headerTransparent: false, scrollEdgeEffects: { top: "automatic" } });
+		expect(tree.root.findAll((node) => node.props.testID === "board-glass")).toEqual([]);
+		expect(boardScroller(tree).props.contentInset?.top ?? 0).toBe(0);
+		expect(boardScroller(tree).findAll((node) => node.props.testID === "chips")).toHaveLength(0);
+	});
 });
