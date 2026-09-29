@@ -985,7 +985,34 @@ describe("a start that lands clears only the draft it started", () => {
 		second.getState().setPrompt("something else entirely");
 		starts[0]?.resolve(landed);
 		expect(await started).toMatchObject({ status: "created" });
-		expect(storage().read("hub-a")).toMatchObject({ prompt: "something else entirely" });
+		// The newer draft stays, and since the start is now known to have
+		// worked, it no longer says one may exist.
+		expect(storage().read("hub-a")).toMatchObject({ prompt: "something else entirely", unconfirmed: false });
 		expect(second.getState().prompt).toBe("something else entirely");
+		expect(first.getState().unconfirmedCreation).toBe(false);
 	});
+});
+
+it("changes nothing in a form whose start is on its way (#3104)", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	store.getState().selectModel(null);
+	const started = store.getState().submit();
+	await flush();
+	const before = { ...store.getState() };
+	await store.getState().setCwd("/elsewhere");
+	store.getState().setPrompt("something else");
+	store.getState().setReasoning("high");
+	store.getState().selectModel(model);
+	store.getState().setLaunchOverrides({ maxRounds: 3 });
+	expect(store.getState()).toMatchObject({
+		cwd: before.cwd,
+		prompt: before.prompt,
+		reasoning: before.reasoning,
+		model: before.model,
+		launchOverrides: before.launchOverrides,
+	});
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	await started;
 });

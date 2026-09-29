@@ -222,6 +222,7 @@ export function createNewSessionStore(
 			});
 		},
 		async setCwd(cwd, refresh = true) {
+			if (get().submitting) return;
 			// A project chosen here answers the host-change line (ruling 17).
 			if (cwd.trim() === get().cwd.trim()) {
 				set({ cwd, hostNote: null });
@@ -244,9 +245,11 @@ export function createNewSessionStore(
 			if (refresh) await get().loadModels();
 		},
 		setPrompt(prompt) {
+			if (get().submitting) return;
 			set({ prompt });
 		},
 		selectModel(value) {
+			if (get().submitting) return;
 			const model = get().models.find((m) => m.provider === value?.provider && m.model === value.model) ?? null;
 			const reasoning = get().launchOverrides.reasoningEffort || get().reasoning;
 			const launchOverrides = withoutModelChoice(get().launchOverrides);
@@ -257,6 +260,7 @@ export function createNewSessionStore(
 			});
 		},
 		setReasoning(value) {
+			if (get().submitting) return;
 			const state = get();
 			const model = creationModel(state.models, state.model, state.launchOverrides);
 			const launchOverrides = { ...state.launchOverrides };
@@ -411,8 +415,13 @@ export function createNewSessionStore(
 						if (stored === null || creationDraftMetadata(stored) === submittedDraft) {
 							storage().clear(hubId);
 							emptyForm();
-							lastSaved = creationDraftMetadata(snapshot());
+						} else {
+							// The start is known to have worked, so the newer draft no
+							// longer says one may exist; it is otherwise left as it is.
+							storage().write(hubId, { ...stored, unconfirmed: false });
+							set({ unconfirmedCreation: false, error: null });
 						}
+						lastSaved = creationDraftMetadata(snapshot());
 					} catch {
 						set({
 							storageError:

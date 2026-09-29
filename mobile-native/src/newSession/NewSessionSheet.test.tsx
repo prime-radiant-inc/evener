@@ -203,7 +203,7 @@ const created = {
 	turn: { id: "turn-1", status: "inProgress", items: [] },
 };
 
-it("never loses a draft edited in a reopened sheet to the start it was swiped away from (#3104)", async () => {
+it("never lets a reopened sheet's edits be lost to the start it was swiped away from (#3104)", async () => {
 	harness.drafts.write("hub-1", evenerDraft);
 	const first = await mount();
 	const outcome = first.context().store.getState().submit();
@@ -211,10 +211,15 @@ it("never loses a draft edited in a reopened sheet to the start it was swiped aw
 	expect(harness.heldStart).not.toBeNull();
 	act(() => first.tree.unmount());
 	const reopened = await mount();
+	// The reopened sheet shows the start on its way, and takes no edits until it lands.
 	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
+	expect(reopened.context().store.getState()).toMatchObject({ submitting: true, prompt: "go" });
 	harness.heldStart?.(created);
 	expect(await outcome).toMatchObject({ status: "created" });
 	await settle();
+	// The landing clears only the draft it started; the form is ready for the next one.
+	expect(harness.drafts.read("hub-1")).toBeNull();
+	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
 	expect(harness.drafts.read("hub-1")).toMatchObject({ prompt: "the next thing" });
 	reopened.tree.unmount();
 });
