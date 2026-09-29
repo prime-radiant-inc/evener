@@ -136,6 +136,15 @@ it("reads links and images as their words", () => {
 	);
 });
 
+it("drops inline HTML tags from a block's words, but not inside an inline code span", () => {
+	const [paragraph] = documentBlocks("Some <b>bold</b> text and a `Vec<String>` span.");
+	expect(paragraph?.kind).toBe("paragraph");
+	expect(paragraph?.markdown).toBe("Some <b>bold</b> text and a `Vec<String>` span.");
+	expect(paragraph?.text).toBe("Some bold text and a Vec<String> span.");
+	expect(documentBlocks("a<br>b")[0]?.text).toBe("ab");
+	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See <https://x.test> too.");
+});
+
 it("hashes the same text the same way every time, and different text differently", () => {
 	expect(hashText("abc")).toBe(hashText("abc"));
 	expect(hashText("abc")).not.toBe(hashText("abd"));
