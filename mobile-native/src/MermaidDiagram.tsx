@@ -1,6 +1,5 @@
 import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import {
-	Modal,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -11,6 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
 import { codeFontFamily } from "./markdownStyle";
@@ -266,7 +266,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 				</View>
 			</Pressable>
 			{open ? (
-				<Modal visible={true} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+				<HoldingModal visible={true} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
 					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 						<View style={styles.header}>
 							<Action onPress={() => setShowSource((showing) => !showing)}>
@@ -285,7 +285,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 							<ZoomWebView source={source} />
 						)}
 					</SafeAreaView>
-				</Modal>
+				</HoldingModal>
 			) : null}
 		</>
 	);
