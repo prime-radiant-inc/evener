@@ -158,6 +158,8 @@ test("says what a worktree adopt or dispose did, and an operation it doesn't kno
   expect(worktree({ operation: "reticulate" })).toBe("Used manage worktree: reticulate");
   // A call that names no worktree says so, with no dangling space.
   expect(worktree({ operation: "dispose" })).toBe("Disposed a worktree");
+  expect(worktree({})).toBe("Used manage worktree");
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: "{}" })).toBe("Using manage worktree");
   expect(worktree({ operation: "create" })).toBe("Created a worktree");
   expect(worktree({ operation: "switch" }, { status: "unchanged" })).toBe("Already in a worktree");
   expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"dispose"}' })).toBe(

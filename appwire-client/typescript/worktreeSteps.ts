@@ -100,7 +100,7 @@ export function worktreeSummary(item: WorktreeStep): string {
     default:
       // A future operation this build has never heard of still says which one
       // it was, in words, never as the bare tool name.
-      return `Used manage worktree: ${operation}`;
+      return operation ? `Used manage worktree: ${operation}` : "Used manage worktree";
   }
 }
 
@@ -134,6 +134,6 @@ export function worktreeProgress(item: Pick<WorktreeStep, "argumentsJSON">): str
     case "dispose":
       return `Disposing ${str(args, "id") || "a worktree"}`;
     default:
-      return `Using manage worktree: ${operation}`;
+      return operation ? `Using manage worktree: ${operation}` : "Using manage worktree";
   }
 }

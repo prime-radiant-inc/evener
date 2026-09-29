@@ -3,8 +3,8 @@
 // fell through to toolRenderers.ts's DEFAULT_DESCRIPTOR, whose summary is
 // `item.toolName`. The whole transcript row read `manage_worktree`.
 //
-// That is worse for this tool than for most. manage_worktree carries seven
-// operations (create/list/switch/exit/remove/prune/dispose) plus `force` and
+// That is worse for this tool than for most. manage_worktree carries eight
+// operations (create/list/switch/adopt/exit/remove/prune/dispose) plus `force` and
 // `force_dirty`, and the Go docs describe force_dirty as overriding "the
 // refusal to discard uncommitted changes" — so a read-only listing and a
 // removal that throws away someone's work rendered as the same single word,
