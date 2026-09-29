@@ -1450,6 +1450,37 @@ it("loads older history as you drag near the top", async () => {
 	).toEqual(["cursor-1"]);
 });
 
+// A long session watched from its start: its first read held it all, so
+// there is no cursor, and the 500-row cap trimmed its top while you followed
+// the live end. Scrolling up asks for the trimmed rows by the oldest one kept.
+it("pages the rows the cap trimmed back as you drag near the top", async () => {
+	const served = thread("ref-trimmed", "idle");
+	const items = Array.from({ length: 600 }, (_, i) => ({
+		id: `u-${i}`,
+		turnId: "turn_1",
+		type: "userMessage",
+		status: "completed",
+		text: `message ${i}`,
+		transcriptKey: `turn_1:${i}:0`,
+		position: { entry: i, item: 0 },
+	}));
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ id: "turn_1", status: "completed", itemsView: "default", items },
+	];
+	const { tree, hub } = await mount(served);
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	scrollTo(tree, 100);
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	const pages = hub.requests.filter((request) => request.method === "thread/turns/list").map((r) => r.params);
+	expect(pages).toHaveLength(1);
+	expect(pages[0]).toMatchObject({ ref: "ref-trimmed", before: { entry: 100, item: 0 } });
+	expect(pages[0]).not.toHaveProperty("cursor");
+});
+
 it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
 	// Opening at the live end of a page shorter than the screen puts the list
 	// near its top; paging there chained every older page in on open, each

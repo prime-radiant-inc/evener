@@ -350,6 +350,26 @@ describe("ConversationService", () => {
 			});
 		});
 
+		// After a trim the store names the oldest row kept: with the cursor it
+		// holds, or alone when it holds none. A request never names a before
+		// it wasn't given, since an older hub rejects the field.
+		it("sends before with or without a cursor, and only when given", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			const listCalls = () =>
+				client.calls.filter((call) => call.method === "thread/turns/list").map((call) => call.params);
+			const boundary = { entry: 100, item: 0 };
+			await service.loadOlder("cursor-1", boundary);
+			await service.loadOlder(null, boundary);
+			await service.loadOlder("cursor-2");
+			const [rebased, cursorless, plain] = listCalls();
+			expect(rebased).toMatchObject({ ref: "ref-1", cursor: "cursor-1", before: boundary });
+			expect(cursorless).toMatchObject({ ref: "ref-1", before: boundary });
+			expect(cursorless).not.toHaveProperty("cursor");
+			expect(plain).toMatchObject({ ref: "ref-1", cursor: "cursor-2" });
+			expect(plain).not.toHaveProperty("before");
+		});
+
 		it("waits for a same-ref projection read before paging", async () => {
 			const { client, service, thread } = setup({
 				olderCursor: "fresh-cursor",

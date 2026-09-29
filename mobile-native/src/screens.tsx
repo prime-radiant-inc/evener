@@ -44,7 +44,7 @@ import {
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
-import { type ConversationState, createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
@@ -416,6 +416,9 @@ export function ConversationScreen({
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
 	const snapshot = store();
+	// The next older page, or null: past the cursor, or above rows the cap
+	// trimmed (the store names the oldest row kept).
+	const olderPage = olderPageKey(snapshot);
 	const timeline = useRef<FlatList>(null);
 	const readerMeasurements = useRef(new Map<string, ReaderMeasurement>());
 	const readerContentHeight = useRef(0);
@@ -434,7 +437,8 @@ export function ConversationScreen({
 	const openedFor = useRef<string | null>(null);
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
-	const follow = useLiveEndFollow();
+	// The store trims the 500-row cap only while the reader follows the end.
+	const follow = useLiveEndFollow((following) => store.getState().setFollowingLiveEnd(following));
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
@@ -1177,10 +1181,10 @@ export function ConversationScreen({
 			// Your answers to a question show beneath the question itself.
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
-					olderToLoad: !!snapshot.olderCursor,
+					olderToLoad: olderPage !== null,
 				}),
 			),
-		[presentation.items, conversation?.turns, snapshot.olderCursor],
+		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row opens the subagent's own session, under this session as
@@ -1315,7 +1319,7 @@ export function ConversationScreen({
 	// resets, so a failing page never loops. Both a reading position restored
 	// above the loaded rows and a scroll near the top ask for it.
 	function loadOlderPage() {
-		const cursor = snapshot.olderCursor;
+		const cursor = olderPage;
 		const pageAttempts = readerPageAttempts.current;
 		if (!service || !connected || !cursor || snapshot.loadingOlder || pageAttempts.has(cursor)) return;
 		pageAttempts.add(cursor);
@@ -1362,7 +1366,7 @@ export function ConversationScreen({
 			return;
 		}
 		if (snapshot.loadingOlder) return;
-		const cursor = snapshot.olderCursor;
+		const cursor = olderPage;
 		if (!cursor) {
 			// Stepped past the oldest match: say so. With none at all, the
 			// label already reads "No matches".
@@ -1496,7 +1500,7 @@ export function ConversationScreen({
 		bindingInstance,
 		layoutRevision,
 		snapshot.status,
-		snapshot.olderCursor,
+		olderPage,
 		snapshot.loadingOlder,
 		conversation?.items,
 		timelineRows,
