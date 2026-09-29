@@ -44,9 +44,10 @@ export interface SubagentRow {
 const STOPPED_OUTCOMES = new Set(["stopped", "cancelled"]);
 const STATE_WORDS: Record<SubagentState, string> = { running: "Running", failed: "Failed", done: "Done" };
 
-/** The delegate fields the state rule reads. The Subagents list's
- * ActivityDelegate and the Session chip's EvenerDelegateInfo both carry them,
- * so `subagentState` is the one classifier for both. */
+/** The delegate fields the state rule reads. The Subagents list passes its
+ * ActivityDelegate (turns included); the Session chip passes an
+ * EvenerDelegateInfo, which is always the stable "delegate" shape and so
+ * carries no turns. `subagentState` is the one classifier for both. */
 export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "turns">;
 
 /** Running, failed or done, as the hub's job counts are (active, failed,
