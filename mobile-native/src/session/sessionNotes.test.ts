@@ -334,6 +334,24 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
+	it("leaves no live save timer behind when a scheduled sync goes clean (RoboRev #3160)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		notes.blur();
+		// The hub catches up to the scheduled text before the ten seconds elapse.
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		// Typing again before the original ten seconds cancels the pending save,
+		// so the stale timer cannot flush the new text prematurely.
+		notes.edit("B and more");
+		await vi.advanceTimersByTimeAsync(SAVE_AFTER_BLUR_MS);
+		expect(hub.requests).toEqual([]);
+		expect(notes.getSnapshot()).toEqual({ text: "B and more", phase: "editing" });
+	});
+
 	it("keeps the whole chain's sent notes, so an early echo is not evicted (RoboRev #2769 round 6)", async () => {
 		let notes!: NotesController;
 		const hub = harness({
