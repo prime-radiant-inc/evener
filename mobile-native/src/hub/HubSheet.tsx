@@ -2,13 +2,14 @@
 // own stack, so each page pushes inside the sheet (ruling 1). Pages read the
 // hub, its client and the connection's readiness from the sheet's context
 // (hubSheetContext.tsx).
+import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useMemo } from "react";
-import { Pressable, Text } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
 import { useRetainedScreenConnection } from "../retainedScreen";
+import { HeaderButton } from "../sheet/HeaderButton";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { AddHubPage } from "./AddHubPage";
@@ -16,6 +17,7 @@ import { AlertsPage } from "./AlertsPage";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { DisplayPage } from "./DisplayPage";
 import { HostDetailPage } from "./HostDetailPage";
+import { HostEditPage } from "./HostEditPage";
 import { HostsPage } from "./HostsPage";
 import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
@@ -45,7 +47,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	useClosesOnHubChange(hubId, close, leave);
 	const ready = isReady(state);
 	const updates = useHubUpdates(renderClient, ready);
-	const { hosts, live } = useHubFleet(renderClient);
+	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const value = useMemo<HubSheetContextValue>(
 		() => ({
 			hubId,
@@ -78,11 +80,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					initialParams={{ hubId }}
 					options={{
 						title: activeProfile.name,
-						headerRight: () => (
-							<Pressable accessibilityRole="button" accessibilityLabel="Done" hitSlop={8} onPress={close}>
-								<Text style={{ color: palette.accentInk, fontSize: 17, fontWeight: "600" }}>Done</Text>
-							</Pressable>
-						),
+						headerRight: () => <HeaderButton label="Done" strong onPress={close} />,
 					}}
 				/>
 				<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
@@ -94,6 +92,8 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					component={HostDetailPage}
 					options={({ route }) => ({ title: route.params.name })}
 				/>
+				{/* The page sets its own title and its Cancel and Save. */}
+				<HubStack.Screen name="HostEdit" component={HostEditPage} />
 				<HubStack.Screen name="Plugins" component={PluginsPage} options={{ title: "Plugins" }} />
 				<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
 				<HubStack.Screen

@@ -408,6 +408,13 @@ func channelArgv(o Options, h hostreg.Host) []string {
 // launch does not depend on the non-interactive PATH), the hub subcommand, and
 // the host's configured config path / address so the started hub matches the one
 // the probes address. It mirrors channelArgv's optional flags.
+//
+// It deliberately carries no helper bytes: §6:131's one exempt delivery step is
+// hostfence's delivery command, run under §6:135's claim-plus-quiesce gate by
+// the hub's first-contact caller (hubHostManager.BootstrapFirstContact, reached
+// through SetBootstrapHook), and this launch runs only after that caller's
+// decision. Composing an ungated second delivery into this argv would be the
+// unfenced delivery §6:135 forbids.
 func hubBootstrapArgv(o Options, h hostreg.Host, target string) []string {
 	args := []string{target, "hub"}
 	if p := strings.TrimSpace(h.ConfigPath); p != "" {

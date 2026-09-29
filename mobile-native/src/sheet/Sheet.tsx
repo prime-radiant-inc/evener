@@ -12,8 +12,9 @@
 // inside the header.
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
-import { Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { Alert, Platform, Text, useWindowDimensions, View } from "react-native";
 import { allowFontScaling, useColors } from "../ui";
+import { HeaderButton } from "./HeaderButton";
 import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
 
 export interface SheetController {
@@ -131,50 +132,5 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 			</View>
 			{children}
 		</>
-	);
-}
-
-function HeaderButton({
-	label,
-	strong = false,
-	disabled = false,
-	onPress,
-}: {
-	label: string;
-	strong?: boolean;
-	disabled?: boolean;
-	onPress(): void;
-}) {
-	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			accessibilityState={{ disabled }}
-			disabled={disabled}
-			hitSlop={8}
-			onPress={onPress}
-			style={({ pressed }) => ({
-				minHeight: 44,
-				minWidth: 44,
-				justifyContent: "center",
-				paddingHorizontal: 8,
-				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
-			})}
-		>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{
-					color: palette.accentInk,
-					fontSize: 17 * scale,
-					lineHeight: 24 * scale,
-					fontWeight: strong ? "600" : "400",
-				}}
-			>
-				{label}
-			</Text>
-		</Pressable>
 	);
 }

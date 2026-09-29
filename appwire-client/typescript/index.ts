@@ -194,6 +194,23 @@ export {
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
+export type {
+  EditableHostField,
+  HostMutationPair,
+  HostMutationPorts,
+  HostMutationResult,
+  HostMutations,
+} from "./hostMutations";
+export {
+  committedMutationRow,
+  createHostMutations,
+  ErrorStaleEntry,
+  HOST_ENTRY_FIELD_ORDER,
+  HOST_ENTRY_FIELD_TEXT,
+  HOST_GATE_TIMEOUT_MS,
+  rootsFromText,
+  rootsToText,
+} from "./hostMutations";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type {

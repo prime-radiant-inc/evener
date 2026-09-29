@@ -24,6 +24,8 @@ vi.mock("./PluginsPage", () => ({ PluginsPage: () => null }));
 vi.mock("./DisplayPage", () => ({ DisplayPage: () => null }));
 vi.mock("./DetailLevelPage", () => ({ DetailLevelPage: () => null }));
 vi.mock("./HostDetailPage", () => ({ HostDetailPage: () => null }));
+vi.mock("./HostEditPage", () => ({ HostEditPage: () => null }));
+vi.mock("expo-crypto", () => ({ randomUUID: () => "hub-sheet-uuid" }));
 vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({}) }));
 vi.mock("@react-navigation/native-stack", () => ({
 	createNativeStackNavigator: () => ({ Navigator: () => null, Screen: () => null }),

@@ -5,7 +5,7 @@
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { Children, Fragment, isValidElement, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
@@ -285,6 +285,49 @@ export function SwitchRow({
 				ios_backgroundColor={palette.edgeStrong}
 			/>
 		</View>
+	);
+}
+
+/** A row that edits a machine value (an address, a path, a list of paths) in
+ * Menlo, as typed: no capitals or corrections. The label is VoiceOver's name
+ * for it; the page's section label shows it. */
+export function TextFieldRow({
+	label,
+	value,
+	onChangeText,
+	multiline = false,
+	disabled = false,
+}: {
+	label: string;
+	value: string;
+	onChangeText(text: string): void;
+	multiline?: boolean;
+	disabled?: boolean;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<TextInput
+			accessibilityLabel={label}
+			value={value}
+			onChangeText={onChangeText}
+			multiline={multiline}
+			editable={!disabled}
+			autoCapitalize="none"
+			autoCorrect={false}
+			spellCheck={false}
+			allowFontScaling={allowFontScaling}
+			style={{
+				color: palette.inkHi,
+				fontFamily: fonts.mono,
+				fontSize: 15 * scale,
+				minHeight: multiline ? 88 : 44,
+				paddingHorizontal: 16,
+				paddingVertical: 11,
+				textAlignVertical: multiline ? "top" : "center",
+				opacity: disabled ? 0.4 : 1,
+			}}
+		/>
 	);
 }
 
