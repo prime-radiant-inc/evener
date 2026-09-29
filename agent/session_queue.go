@@ -1488,14 +1488,21 @@ func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
 }
 
+// kindedSteeringTurn is a daemon steering turn of one kind (a job
+// notification reminder, a task nudge), owned by the turn it lands in.
+func kindedSteeringTurn(text, kind, owningTurnID string) schema.Turn {
+	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
+	t.SteeringKind = kind
+	t.OwningTurnID = owningTurnID
+	return t
+}
+
 // appendSteeringTurnDurablyForOwner durably records a daemon steering turn
 // with the logical turn that owns it. Notification reminders use the caller's
 // supplied turn id because client steering arriving during that notification
 // turn is grouped by the same durable owner.
 func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID string) error {
-	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
-	t.SteeringKind = kind
-	t.OwningTurnID = owningTurnID
+	t := kindedSteeringTurn(text, kind, owningTurnID)
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptSyncedLocked(t) },

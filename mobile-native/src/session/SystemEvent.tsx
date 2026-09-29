@@ -7,6 +7,17 @@ import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
+/** The diamond in a system event's 16pt gutter. */
+export function SystemEventMark() {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ width: 16 }}>
+			<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
+		</View>
+	);
+}
+
 export function SystemEvent({
 	label,
 	text,
@@ -46,9 +57,7 @@ export function SystemEvent({
 				onPress={onToggle}
 				style={{ flexDirection: "row", alignItems: "center", minHeight: 44 }}
 			>
-				<View style={{ width: 16 }}>
-					<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
-				</View>
+				<SystemEventMark />
 				<View style={{ flex: 1, minWidth: 0 }}>{line}</View>
 			</Pressable>
 			{label && expanded ? (
