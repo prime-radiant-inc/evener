@@ -149,8 +149,50 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	it("shows the transcript past a nudge the registry appended", () => {
+		const output = `${JSON.stringify({ transcript_ref: "local:abc", content: "0 · Assistant · hi" })}\n\nYou have now made this same call and received the identical result 2 times in a row.`;
+		expect(stepEvidence({ label: "read_transcript", detail: { output } })).toEqual([
+			{ kind: "output", text: "0 · Assistant · hi", lines: 1 },
+		]);
+	});
+
+	it("keeps the left-out note when a read returned no content, and else shows what it printed", () => {
+		const elided = JSON.stringify({ transcript_ref: "local:abc", content: "", meta: { elided_turns: 3 } });
+		expect(stepEvidence({ label: "read_transcript", detail: { output: elided } })).toEqual([
+			{ kind: "note", text: "3 turns left out by the read's budget" },
+		]);
+		const empty = JSON.stringify({ transcript_ref: "local:abc", content: "" });
+		expect(stepEvidence({ label: "read_transcript", detail: { output: empty } })).toEqual([
+			{ kind: "output", text: empty, lines: 1 },
+		]);
+	});
+
 	it("shows what a transcript read printed when it isn't the envelope", () => {
 		expect(stepEvidence({ label: "read_transcript", detail: { output: "not json" } })).toEqual([
+			{ kind: "output", text: "not json", lines: 1 },
+		]);
+	});
+
+	it("shows what a worktree operation says it did, not its JSON", () => {
+		expect(real("call_worktree_create")).toEqual([
+			{
+				kind: "output",
+				text: 'Created and entered worktree "settle-fix" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix, base 5e5f1c3a9b7d). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.',
+				lines: 1,
+			},
+		]);
+		// The registry's repetition nudge follows this exit's JSON.
+		expect(real("call_worktree_exit_again")).toEqual([
+			{
+				kind: "output",
+				text: "Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.",
+				lines: 1,
+			},
+		]);
+	});
+
+	it("shows what a worktree operation printed when it isn't the tool's JSON", () => {
+		expect(stepEvidence({ label: "manage_worktree", detail: { output: "not json" } })).toEqual([
 			{ kind: "output", text: "not json", lines: 1 },
 		]);
 	});

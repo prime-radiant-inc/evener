@@ -19,7 +19,9 @@ import {
 	skillContext,
 	str,
 	toolFamily,
+	turns,
 	webFetchResult,
+	worktreeMessage,
 } from "@evener/appwire-client";
 import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
@@ -88,8 +90,9 @@ function shellNotes(run: ShellOutput): Evidence[] {
 
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
-// checklist, a transcript a read returned, an MCP or other tool's JSON
-// pretty-printed; anything else as the tool printed it.
+// checklist, a transcript a read returned, what a worktree operation says it
+// did, an MCP or other tool's JSON pretty-printed; anything else as the tool
+// printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -132,13 +135,13 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			if (envelope?.content === undefined) return rawOutput(text);
 			const evidence = rawOutput(envelope.content.replace(/\n+$/, ""));
 			const elided = envelope.elidedTurns ?? 0;
-			if (elided > 0)
-				evidence.push({
-					kind: "note",
-					text: `${elided} ${elided === 1 ? "turn" : "turns"} left out by the read's budget`,
-				});
-			return evidence;
+			if (elided > 0) evidence.push({ kind: "note", text: `${turns(elided)} left out by the read's budget` });
+			// An empty read with nothing left out: what the tool printed.
+			return evidence.length > 0 ? evidence : rawOutput(text);
 		}
+		case "worktree":
+			// What the operation says it did, not the JSON around it.
+			return rawOutput(worktreeMessage(text) ?? text);
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;

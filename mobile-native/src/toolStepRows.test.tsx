@@ -10,7 +10,8 @@ import { projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
-import { hideAnswerMessages, runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { stepEvidence } from "./session/evidence";
+import { hideAnswerMessages, runSummary, runSummaryText, sessionRows, stepTarget } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -72,6 +73,41 @@ describe("a step with no intent", () => {
 		]) {
 			expect(text).toContain(summary);
 		}
+	});
+});
+
+// A transcript read serves each call and its result as two items sharing a
+// callId: the call carries the arguments, the result the output. The package
+// folds the two into one step (reducer.ts), so the step keeps both: its line
+// names what it acted on, and an edit, a write and a patch open to their diff
+// or path, which come from the arguments alone (#3306).
+describe("a call and its result, served as two items", () => {
+	const steps = (level: Level) => runsAt(level).flatMap((run) => run.steps);
+	const step = (level: Level, label: string) => {
+		const found = steps(level).find((candidate) => candidate.label === label);
+		if (!found) throw new Error(`no ${label} step at ${level}`);
+		return found;
+	};
+
+	it.each(["intent", "tools", "full"] as const)("keeps the call's arguments on every step, at %s", (level) => {
+		for (const each of steps(level)) expect(each.detail.arguments, each.label).toBeDefined();
+		expect(stepTarget("read_file", step(level, "read_file").detail.arguments)).toBe("agent/tree.go");
+		// The command as the call sent it; only the summary drops the session's cd.
+		expect(stepTarget("shell", step(level, "shell").detail.arguments)).toBe(
+			"cd /home/jesse/git/evener && cat agent/tree_order.go",
+		);
+	});
+
+	// The result's half: its output, which the call never carries.
+	it.each(["tools", "full"] as const)("keeps the result's output on the step, at %s", (level) => {
+		expect(step(level, "read_file").detail.output).toContain("package agent");
+		expect(stepEvidence(step(level, "shell"))).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
+	});
+
+	it.each(["tools", "full"] as const)("opens an edit, a write and a patch to what they changed, at %s", (level) => {
+		expect(stepEvidence(step(level, "edit_file")).map((evidence) => evidence.kind)).toEqual(["diff"]);
+		expect(stepEvidence(step(level, "write_file"))).toEqual([{ kind: "wrote", path: "agent/tree_order.go" }]);
+		expect(stepEvidence(step(level, "apply_patch")).map((evidence) => evidence.kind)).toEqual(["diff"]);
 	});
 });
 
