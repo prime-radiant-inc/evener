@@ -55,6 +55,7 @@ import {
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
+	toolStepSummary,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -107,6 +108,10 @@ export type ActivityFamily = "tool" | "reasoning" | "unknown";
 // the default collapsed row.
 export interface ActivityDetail {
 	description?: string;
+	// A tool step's words when it has no intent of its own ("Read agent/tree.go
+	// · lines 1-40"): the package's toolStepSummary, the web's words, read once
+	// here from the whole step, since a summary-only row keeps no output.
+	summary?: string;
 	arguments?: string;
 	output?: string;
 	error?: string;
@@ -165,8 +170,19 @@ export type MobileTimelineItem =
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
 		// roundKey: the key a reply keeps from its first streamed frame through
-		// its recording (see withRoundKey), where it has one.
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
+		// its recording (see withRowKey), where it has one.
+		// callKey: the same, for a communicate reply, which is keyed by its
+		// call instead of its round (a round can hold both a stream and a
+		// communicate, and the communicate's message is recorded under the
+		// call, not the round).
+		| {
+				kind: "assistant";
+				id: string;
+				markdown: string;
+				streaming: boolean;
+				roundKey?: string;
+				callKey?: string;
+		  }
 		| {
 				kind: "activity";
 				id: string;
@@ -237,6 +253,9 @@ export type MobileTimelineItem =
 export interface ProjectedRowContext {
 	readonly turnStatus?: string;
 	readonly asks?: ReadonlyMap<string, AskQuestionRef[]>;
+	// The session's directory, which a shell step's leading "cd <cwd> && "
+	// only repeats (toolStepSummary strips it).
+	readonly cwd?: string;
 }
 
 // One ProjectedEntry becomes one row (or none, for a warning with nothing to
@@ -305,14 +324,16 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary } = row.detail;
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
 	};
+	// With no rationale of its own, the row keeps the step's words, read from
+	// the whole step before its output goes.
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments, ...metadata }
+			? { arguments: row.detail.arguments, ...metadata, ...(summary !== undefined ? { summary } : {}) }
 			: { description: entry.rationale, ...metadata };
 	return {
 		...row,
@@ -384,7 +405,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: toolLabel(it),
 			family: "tool",
 			state: activityState(it, context.turnStatus),
-			detail: activityDetail(it),
+			detail: { ...activityDetail(it), summary: toolStepSummary(it, { cwd: context.cwd }) },
 			...identity,
 		};
 	}
@@ -884,7 +905,7 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
-	const keyedRounds = new Set<string>();
+	const keyed = new Set<string>();
 	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
 	for (const entry of projected.entries) {
 		// A failed turn's error shows once, as the failure row at its end, which
@@ -897,9 +918,9 @@ function rowsForProjectedTurn(
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks, cwd: model.cwd });
 		if (plain === null) continue;
-		const row = withRoundKey(plain, entry.item, keyedRounds);
+		const row = withRowKey(plain, entry.item, keyed);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -942,17 +963,31 @@ function rowsForProjectedTurn(
 // and keeps one key through the change: the list doesn't remount it, and a
 // reading position or a "new below" count taken on it still finds it. Only the
 // round's first reply takes the round's key, since a round can record two
-// replies (text before and after a tool call); the later one keeps its own. A
-// communicate preview carries the round too, but its message is recorded with
-// no round id, so it has nothing to share a key with and takes none. The key
-// is for display and reading positions only: timelineIdentity, which the
-// store's merges use, stays transcriptKey-first.
-function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
-	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
-	const key = `round:${item.roundId}:agentMessage`;
-	if (keyedRounds.has(key)) return row;
-	keyedRounds.add(key);
-	return { ...row, roundKey: key };
+// replies (text before and after a tool call); the later one keeps its own.
+//
+// A communicate preview is the same story told with the call's id: the preview
+// ("preview:<callId>") and the message it records (a call id on the recorded
+// item) share one key, so the preview keeps its row when the message is
+// recorded. A call-bearing reply takes the call's key, never the round's, so it
+// leaves the round's key to the round's own stream. The key is for display and
+// reading positions only: timelineIdentity, which the store's merges use, stays
+// transcriptKey-first.
+function withRowKey(row: MobileTimelineItem, item: ItemModel, keyed: Set<string>): MobileTimelineItem {
+	if (row.kind !== "assistant") return row;
+	let field: "callKey" | "roundKey";
+	let key: string;
+	if (item.callId) {
+		field = "callKey";
+		key = `call:${item.callId}:agentMessage`;
+	} else if (item.roundId) {
+		field = "roundKey";
+		key = `round:${item.roundId}:agentMessage`;
+	} else {
+		return row;
+	}
+	if (keyed.has(key)) return row;
+	keyed.add(key);
+	return { ...row, [field]: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.
@@ -999,7 +1034,9 @@ export function projectTimeline(
 	const fingerprint = configFingerprint(config);
 	const ordered: Ordered[] = [];
 	for (const turn of model.turns) {
-		ordered.push(...rowsForProjectedTurn(model, turn, asks, config, fingerprint));
+		// The session's directory shapes a shell step's summary, so a turn's
+		// cached rows are its rows for this directory.
+		ordered.push(...rowsForProjectedTurn(model, turn, asks, config, `${fingerprint}\u0000${model.cwd}`));
 	}
 
 	// Second pass: cluster consecutive activity rows that share a family, then
@@ -1200,6 +1237,7 @@ export type BoundText = (text: string) => string;
 // as much as the output is.
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
+	const summary = detail.summary ? bound(detail.summary) : detail.summary;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
@@ -1207,6 +1245,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	// identity across publishes (see truncateItem).
 	if (
 		description === detail.description &&
+		summary === detail.summary &&
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error
@@ -1216,6 +1255,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	return {
 		...detail,
 		description,
+		summary,
 		arguments: args,
 		output,
 		error,

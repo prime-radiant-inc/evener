@@ -8,10 +8,10 @@ import {
 	isActiveItem,
 	formatTokenCount,
 	type ModelRetryState,
-	parseArgs,
 	pendingTextJoined,
-	str,
 	type ThreadModel,
+	toolFamily,
+	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
 import { PULSE_BARS } from "../board/pulse";
@@ -32,7 +32,11 @@ export interface TrayLine {
 export type TraySource = Pick<
 	ThreadModel,
 	"status" | "turns" | "activeTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
->;
+> & {
+	/** The session's directory, which a running command's leading cd to it
+	 * only repeats. */
+	cwd?: string;
+};
 
 interface Step {
 	text: string;
@@ -102,13 +106,16 @@ function currentStep(session: TraySource): Step | null {
 	for (let index = turn.items.length - 1; index >= 0; index -= 1) {
 		const item = turn.items[index];
 		if (!item || !isActiveItem(item, turn.status)) continue;
-		const step = stepFor(item);
+		const step = stepFor(item, session.cwd);
 		if (step) return step;
 	}
 	return null;
 }
 
-function stepFor(item: ItemModel): Step | null {
+// What toolStepProgress says for a shell call that names no command.
+const RUNNING_A_COMMAND = "Running a command";
+
+function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
 		return {
@@ -118,9 +125,14 @@ function stepFor(item: ItemModel): Step | null {
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
-	const command = item.toolName === "shell" ? str(parseArgs(item.argumentsJSON), "command") : undefined;
-	const firstLine = command?.split("\n")[0]?.trim();
-	const text = firstLine ? `Running ${firstLine}` : item.description?.trim() || `Running ${item.toolName ?? "a step"}`;
+	// What the step is doing in the words its summary will use, live
+	// ("Reading agent/tree.go", "Running go test ./..."), never its tool's
+	// name. A command says itself; any other step, and a shell call with no
+	// command to name, says its intent first.
+	const progress = toolStepProgress(item, { cwd });
+	const intent = item.description?.trim();
+	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
+	const text = namesCommand ? progress : intent || progress;
 	return { text, startedAt: timeOf(item.startedAt), waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? "") };
 }
 

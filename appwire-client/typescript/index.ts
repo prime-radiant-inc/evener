@@ -319,7 +319,7 @@ export type {
   LaunchConfigStoreState,
   LaunchSettingsState,
 } from "./launchConfig";
-export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
+export { createLaunchConfigStore, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
@@ -532,6 +532,36 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
+export {
+  applyPatchSummary,
+  BINARY_PAYLOAD_HEADER,
+  editFileSummary,
+  fallbackToolSummary,
+  filePathArg,
+  filePathOf,
+  globSummary,
+  grepSummary,
+  listDirSummary,
+  mcpToolParts,
+  readFileSummary,
+  shellCommand,
+  shellSummary,
+  skillName,
+  stripRedundantCd,
+  type ToolFamily,
+  type ToolStep,
+  type ToolSummaryContext,
+  toolFamily,
+  toolStepProgress,
+  toolStepSummary,
+  useSkillSummary,
+  webFetchByteCount,
+  webFetchSummary,
+  webSearchResultLines,
+  webSearchSummary,
+  words,
+  writeFileSummary,
+} from "./toolSummaries";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -559,6 +589,7 @@ export {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -606,7 +637,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

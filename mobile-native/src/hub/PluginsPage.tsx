@@ -16,7 +16,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert, View } from "react-native";
 import type {
 	AnyNotification,
 	ConnectionState,
@@ -38,9 +38,12 @@ import {
 	type PluginMutationGate,
 } from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
+import { space } from "../design/tokens";
+import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { SearchField } from "../sheet/SearchField";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
+import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 
 type Segment = "installed" | "marketplaces" | "browse";
@@ -272,7 +275,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} label="Loading plugins" />
 			</GroupedPage>
 		);
 	return (
@@ -502,12 +505,12 @@ function Plugins({
 					</GroupFooter>
 					{listError ? <GroupFooter tone="danger">{listError}</GroupFooter> : null}
 					{!selected && actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-					{state.plugins === null && state.pluginsLoading ? (
-						<ActivityIndicator accessibilityLabel="Loading installed plugins" />
-					) : null}
+					{state.plugins === null && state.pluginsLoading ? <Spinner label="Loading installed plugins" /> : null}
 					{/* The field stays while a filter is set, so it can always be cleared. */}
 					{state.plugins?.length || query !== "" ? (
-						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
+						<View style={{ marginHorizontal: space.margin }}>
+							<SearchField label="Filter installed plugins" value={query} onChangeText={setQuery} />
+						</View>
 					) : null}
 					{state.plugins?.length === 0 && query === "" ? (
 						<GroupFooter>No plugins installed on this hub.</GroupFooter>
@@ -605,7 +608,7 @@ function Plugins({
 						</Group>
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
-						{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
+						{busy ? <Spinner label="Updating plugin" /> : null}
 						<Group label="Details">
 							<Row label="Version" value={entry.version || "Unknown version"} />
 							<Row label="Marketplace" sub={entry.marketplace} machineSub />
