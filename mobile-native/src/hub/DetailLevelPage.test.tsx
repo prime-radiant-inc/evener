@@ -10,6 +10,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
 import { render, renderedText } from "../renderNative.testkit";
+import { Group } from "../sheet/Grouped";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -472,4 +473,11 @@ it.each([
 	// The levels' own group, then the line about the choice made in it.
 	expect(text.indexOf("Custom")).toBeGreaterThan(-1);
 	expect(text.indexOf("Custom")).toBeLessThan(text.indexOf(line));
+});
+
+it("lets the page's title name the setting, with no group label repeating it", () => {
+	const { tree } = mount(transcript());
+	expect(tree.root.findAll((node) => node.type === Group && node.props.label === "Default detail level")).toHaveLength(
+		0,
+	);
 });

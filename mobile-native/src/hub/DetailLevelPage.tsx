@@ -192,7 +192,8 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 			) : null}
 			{config && state.support === "supported" ? (
 				<>
-					<Group label="Default detail level">
+					{/* The page's title names the setting. */}
+					<Group>
 						{DETAIL_LEVELS.map(({ level, label, description }) => (
 							<Row
 								key={level}
