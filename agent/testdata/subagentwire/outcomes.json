@@ -29,7 +29,7 @@
               "status": "idle",
               "projectionRevision": 3,
               "outcome": "failed",
-              "reason": "failed",
+              "reason": "run_error",
               "error": "provider returned 500",
               "terminal": true,
               "resumable": true,

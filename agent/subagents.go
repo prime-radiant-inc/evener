@@ -2261,10 +2261,16 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		Message:  rawMessage,
 		Warnings: append([]string(nil), inputs.warnings...),
 	}
+	// A failure's reason says which failure it was; the branches below
+	// replace it for a run that reported, exhausted, or was cancelled.
+	reason := "ended_without_report"
+	if inputs.runErr != nil {
+		reason = "run_error"
+	}
 	finish := delegateFinish{
 		outcome:     delegatestore.OutcomeFailed,
 		disposition: delegatestore.DispositionTerminalError,
-		reason:      "failed",
+		reason:      reason,
 		packet:      &packet,
 		endedAt:     inputs.endedAt,
 	}

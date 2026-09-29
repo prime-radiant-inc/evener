@@ -13,6 +13,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
@@ -425,9 +426,7 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 	case "done":
 		// A tied notification headline ("tests passed · 4ad69c0") on a finished row.
 		if hl := strings.TrimSpace(r.Headline); hl != "" {
-			if len(hl) > 50 {
-				hl = hl[:49] + "…"
-			}
+			hl = ansi.Truncate(hl, 50, "…")
 			color := th.TextDim
 			if r.HeadlineError {
 				color = lipgloss.Color("9")
@@ -435,11 +434,9 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 			row += "  " + lipgloss.NewStyle().Foreground(color).Render(hl)
 		}
 	case "failed":
-		if reason := strings.TrimSpace(r.Reason); reason != "" {
-			if len(reason) > 40 {
-				reason = reason[:39] + "…"
-			}
-			row += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(reason)
+		// The run's cause, else its reason code in words (#3327).
+		if ending := transcript.SubagentEndingText(r); ending != "" {
+			row += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(ansi.Truncate(ending, 40, "…"))
 		}
 	}
 	return row

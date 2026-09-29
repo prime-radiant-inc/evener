@@ -85,8 +85,8 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	// A failed run's cause rides beside its reason code: the error's first
 	// line, on the activity tree, the status roster and delegate/updated.
-	if got := stableReadonlyActivityRow(t, tree, "dlg_failed"); got["reason"] != "failed" || got["error"] != "provider returned 500" {
-		t.Fatalf("failed row reason=%v error=%v, want reason failed and error %q", got["reason"], got["error"], "provider returned 500")
+	if got := stableReadonlyActivityRow(t, tree, "dlg_failed"); got["reason"] != "run_error" || got["error"] != "provider returned 500" {
+		t.Fatalf("failed row reason=%v error=%v, want reason run_error and error %q", got["reason"], got["error"], "provider returned 500")
 	}
 	if got := stableReadonlyActivityRow(t, tree, "dlg_reported"); got["error"] != nil {
 		t.Fatalf("reported row error=%v, want none", got["error"])

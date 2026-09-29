@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,10 +139,52 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	}
 	// The quiet-notice contract: this warning is informational budget
 	// arithmetic, and clients demote and verbosity-gate it by its stable code,
-	// never by matching its prose (the projector hides a coded warning below
-	// high verbosity; the Web UI renders it as a quiet one-liner there).
+	// never by matching its prose (the projector shows a coded warning only
+	// at Full; the Web UI renders it as a quiet one-liner there).
 	if warnings[0].Code != events.WarningCodeContextBudget {
 		t.Fatalf("output-reduction warning code = %q, want %q", warnings[0].Code, events.WarningCodeContextBudget)
+	}
+}
+
+// A clamp that holds round after round is one fact, not one per round: a
+// long conversation clamps every round, and a notice each time floods the
+// transcript. Once input fills the window the admitted allocation is what the
+// window leaves, so it shrinks every round; the clamp is still the same one.
+// The session warns when a clamp first applies, again when the model or the
+// requested allocation changes, and again when a clamp returns after an
+// unclamped round.
+func TestSessionOutputReductionWarnsOnlyWhenTheClampChanges(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	profile := testOpenAICompatProfile("budget-warning", "warning-model", 0)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	clamp := func(requested, admitted int) llm.TokenBudget {
+		return llm.TokenBudget{LimitedOutput: true, RequestedOutput: requested, AdmittedOutput: admitted}
+	}
+	for admitted := 20_000; admitted > 10_000; admitted -= 1_000 {
+		sess.warnOutputReduction(profile, clamp(131_072, admitted))
+	}
+	sess.warnOutputReduction(profile, clamp(65_536, 9_000))
+	sess.warnOutputReduction(profile, clamp(65_536, 8_000))
+	sess.warnOutputReduction(profile, llm.TokenBudget{})
+	sess.warnOutputReduction(profile, clamp(65_536, 7_000))
+	sess.Close()
+	warnings := warningEvents(<-eventsDone)
+	var allocations []string
+	for _, warning := range warnings {
+		_, allocation, found := strings.Cut(warning.Message, "requested=")
+		if !found {
+			t.Fatalf("output-reduction warning %q names no requested allocation", warning.Message)
+		}
+		allocations = append(allocations, "requested="+allocation)
+	}
+	want := []string{"requested=131072 admitted=20000", "requested=65536 admitted=9000", "requested=65536 admitted=7000"}
+	if !slices.Equal(allocations, want) {
+		t.Fatalf("warned %v, want %v: once per clamp, again when its request changes or it returns", allocations, want)
 	}
 }
 

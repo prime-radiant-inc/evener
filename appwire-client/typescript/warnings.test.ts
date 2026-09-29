@@ -40,6 +40,35 @@ describe("isInformationalWarning", () => {
     expect(isInformationalWarning(warningItem({ warning: { code: WarningCodeContextBudget } }))).toBe(true);
   });
 
+  // The daemon's warnings arrive as overlay notices: a systemMessage with
+  // eventKind "warning" and its code on raw.warning.code.
+  test("true for a warning notice carrying an informational code on its raw", () => {
+    const notice = warningItem({
+      type: "systemMessage",
+      eventKind: "warning",
+      raw: { warning: { title: "Context budget", code: WarningCodeContextBudget } },
+    });
+    expect(isInformationalWarning(notice)).toBe(true);
+  });
+
+  test("false for an uncoded warning notice, and for a coded notice of another kind", () => {
+    expect(
+      isInformationalWarning(
+        warningItem({ type: "systemMessage", eventKind: "warning", raw: { warning: { title: "Careful" } } }),
+      ),
+    ).toBe(false);
+    expect(isInformationalWarning(warningItem({ type: "systemMessage", eventKind: "warning" }))).toBe(false);
+    expect(
+      isInformationalWarning(
+        warningItem({
+          type: "systemMessage",
+          eventKind: "error",
+          raw: { warning: { code: WarningCodeContextBudget } },
+        }),
+      ),
+    ).toBe(false);
+  });
+
   test("false for an uncoded warning, another code, and a coded non-warning item", () => {
     expect(isInformationalWarning(warningItem())).toBe(false);
     expect(isInformationalWarning(warningItem({ warning: { code: "delegate_abandoned_by_drain" } }))).toBe(false);

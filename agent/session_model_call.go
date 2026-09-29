@@ -1452,7 +1452,24 @@ func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Req
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {
-	if s == nil || profile == nil || !budget.LimitedOutput {
+	if s == nil || profile == nil {
+		return
+	}
+	// A clamp that holds round after round is one fact: a long conversation
+	// clamps every round, and a notice each time floods the transcript. Once
+	// input fills the window the admitted allocation is what the window
+	// leaves, so it shrinks every round and cannot tell one clamp from the
+	// next. Warn when the clamp first applies, when its model or requested
+	// allocation changes, and when it returns after an unclamped round.
+	clamp := ""
+	if budget.LimitedOutput {
+		clamp = fmt.Sprintf("%s/%s:%d", profile.ID(), profile.Model(), budget.RequestedOutput)
+	}
+	s.outputReductionMu.Lock()
+	unchanged := clamp == s.outputReductionWarned
+	s.outputReductionWarned = clamp
+	s.outputReductionMu.Unlock()
+	if clamp == "" || unchanged {
 		return
 	}
 	// An explicit neutral title and hint, both because this is budget
