@@ -30,6 +30,12 @@ func TestWarningDataFromErrorCarriesItsCause(t *testing.T) {
 	if spoof := warningDataFromError("inspect delegate attention", errors.New("disk full\rall good")); spoof.Message != "inspect delegate attention: disk full all good" {
 		t.Fatalf("carriage-return message = %q", spoof.Message)
 	}
+	// No other control reaches a terminal or hook either: an ANSI sequence's
+	// ESC (which could clear the line), backspace and DEL are dropped, as
+	// session notes drop them (stripDisplayControls).
+	if ansi := warningDataFromError("inspect delegate attention", errors.New("disk full\x1b[2K\x1b[1Gall\bgood\x7f")); ansi.Message != "inspect delegate attention: disk full[2K[1Gallgood" {
+		t.Fatalf("control-character message = %q", ansi.Message)
+	}
 	long := warningDataFromError("label", errors.New(strings.Repeat("€", 400)))
 	if !utf8.ValidString(long.Message) || len(long.Message) > len("label: ")+warningCauseLimit {
 		t.Fatalf("long cause: %d bytes, valid=%v", len(long.Message), utf8.ValidString(long.Message))

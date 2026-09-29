@@ -39,10 +39,11 @@ func warningDataFromError(label string, err error) events.WarningData {
 	}
 	// errors.Join separates its errors with newlines; one line reads "; ". A
 	// lone carriage return, which would let the cause overwrite the label on
-	// a terminal, reads as a space.
+	// a terminal, reads as a space, and every other control (an ANSI
+	// sequence's ESC, backspace, DEL) is dropped, as session notes drop them.
 	var lines []string
 	for line := range strings.SplitSeq(err.Error(), "\n") {
-		if line = strings.TrimSpace(strings.ReplaceAll(line, "\r", " ")); line != "" {
+		if line = strings.TrimSpace(stripDisplayControls(strings.ReplaceAll(line, "\r", " "))); line != "" {
 			lines = append(lines, line)
 		}
 	}
