@@ -172,12 +172,6 @@ function pressables(tree: ReactTestRenderer) {
 	return tree.root.findAll((node) => String(node.type) === "Pressable");
 }
 
-function pressLabel(tree: ReactTestRenderer, label: string) {
-	const target = pressables(tree).find((node) => node.props.accessibilityLabel === label);
-	if (!target) throw new Error(`no pressable labelled ${label}`);
-	act(() => target.props.onPress());
-}
-
 // The client keeps the conversation read pending: the screen stays connected
 // with no session error (which would set deliveryConcern and hide the entry),
 // and the recovery surface is exercised on its own.

@@ -106,6 +106,7 @@ import {
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
 	readerAnchorAt,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -179,7 +180,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -1174,8 +1175,12 @@ export function ConversationScreen({
 	const timelineRows = useMemo(
 		() =>
 			// Your answers to a question show beneath the question itself.
-			hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [])),
-		[presentation.items, conversation?.turns],
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
+					olderToLoad: !!snapshot.olderCursor,
+				}),
+			),
+		[presentation.items, conversation?.turns, snapshot.olderCursor],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row opens the subagent's own session, under this session as
@@ -2590,7 +2595,9 @@ export function ConversationScreen({
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
-							keyExtractor={(item) => item.id}
+							// A row keeps its reader key when history records it, so the
+							// list keeps its cell (a streamed reply's wire id changes).
+							keyExtractor={readerKey}
 							renderItem={renderItem}
 							// The end keeps a fixed room for what floats over it (spec 8.3),
 							// so Next never sits on the last line and nothing coming or
@@ -2633,10 +2640,7 @@ export function ConversationScreen({
 								if (follow.state.current.touch === "none" && !follow.state.current.following)
 									follow.dispatch({ type: "assistiveScroll" });
 								if (!follow.state.current.following) pageOlderNear(y);
-								const visible = timelineRows.find((item) => {
-									const measurement = readerMeasurements.current.get(readerKey(item));
-									return measurement && measurement.y + measurement.height > y;
-								});
+								const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
 								if (visible) {
 									readerAnchor.current = captureReaderAnchor(
 										route.params.hubId,

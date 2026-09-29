@@ -17,6 +17,7 @@ import {
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
+  HostMutationOutcomeError,
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
@@ -240,6 +241,18 @@ test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
 
 test("friendlyErrorMessage falls back to a generic sentence for a WireError with no message text", () => {
   expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
+});
+
+// committedMutationRow (hostMutations.ts) throws a HostMutationOutcomeError for
+// a non-commit arm of the host mutation-result union. Its message is written
+// for a person - it names what happened and, for a teardown failure, the
+// remnantId to repair - so friendlyErrorMessage shows it rather than the
+// generic sentence it would give an arbitrary JS exception.
+test("friendlyErrorMessage keeps a HostMutationOutcomeError's own message", () => {
+  const message =
+    "evener/host/remove: the mutation committed but its rebind teardown failed; " +
+    "the entry is committed and its repair handle is remnantId r1";
+  expect(friendlyErrorMessage(new HostMutationOutcomeError(message, "committed-with-teardown-failure"))).toBe(message);
 });
 
 test("friendlyErrorMessage maps ConnectionClosedError to a plain sentence naming the hub, not the class", () => {

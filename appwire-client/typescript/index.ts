@@ -177,6 +177,7 @@ export {
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
+  HostMutationOutcomeError,
   HUB_UNREACHABLE_MESSAGE,
   hostFieldError,
   isHubLaunchError,
