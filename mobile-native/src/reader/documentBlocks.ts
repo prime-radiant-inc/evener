@@ -29,13 +29,14 @@ const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 // A setext heading's underline ("===" or "---" under its words). Only a
 // heading has one: a line of "=" on its own is a paragraph's words.
 const SETEXT_UNDERLINE = /\n[ \t]*(?:=+|-+)[ \t]*$/;
-// An inline code span or an inline HTML tag. The code span keeps its contents
-// (group 2), so stripping a tag can't take the angle brackets it holds:
-// `Vec<String>` survives, `<b>` doesn't. The tag's name needs a `\s`, `/` or
-// `>` boundary, so a bare autolink like `<https://x>` isn't mistaken for one,
-// and a quoted attribute may hold a `>`.
+// An inline code span or an inline HTML tag. It runs over a whole block before
+// the block is split into lines, so a code span may cross lines; the span keeps
+// its contents (group 2), so stripping a tag can't take the angle brackets it
+// holds: `Vec<String>` survives, `<b>` doesn't. A tag stays on one line and its
+// name needs a space, `/` or `>` boundary, so a bare autolink like `<https://x>`
+// isn't mistaken for one, and a quoted attribute may hold a `>`.
 const INLINE_CODE_OR_TAG =
-	/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|<\/?[a-z][a-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\/?>/gi;
+	/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|<\/?[a-z][a-z0-9-]*(?:[ \t]+(?:[^>"'\n]|"[^"\n]*"|'[^'\n]*')*)?\/?>/gi;
 
 /** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
  * document's scale; stability across launches does. */
@@ -77,11 +78,11 @@ function isTableRule(line: string): boolean {
  * go too, unless `stripInlineTags` is false (the html block's own words keep
  * theirs). Underscores inside words (snake_case) stay. */
 export function plainText(markdown: string, stripInlineTags = true): string {
-	return markdown
+	const stripped = stripInlineTags ? markdown.replace(INLINE_CODE_OR_TAG, "$2") : markdown;
+	return stripped
 		.split("\n")
-		.map((line) => {
-			const plain = stripInlineTags ? line.replace(INLINE_CODE_OR_TAG, "$2") : line;
-			return plain
+		.map((line) =>
+			line
 				.replace(/^\s{0,3}#{1,6}\s+/, "")
 				.replace(/^\s*>\s?/, "")
 				.replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "")
@@ -90,8 +91,8 @@ export function plainText(markdown: string, stripInlineTags = true): string {
 				.replace(/\*\*|__|~~|`/g, "")
 				.replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, "$1$2")
 				.replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, "$1$2")
-				.trim();
-		})
+				.trim(),
+		)
 		.filter((line) => line !== "" && !isTableRule(line))
 		.join("\n");
 }

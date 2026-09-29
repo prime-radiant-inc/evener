@@ -151,6 +151,10 @@ it("keeps an html block's markup but still strips its markdown", () => {
 	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
 });
 
+it("protects a code span that runs across lines from tag stripping", () => {
+	expect(documentBlocks("`before\n<b>\nafter`")[0]?.text).toBe("before\n<b>\nafter");
+});
+
 it("hashes the same text the same way every time, and different text differently", () => {
 	expect(hashText("abc")).toBe(hashText("abc"));
 	expect(hashText("abc")).not.toBe(hashText("abd"));
