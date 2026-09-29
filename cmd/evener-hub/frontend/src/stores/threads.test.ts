@@ -5184,7 +5184,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       // region through the persisted submitted draft is owned.
       const record = await act(async () => {
         const submitted = await threadsStore.getState().setHumanNote("ref_a", "B");
-        if (!submitted) throw new Error("expected a durable note record");
         await firstRequest;
         await waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
         return submitted;
@@ -5254,7 +5253,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       throw new RequestTimeoutError("lost note response");
     });
     const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
-    if (!record) throw new Error("expected a durable note record");
     syncHumanNote("ref_a", "A");
     // The mounted draft consumer implies a session pane in production; hold
     // the ref so the acknowledgment's eviction sweep keeps the record.
@@ -5304,7 +5302,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     const raw = " \tline one\nline two\u00a0e\u0301🙂  ";
     const record = await threadsStore.getState().setHumanNote("ref_a", raw);
-    if (!record) throw new Error("expected a durable note record");
     const first = await reached;
     const independent = new MutationOutboxIndexedDB();
     expect((await independent.getOutbox(record.clientMutationId))?.payload).toEqual(first);
@@ -12724,6 +12721,68 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
         .threads.get("ref_a")
         ?.turns.map((turn) => turn.id),
     ).toEqual(["turn_1"]);
+  });
+
+  // Round-3 High, contested. A readwrite timeout rejects ONLY when the
+  // watchdog's abort() succeeds - i.e. when rollback is proven. A write that is
+  // already committing when the watchdog fires makes abort() throw, and
+  // #runTransaction's stalledWrite path then leaves the promise pending rather
+  // than rejecting: enqueueDurableMutation does not retry and the direct
+  // fallback never runs, and the commit still lands. This pins that path
+  // mechanically (see the teeth proof in the commit message).
+  test("a readwrite timeout that cannot abort never rejects, retries or falls back, and the commit stands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    let enqueueAttempts = 0;
+    const realEnqueue = storage.enqueueIntent.bind(storage);
+    storage.enqueueIntent = (...args: Parameters<typeof realEnqueue>) => {
+      enqueueAttempts += 1;
+      return realEnqueue(...args);
+    };
+
+    // Hold the enqueue transaction's complete event: the write is durably done
+    // and committing when the watchdog fires, so transaction.abort() throws.
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    // Only the timer types the deadline and the retry delay use: the outbox
+    // interval stays real so no discovery fires mid-test.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let outcome: "resolved" | "rejected" | null = null;
+    try {
+      const send = threadsStore.getState().send("ref_a", "commit in flight");
+      void send.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        },
+      );
+      await hold.reached;
+      // The enqueue watchdog fires: abort() throws, so the deadline cannot
+      // reject and the retry delay is never scheduled. Advance past both the
+      // watchdog and the retry delay so a mutation that DOES reject would run
+      // its retry to completion and trip the assertions below.
+      await vi.advanceTimersByTimeAsync(11_000);
+      await flushUntil(() => outcome !== null);
+      // Not rejected, not resolved, not retried, and nothing reached the wire.
+      expect(outcome).toBeNull();
+      expect(enqueueAttempts).toBe(1);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      hold.release();
+      vi.useRealTimers();
+    }
+    // The withheld commit lands: the send resolves and the outbox dispatches it.
+    await flushUntilArrived("the committing send to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/start"),
+    );
+    expect(enqueueAttempts).toBe(1);
   });
 
   // A Stop is the one durable write that must NOT take the direct fallback.

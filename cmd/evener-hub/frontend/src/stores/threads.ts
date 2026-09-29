@@ -235,14 +235,14 @@ export interface ThreadsStoreState {
   // responses and evener/notes/updated publish canonical note state. A note
   // save is never a composer send, so it never takes enqueueMutationIntent's
   // direct fallback (DIRECT_FALLBACK_METHODS) and always resolves with the
-  // committed record; the `| undefined` on the signature is that function's
-  // return union, not a value this method produces.
+  // committed record; enqueueCommittedMutation asserts that a non-send method
+  // never returns undefined rather than casting the type.
   setHumanNote(
     ref: string,
     note: string,
     expectedInstanceId?: string,
     onCommitted?: (record: MutationOutboxRecord) => void,
-  ): Promise<MutationOutboxRecord | undefined>;
+  ): Promise<MutationOutboxRecord>;
   // Removes one session URL list entry by id. The response carries no
   // state; the evener/urls/updated push is the authority. Local list edits
   // on success are the push's business, not this response's — unlike
@@ -2249,9 +2249,14 @@ async function enqueueMutationIntent(
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
   const pending = pendingThreadHydrations.get(ref);
-  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
-    dispatchableMutationRefs.add(ref);
-  }
+  // Whether THIS click is the one that put the ref into dispatchableMutationRefs.
+  // Only an arm this click added is this click's to remove later: a concurrent
+  // healthy enqueue for the same ref can arm it (and then pin it) while this
+  // click is in its watchdogs, and that arm belongs to the durable row it is
+  // writing, not to this click's failed one.
+  const armAddedByThisClick =
+    (pending?.client !== wiredClient || pending.epoch !== readyEpoch) && !dispatchableMutationRefs.has(ref);
+  if (armAddedByThisClick) dispatchableMutationRefs.add(ref);
   try {
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
@@ -2308,9 +2313,12 @@ async function enqueueMutationIntent(
       if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
-    // The click armed this ref's dispatch bookkeeping for a durable row that
-    // now does not exist, so disarm it (a pin is not this click's to drop).
-    dispatchableMutationRefs.delete(ref);
+    // Disarm only the arm this click added (a pin is not this click's to drop,
+    // and neither is an arm a concurrent enqueue placed for its own durable
+    // row). The admission check above already guarantees the ref is not pinned,
+    // so a bare pin guard here would be a no-op; the arm this click added is the
+    // one thing this click owns.
+    if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
     //
     // The forfeited cross-tab Stop fence: this send carries no click-time stop
     // epoch - whether the capture read timed out, or the capture succeeded and
@@ -2377,6 +2385,25 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
   } catch (err) {
     throw mapConflict(err);
   }
+}
+
+// A non-send durable write (thread/clear, notes/human/set,
+// turn/promoteQueuedAsSteer) can never take the direct fallback, so
+// enqueueMutationIntent always resolves with its committed record. This asserts
+// that contract instead of casting it: a cast would hand the caller an
+// undefined record its type called present, where a violation here throws. The
+// union stays enqueueMutationIntent's own return; this is the honest narrow for
+// a caller whose method is never one of the composer send verbs.
+async function enqueueCommittedMutation(
+  intent: MutationIntent,
+  onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+): Promise<MutationOutboxRecord> {
+  const record = await enqueueMutationIntent(intent, onCommitted, durableWrite);
+  if (record === undefined) {
+    throw new Error(`threads store: ${intent.method} unexpectedly took the direct send fallback`);
+  }
+  return record;
 }
 
 async function enqueueMutation(
@@ -4325,7 +4352,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       throw new Error("Session instance changed");
     const generation = (notesUpdateGenerations.get(ref) ?? 0) + 1;
     notesUpdateGenerations.set(ref, generation);
-    return enqueueMutationIntent(
+    return enqueueCommittedMutation(
       {
         targetRef: ref,
         threadId: model?.threadId,
