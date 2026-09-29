@@ -755,10 +755,17 @@ function Board({
 		() => list.setInteraction("select", selecting && inFront && appActive),
 		[list, selecting, inFront, appActive],
 	);
-	// The rows the row menu sheet can be about: Live's and the categories'
-	// (a fold hides them, but they stay loaded) and the project sessions in
-	// the shown tree.
+	// The session rows the Board's list shows now, a departed row a hold keeps
+	// on screen included (ruling 22).
+	const shownRowItems = settled.display.flatMap((item) =>
+		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
+	);
+	// The rows the row menu sheet can be about: those, then Live's and the
+	// categories' (a fold hides them, but they stay loaded) and the project
+	// sessions in the shown tree, so the menu stays on whichever row it opened
+	// from.
 	const shownRows = useShownRows([
+		...shownRowItems,
 		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
 			item,
 			archived: false,
@@ -776,7 +783,11 @@ function Board({
 	// The sheet reads the row live, so its actions follow the row while it's
 	// open, and hands each answer back to the Board's own handlers.
 	const menuHandlers = useRef({ actOnRow, openSession });
-	menuHandlers.current = { actOnRow, openSession };
+	// The sheet reads these at press time, so they are written after the commit
+	// that made them current, not during render.
+	useEffect(() => {
+		menuHandlers.current = { actOnRow, openSession };
+	});
 	const rowMenuHost = useMemo<RowMenuHost>(
 		() => ({
 			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
@@ -1029,9 +1040,6 @@ function Board({
 		);
 	};
 	const liveShown = shownGroups.get("live");
-	const shownRowItems = settled.display.flatMap((item) =>
-		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
-	);
 	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
 	/** Select mode's change to many rows, one at a time through the journal,
 	 * reading the Board as it is now. A row whose change can't go now

@@ -4082,6 +4082,23 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 });
 
+it("keeps the row menu's row while the list is held, even once the read drops it", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	// Opening the menu from the row holds the list (ruling 22).
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	const ref = `local:${SESSION_ID}`;
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
+	// A later read no longer has the row, but the held list keeps showing it,
+	// so the menu that is about it must still resolve one.
+	shape.live = [[swipeFinished, swipePark]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hasRow(tree, "Refactor parser")).toBe(true);
+	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
+});
+
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const shape = swipeFleet();
