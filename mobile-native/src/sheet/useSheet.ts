@@ -2,8 +2,8 @@
 // asks before it goes, whether by Cancel, a swipe down or Android's back.
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useEffect, useMemo, useRef } from "react";
-import { Alert } from "react-native";
-import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
+import { confirmDiscard } from "./confirmDiscard";
+import { DISCARD_TITLE, sheetLeave } from "./sheetLeave";
 
 export interface SheetController {
 	/** Close as a person would: a sheet with unsaved input asks first. */
@@ -60,11 +60,4 @@ export function useSheet({
 		}),
 		[navigation],
 	);
-}
-
-/** Asks before unsaved input goes: "Discard your changes?" (or `title`),
- * Keep editing first, and only Discard runs `discard`. */
-export function confirmDiscard(discard: () => void, title = DISCARD_TITLE): void {
-	const alert = discardAlert(title, discard);
-	Alert.alert(alert.title, undefined, alert.buttons);
 }

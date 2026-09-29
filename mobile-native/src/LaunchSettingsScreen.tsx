@@ -14,7 +14,7 @@ import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
-import { confirmDiscard } from "./sheet/useSheet";
+import { confirmDiscard } from "./sheet/confirmDiscard";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {

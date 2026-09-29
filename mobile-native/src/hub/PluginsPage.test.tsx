@@ -3180,3 +3180,42 @@ it("waits for the installed list in the same padded space every Hub page waits i
 	const spinner = tree.root.findByProps({ accessibilityLabel: "Loading installed plugins" });
 	expect(spinner.props.style).toEqual({ padding: 32 });
 });
+
+function mountAdd(onClose = vi.fn()) {
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={async () => {}}
+		/>,
+	);
+	return { tree, onClose };
+}
+
+it("closes an untouched Add marketplace at once, by Cancel or a swipe", () => {
+	alertRequests.length = 0;
+	const { tree, onClose } = mountAdd();
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).toHaveBeenCalledTimes(2);
+	expect(alertRequests).toHaveLength(0);
+});
+
+it("asks before Cancel or a swipe throws away a typed source (spec 6)", () => {
+	alertRequests.length = 0;
+	const { tree, onClose } = mountAdd();
+	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).not.toHaveBeenCalled();
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Keep editing")?.onPress?.());
+	expect(onClose).not.toHaveBeenCalled();
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Discard")?.onPress?.());
+	expect(onClose).toHaveBeenCalledOnce();
+});
