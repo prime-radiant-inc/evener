@@ -388,6 +388,8 @@ export function createNewSessionStore(
 					saving = false;
 					return { status: "blocked" };
 				}
+				// The draft as this start sent it; only that draft is cleared when it lands.
+				const submittedDraft = lastSaved;
 				startDispatched = true;
 				creationRequested = true;
 				const result = await current.start({
@@ -403,9 +405,14 @@ export function createNewSessionStore(
 				if (storage) {
 					saving = true;
 					try {
-						storage().clear(hubId);
-						emptyForm();
-						lastSaved = creationDraftMetadata(snapshot());
+						// Another form on this hub may have saved a newer draft while
+						// the start was on its way; that draft, and this form, stay.
+						const stored = storage().read(hubId);
+						if (stored === null || creationDraftMetadata(stored) === submittedDraft) {
+							storage().clear(hubId);
+							emptyForm();
+							lastSaved = creationDraftMetadata(snapshot());
+						}
 					} catch {
 						set({
 							storageError:

@@ -1,10 +1,11 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
-import type { CreationDraft } from "./creationDraftRepository";
+import { type CreationDraft, CreationDraftRepository } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
 import { ImageSelection } from "./imageSelection";
 import { createNewSessionStore } from "./newSession";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 function deferred() {
 	let resolve!: (value: unknown) => void;
@@ -931,4 +932,60 @@ it("drops a saved per-launch effort that came with no model", async () => {
 	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
 	expect(start).not.toHaveProperty("reasoningEffort");
 	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
+});
+
+describe("a start that lands clears only the draft it started", () => {
+	function repository() {
+		const { port } = openSqliteSyncDouble();
+		const drafts = new CreationDraftRepository(port);
+		return () => drafts;
+	}
+	function heldHub() {
+		const starts: ReturnType<typeof deferred>[] = [];
+		const service = createNewSessionService({
+			request(method: string) {
+				if (method === "thread/start") {
+					const start = deferred();
+					starts.push(start);
+					return start.promise;
+				}
+				return Promise.resolve({ data: [] });
+			},
+		} as unknown as ConversationClientLike);
+		return { service, starts };
+	}
+	const landed = { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} };
+
+	it("clears the draft and empties the form when the draft is still the one it started", async () => {
+		const storage = repository();
+		const { service, starts } = heldHub();
+		const store = createNewSessionStore("hub-a", storage);
+		store.getState().bind(service);
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("fix the flaky test");
+		const started = store.getState().submit();
+		await flush();
+		starts[0]?.resolve(landed);
+		expect(await started).toMatchObject({ status: "created" });
+		expect(storage().read("hub-a")).toBeNull();
+		expect(store.getState()).toMatchObject({ cwd: "", prompt: "" });
+	});
+
+	it("keeps a newer draft another form saved while the start was on its way", async () => {
+		const storage = repository();
+		const { service, starts } = heldHub();
+		const first = createNewSessionStore("hub-a", storage);
+		first.getState().bind(service);
+		await first.getState().setCwd("/project", false);
+		first.getState().setPrompt("fix the flaky test");
+		const started = first.getState().submit();
+		await flush();
+		// Another form on this hub reads the draft and edits it.
+		const second = createNewSessionStore("hub-a", storage);
+		second.getState().setPrompt("something else entirely");
+		starts[0]?.resolve(landed);
+		expect(await started).toMatchObject({ status: "created" });
+		expect(storage().read("hub-a")).toMatchObject({ prompt: "something else entirely" });
+		expect(second.getState().prompt).toBe("something else entirely");
+	});
 });
