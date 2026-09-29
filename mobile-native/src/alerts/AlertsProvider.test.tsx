@@ -6,6 +6,7 @@ import {
 	answer,
 	answerNotices,
 	boundary,
+	fail,
 	type Hub,
 	hubNotice,
 	invalidate,
@@ -231,6 +232,30 @@ it("alerts a notice that appears later, never one there at first, never a count 
 		await tick();
 	});
 	expect(shownRefs()).toEqual(["signInRequired:anthropic"]);
+});
+
+it("takes a changed list as the notice baseline when the list read failed, and alerts what appears after", async () => {
+	const hub = boundary();
+	connect(hub.client);
+	mount();
+	await act(async () => {
+		answer(hub, "live", { sessions: [], remaining: 0 });
+		answer(hub, "needs_you", { sessions: [], remaining: 0 });
+		answer(hub, "manifest", manifest({ sources }));
+		fail(hub, "notices", "request timed out");
+		await tick();
+	});
+	await act(async () => {
+		// Its first list: the baseline, so it alerts nothing.
+		noticesChanged(hub, [hubNotice("signInRequired", "openai")]);
+		await tick();
+	});
+	expect(probe.snapshot?.banner).toBeNull();
+	await act(async () => {
+		noticesChanged(hub, [hubNotice("signInRequired", "openai"), hubNotice("hostOffline", "laptop")]);
+		await tick();
+	});
+	expect(shownRefs()).toEqual(["hostOffline:laptop"]);
 });
 
 it("holds a banner while you read or type, and counts what waits", async () => {

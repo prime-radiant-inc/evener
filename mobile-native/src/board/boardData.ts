@@ -476,8 +476,18 @@ export function createBoardController({ scope = "board" }: BoardControllerOption
 		bound.stop.push(
 			bound.manifest.watch(),
 			client.onNotification((event) => {
-				if (event.method === "evener/notices/changed" && readers === bound && takeNotices(event.params.notices))
-					publish();
+				if (event.method !== "evener/notices/changed" || readers !== bound) return;
+				// The hub orders a list response against a broadcast only while
+				// it derives, and never re-broadcasts a list it announced: a read
+				// still out is older than this list, so it is dropped.
+				bound.noticeRead += 1;
+				// A changed list is a baseline too, so the alerts stay live
+				// when the read was dropped or failed; a notice that first
+				// appears in this list counts as baseline and never alerts.
+				const changed = takeNotices(event.params.notices);
+				if (!changed && noticesRead) return;
+				noticesRead = true;
+				publish();
 			}),
 		);
 		if (paused) {

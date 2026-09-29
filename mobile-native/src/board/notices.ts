@@ -22,9 +22,7 @@ export type Notice = { key: string; text: string } & (
 export function notices(input: { hubNotices: readonly HubNotice[]; sources: readonly Source[] }): Notice[] {
 	// The count keeps its noun on its line: a no-break space joins them.
 	const withCount = (sentence: string, notice: HubNotice) =>
-		notice.affectedSessions
-			? `${sentence} · ${plural(notice.affectedSessions, "session").replace(" ", "\u00a0")}`
-			: sentence;
+		notice.affectedSessions ? `${sentence} · ${plural(notice.affectedSessions, "session", "\u00a0")}` : sentence;
 	const brokenPlugins = input.hubNotices.filter((notice) => notice.kind === "pluginBroken");
 	return input.hubNotices.flatMap((notice): Notice[] => {
 		const key = notice.id;

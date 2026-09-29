@@ -671,6 +671,34 @@ it("takes each evener/notices/changed list as the notices, with no read", async 
 	expect(requestsFor(hub, "notices")).toHaveLength(1);
 });
 
+// The hub orders a list response against a broadcast only while it derives,
+// and never re-broadcasts a list it announced, so a read answered after a
+// changed list is older than it.
+it("drops a list read that answers after a changed list", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	noticesChanged(hub, [offline]);
+	answerNotices(hub, [signIn]);
+	await tick();
+	expect(board.getSnapshot().notices).toEqual([offline]);
+});
+
+// A changed list is a baseline too, so the alerts stay live when the read
+// was dropped or failed. A notice that first appears in that list counts as
+// baseline and never alerts: the price of not waiting on a read that may
+// never land.
+it("takes a changed list as its first notice read when the read failed", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	fail(hub, "notices", "boom");
+	await tick();
+	expect(board.getSnapshot().noticesRead).toBe(false);
+	noticesChanged(hub, [offline]);
+	expect(board.getSnapshot()).toMatchObject({ notices: [offline], noticesRead: true });
+});
+
 it("shows no notices and no error on a hub without evener/notices/list", async () => {
 	const hub = boundary();
 	const board = createBoardController();

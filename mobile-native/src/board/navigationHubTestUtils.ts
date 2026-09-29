@@ -108,13 +108,13 @@ export function invalidate(
 		});
 }
 /** A hub notice (S11) as evener/notices/list and evener/notices/changed
- * carry it: "<kind>:<subject>", its count only when the hub has one. */
-export const hubNotice = (kind: string, subject: string, affectedSessions?: number): HubNotice => ({
-	id: `${kind}:${subject}`,
-	kind,
-	subject,
-	...(affectedSessions ? { affectedSessions } : {}),
-});
+ * carry it (cmd/evener-hub/app_notices.go): "<kind>:<subject>", and
+ * "<kind>:<plugin>@<marketplace>" with its marketplace for a broken plugin;
+ * its count only when the hub has one. */
+export const hubNotice = (kind: string, subject: string, affectedSessions?: number): HubNotice =>
+	kind === "pluginBroken"
+		? { id: `${kind}:${subject}@evener`, kind, subject, marketplace: "evener" }
+		: { id: `${kind}:${subject}`, kind, subject, ...(affectedSessions ? { affectedSessions } : {}) };
 export function answerNotices(hub: Hub, notices: HubNotice[]) {
 	next(hub, "notices").resolve({ notices } as never);
 }

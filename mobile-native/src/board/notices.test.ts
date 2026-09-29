@@ -129,7 +129,7 @@ it("keeps the hub's order, and leaves out a kind it doesn't know", () => {
 				notice("signInRequired", "openai"),
 				notice("somethingNew", "x"),
 				notice("hostOffline", "studio"),
-				{ ...notice("pluginBroken", "go"), marketplace: "evener" },
+				{ ...notice("pluginBroken", "go"), id: "pluginBroken:go@evener", marketplace: "evener" },
 			],
 			sources: [],
 		}).map((found) => found.kind),

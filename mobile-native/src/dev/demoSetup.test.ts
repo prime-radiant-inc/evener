@@ -4,9 +4,10 @@
 import { WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { createDemoFleet } from "./demoFleet.js";
-import { createDemoSetup } from "./demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_PROVIDERS } from "./demoSetup.js";
 
-const setup = (offlineHost = false) => createDemoSetup(createDemoFleet({ offlineHost }), { offlineHost });
+const setup = (offlineHost = false) =>
+	createDemoSetup(createDemoFleet({ offlineHost, modelProviders: DEMO_MODEL_PROVIDERS }), { offlineHost });
 
 describe("hosts and updates", () => {
 	it("lists paradise-park from hub.toml, attached, on an older version", () => {
