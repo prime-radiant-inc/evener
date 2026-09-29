@@ -191,7 +191,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, _, ok := readOutputImageFile(abs)
+	data, _, ok := readOutputImageInRoot(cwd, abs)
 	if !ok {
 		http.NotFound(w, r)
 		return

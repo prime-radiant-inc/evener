@@ -22,7 +22,7 @@ import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
 
 export interface CommandsHost {
 	session: ComposerCommandSession;
@@ -165,14 +165,7 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 						autoCorrect={false}
 						clearButtonMode="while-editing"
 						allowFontScaling={allowFontScaling}
-						style={{
-							minHeight: 36,
-							paddingHorizontal: 12,
-							borderRadius: 10,
-							backgroundColor: palette.inset,
-							color: palette.inkHi,
-							fontSize: 17 * scale,
-						}}
+						style={searchFieldStyle(palette, scale)}
 					/>
 				</View>
 			}

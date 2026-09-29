@@ -296,9 +296,14 @@ const FAMILIES: Record<string, Family> = {
 };
 
 /** What a step acted on: the command for a shell step, else the file or path
- * it named. */
-export function stepTarget(label: string, argumentsJSON: string | undefined): string | undefined {
-	const args = parseArgs(argumentsJSON);
+ * it named. `parsed` is the arguments already decoded, for a caller that read
+ * them itself. */
+export function stepTarget(
+	label: string,
+	argumentsJSON: string | undefined,
+	parsed?: Record<string, unknown>,
+): string | undefined {
+	const args = parsed ?? parseArgs(argumentsJSON);
 	return FAMILIES[label] === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
 }
 

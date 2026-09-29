@@ -15,12 +15,14 @@ export interface ScrollGeometry {
 	contentOffset: { y: number };
 	contentSize: { height: number };
 	layoutMeasurement: { height: number };
+	/** iOS: a bar the list runs under, as a bottom inset past its content. */
+	contentInset?: { bottom: number };
 }
 
 /** Whether a scroll position is at the transcript's end: within AT_END_PT of
- * it, or everything fits in the viewport. */
-export function atEnd({ contentOffset, contentSize, layoutMeasurement }: ScrollGeometry): boolean {
-	return contentOffset.y + layoutMeasurement.height >= contentSize.height - AT_END_PT;
+ * it, or everything fits in the viewport. The end is past any bottom inset. */
+export function atEnd({ contentOffset, contentSize, layoutMeasurement, contentInset }: ScrollGeometry): boolean {
+	return contentOffset.y + layoutMeasurement.height >= contentSize.height + (contentInset?.bottom ?? 0) - AT_END_PT;
 }
 
 export interface LiveEndFollow {

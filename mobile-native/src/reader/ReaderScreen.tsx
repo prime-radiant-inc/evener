@@ -5,7 +5,6 @@
 // leave. It never shows a Retry, Refresh or Reconnect: it reads
 // again on its own when it comes back to the front, when the connection
 // returns, and when the document's session ends a turn.
-import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
@@ -85,7 +84,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { document, reload } = useDocument(hubId, sessionRef, path);
 	const inFront = useScreenInFront(route.key);
 	// Banners wait while you read (spec 13.3); Back counts what waits.
-	useHoldAlerts(useIsFocused(), "quiet");
+	// "In front" is the Reader's own notion of reading: it stays true while a
+	// sheet covers the Reader and follows the stack, so a hold ends when the
+	// Reader is actually left even if a fast swipe never delivers a blur.
+	useHoldAlerts(inFront, "quiet");
 	const held = useHeldAlertCount();
 	const { palette } = useColors();
 	const scale = useTextScale();

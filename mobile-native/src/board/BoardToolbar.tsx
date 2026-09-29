@@ -1,15 +1,23 @@
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { type LayoutChangeEvent, Pressable, type StyleProp, Text, View, type ViewStyle } from "react-native";
 import { BarFrame } from "../design/BarFrame";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useConnectionStatusText } from "./connectionStatus";
 
+/** Where the Board lays its bar (over the Board's end) and how it learns
+ * the bar's height. */
+export type ToolbarPlacement = {
+	style?: StyleProp<ViewStyle>;
+	testID?: string;
+	onLayout?: (event: LayoutChangeEvent) => void;
+};
+
 /** The bar under the Board, above the home indicator: the toolbar, or the
  * select bar in its place. */
-export function ToolbarFrame({ children }: { children: ReactNode }) {
+export function ToolbarFrame({ children, ...placement }: { children: ReactNode } & ToolbarPlacement) {
 	return (
-		<BarFrame>
+		<BarFrame {...placement}>
 			<View style={{ height: 50, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>{children}</View>
 		</BarFrame>
 	);
@@ -59,16 +67,17 @@ export function BoardToolbar({
 	newSessionDisabled,
 	onNewSession,
 	onSelect,
+	...placement
 }: {
 	newSessionDisabled: boolean;
 	onNewSession: () => void;
 	onSelect?: () => void;
-}) {
+} & ToolbarPlacement) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const status = useConnectionStatusText();
 	return (
-		<ToolbarFrame>
+		<ToolbarFrame {...placement}>
 			<View style={{ flex: 1, alignItems: "flex-start" }}>
 				{onSelect ? <BarButton label="Select" onPress={onSelect} /> : null}
 			</View>
