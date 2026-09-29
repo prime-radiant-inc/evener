@@ -278,6 +278,18 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A URL with a lone, unbalanced parenthesis still reads to its first close,
+	// as it did before the balanced form, so no URL text is left behind.
+	it("strips an image whose URL has an unbalanced parenthesis", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![a](https://x.test/a_(b.png)",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na" },
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
