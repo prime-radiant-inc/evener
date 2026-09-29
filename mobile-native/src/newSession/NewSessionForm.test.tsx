@@ -774,3 +774,22 @@ it("raises no alert for a failure the form in front already shows", async () => 
 	expect(form.alerts.getSnapshot().banner).toBeNull();
 	form.dispose();
 });
+
+it("says a start the connection lost after its sheet closed may exist (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// The connection drops while the hub is still starting it.
+	await act(async () => form.store.getState().bind(null));
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{
+			kind: "startFailed",
+			title: "Couldn't confirm the new session started",
+			reason: "Creation could not be confirmed. Check the session list before trying again; the session may exist.",
+		},
+	]);
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
+});
