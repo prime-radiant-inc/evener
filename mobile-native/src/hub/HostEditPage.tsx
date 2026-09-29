@@ -94,7 +94,8 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 		};
 		navigation.setOptions({
 			title: `Edit ${name}`,
-			headerLeft: () => <HeaderButton label="Cancel" onPress={() => navigation.goBack()} />,
+			// Cancel holds while Save runs: a save that lands goes back itself.
+			headerLeft: () => <HeaderButton label="Cancel" disabled={saving} onPress={() => navigation.goBack()} />,
 			headerRight: () => (
 				<HeaderButton label="Save" emphasized disabled={saving || !ready} onPress={() => void save()} />
 			),

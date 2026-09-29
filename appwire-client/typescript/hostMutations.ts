@@ -108,11 +108,17 @@ export function createHostMutations(ports: HostMutationPorts): HostMutations {
     const held = ports.heldPair(name);
     if (held !== undefined) return held;
     await ports.reRead();
-    const reread = ports.heldPair(name);
-    if (reread === undefined) {
+    return listedPair(name);
+  }
+
+  /** The pair the rows hold after a re-read, or a local refusal when the
+   * registry no longer lists the name. */
+  function listedPair(name: string): HostMutationPair {
+    const pair = ports.heldPair(name);
+    if (pair === undefined) {
       throw new Error(`host "${name}" is not listed, so there is no guarded pair to send with the request`);
     }
-    return reread;
+    return pair;
   }
 
   /** Sends a guarded mutation with the retry path the spec's `stale-entry`
@@ -129,11 +135,11 @@ export function createHostMutations(ports: HostMutationPorts): HostMutations {
     } catch (error) {
       if (!(error instanceof WireError) || error.evenerErrorInfo !== ErrorStaleEntry) throw error;
       // The held row is exactly what the refusal just proved stale, so the
-      // retry re-reads before it echoes anything: pairForMutation after this
-      // read answers the current row (or refuses locally when the registry no
-      // longer lists the name).
+      // retry re-reads before it echoes anything, then echoes that read's row
+      // or refuses locally when the registry no longer lists the name. One
+      // read only: a second could find the name re-added as another host.
       await ports.reRead();
-      return await send(await pairForMutation(name), ports.newMutationId());
+      return await send(listedPair(name), ports.newMutationId());
     }
   }
 

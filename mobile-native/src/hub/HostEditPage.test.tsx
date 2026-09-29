@@ -161,6 +161,8 @@ it("holds Save only while it saves: the hub is the one validator", async () => {
 	expect(page.header("headerRight").props.disabled).toBe(false);
 	await act(async () => page.header("headerRight").props.onPress());
 	expect(page.header("headerRight").props.disabled).toBe(true);
+	// Cancel holds too: the save would otherwise go back a second time.
+	expect(page.header("headerLeft").props.disabled).toBe(true);
 	await act(async () => release());
 	await settle();
 	page.dispose();

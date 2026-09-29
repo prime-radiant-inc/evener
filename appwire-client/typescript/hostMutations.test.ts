@@ -101,6 +101,17 @@ describe("guarded host mutations (registry spec 08 §12)", () => {
     expect(h.sent).toHaveLength(2);
   });
 
+  test("a stale-entry refusal whose re-read no longer lists the host refuses locally, reading only once", async () => {
+    const h = harness([row("alpha")]);
+    h.answers.push(() => {
+      h.registry.rows = [];
+      throw stale();
+    });
+    await expect(h.mutations.remove("alpha")).rejects.toThrow(/not listed/);
+    expect(h.registry.reads).toBe(1);
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("any other refusal is not retried", async () => {
     const h = harness([row("alpha")]);
     h.answers.push(() => {
