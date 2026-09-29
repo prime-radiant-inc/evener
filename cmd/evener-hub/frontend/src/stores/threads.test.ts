@@ -49,6 +49,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace"
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
+import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
@@ -13326,6 +13327,81 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       await vi.advanceTimersByTimeAsync(11_000);
       await rejection;
       expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A settle is a truth-changing event like a commit, so it must invalidate an
+  // in-flight refresh read the same way. Park the refresh's outbox read (armed
+  // at the drain's own attempt, which reads nothing after it), settle the id
+  // that read will return, then let the read land with its pre-settlement
+  // snapshot: the ref's generation moved under it, so the snapshot is discarded
+  // and the delivered id is not put back. Without the settle's bump the stale
+  // read reinserts the id and every later fallback send fails closed.
+  test("a settle that lands during a refresh read is not undone by its snapshot", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-settle-during-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // The refresh's outbox read parks on a gate; listOptimistic stays real, so
+    // the read's Promise.all waits on the outbox half alone.
+    let releaseRead: (rows: MutationOutboxRecord[]) => void = () => {};
+    const readGate = new Promise<MutationOutboxRecord[]>((resolve) => {
+      releaseRead = resolve;
+    });
+    let parked = false;
+    const realListOutbox = storage.listOutbox.bind(storage);
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      if (!parked) {
+        parked = true;
+        storage.listOutbox = () => readGate;
+      }
+      return marked;
+    };
+
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !parked; i += 1) await probe.listOutbox("ref_a");
+    expect(parked).toBe(true);
+    // The pre-settlement snapshot the parked read will return.
+    const snapshot = await probe.listOutbox("ref_a");
+    expect(snapshot.map((record) => record.state)).toEqual(["submitting"]);
+
+    // The settle lands while that read is still in flight.
+    expect(await storage.settleReceipt(snapshot[0]!.clientMutationId, "pending")).toBe(true);
+    // Let the parked read land with its pre-settlement snapshot, then stop
+    // stubbing reads so nothing later re-serves it.
+    releaseRead(snapshot);
+    storage.listOutbox = realListOutbox;
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    probe.close();
+
+    // Storage wedges; the delivered row must not refuse the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      // B's fallback dispatched: the settled id was not restored.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
       openSpy.mockRestore();

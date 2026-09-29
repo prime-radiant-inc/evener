@@ -779,6 +779,13 @@ function noteHandledMutation(clientMutationId: string): void {
   for (const [ref, ids] of undeliveredMutationIds) {
     if (!ids.delete(clientMutationId)) continue;
     if (ids.size === 0) undeliveredMutationIds.delete(ref);
+    // A settle is a truth-changing event like a commit, so it invalidates
+    // in-flight reads the same way: without this bump an outbox read parked
+    // before the settle returns a pre-settlement snapshot, passes the
+    // generation check, and puts the delivered id back - refusing every later
+    // fallback send until another refresh happens to land. The loop already
+    // names the ref, so no plumbing is needed to find it.
+    noteMutationStateChange(ref);
   }
 }
 // A successful read is the authoritative snapshot of the ref: its ids are
@@ -788,13 +795,21 @@ function replaceUndeliveredMutations(ref: string, clientMutationIds: Iterable<st
   if (ids.size === 0) undeliveredMutationIds.delete(ref);
   else undeliveredMutationIds.set(ref, ids);
 }
-// Per-ref generation bumped by every durable outbox commit. A refresh records
-// it before its outbox read and discards its result if it moved under the read,
-// so a read that began before a commit cannot land after it and replace the
-// commit's own ids (or the dispatch arm) with a stale snapshot - which would let
-// a later storage-timeout fallback send directly while the committed row is
-// still queued.
-const mutationCommitGenerations = new Map<string, number>();
+// Per-ref generation of the ref's durable outbox state as this tab knows it,
+// bumped by both events that change it: a durable commit of any row (a
+// born-canceled one moves the pins without adding an id) and a settle that
+// proves delivery. A refresh records it before its outbox read and discards its
+// result if it moved under the read, so a snapshot taken before either event
+// cannot land after it and restore an id that event resolved (nor drop the
+// commit's own ids, nor resurrect a stale dispatch arm) - which would let a
+// later storage-timeout fallback send directly while the row is still queued.
+// A read's own reconciliation does not bump: reads are what the generation is
+// compared against, and bumping there would let a newer read's snapshot be
+// discarded by an older one.
+const mutationStateGenerations = new Map<string, number>();
+function noteMutationStateChange(ref: string): void {
+  mutationStateGenerations.set(ref, (mutationStateGenerations.get(ref) ?? 0) + 1);
+}
 // Per-ref count of durable enqueues whose write is still in flight (from the
 // click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
 // serve this: a background pin refresh clears a ref's arm when the outbox reads
@@ -963,7 +978,7 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
-    const generation = mutationCommitGenerations.get(targetRef) ?? 0;
+    const generation = mutationStateGenerations.get(targetRef) ?? 0;
     // A failed read proves nothing, so it changes nothing: guessing "nothing is
     // undelivered" here is what let a later storage-timeout send dispatch ahead
     // of a committed row whose delivery no one had proven. The rejection still
@@ -976,7 +991,7 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
     if (!isCurrentMutationRuntime(runtime)) return;
     // A durable commit for this ref since the read began means this snapshot
     // predates it: discard rather than replace the commit's own ids.
-    if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) continue;
+    if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
     // A successful read is the authoritative snapshot: the ref's ids are
     // exactly the non-canceled rows this read observed.
     replaceUndeliveredMutations(
@@ -1012,7 +1027,7 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 // turn on the next discovery; a dispatch killed here costs the user's save.
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const generation = mutationCommitGenerations.get(targetRef) ?? 0;
+  const generation = mutationStateGenerations.get(targetRef) ?? 0;
   // As in refreshMutationPins: a failed read proves nothing and changes
   // nothing, so nothing here catches it.
   const [outbox, optimistic] = await Promise.all([
@@ -1021,7 +1036,7 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
-  if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) return;
+  if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
   replaceUndeliveredMutations(
     targetRef,
     outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
@@ -2390,9 +2405,9 @@ function disarmQuiescedMutationArm(ref: string): void {
 }
 
 // Note a durable outbox commit for the ref: refreshes that began their read
-// before it discard their (now-stale) snapshot - see mutationCommitGenerations.
+// before it discard their (now-stale) snapshot - see mutationStateGenerations.
 function noteMutationCommit(ref: string): void {
-  mutationCommitGenerations.set(ref, (mutationCommitGenerations.get(ref) ?? 0) + 1);
+  noteMutationStateChange(ref);
 }
 
 // The hydrated-replay gate: a matching pending hydration for the ref keeps
@@ -4898,7 +4913,7 @@ export function resetThreadsStoreForTests(): void {
   pinnedMutationRefs.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();
-  mutationCommitGenerations.clear();
+  mutationStateGenerations.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
