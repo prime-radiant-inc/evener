@@ -12,29 +12,16 @@ declare global {
 	}
 }
 
-// Duplicated verbatim from the web security module at
-// cmd/evener-hub/frontend/src/widgets/mermaid/security.ts (MERMAID_FORBID_TAGS).
-// There is no shared package between the two frontends, so the literal is a
-// copy: keep it in sync with that module. Resource-bearing and navigational
-// tags are forbidden at BOTH layers here too — mermaid's own sanitize
-// (dompurifyConfig below) and this post-render pass. The render-time network
-// fetch (mermaid's temporary render DOM) can only be stopped at the mermaid
-// layer; the post-render pass covers markup passed through labels.
-const MERMAID_FORBID_TAGS = [
-	"a",
-	"img",
-	// SVG <image href> is a resource-fetch channel; no mermaid diagram type emits it.
-	"image",
-	"video",
-	"audio",
-	"iframe",
-	"object",
-	"embed",
-	"source",
-	"track",
-	"form",
-	"input",
-] as const;
+// The forbid list is not a literal here: the generator
+// (scripts/build-mermaid-page.mts) imports MERMAID_FORBID_TAGS from the web
+// security module (cmd/evener-hub/frontend/src/widgets/mermaid/security.ts -
+// the one source) and substitutes it into this bundle via esbuild's define, so
+// the two frontends cannot drift. Resource-bearing and navigational tags are
+// forbidden at BOTH layers here too — mermaid's own sanitize (dompurifyConfig
+// below) and this post-render pass. The render-time network fetch (mermaid's
+// temporary render DOM) can only be stopped at the mermaid layer; the
+// post-render pass covers markup passed through labels.
+declare const MERMAID_FORBID_TAGS: readonly string[];
 
 // Same profile config as the web sanitizer (MERMAID_SANITIZE_CONFIG in the
 // module above): html + svg + svgFilters keeps mermaid's <foreignObject> label

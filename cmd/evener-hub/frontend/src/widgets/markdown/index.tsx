@@ -363,7 +363,7 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // keyed on the head's own exact text, never stale, misses evaluate once.
   const headGateCacheRef = useRef<HeadGateVerdict | null>(null);
   const html = useMemo(() => {
-    if (segmented) return null;
+    if (segmented) return "";
     if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
@@ -431,7 +431,7 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // takes whenever a fence sits in the tail window, so no new throttle tier is
   // added. The hook is called unconditionally so hook order is stable as a
   // source grows into (or out of) a fence; the settled single-root `html` is
-  // null on this branch and vice versa.
+  // empty on this branch and vice versa.
   const segments = useMemo(
     () => (segmented ? splitMarkdownSegments(live ? closeOpenMarkdown(source) : source, live ? source : null) : null),
     [source, live, segmented],
@@ -448,7 +448,7 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
   if (!segmented) {
     // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
-    return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html ?? "" }} />;
+    return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
   }
 
   // Keys combine a sequence position with content-derived values, so a

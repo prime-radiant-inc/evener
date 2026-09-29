@@ -108,11 +108,6 @@ async function main() {
       if (result.missingLabels.length > 0) {
         failures.push(`benign diagram is missing labels: ${result.missingLabels.join(", ")}`);
       }
-      if (result.labelsPresent.length !== 3) {
-        failures.push(
-          `expected all 3 benign labels present, saw ${result.labelsPresent.length} (${result.labelsPresent.join(", ")})`,
-        );
-      }
       if (result.externalAttempts.length > 0) {
         failures.push(
           `hostile diagram issued ${result.externalAttempts.length} external fetch attempt(s): ${result.externalAttempts.join(", ")}`,

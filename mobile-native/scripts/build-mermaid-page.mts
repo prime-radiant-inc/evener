@@ -9,6 +9,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+// The one source for the forbid list: the web frontend's security module owns
+// it, and this generator substitutes it into the native page bundle so the two
+// frontends cannot drift. Imported as TS (this script runs under tsx), while
+// the emitted page stays a plain inlined bundle.
+import { MERMAID_FORBID_TAGS } from "../../cmd/evener-hub/frontend/src/widgets/mermaid/security";
 
 const nativeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GENERATED_FILE = path.join(nativeRoot, "src", "generated", "mermaidPage.ts");
@@ -58,6 +63,9 @@ export async function buildMermaidPageHtml(): Promise<string> {
 		// bundle: "none" would strip them, and the MIT terms require retaining them.
 		legalComments: "eof",
 		charset: "utf8",
+		// mermaidPageContent.ts declares MERMAID_FORBID_TAGS; esbuild substitutes
+		// the web module's current list here, so the page carries no copy of it.
+		define: { MERMAID_FORBID_TAGS: JSON.stringify(MERMAID_FORBID_TAGS) },
 	});
 	const [output] = result.outputFiles ?? [];
 	if (!output) throw new Error("esbuild produced no bundle for the mermaid page");

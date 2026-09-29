@@ -21,6 +21,7 @@
 // resource timing entry.
 import { createRoot } from "react-dom/client";
 import { MermaidDiagram } from "../widgets/mermaid";
+import { MERMAID_DIAGRAM_ATTR } from "../widgets/mermaid/markers";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -107,9 +108,8 @@ function installImageWrapping(): void {
     for (const record of records) {
       for (const node of record.addedNodes) {
         if (!(node instanceof Element)) continue;
-        const images = node.querySelectorAll("img");
-        const self = node.tagName === "IMG" ? [node as HTMLImageElement] : [];
-        for (const image of [...self, ...images]) noteExternal(image.getAttribute("src"));
+        if (node.tagName === "IMG") noteExternal(node.getAttribute("src"));
+        for (const image of node.querySelectorAll("img")) noteExternal(image.getAttribute("src"));
       }
     }
   });
@@ -139,13 +139,13 @@ function mermaidGuardResult(): {
   externalAttempts: string[];
   anchors: number;
 } {
-  const containers = [...document.querySelectorAll("[data-mermaid-diagram]")];
+  const containers = [...document.querySelectorAll(`[${MERMAID_DIAGRAM_ATTR}]`)];
   const text = containers.map((container) => container.textContent ?? "").join("\n");
   return {
     labelsPresent: BENIGN_LABELS.filter((label) => text.includes(label)),
     missingLabels: BENIGN_LABELS.filter((label) => !text.includes(label)),
     externalAttempts: [...externalAttempts],
-    anchors: document.querySelectorAll("[data-mermaid-diagram] a").length,
+    anchors: document.querySelectorAll(`[${MERMAID_DIAGRAM_ATTR}] a`).length,
   };
 }
 
@@ -156,7 +156,7 @@ function mermaidGuardResult(): {
 async function waitForMermaidGuardSettled(): Promise<ReturnType<typeof mermaidGuardResult>> {
   const deadline = performance.now() + 20_000;
   for (;;) {
-    const containers = [...document.querySelectorAll("[data-mermaid-diagram]")];
+    const containers = [...document.querySelectorAll(`[${MERMAID_DIAGRAM_ATTR}]`)];
     const settled =
       containers.length === 2 &&
       containers.every(
@@ -165,7 +165,7 @@ async function waitForMermaidGuardSettled(): Promise<ReturnType<typeof mermaidGu
     if (settled) break;
     if (performance.now() > deadline) {
       throw new Error(
-        `mermaidguard harness: diagrams never settled (containers=${containers.length}, svgs=${document.querySelectorAll("[data-mermaid-diagram] svg").length})`,
+        `mermaidguard harness: diagrams never settled (containers=${containers.length}, svgs=${document.querySelectorAll(`[${MERMAID_DIAGRAM_ATTR}] svg`).length})`,
       );
     }
     await new Promise((resolve) => requestAnimationFrame(resolve));

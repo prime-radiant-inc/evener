@@ -12,6 +12,11 @@
 // Identification compares the real source's own lex, never raw-vs-source
 // suffix checks: marked normalizes CRLF at lex, so a CRLF fence's raw does
 // not suffix-match the source (verified).
+//
+// The fence helpers below (MERMAID_FENCE, isMermaidCodeToken, mermaidText,
+// FENCE_CLOSE_LINE, fenceTokenTerminated) are mirrored in the native sibling
+// mobile-native/src/markdownSegments.ts - keep the two in sync (their bodies
+// deliberately differ where noted there).
 import type { Token } from "marked";
 import { markdownLexer } from "./lexer";
 
@@ -104,7 +109,9 @@ export function splitMarkdownSegments(closedSource: string, realSource: string |
   if (realSource !== null && realSourceTailIsOpenMermaid(realSource)) {
     const last = segments[segments.length - 1];
     if (last?.kind === "mermaid") {
-      const demoted = markdownLexer.lexer(closedSource).slice(-1);
+      // The first lex above already produced this token; reuse its last entry
+      // rather than re-lexing the whole source to find the same fence.
+      const demoted = tokens.slice(-1);
       segments[segments.length - 1] = { kind: "markdown", tokens: demoted };
     }
   }

@@ -7,6 +7,10 @@ import DOMPurify from "dompurify";
 // (mermaid's temporary render DOM) can only be stopped at the mermaid layer.
 // Verified in real Chrome against mermaid 11.17.2 and 12.0.0; see the spec's
 // Security section.
+//
+// This list is the one source for the native mermaid page too: the native
+// generator (mobile-native/scripts/build-mermaid-page.mts) imports it directly
+// and interpolates it into that page's bundle, so the two never drift.
 export const MERMAID_FORBID_TAGS = [
   "a",
   "img",

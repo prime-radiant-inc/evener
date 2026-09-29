@@ -1,34 +1,3 @@
-import { useSyncExternalStore } from "react";
-import { usePrefsStore } from "../../stores/prefs";
-
-const DARK_QUERY = "(prefers-color-scheme: dark)";
-
-// jsdom has no matchMedia at all, so these guard exactly the way
-// stores/prefs.ts's systemPrefersDark and shell/holdhints/usePrefersReducedMotion
-// do: an environment without the API degrades to the dark default rather than
-// throwing at render. systemDark therefore reports dark when the query cannot
-// be read, matching prefs.ts's pre-existing "system always rendered dark"
-// fallback.
-function systemDark(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
-  return window.matchMedia(DARK_QUERY).matches;
-}
-
-function subscribe(callback: () => void): () => void {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
-  const query = window.matchMedia(DARK_QUERY);
-  query.addEventListener("change", callback);
-  return () => query.removeEventListener("change", callback);
-}
-
-/** The theme actually in effect: the pref, with "system" resolved live. */
-export function useResolvedScheme(): "light" | "dark" {
-  const theme = usePrefsStore((state) => state.theme);
-  const systemIsDark = useSyncExternalStore(subscribe, systemDark);
-  if (theme === "system") return systemIsDark ? "dark" : "light";
-  return theme;
-}
-
 /** Maps the app's CSS tokens (read after the theme applies) onto mermaid's
  * themeVariables knobs, so a diagram picks up the app palette instead of
  * mermaid's own default theme. Tokens come from src/styles/tokens.css.

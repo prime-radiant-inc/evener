@@ -1,10 +1,14 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { useResolvedScheme } from "../../stores/prefs";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { DiagramViewer } from "./DiagramViewer";
+import { MERMAID_DIAGRAM_ATTR } from "./markers";
 import styles from "./mermaid.module.css";
-import { mermaidThemeVariables, useResolvedScheme } from "./resolveScheme";
+import { mermaidThemeVariables } from "./resolveScheme";
 import { renderMermaidSvg } from "./security";
+
+export { MERMAID_DIAGRAM_ATTR } from "./markers";
 
 const CLASS = {
   root: requireClass(styles.root, "mermaid.module.css", "root"),
@@ -46,8 +50,9 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
-      setTimeout(() => reject(new Error("render timed out")), renderTimeoutMs);
+      timeoutId = setTimeout(() => reject(new Error("render timed out")), renderTimeoutMs);
     });
     Promise.race([renderMermaidSvg(source, mermaidThemeVariables(scheme)), timeout])
       .then((svg) => {
@@ -58,6 +63,9 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
       });
     return () => {
       cancelled = true;
+      // The race leaves the timer pending once the render settles first, so it
+      // must be cleared here or it lives for the full timeout after unmount.
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     };
   }, [source, scheme, renderTimeoutMs]);
 
@@ -91,7 +99,7 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
         <button
           type="button"
           className={`${CLASS.root} ${CLASS.clickable}`}
-          data-mermaid-diagram=""
+          {...{ [MERMAID_DIAGRAM_ATTR]: "" }}
           aria-label="Open diagram fullscreen"
           onClick={() => setViewer({ svg })}
         >
@@ -105,7 +113,7 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: st
   }
 
   return (
-    <div className={CLASS.root} data-mermaid-diagram="">
+    <div className={CLASS.root} {...{ [MERMAID_DIAGRAM_ATTR]: "" }}>
       {body}
     </div>
   );

@@ -123,7 +123,6 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
         >
-          {/* svg arrives already sanitized via security.ts's two layers */}
           {/* biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized upstream in security.ts */}
           <div className={CLASS.zoomContent} style={zoomStyle} dangerouslySetInnerHTML={{ __html: svg }} />
         </div>

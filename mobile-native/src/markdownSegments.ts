@@ -7,6 +7,11 @@
 // fence still open at the tail (stream in flight) stays prose and renders as
 // a code block until its closer arrives - there is no closeOpenMarkdown on
 // native, so this is a terminated-raw check, not a two-lex comparison.
+//
+// The fence helpers below (MERMAID_FENCE, isMermaidCodeToken, mermaidText,
+// FENCE_CLOSE_LINE, fenceTokenTerminated) mirror the web sibling at
+// cmd/evener-hub/frontend/src/widgets/markdown/segments.ts - keep the two in
+// sync (their bodies deliberately differ where noted here).
 import { lexer, type Token } from "marked";
 
 export type NativeSegment = { kind: "markdown"; source: string } | { kind: "mermaid"; source: string };

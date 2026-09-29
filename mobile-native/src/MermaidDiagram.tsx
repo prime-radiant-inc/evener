@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import {
 	Modal,
-	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -13,8 +12,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { copyText } from "./clipboard";
-import { fonts } from "./design/tokens";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
+import { codeFontFamily } from "./markdownStyle";
 import { Action, styles as uiStyles, useColors } from "./ui";
 
 // Last posted height per source, so a FlatList remount shows the right-sized
@@ -27,6 +26,15 @@ const PLACEHOLDER_HEIGHT = 120;
 // tap-to-open Pressable is accessible={false}, so this action on the diagram's
 // accessible wrapper is the only way a screen-reader user can open the viewer.
 const OPEN_ACTION: AccessibilityActionInfo = { name: "open", label: "Open fullscreen" };
+
+// The WebView lockdown shared by the inline and zoom views; only scrollEnabled
+// differs (the inline diagram must not scroll, the fullscreen viewer may). One
+// object so the two cannot drift.
+const MERMAID_WEBVIEW_PROPS = {
+	originWhitelist: ["about:blank"],
+	source: { html: MERMAID_PAGE_HTML },
+	onShouldStartLoadWithRequest: (request: { url: string }) => request.url === "about:blank",
+};
 
 type PageMessage = { type: "ready" } | { type: "height"; value: number } | { type: "error"; message: string };
 
@@ -143,9 +151,7 @@ function ZoomWebView({ source }: { source: string }) {
 	return (
 		<WebView
 			ref={webView}
-			originWhitelist={["about:blank"]}
-			source={{ html: MERMAID_PAGE_HTML }}
-			onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+			{...MERMAID_WEBVIEW_PROPS}
 			scrollEnabled={true}
 			style={styles.webView}
 			onMessage={handleMessage}
@@ -168,11 +174,6 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	const [failed, setFailed] = useState(false);
 	const [open, setOpen] = useState(false);
 	const [showSource, setShowSource] = useState(false);
-
-	// The app's iOS-only Mono token; Android does not resolve "Menlo", so the
-	// source view and error fallback fall back to the platform monospace face
-	// (markdownStyle.ts's codeFontFamily is the precedent).
-	const codeFontFamily = Platform.OS === "ios" ? fonts.mono : "monospace";
 
 	// The page's bootstrap answers a render message; the source and theme cross
 	// as JSON, never string-interpolated into JS (spec: Security). The shared
@@ -232,7 +233,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 				onAccessibilityAction={onAccessibilityAction}
 				style={[styles.fallback, { backgroundColor: colors.surface, borderColor: colors.border }]}
 			>
-				<Text style={[styles.fallbackSource, { color: colors.text, fontFamily: codeFontFamily }]}>{source}</Text>
+				<Text style={[styles.fallbackSource, { color: colors.text, fontFamily: codeFontFamily() }]}>{source}</Text>
 				<Text style={[styles.fallbackNote, { color: colors.secondary }]}>Couldn't render this diagram.</Text>
 			</View>
 		);
@@ -256,9 +257,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 					<View pointerEvents="none" style={styles.fill}>
 						<WebView
 							ref={webView}
-							originWhitelist={["about:blank"]}
-							source={{ html: MERMAID_PAGE_HTML }}
-							onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+							{...MERMAID_WEBVIEW_PROPS}
 							scrollEnabled={false}
 							style={styles.webView}
 							onMessage={handleMessage}
@@ -280,7 +279,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 						</View>
 						{showSource ? (
 							<ScrollView contentContainerStyle={styles.sourceContainer}>
-								<Text style={[styles.source, { color: colors.text, fontFamily: codeFontFamily }]}>{source}</Text>
+								<Text style={[styles.source, { color: colors.text, fontFamily: codeFontFamily() }]}>{source}</Text>
 							</ScrollView>
 						) : (
 							<ZoomWebView source={source} />

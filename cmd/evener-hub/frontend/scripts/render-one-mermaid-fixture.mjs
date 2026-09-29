@@ -4,6 +4,7 @@
 // 11.17.2 and 12.0.0 (direct ESM import keeps Node's structuredClone).
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
+import { installJsdomSvgShims } from "./jsdomSvgShims.mjs";
 
 const { window } = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 globalThis.window = window;
@@ -23,23 +24,7 @@ globalThis.CSSStyleSheet =
   };
 window.CSSStyleSheet = globalThis.CSSStyleSheet;
 if (!("adoptedStyleSheets" in window.document)) window.document.adoptedStyleSheets = [];
-window.SVGElement.prototype.getBBox = () => ({ x: 0, y: 0, width: 50, height: 20 });
-window.SVGElement.prototype.getComputedTextLength = () => 50;
-window.SVGElement.prototype.getScreenCTM = () => ({
-  a: 1,
-  b: 0,
-  c: 0,
-  d: 1,
-  e: 0,
-  f: 0,
-  inverse() {
-    return this;
-  },
-  multiply() {
-    return this;
-  },
-});
-window.SVGElement.prototype.getPointAtLength = () => ({ x: 0, y: 0 });
+installJsdomSvgShims(window);
 
 const file = process.argv[2];
 const source = readFileSync(new URL(`../src/widgets/mermaid/testdata/sources/${file}`, import.meta.url), "utf8");
