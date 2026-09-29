@@ -2,17 +2,20 @@
 # package-import-paths-check.sh fails if any file in the app trees names the
 # AppWire TypeScript package by path instead of by its package name.
 #
-# It is a substring grep, not a parser. A quoted literal anywhere in a swept
-# file that contains `appwire-client/typescript` (the package by path) or
-# `/protocol/` (the directory the package used to live behind) fails the gate.
-# The rewriter's TypeScript reader is precise about which quoted strings are
-# imports; this gate is deliberately broader, because the cost of missing one
-# is a path import that typechecks and that nothing else in the tree notices.
-# The price of the breadth: a quoted path in a COMMENT -- a commented-out
-# import, an example in a doc comment -- is refused too, since grep cannot tell
-# it from a live import. Spell the package name, or move the string out of the
-# swept trees, or (for a config or a test that legitimately names the path) add
-# it to the exact-path exemptions below.
+# It is a line grep, not a parser. A quoted literal that follows a module-loading
+# keyword -- `from` (static import or re-export), a dynamic `import(` or
+# `require(`, a test's `vi.mock(`, or a side-effect `import "..."` -- and
+# contains `appwire-client/typescript` (the package by path) or `/protocol/`
+# (the directory the package used to live behind) fails the gate. The rewriter's
+# TypeScript reader is precise about which quoted strings are imports; this gate
+# is deliberately broader, because the cost of missing one is a path import that
+# typechecks and that nothing else in the tree notices. It cannot tell a live
+# import from a commented-out one on the same line, so a quoted path in a
+# COMMENT -- a commented-out import, an example in a doc comment -- is refused
+# too. Ordinary string data -- a docs URL, a demo path, a fixture label -- is
+# not a module-loading line and passes. Spell the package name, or move the
+# string out of the swept trees, or (for a config or a test that legitimately
+# names the path) add it to the exact-path exemptions below.
 #
 # --root points the sweep at a fixture tree instead of this checkout; only the
 # gate's own Go test passes it.
@@ -69,6 +72,12 @@ exempt_configs=(
 seam='/protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
 
+# The module-loading keywords a specifier can follow, each ending just before the
+# opening quote. `from` covers static imports, re-exports, and a statement
+# wrapped so its specifier lands on a line with no `import` keyword on it. A
+# quoted literal with none of these ahead of it is string data, not an import.
+loader='(^|[^[:alnum:]_])(from[[:space:]]+|require[[:space:]]*\([[:space:]]*|vi\.mock[[:space:]]*\([[:space:]]*|import[[:space:]]*\([[:space:]]*|import[[:space:]]+)'
+
 status=0
 
 report() {
@@ -102,7 +111,7 @@ for config in "${exempt_configs[@]}"; do
 	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
 	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
 done
-if found="$(grep "${sources[@]}" -rnE "[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
+if found="$(grep "${sources[@]}" -rnE "${loader}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
 	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then

@@ -101,6 +101,13 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 		{"cmd/evener-hub/frontend/src/singleQuote.ts", "import { errorText } from '../../protocol/errors';\n", "by path"},
 		{"mobile-native/src/noTrailingSlash.tsx", "import { AppwireClient } from \"../../appwire-client/typescript\";\n", "by path"},
 		{"cmd/evener-hub/frontend/src/seamDirItself.ts", "import { errorText } from \"../protocol\";\n", "by path"},
+		{"mobile-native/src/requirePath.cjs", "const wire = require(\"../../appwire-client/typescript/errors\");\nvoid wire;\n", "by path"},
+		{"mobile-native/src/viMockPath.test.ts", "vi.mock(\"../../appwire-client/typescript/errors\", () => ({}));\n", "by path"},
+		{"mobile-native/src/sideEffect.ts", "import \"../../appwire-client/typescript/errors\";\n", "by path"},
+		{"mobile-native/src/reExport.ts", "export { errorText } from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		// A wrapped statement puts the specifier on a line with no `import`
+		// keyword on it, so the rule has to read the `from` too.
+		{"mobile-native/src/multiline.ts", "import {\n\terrorText,\n} from \"../../appwire-client/typescript/errors\";\n", "by path"},
 	}
 	files := cleanPackageImportTree()
 	for _, c := range cases {
@@ -149,6 +156,25 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
 	if !passed {
 		t.Fatalf("the gate fired on a tree that never names the package by path:\n%s", output)
+	}
+}
+
+// The gate reads import specifiers, not every quoted string that happens to
+// name the seam. A demo URL or a fixture label that quotes the path is data,
+// not an import, and #3107's false positive renamed working demo paths to
+// appease it. Only a module-loading keyword before the literal makes it an
+// import, so ordinary string data passes.
+func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/src/dev/demoDoc.ts"] = strings.Join([]string{
+		"// a docs URL and a demo label: neither is an import specifier",
+		"export const demoDoc = \"/home/jesse/sites/docs/reference/appwire/protocol/v6/index.html\";",
+		"export const label = \"appwire-client/typescript state/navigation\";",
+		"",
+	}, "\n")
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if !passed {
+		t.Fatalf("the gate fired on string data that names no import specifier:\n%s", output)
 	}
 }
 
