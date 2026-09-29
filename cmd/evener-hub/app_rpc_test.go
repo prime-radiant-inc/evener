@@ -7767,12 +7767,29 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 	}
 }
 
+// relayResyncTimeout is the bound awaitRelayResync waits: the requested timeout,
+// raised to relayResyncRaceFloor under the race detector. The relay's ordered
+// goroutines run ~10x slower under -race, so a request-sized bound can expire
+// while the resync is genuinely on its way (issue #2977). Outside -race the
+// requested bound stands. The floor is a build-tagged constant, not t.Deadline:
+// the CI shards run a prebuilt test binary directly with no -test.timeout, so a
+// test there has no deadline to scale against.
+func relayResyncTimeout(requested time.Duration) time.Duration {
+	return max(requested, relayResyncRaceFloor)
+}
+
 // awaitRelayResync is expectRelayResync for a client that also receives other
 // traffic (navigation invalidations, status frames): those are skipped, and
 // the resync may take as long as timeout to arrive.
+//
+// The resync is awaited on its channel; the bound is only a tripwire. It is
+// scaled under -race (relayResyncTimeout) because a fixed wall-clock bound can
+// expire before a resync that is genuinely on its way — which is what failed
+// under -race on a loaded runner.
 func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.After(timeout)
+	bound := relayResyncTimeout(timeout)
+	timer := time.After(bound)
 	for {
 		select {
 		case got := <-notifications:
@@ -7781,10 +7798,48 @@ func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, w
 			}
 			expectResyncParams(t, got, wantThreadID, wantRef)
 			return
-		case <-deadline:
-			t.Fatalf("no thread resync for %s within %v", wantRef, timeout)
+		case <-timer:
+			t.Fatalf("no thread resync for %s within %v", wantRef, bound)
 		}
 	}
+}
+
+// TestRelayResyncTimeout pins the scaling in both build modes: under -race a
+// request-sized bound is raised to the floor, and a larger bound is untouched.
+func TestRelayResyncTimeout(t *testing.T) {
+	want := time.Millisecond
+	if raceDetectorEnabled {
+		want = relayResyncRaceFloor
+	}
+	if got := relayResyncTimeout(time.Millisecond); got != want {
+		t.Errorf("relayResyncTimeout(1ms) = %v, want %v", got, want)
+	}
+	if got := relayResyncTimeout(time.Hour); got != time.Hour {
+		t.Errorf("relayResyncTimeout(1h) = %v, want 1h", got)
+	}
+}
+
+// TestAwaitRelayResyncWaitsPastTheRequestedBound pins the -race scaling: a
+// resync delivered after a small requested bound is still accepted because the
+// wait is raised to relayResyncRaceFloor. Under the old fixed time.After(bound)
+// this 200ms-late delivery against a 50ms bound failed at once (issue #2977).
+func TestAwaitRelayResyncWaitsPastTheRequestedBound(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("relay resync scaling is a -race guarantee; run with -race")
+	}
+	const (
+		threadID = "late"
+		ref      = "codex:late"
+	)
+	notifications := make(chan appwire.Notification, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		notifications <- *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+			ThreadID: threadID,
+			Ref:      ref,
+		}).Notification
+	}()
+	awaitRelayResync(t, notifications, threadID, ref, 50*time.Millisecond)
 }
 
 func expectResyncParams(t *testing.T, got appwire.Notification, wantThreadID, wantRef string) {

@@ -2666,6 +2666,38 @@ it("keeps the marketplace draft through a flap, with no Reconnect anywhere", asy
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
+it("heads Add marketplace with the shared sheet header: its title and Cancel, and no second title in the body", () => {
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={async () => {}}
+		/>,
+	);
+	const title = tree.root.findByProps({ accessibilityRole: "header" });
+	expect(title.props.children).toBe("Add marketplace");
+	// The hub it adds to rides under the title.
+	expect(renderedText(tree)).toContain("Work hub");
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	expect(onClose).toHaveBeenCalledOnce();
+	// Only the header says it: the body's one "Add marketplace" is its submit
+	// button, never a second title.
+	const bodyTitles = tree.root.findAll(
+		(node) =>
+			String(node.type) === "Text" &&
+			node !== title &&
+			node.props.children === "Add marketplace" &&
+			node.parent?.props.accessibilityRole !== "button",
+	);
+	expect(bodyTitles).toHaveLength(0);
+});
+
 it("keeps Add marketplace open when readiness is lost during submit", async () => {
 	const hub = pluginsClient([]);
 	const onAdd = vi.fn(async () => {});
@@ -3000,6 +3032,18 @@ it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is
 	expect(alertRequests.at(-1)?.message).toBe("cracked from core on Work hub");
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});
+
+it("heads a plugin's detail with the shared sheet header: its name, and Done on the right", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked")]));
+	const detail = await openDetail(tree, "cracked");
+	// The sheet's title comes first; the page's section labels are headers too.
+	expect(detail.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("cracked");
+	expect(detail.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" })).toHaveLength(0);
+	await act(async () => {
+		detail.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
 	});
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
 });

@@ -18,10 +18,14 @@ const harness = vi.hoisted(() => ({
 	drafts: new Map<string, unknown>(),
 	memory: null as unknown,
 	context: null as unknown,
+	// A thread/start the test answers itself, as a slow hub would.
+	heldStart: null as null | ((response: unknown) => void),
 }));
 const client = {
 	request: async (method: string, params: unknown) => {
 		harness.requests.push({ method, params });
+		if (method === "thread/start" && harness.heldStart === null)
+			return new Promise((resolve) => (harness.heldStart = resolve));
 		return { data: [] };
 	},
 	onNotification: () => () => {},
@@ -102,6 +106,7 @@ beforeEach(() => {
 	harness.drafts.clear();
 	harness.memory = new LaunchMemory(memoryStorage(), "hub-1");
 	harness.context = null;
+	harness.heldStart = null;
 });
 
 it("names the hub's own machine after the hub (ruling 3)", async () => {
@@ -155,4 +160,33 @@ it("asks the hub nothing until the connection is ready, then loads projects and 
 		expect.arrayContaining(["evener/projects/recent", "model/list"]),
 	);
 	sheet.tree.unmount();
+});
+
+it("finishes a start the sheet was swiped away from, so the session it made is known (#3048)", async () => {
+	const draft: CreationDraft = {
+		source: "local",
+		cwd: "/home/jesse/git/evener",
+		prompt: "go",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+	};
+	harness.drafts.set("hub-1", draft);
+	const sheet = await mount();
+	const store = sheet.context().store;
+	const outcome = store.getState().submit();
+	await settle();
+	expect(harness.heldStart).not.toBeNull();
+	// The person swipes the sheet down while the hub is still starting it.
+	act(() => sheet.tree.unmount());
+	harness.heldStart?.({
+		thread: { id: "t-1", name: "Demonstration 1", evener: { ref: "demo:created-1" } },
+		turn: { id: "turn-1", status: "inProgress", items: [] },
+	});
+	expect(await outcome).toMatchObject({ status: "created", thread: { evener: { ref: "demo:created-1" } } });
+	// The session exists, so its draft goes rather than waiting to start it twice.
+	expect(harness.drafts.get("hub-1")).toBeUndefined();
 });
