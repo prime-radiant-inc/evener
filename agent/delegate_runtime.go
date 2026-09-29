@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1114,6 +1115,41 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 	return nil
 }
 
+// warnDelegateAttentionRestoreFailed reports a failed restore of delegateID's
+// cold runtime once per failure episode. The drive retries with backoff (up
+// to every 5s) for as long as the attention is owed, and one warning per
+// attempt flooded the transcript with the same line. It warns again when the
+// error changes, and after delegateAttentionRestored ends the episode. The
+// warning carries the error, which warningDataFromError alone would drop,
+// and its own code, so clients show it only at their most detailed level;
+// the daemon log gets the same error, recoverable wherever the transcript
+// hides it.
+func (s *Session) warnDelegateAttentionRestoreFailed(delegateID string, err error) {
+	cause := err.Error()
+	s.attentionRestoreWarnMu.Lock()
+	previous, warned := s.attentionRestoreWarned[delegateID]
+	if s.attentionRestoreWarned == nil {
+		s.attentionRestoreWarned = make(map[string]string)
+	}
+	s.attentionRestoreWarned[delegateID] = cause
+	s.attentionRestoreWarnMu.Unlock()
+	if warned && previous == cause {
+		return
+	}
+	slog.Warn("restore delegate attention failed", "session", s.ID(), "delegate", delegateID, "error", cause)
+	data := warningDataFromError("restore delegate attention: "+cause, err)
+	data.Code = events.WarningCodeDelegateAttentionRestore
+	s.emit(events.EventWarning, data)
+}
+
+// delegateAttentionRestored ends delegateID's restore failure episode, so the
+// next failure warns again.
+func (s *Session) delegateAttentionRestored(delegateID string) {
+	s.attentionRestoreWarnMu.Lock()
+	delete(s.attentionRestoreWarned, delegateID)
+	s.attentionRestoreWarnMu.Unlock()
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
@@ -1131,10 +1167,11 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("restore delegate attention", err))
+		s.warnDelegateAttentionRestoreFailed(delegateID, err)
 		s.scheduleStableDelegateAttentionRetry()
 		return true
 	}
+	s.delegateAttentionRestored(delegateID)
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)
 	}

@@ -993,7 +993,12 @@ type Session struct {
 	// runningTurnReleaseRetry paces re-attempts of a release write the client
 	// mutation store refused. See scheduleRunningTurnReleaseRetry
 	// (session_active_turn.go).
-	runningTurnReleaseRetry   runningTurnReleaseRetryState
+	runningTurnReleaseRetry runningTurnReleaseRetryState
+	// attentionRestoreWarnMu guards attentionRestoreWarned alone: per
+	// delegate, the restore error the session last warned about (see
+	// warnDelegateAttentionRestoreFailed).
+	attentionRestoreWarnMu    sync.Mutex
+	attentionRestoreWarned    map[string]string
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry

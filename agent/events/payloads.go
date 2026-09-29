@@ -588,6 +588,12 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeDelegateAttentionRestore identifies a failed restore of a cold
+// delegate's runtime to deliver the attention it owes. The session retries
+// on its own, so clients show this warning only at their most detailed
+// level, by this stable code.
+const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
