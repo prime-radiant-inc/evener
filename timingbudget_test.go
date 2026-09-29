@@ -88,6 +88,10 @@ func TestTimingParseHelperEmitsTheRatchetsRows(t *testing.T) {
 	writeAuditScriptFixture(t, pkgs, "example.com/mod\n")
 	cmd := exec.Command("go", "run", "./cmd/evener-dev/bin", "dev", "timing-parse",
 		"--json", stream, "--packages", pkgs)
+	// Isolate the toolchain, as the other Go-invoking tests do and as the
+	// script itself does (`GOFLAGS= go run`): a developer's persisted
+	// `go env -w GOFLAGS=...` would otherwise fail this nested `go run`.
+	cmd.Env = append(os.Environ(), "GOFLAGS=", "GOENV=off")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("timing-parse helper failed: %v\n%s", err, out)
