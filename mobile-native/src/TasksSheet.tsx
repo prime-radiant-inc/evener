@@ -14,7 +14,6 @@ import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Action, Copy, ErrorMessage, useColors } from "./ui";
 
-
 /** The session's Tasks sheet: a formSheet route over the session it lists
  * (sheetRoutes.ts). It reads its hub's connection itself, since a sheet
  * renders beside its screen and takes only plain params. */
