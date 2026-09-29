@@ -867,6 +867,11 @@ function rowsForProjectedTurn(
 	const askState: Array<[string, boolean]> = [];
 	const keyedRounds = new Set<string>();
 	for (const entry of projected.entries) {
+		// A failed turn's error shows once, as the failure row at its end, which
+		// carries the one action (spec 8.2 "Error"). A reload also carries the
+		// failure as an error systemMessage (apptranscript's TurnFailure item),
+		// which would say it a second time.
+		if (turn.error && isTurnErrorNotice(entry.item)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
@@ -1030,6 +1035,10 @@ export function projectConversation(
 }
 
 // --- failure rows ----------------------------------------------------------------
+
+function isTurnErrorNotice(it: ItemModel): boolean {
+	return it.type === "systemMessage" && it.eventKind === "error";
+}
 
 function failureItem(
 	error: NonNullable<Turn["error"]>,
