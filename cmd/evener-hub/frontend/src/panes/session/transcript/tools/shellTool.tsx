@@ -37,12 +37,8 @@ import { registerToolRenderer } from "../toolRenderers";
 
 const TAIL_MAX_CHARS = 8000;
 
-// shellCommand and stripRedundantCd come from @evener/appwire-client's
-// toolSummaries, which the phone reads too. stripRedundantCd removes the
-// literal "cd <cwd> && " prefix models habitually prepend even though the
-// daemon already runs every command in the session cwd. Literal match only —
-// a cd anywhere else is information and stays. Display-only: argumentsJSON
-// is never modified.
+// shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
+// toolSummaries.
 
 // A second, differently-shaped trailer for the "buffered" execution
 // environment fallback (used when the env doesn't support streaming,

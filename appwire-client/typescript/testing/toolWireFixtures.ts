@@ -12,6 +12,7 @@ import toolCalls from "../../../agent/testdata/toolwire/calls.json?raw";
 import type { ItemModel, ThreadModel } from "../model";
 import { hydrateThread } from "../reducer";
 import type { Thread, ThreadItem } from "../types.gen";
+import { wireThread } from "./notifications";
 
 interface ToolWireFixture {
   cwd: string;
@@ -52,26 +53,19 @@ export function toolWireItems(): ThreadItem[] {
 
 /** A thread holding every recorded call and result in one completed turn. */
 export function toolWireThread(): Thread {
-  return {
-    id: "thread-tools",
-    sessionId: "session-tools",
-    preview: "",
-    ephemeral: false,
-    modelProvider: "anthropic",
-    createdAt: 0,
-    updatedAt: 0,
-    status: { type: "ready" },
+  return wireThread("ref-tools", {
     cwd: toolWireCwd(),
-    cliVersion: "1.0.0",
-    source: "local",
     turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: toolWireItems() }],
-    evener: { ref: "ref-tools", queue: { revision: 0 } },
-  } as unknown as Thread;
+  } as Partial<Thread>);
 }
 
-/** The thread as a client's model holds it: each call merged with its result. */
+let model: ThreadModel | undefined;
+
+/** The thread as a client's model holds it: each call merged with its result.
+ * Hydrated once; treat it as read-only. */
 export function toolWireModel(): ThreadModel {
-  return hydrateThread({ thread: toolWireThread() }, "ref-tools", 0);
+  model ??= hydrateThread({ thread: toolWireThread() }, "ref-tools", 0);
+  return model;
 }
 
 /** One settled step: the call merged with its result, as a client holds it. */

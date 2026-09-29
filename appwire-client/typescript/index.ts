@@ -538,6 +538,7 @@ export {
   editFileSummary,
   fallbackToolSummary,
   filePathArg,
+  filePathOf,
   globSummary,
   grepSummary,
   listDirSummary,
@@ -551,12 +552,14 @@ export {
   type ToolStep,
   type ToolSummaryContext,
   toolFamily,
+  toolStepProgress,
   toolStepSummary,
   useSkillSummary,
   webFetchByteCount,
   webFetchSummary,
   webSearchResultLines,
   webSearchSummary,
+  words,
   writeFileSummary,
 } from "./toolSummaries";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is

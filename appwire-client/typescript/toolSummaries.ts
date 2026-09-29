@@ -29,57 +29,84 @@ const QUERY_CLIP = 120;
 // --- files ------------------------------------------------------------------
 
 // The line range a read covered: its offset and limit, or else as many lines
-// as the output holds.
-function readLineRange(args: Record<string, unknown>, output: string): string {
+// as the output holds. Undefined when neither says: a read whose output hasn't
+// arrived, with no limit of its own.
+function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
   const limitArg = args.limit;
   const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
-  return count > 0 ? `lines ${offset}-${offset + count - 1}` : `lines ${offset}`;
+  if (count > 0) return `lines ${offset}-${offset + count - 1}`;
+  return output === "" ? undefined : `lines ${offset}`;
+}
+
+// A summary's words, and the count its output adds once there is output.
+function withCount(text: string, count: string | undefined): string {
+  return count === undefined ? text : `${text} · ${count}`;
+}
+
+// What an output counts ("2 hits"), only once there is output to count.
+function outputCount(output: string | undefined, noun: string): string | undefined {
+  return output ? `${lineCount(output)} ${noun}` : undefined;
 }
 
 /** The header read_file puts before an image or a document's base64 data. */
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
-/** The file a step read, wrote or edited. */
-export function filePathArg(step: Pick<ToolStep, "argumentsJSON">): string | undefined {
-  const args = parseArgs(step.argumentsJSON);
+/** The file parsed arguments name: file_path, or the older path alias. */
+export function filePathOf(args: Record<string, unknown>): string | undefined {
   return str(args, "file_path") ?? str(args, "path");
 }
 
-/** "Read agent/tree.go · lines 1-40", or just "Read <file>" for an image or a
- * document, whose output is base64 data rather than lines. */
-export function readFileSummary(step: ToolStep): string {
-  const target = filePathArg(step) ?? "";
-  if (BINARY_PAYLOAD_HEADER.test(step.output ?? "")) return `Read ${target}`;
-  return `Read ${target} · ${readLineRange(parseArgs(step.argumentsJSON), step.output ?? "")}`;
+/** The file a step read, wrote or edited. */
+export function filePathArg(step: Pick<ToolStep, "argumentsJSON">): string | undefined {
+  return filePathOf(parseArgs(step.argumentsJSON));
 }
 
-function grepTarget(args: Record<string, unknown>): string {
-  const pattern = clip(str(args, "pattern") ?? "", GREP_PATTERN_CLIP);
+/** "Read agent/tree.go · lines 1-40", "Read <file>" for an image or a
+ * document (base64 data, not lines), or "Read a file" when it names none. */
+export function readFileSummary(step: ToolStep): string {
+  const target = filePathArg(step);
+  if (!target) return "Read a file";
+  if (BINARY_PAYLOAD_HEADER.test(step.output ?? "")) return `Read ${target}`;
+  return withCount(`Read ${target}`, readLineRange(parseArgs(step.argumentsJSON), step.output ?? ""));
+}
+
+function grepTarget(args: Record<string, unknown>): string | undefined {
+  const pattern = str(args, "pattern");
+  if (!pattern) return undefined;
   const path = str(args, "path") ?? ".";
   const globFilter = str(args, "glob_filter");
-  return `"${pattern}" in ${path}${globFilter ? ` (${globFilter})` : ""}`;
+  return `"${clip(pattern, GREP_PATTERN_CLIP)}" in ${path}${globFilter ? ` (${globFilter})` : ""}`;
 }
 
-/** 'Searched "func settle" in agent (*.go) · 2 hits'. */
+/** 'Searched "func settle" in agent (*.go) · 2 hits', or "Searched files". */
 export function grepSummary(step: ToolStep): string {
-  return `Searched ${grepTarget(parseArgs(step.argumentsJSON))} · ${lineCount(step.output ?? "")} hits`;
+  const target = grepTarget(parseArgs(step.argumentsJSON));
+  return target ? withCount(`Searched ${target}`, outputCount(step.output, "hits")) : "Searched files";
 }
 
-/** "Listed agent/internal · 4 entries". */
-export function listDirSummary(step: ToolStep): string {
-  const args = parseArgs(step.argumentsJSON);
-  const path = str(args, "path") ?? ".";
+function listTarget(args: Record<string, unknown>): string | undefined {
+  const path = str(args, "path");
   const pattern = str(args, "pattern");
-  return `Listed ${path}${pattern ? ` (${pattern})` : ""} · ${lineCount(step.output ?? "")} entries`;
+  if (!path && !pattern) return undefined;
+  return `${path || "."}${pattern ? ` (${pattern})` : ""}`;
 }
 
-/** "Matched agent/**\/*_test.go · 3 matches". */
+/** "Listed agent/internal · 4 entries", or "Listed files". */
+export function listDirSummary(step: ToolStep): string {
+  const target = listTarget(parseArgs(step.argumentsJSON));
+  return target ? withCount(`Listed ${target}`, outputCount(step.output, "entries")) : "Listed files";
+}
+
+function globPattern(args: Record<string, unknown>): string | undefined {
+  return str(args, "pattern") || str(args, "glob") || undefined;
+}
+
+/** "Matched agent/**\/*_test.go · 3 matches", or "Searched files". */
 export function globSummary(step: ToolStep): string {
-  const args = parseArgs(step.argumentsJSON);
-  const pattern = str(args, "pattern") ?? str(args, "glob") ?? "";
-  return `Matched ${pattern} · ${lineCount(step.output ?? "")} matches`;
+  const pattern = globPattern(parseArgs(step.argumentsJSON));
+  return pattern ? withCount(`Matched ${pattern}`, outputCount(step.output, "matches")) : "Searched files";
 }
 
 // An edit's result: its diff's added and removed lines, or "ok" for none.
@@ -88,18 +115,20 @@ function diffResultText(text: string): string {
   return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
 }
 
-/** "Edited agent/tree.go · +3 -2". */
+/** "Edited agent/tree.go · +3 -2", or "Edited a file". */
 export function editFileSummary(step: ToolStep): string {
+  const path = filePathArg(step);
+  if (!path) return "Edited a file";
   const args = parseArgs(step.argumentsJSON);
-  const path = str(args, "file_path") ?? str(args, "path") ?? "";
   const oldString = str(args, "old_string") ?? "";
   const newString = str(args, "new_string") ?? "";
   return `Edited ${path} · ${diffResultText(editDiffText(path, oldString, newString))}`;
 }
 
-/** "Wrote agent/tree_order.go". */
+/** "Wrote agent/tree_order.go", or "Wrote a file". */
 export function writeFileSummary(step: ToolStep): string {
-  return `Wrote ${filePathArg(step) ?? ""}`;
+  const path = filePathArg(step);
+  return path ? `Wrote ${path}` : "Wrote a file";
 }
 
 const PATCH_FILE_HEADER_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/;
@@ -118,10 +147,11 @@ function patchTargets(patch: string): string[] {
   return targets;
 }
 
-/** "Patched agent/tree.go, agent/tree_order.go · +3 -1". */
+/** "Patched agent/tree.go, agent/tree_order.go · +3 -1", or "Patched files". */
 export function applyPatchSummary(step: ToolStep): string {
   const patch = str(parseArgs(step.argumentsJSON), "patch") ?? "";
-  return `Patched ${patchTargets(patch).join(", ")} · ${diffResultText(patch)}`;
+  const targets = patchTargets(patch);
+  return targets.length > 0 ? `Patched ${targets.join(", ")} · ${diffResultText(patch)}` : "Patched files";
 }
 
 // --- shell ------------------------------------------------------------------
@@ -141,10 +171,15 @@ export function stripRedundantCd(command: string, cwd: string | undefined): stri
   return rest === "" ? command : rest;
 }
 
-/** "Ran go test ./agent/...". The exit code stays out: a failed step says so
- * with its own mark. */
+function commandOf(step: Pick<ToolStep, "argumentsJSON">, ctx?: ToolSummaryContext): string {
+  return stripRedundantCd(shellCommand(parseArgs(step.argumentsJSON)), ctx?.cwd).trim();
+}
+
+/** "Ran go test ./agent/...", or "Ran a command". The exit code stays out: a
+ * failed step says so with its own mark. */
 export function shellSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
-  return `Ran ${stripRedundantCd(shellCommand(parseArgs(step.argumentsJSON)), ctx?.cwd)}`;
+  const command = commandOf(step, ctx);
+  return command ? `Ran ${command}` : "Ran a command";
 }
 
 // --- web ----------------------------------------------------------------------
@@ -155,10 +190,13 @@ export function webFetchByteCount(output: string): number {
   return typeof sizeBytes === "number" ? sizeBytes : output.length;
 }
 
-/** "Fetched https://example.com/release-notes · 48213 bytes". */
+/** "Fetched https://example.com/release-notes · 48213 bytes", or "Fetched a
+ * page". */
 export function webFetchSummary(step: ToolStep): string {
-  const url = str(parseArgs(step.argumentsJSON), "url") ?? "";
-  return `Fetched ${url} · ${formatByteCount(webFetchByteCount(step.output ?? ""))}`;
+  const url = str(parseArgs(step.argumentsJSON), "url");
+  if (!url) return "Fetched a page";
+  const output = step.output ?? "";
+  return withCount(`Fetched ${url}`, output ? formatByteCount(webFetchByteCount(output)) : undefined);
 }
 
 /** The lines of a web search's output that are results. */
@@ -166,11 +204,21 @@ export function webSearchResultLines(output: string): string[] {
   return output.split("\n").filter((line) => line.trim() !== "");
 }
 
-/** 'Searched the web for "go race detector" · 2 results'. */
+function searchQuery(args: Record<string, unknown>): string | undefined {
+  const query = str(args, "query") || str(args, "q");
+  return query ? clip(query, QUERY_CLIP) : undefined;
+}
+
+/** 'Searched the web for "go race detector" · 2 results', or "Searched the
+ * web". */
 export function webSearchSummary(step: ToolStep): string {
-  const args = parseArgs(step.argumentsJSON);
-  const query = clip(str(args, "query") ?? str(args, "q") ?? "", QUERY_CLIP);
-  return `Searched the web for "${query}" · ${webSearchResultLines(step.output ?? "").length} results`;
+  const query = searchQuery(parseArgs(step.argumentsJSON));
+  if (!query) return "Searched the web";
+  const output = step.output ?? "";
+  return withCount(
+    `Searched the web for "${query}"`,
+    output ? `${webSearchResultLines(output).length} results` : undefined,
+  );
 }
 
 // --- skills -------------------------------------------------------------------
@@ -181,22 +229,26 @@ export function skillName(step: Pick<ToolStep, "argumentsJSON">): string {
   return str(args, "skill_name") ?? str(args, "name") ?? "";
 }
 
-/** "Activated skill: systematic-debugging". */
+/** "Activated skill: systematic-debugging", or "Activated a skill". */
 export function useSkillSummary(step: ToolStep): string {
-  return `Activated skill: ${skillName(step)}`;
+  const name = skillName(step);
+  return name ? `Activated skill: ${name}` : "Activated a skill";
 }
 
 // --- every other tool ---------------------------------------------------------
 
-// A tool name's words: its underscores are spaces ("create_issue" reads
-// "create issue").
-function words(name: string): string {
+/** A tool name's words: its underscores are spaces ("create_issue" reads
+ * "create issue"). */
+export function words(name: string): string {
   return name.replaceAll("_", " ").trim();
 }
 
 /** An MCP tool's server and tool in words. The MCP manager names each tool
  * <server>__<tool>, a hyphen in either turned into an underscore
- * (agent/internal/mcp's sanitizeToolName). Undefined for any other name. */
+ * (agent/internal/mcp's sanitizeToolName). The name splits at its first
+ * double underscore, so a server whose own name holds one ("my__srv") reads
+ * as the part before it; nothing in the name marks the true boundary.
+ * Undefined for any other name. */
 export function mcpToolParts(toolName: string): { server: string; tool: string } | undefined {
   const at = toolName.indexOf("__");
   if (at <= 0 || at + 2 >= toolName.length) return undefined;
@@ -206,10 +258,72 @@ export function mcpToolParts(toolName: string): { server: string; tool: string }
 /** A tool no summary covers, in words: "Used github: create issue" for an MCP
  * tool, "Used compact context" for any other. Never its raw name. */
 export function fallbackToolSummary(step: Pick<ToolStep, "toolName">): string {
-  const name = step.toolName ?? "";
+  return `Used ${toolInWords(step.toolName ?? "")}`;
+}
+
+function toolInWords(name: string): string {
   const mcp = mcpToolParts(name);
-  if (mcp) return `Used ${mcp.server}: ${mcp.tool}`;
-  return name ? `Used ${words(name)}` : "Used a tool";
+  if (mcp) return `${mcp.server}: ${mcp.tool}`;
+  return words(name) || "a tool";
+}
+
+// --- a running step -------------------------------------------------------------
+
+// What a running step is doing, for the phone's status tray: the summary's
+// live form, without the counts its output hasn't given yet.
+function progressFor(
+  family: ToolFamily,
+  step: Pick<ToolStep, "toolName" | "argumentsJSON">,
+  ctx?: ToolSummaryContext,
+): string {
+  const args = parseArgs(step.argumentsJSON);
+  const name = step.toolName ?? "";
+  switch (family) {
+    case "read": {
+      const path = filePathArg(step);
+      return path ? `Reading ${path}` : "Reading a file";
+    }
+    case "search": {
+      if (name === "glob") {
+        const pattern = globPattern(args);
+        return pattern ? `Matching ${pattern}` : "Searching files";
+      }
+      if (name === "list_dir" || name === "list_directory") {
+        const target = listTarget(args);
+        return target ? `Listing ${target}` : "Listing files";
+      }
+      const target = grepTarget(args);
+      return target ? `Searching ${target}` : "Searching files";
+    }
+    case "edit": {
+      if (name === "apply_patch") {
+        const targets = patchTargets(str(args, "patch") ?? "");
+        return targets.length > 0 ? `Patching ${targets.join(", ")}` : "Patching files";
+      }
+      const path = filePathArg(step);
+      const verb = name === "write_file" ? "Writing" : "Editing";
+      return path ? `${verb} ${path}` : `${verb} a file`;
+    }
+    case "shell": {
+      const firstLine = commandOf(step, ctx).split("\n")[0]?.trim();
+      return firstLine ? `Running ${firstLine}` : "Running a command";
+    }
+    case "fetch": {
+      const url = str(args, "url");
+      return url ? `Fetching ${url}` : "Fetching a page";
+    }
+    case "webSearch": {
+      const query = searchQuery(args);
+      return query ? `Searching the web for "${query}"` : "Searching the web";
+    }
+    case "skill": {
+      const skill = skillName(step);
+      return skill ? `Activating skill: ${skill}` : "Activating a skill";
+    }
+    case "mcp":
+    case "tool":
+      return `Using ${toolInWords(name)}`;
+  }
 }
 
 // --- the table ----------------------------------------------------------------
@@ -251,4 +365,10 @@ export function toolFamily(toolName: string): ToolFamily {
 export function toolStepSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
   const entry = entryFor(step.toolName ?? "");
   return entry ? entry.summary(step, ctx) : fallbackToolSummary(step);
+}
+
+/** What a running step is doing, for any tool: "Reading agent/tree.go",
+ * "Running go test ./...", "Using github: create issue". */
+export function toolStepProgress(step: Pick<ToolStep, "toolName" | "argumentsJSON">, ctx?: ToolSummaryContext): string {
+  return progressFor(toolFamily(step.toolName ?? ""), step, ctx);
 }

@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
-import { mcpToolParts, toolFamily, toolStepSummary } from "./toolSummaries";
+import { mcpToolParts, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
 
 // Every case reads a settled step the daemon actually sends
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
@@ -58,4 +58,73 @@ test("reads an MCP tool's server and tool in words", () => {
   expect(mcpToolParts("linear_app__list_issues")).toEqual({ server: "linear app", tool: "list issues" });
   expect(mcpToolParts("compact_context")).toBeUndefined();
   expect(mcpToolParts("__odd")).toBeUndefined();
+});
+
+// A call whose arguments are missing, empty or cut off still reads as a verb,
+// and a step whose output hasn't arrived drops what the output would count.
+test.each<[string, string]>([
+  ["read_file", "Read a file"],
+  ["grep", "Searched files"],
+  ["glob", "Searched files"],
+  ["list_dir", "Listed files"],
+  ["edit_file", "Edited a file"],
+  ["write_file", "Wrote a file"],
+  ["apply_patch", "Patched files"],
+  ["shell", "Ran a command"],
+  ["web_fetch", "Fetched a page"],
+  ["web_search", "Searched the web"],
+  ["use_skill", "Activated a skill"],
+])("says a %s with no arguments as %s", (toolName, summary) => {
+  for (const argumentsJSON of ["", "{", "{}", undefined]) {
+    expect(toolStepSummary({ toolName, argumentsJSON, output: "" })).toBe(summary);
+  }
+});
+
+test.each<[string, Record<string, unknown>, string]>([
+  ["read_file", { file_path: "a.go" }, "Read a.go"],
+  ["read_file", { file_path: "a.go", offset: 5, limit: 10 }, "Read a.go · lines 5-14"],
+  ["grep", { pattern: "x", path: "agent" }, 'Searched "x" in agent'],
+  ["glob", { pattern: "*.go" }, "Matched *.go"],
+  ["list_dir", { path: "agent" }, "Listed agent"],
+  ["web_fetch", { url: "https://example.com" }, "Fetched https://example.com"],
+  ["web_search", { query: "evener" }, 'Searched the web for "evener"'],
+])("says a %s whose output hasn't arrived without its counts", (toolName, args, summary) => {
+  expect(toolStepSummary({ toolName, argumentsJSON: JSON.stringify(args), output: "" })).toBe(summary);
+});
+
+// The tray says what a running step is doing, in the same words' live form.
+test.each<[string, Record<string, unknown> | undefined, string]>([
+  ["read_file", { file_path: "agent/tree.go" }, "Reading agent/tree.go"],
+  ["read_file", undefined, "Reading a file"],
+  ["grep", { pattern: "func settle", path: "agent" }, 'Searching "func settle" in agent'],
+  ["grep", undefined, "Searching files"],
+  ["glob", { pattern: "*.go" }, "Matching *.go"],
+  ["list_dir", { path: "agent" }, "Listing agent"],
+  ["edit_file", { file_path: "a.go" }, "Editing a.go"],
+  ["write_file", { file_path: "a.go" }, "Writing a.go"],
+  ["write_file", undefined, "Writing a file"],
+  ["apply_patch", { patch: "*** Update File: a.go\n" }, "Patching a.go"],
+  ["apply_patch", undefined, "Patching files"],
+  ["shell", { command: "go test ./...\ngo vet ./..." }, "Running go test ./..."],
+  ["shell", undefined, "Running a command"],
+  ["web_fetch", { url: "https://example.com" }, "Fetching https://example.com"],
+  ["web_search", { query: "evener" }, 'Searching the web for "evener"'],
+  ["use_skill", { skill_name: "brainstorming" }, "Activating skill: brainstorming"],
+  ["github__create_issue", {}, "Using github: create issue"],
+  ["compact_context", {}, "Using compact context"],
+])("says a running %s as %s", (toolName, args, progress) => {
+  expect(toolStepProgress({ toolName, argumentsJSON: args ? JSON.stringify(args) : undefined })).toBe(progress);
+});
+
+test("strips the session's own directory from a running command", () => {
+  expect(
+    toolStepProgress(
+      { toolName: "shell", argumentsJSON: JSON.stringify({ command: "cd /repo && make test" }) },
+      { cwd: "/repo" },
+    ),
+  ).toBe("Running make test");
+});
+
+test("reads a tool name in words", () => {
+  expect(words("compact_context")).toBe("compact context");
 });
