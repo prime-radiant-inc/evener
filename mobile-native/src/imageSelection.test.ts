@@ -62,7 +62,7 @@ it("takes a photo bigger than the limit on disk when the phone's encoding of it 
 	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
 });
 
-const TOO_LARGE = "This photo is too large to attach. Try a screenshot or a smaller image.";
+const TOO_LARGE = "This image is too large to attach. Try a smaller image or a screenshot.";
 
 /** Picks `images`, counting the decodes the selection asks for. */
 async function chooseCounting(images: PickedImage[]) {
@@ -125,7 +125,7 @@ it("rejects an encoded image over the server byte limit without persisting it", 
 	expect(document.getSnapshot().record.images?.[0]?.name).toBe(valid.name);
 	expect(document.getSnapshot().record.images?.[0]?.marker).toBe(2);
 	expect(document.getSnapshot().record.draft).toBe("[image 2]");
-	expect(selection.getSnapshot().error).toContain("maximum 8 MB");
+	expect(selection.getSnapshot().error).toBe(`${source.name}: ${TOO_LARGE}`);
 	expect(selection.getSnapshot().pending).toHaveLength(0);
 });
 
@@ -296,6 +296,26 @@ it("says an image the phone couldn't encode couldn't be processed, and attaches 
 		},
 	);
 	await selection.choose();
-	expect(selection.getSnapshot().error).toBe("broken.heic (could not process image)");
+	expect(selection.getSnapshot().error).toBe(
+		"broken.heic: This image couldn't be prepared to attach. Try another image.",
+	);
 	expect(document.getSnapshot().record.images).toHaveLength(1);
+});
+
+it("says in a sentence why each picked file can't be attached (#3166)", async () => {
+	const { selection } = setup(
+		async () => [
+			{ ...photo, name: "notes.txt", type: "text/plain" },
+			{ ...photo, name: "unread.jpg", size: Number.NaN },
+			...Array.from({ length: 8 }, (_, index) => ({ ...photo, name: `photo-${index}.jpg` })),
+			{ ...photo, name: "ninth.jpg" },
+		],
+		async () => "AQID",
+	);
+	await selection.choose();
+	expect(selection.getSnapshot().error?.split("\n")).toEqual([
+		"notes.txt: This isn't an image. Choose an image to attach.",
+		"unread.jpg: This image's size couldn't be read. Try another image.",
+		"ninth.jpg: You can attach up to 8 images. Remove one to add another.",
+	]);
 });

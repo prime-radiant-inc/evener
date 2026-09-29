@@ -1,4 +1,4 @@
-import { MAX_ATTACHMENTS, rejectionReason } from "@evener/appwire-client";
+import { type AttachmentRejection, admissionRejection, MAX_ATTACHMENTS, sizeRejection } from "@evener/appwire-client";
 import type { DraftDocument } from "./draftDocument";
 
 export interface PickedImage {
@@ -38,10 +38,11 @@ export class CameraAccessDenied extends Error {
 	}
 }
 
-/** An image as base64, and the type it is in. */
+/** An image as base64, and the type it is in: always an image, so only its
+ * size is checked once it's encoded. */
 export interface EncodedImage {
 	data: string;
-	mediaType: string;
+	mediaType: "image/jpeg" | "image/png";
 }
 
 /** The largest picked file the phone decodes to scale it: far above a camera
@@ -54,19 +55,30 @@ const FULL_FRAME_WIDTH = 8064;
 const FULL_FRAME_HEIGHT = 6048;
 const MAX_SOURCE_PIXELS = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
 
-const TOO_LARGE = "This photo is too large to attach. Try a screenshot or a smaller image.";
+/** Why an image can't be attached, after its name: the reason, then what to
+ * do (#3166). Too large to decode and too large to send read the same. */
+const REFUSED: Record<AttachmentRejection, string> = {
+	notImage: "This isn't an image. Choose an image to attach.",
+	tooMany: `You can attach up to ${MAX_ATTACHMENTS} images. Remove one to add another.`,
+	tooLarge: "This image is too large to attach. Try a smaller image or a screenshot.",
+};
+const SIZE_UNREAD = "This image's size couldn't be read. Try another image.";
+const NOT_PREPARED = "This image couldn't be prepared to attach. Try another image.";
+
+function refused(image: PickedImage, why: string): string {
+	return `${image.name}: ${why}`;
+}
 
 /** Why a picked image can't be staged, said before it's decoded, or undefined.
  * Its own size isn't the attachment limit: the phone scales it down and the
  * encoding is measured after. A picker that doesn't say its pixel size leaves
  * only the file-size cap to bound the decode. */
 function sourceRejection(image: PickedImage, reserved: number): string | undefined {
-	if (!Number.isFinite(image.size) || image.size < 0) return `${image.name} (could not read file size)`;
+	if (!Number.isFinite(image.size) || image.size < 0) return refused(image, SIZE_UNREAD);
 	if (image.size > MAX_SOURCE_BYTES || (image.width ?? 0) * (image.height ?? 0) > MAX_SOURCE_PIXELS)
-		return `${image.name}: ${TOO_LARGE}`;
-	// The shared check bundles size with type and count (#3166); with no size
-	// it applies only those two.
-	return rejectionReason({ type: image.type, name: image.name, size: 0 }, reserved);
+		return refused(image, REFUSED.tooLarge);
+	const rejection = admissionRejection(image, reserved);
+	return rejection && refused(image, REFUSED[rejection]);
 }
 
 function base64ByteLength(data: string): number {
@@ -113,7 +125,7 @@ export class ImageSelection {
 		if (this.snapshot.busy || !draft.loaded || draft.error) return;
 		const count = draft.record.images?.length ?? 0;
 		if (count >= MAX_ATTACHMENTS) {
-			this.update({ error: `You can attach up to ${MAX_ATTACHMENTS} images.` });
+			this.update({ error: REFUSED.tooMany });
 			return;
 		}
 		const generation = ++this.generation;
@@ -152,15 +164,8 @@ export class ImageSelection {
 					const { data, mediaType } = await this.picker.encode(image);
 					if (generation !== this.generation) return;
 					if (!this.snapshot.pending.some((item) => item.id === image.id)) continue;
-					const reason = rejectionReason(
-						{
-							type: mediaType,
-							size: base64ByteLength(data),
-							name: image.name,
-						},
-						0,
-					);
-					if (reason) errors.push(reason);
+					const rejection = sizeRejection(base64ByteLength(data));
+					if (rejection) errors.push(refused(image, REFUSED[rejection]));
 					else
 						this.document.addImage({
 							id: image.id,
@@ -171,7 +176,7 @@ export class ImageSelection {
 						});
 				} catch {
 					if (generation === this.generation && this.snapshot.pending.some((item) => item.id === image.id))
-						errors.push(`${image.name} (could not process image)`);
+						errors.push(refused(image, NOT_PREPARED));
 				}
 				if (generation === this.generation) this.remove(image.id);
 			}
