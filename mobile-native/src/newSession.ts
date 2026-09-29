@@ -550,8 +550,10 @@ export function createNewSessionStore(
 		},
 		retired: false,
 		retire() {
-			get().bind(null);
+			// Retired first, so unbinding persists nothing: the hub's drafts are
+			// already gone.
 			set({ retired: true });
+			get().bind(null);
 		},
 		startMayRepeat() {
 			return get().unconfirmedCreation && unconfirmedContent !== null && draftContent() === unconfirmedContent;
@@ -622,7 +624,8 @@ export function createNewSessionStore(
 		};
 	}
 	function saveDraft(): boolean {
-		if (!storage) return true;
+		// A removed hub's store writes nothing back.
+		if (!storage || store.getState().retired) return true;
 		if (!store.getState().storageLoaded) return false;
 		const draft = snapshot();
 		const signature = creationDraftMetadata(draft);

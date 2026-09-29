@@ -1133,3 +1133,32 @@ it("keeps an uncertain draft uncertain when the host's models fill in what an ol
 	expect(store.getState().startMayRepeat()).toBe(false);
 	expect(saved.get("hub-a")).toMatchObject({ unconfirmed: false });
 });
+
+it("persists nothing once retired, even with its start still out (#3104)", async () => {
+	const { saved, storage } = memoryDrafts();
+	const store = createNewSessionStore("hub-a", storage);
+	const starts: ReturnType<typeof deferred>[] = [];
+	store.getState().bind(
+		createNewSessionService({
+			request: () => {
+				const start = deferred();
+				starts.push(start);
+				return start.promise;
+			},
+		} as unknown as ConversationClientLike),
+	);
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	const started = store.getState().submit();
+	await flush();
+	// The hub is removed: its drafts go first, then its store retires.
+	saved.clear();
+	store.getState().retire();
+	expect(store.getState().retired).toBe(true);
+	starts.at(-1)?.resolve({ thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await started).toEqual({ status: "obsolete" });
+	// Nothing the retired store does afterwards reaches storage.
+	store.getState().setPrompt("anything");
+	store.getState().retryStorage();
+	expect(saved.size).toBe(0);
+});
