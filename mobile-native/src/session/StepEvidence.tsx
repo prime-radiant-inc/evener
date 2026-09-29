@@ -5,8 +5,8 @@
 import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
-import { expandLineTabs, expandTabs } from "../ansiOutputStyles";
+import type { AnsiLine } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { expandTabs, parseOutputLines } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
 import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "../taskStatus";
@@ -52,7 +52,7 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 	const preview = useMemo(
 		() =>
 			keyedByOffset(
-				parseAnsiLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")).map(expandLineTabs),
+				parseOutputLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")),
 				ansiLineLength,
 			),
 		[text],
