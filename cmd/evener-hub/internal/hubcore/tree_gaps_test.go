@@ -262,3 +262,20 @@ func TestFavoriteCandidatesSkipsEmptyID(t *testing.T) {
 // Ensure identifier import is used.
 var _ = identifier.ValidateProjectID
 var _ = time.Now
+
+// TestPinCandidatesExcludeForkRows pins that only session rows are pin
+// candidates, whatever tier holds them.
+func TestPinCandidatesExcludeForkRows(t *testing.T) {
+	tree := Tree{
+		Projects: []TreeProject{
+			{allCurrent: []TreeNode{
+				{ID: "session-1", Kind: "session"},
+				{ID: "fork-1", Kind: "fork"},
+			}},
+		},
+	}
+	got := tree.PinCandidates()
+	if len(got) != 1 || got[0].ID != "session-1" {
+		t.Fatalf("PinCandidates = %+v, want only session-1", got)
+	}
+}

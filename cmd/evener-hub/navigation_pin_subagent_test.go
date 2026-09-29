@@ -184,7 +184,7 @@ func TestUnpinRemovesARemoteSubagentPin(t *testing.T) {
 func classifyReferenced(t *testing.T, web *WebServer, ids ...string) map[string]hubcore.FavoriteDecisionClassification {
 	t.Helper()
 	snapshot := web.navigationSnapshot(t.Context())
-	authority, _ := web.favoriteAuthorityForReferences(snapshot, hubcore.Tree{}, ids)
+	authority, _ := web.favoriteAuthorityForReferences(snapshot, ids)
 	decisions := make(map[hubcore.ArchiveKey]bool, len(ids))
 	for _, id := range ids {
 		decisions[hubcore.ArchiveKey{Kind: "session", ID: id}] = true
