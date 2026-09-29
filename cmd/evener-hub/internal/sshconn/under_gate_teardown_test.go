@@ -13,6 +13,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -214,6 +215,61 @@ func TestRemoveHostUnderGateTearsDownUnderTheHold(t *testing.T) {
 		t.Fatalf("TryAcquire after the caller released: %v", err)
 	}
 	free()
+}
+
+// TestCanceledSupervisorStandsDownWithoutTheGate pins the race behind the two
+// teardown tests' final acquisition: a supervisor a teardown canceled must stand
+// down without contending for the host gate, so the caller that releases last
+// observes the gate free rather than briefly held by a loop whose owner is
+// already gone. The test parks the supervisor on the link drop via
+// beforeSuperviseGate, cancels its loop with an under-gate update while the
+// caller still holds the gate, then releases the hook: a canceled loop must exit
+// (superviseExited) while the gate is still the caller's, which it cannot do if
+// it first waits for the gate.
+func TestCanceledSupervisorStandsDownWithoutTheGate(t *testing.T) {
+	runner := &reapRecordingRunner{}
+	atGate := make(chan struct{}, 1)
+	unblock := make(chan struct{})
+	exited := make(chan struct{}, 4)
+	m := newTestManager(t, testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"}), &fakeRunner{
+		runFn:   runner.Run,
+		startFn: runner.Start,
+	}, Options{
+		beforeSuperviseGate: func(string, *Channel) {
+			atGate <- struct{}{}
+			<-unblock
+		},
+		superviseExited: func(string) { exited <- struct{}{} },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// Wake the supervisor on the link drop and park it inside beforeSuperviseGate,
+	// before it contends for the gate. Its context is still live here, so the
+	// select takes the drop branch deterministically.
+	ch.markLost()
+	<-atGate
+
+	holder := underGateHolder("update")
+	release, err := m.TryAcquire("alpha", holder)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+	// The under-gate update cancels the parked supervisor's loop, exactly as a
+	// teardown does, while the caller holds the gate (the caller releases last).
+	if err := m.UpdateHostUnderGate(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, holder, nil); err != nil {
+		t.Fatalf("UpdateHostUnderGate: %v", err)
+	}
+	// Let the loop past the hook with its context already canceled. It must exit
+	// without acquiring the gate the caller still holds.
+	close(unblock)
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a canceled supervisor blocked on the host gate instead of standing down")
+	}
 }
 
 // TestUpdateHostUnderGateRebindsUnderTheHold pins the shipped rule for an edit:

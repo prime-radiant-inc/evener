@@ -459,10 +459,9 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 // predates the handler and every other read failure is `probe-failed` with the
 // failure half named.
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
-	// The fencing refusals this surface shares with the first-contact caller are
-	// converted first, so a helper gate that happens to wrap a probe read (the
-	// helper self-test is itself a read-only round trip) is never `probe-failed`
-	// (§6:161).
+	// The helper-gate refusal is converted first, so a gate that happens to wrap
+	// a probe read (the helper self-test is itself a read-only round trip) is
+	// never `probe-failed` (§8:161).
 	if wire, ok := fencingRefusalWire(name, err); ok {
 		return wire
 	}
@@ -485,23 +484,15 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	}
 }
 
-// fencingRefusalWire converts the refusal classes the fenced probe and the
-// first-contact bootstrap share onto their typed envelopes, ok=false when err
-// is none of them so each caller keeps its remaining arms.
+// fencingRefusalWire converts the helper-gate refusal class the fenced probe
+// shares onto its typed envelope, ok=false when err is none of it so the caller
+// keeps its remaining arms.
 //
 //   - The helper gate (§8:161) rides the conflict class: a known discriminator
 //     renders its arm (absent or untrusted, with the pinned or observed
 //     version); a discriminator this build cannot render is still a gate
 //     refusal and refuses as an internal error naming the unknown class —
 //     never as `fencing-helper-absent` and never as `probe-failed`.
-//   - A bootstrap attempt bound to a registration the host no longer carries
-//     (a remove and re-add landed while the attempt paused) is the deploy
-//     pipeline's `stale-entry` class on its generation binding: the caller
-//     re-resolves the host and retries. Never a helper-gate arm.
-//   - A crashed bootstrap attempt whose process is still live fences the host
-//     the way an open orphan-unverified record does (§8:158): the transient
-//     busy class, with the diagnostic naming the crashed epoch. Never
-//     `probe-failed`, which names only a re-probe read failure.
 func fencingRefusalWire(name string, err error) (appwire.WireError, bool) {
 	if wire, ok := helperGateWireRefusal(err); ok {
 		return wire, true
@@ -509,14 +500,6 @@ func fencingRefusalWire(name string, err error) (appwire.WireError, bool) {
 	if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
 		return appwire.InternalError(fmt.Sprintf(
 			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err)), true
-	}
-	if stale, ok := errors.AsType[*hostfence.StaleAttemptError](err); ok {
-		return appwire.StaleEntry(appwire.StaleEntryBindingGeneration, stale.Error()), true
-	}
-	if orphan, ok := errors.AsType[*hostfence.AttemptOrphanError](err); ok {
-		return appwire.HostBusyTransient(fmt.Sprintf(
-			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
-			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan)), true
 	}
 	return appwire.WireError{}, false
 }

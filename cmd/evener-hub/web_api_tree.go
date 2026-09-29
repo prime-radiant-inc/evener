@@ -431,9 +431,18 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
 		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
 	}) {
-		// Persisted delegates have no rendezvous of their own. Preserve the
-		// authenticated owner's restart restriction in every navigation projection.
+		// Persisted job-tree roots and fork continuations have no rendezvous of
+		// their own. Preserve the authenticated owner's restart restriction in
+		// every navigation projection. The walk still passes through subagents
+		// to reach them, but a subagent has no row to carry the state.
+		roots, running := hubcore.NewRootIndex(nil), hubcore.RunningSubagentIDs(live)
+		if s.cfg.Past != nil {
+			roots = s.cfg.Past.RootIndex()
+		}
 		for _, past := range sessionsUnderIncompatibleDaemons(pastEntries, live, unconfirmed) {
+			if roots.IsSubagent(past.Meta.ID) || running[past.Meta.ID] {
+				continue
+			}
 			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {

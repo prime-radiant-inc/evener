@@ -45,13 +45,16 @@ func crashPerformLeavingCommand(t *testing.T, remote *fenceRemote, epoch Epoch, 
 
 // writeLeaseEntry writes one lease entry file by hand, in the exact field set
 // the wrapper's writer emits, so a test can place an identity the wrapper never
-// observed. The entry is registered now: a running entry's registration is its
-// own spawn second, and the nonce scan's uninspectable-process bound reads it,
-// so a fixed past date would let unrelated host processes stand in for possible
-// descendants of the command under test.
+// observed. The entry registers ahead of every process the host is running, as
+// the wrapper's own entries do (installShiftedClock): a running entry's
+// registration bounds the nonce scan's uninspectable-process rule, and an entry
+// registered at the host's clock would let an unrelated process on a busy host
+// stand in for a possible descendant of the command under test. A test whose
+// fixture must count as a possible descendant registers the entry at
+// time.Now() through writeLeaseEntryRegisteredAt, before starting the fixture.
 func writeLeaseEntry(t *testing.T, remote *fenceRemote, id, state, kind, pid, start, nonce, cgroup string) {
 	t.Helper()
-	writeLeaseEntryRegisteredAt(t, remote, time.Now(), id, state, kind, pid, start, nonce, cgroup)
+	writeLeaseEntryRegisteredAt(t, remote, registrationAheadOfHost(), id, state, kind, pid, start, nonce, cgroup)
 }
 
 // writeLeaseEntryRegisteredAt writes a lease entry registered at the given time.
@@ -639,7 +642,7 @@ func TestScriptUnreadableSameOwnerProcessStaysLive(t *testing.T) {
 	// The recorded start token is deliberately not the live process's: the
 	// recorded identity reads clean, and only the uninspectable process keeps
 	// the entry live.
-	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	writeLeaseEntryRegisteredAt(t, remote, time.Now(), "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
 	sleeper := startUninspectableSleeper(t, "n1")
 	defer func() { _ = sleeper.Process.Kill(); _, _ = sleeper.Process.Wait() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
@@ -775,7 +778,7 @@ func TestScriptScanErrorBesideAFalseCandidateStaysLive(t *testing.T) {
 		t.Fatalf("start the recorded-instance stand-in: %v", err)
 	}
 	defer func() { _ = victim.Process.Kill(); _, _ = victim.Process.Wait() }()
-	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	writeLeaseEntryRegisteredAt(t, remote, time.Now(), "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
 	sleeper := startUninspectableSleeper(t, "n1")
 	defer func() { _ = sleeper.Process.Kill(); _, _ = sleeper.Process.Wait() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
@@ -843,12 +846,11 @@ func TestScriptPostSpawnFailureNeverSignalsAnUnreadableToken(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("sleep 60 & echo $! > %s/descendant; sleep 60", work)
+	env, ready := faultAfterSpawnEnv(t, "EVENER_FENCE_FAULT_UNREADABLE_START=1")
+	command := fmt.Sprintf("sleep 0.3; sleep 60 & echo $! > %s/descendant; touch %s; sleep 60", work, ready)
 	// File-backed streams: the surviving descendant would hold a pipe open and
 	// block this call for its full sleep.
-	combined, _, code := remote.runFile(
-		[]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1", "EVENER_FENCE_FAULT_UNREADABLE_START=1"},
-		"perform", epoch.BootID, "1", command)
+	combined, _, code := remote.runFile(env, "perform", epoch.BootID, "1", command)
 	if code != 69 {
 		t.Fatalf("faulted perform exited %d, want 69: %s", code, combined)
 	}
@@ -1321,7 +1323,7 @@ func TestScriptKillSettlesAReusedIdentityWithoutSignaling(t *testing.T) {
 	ambient := startUninspectableSleeper(t, "unrelated")
 	defer func() { _ = ambient.Process.Kill(); _, _ = ambient.Process.Wait() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
-	writeLeaseEntryRegisteredAt(t, remote, time.Now().Add(time.Hour), "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	writeLeaseEntryRegisteredAt(t, remote, registrationAheadOfHost(), "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
 	if _, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1"); code != 0 {
 		t.Fatalf("kill exited %d: %s", code, stderr)
 	}

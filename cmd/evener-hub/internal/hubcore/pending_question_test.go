@@ -110,12 +110,3 @@ func fuzzScenarioBuildTree_EveryRowNamesThePendingQuestion(t *testing.T) {
 		t.Fatalf("stale session's project row = %+v (found %v), want no question", stale.Question, found)
 	}
 }
-
-// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsQuestion: a row clamped to
-// ended under a dead parent asks nothing, so it names no question.
-func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsQuestion(t *testing.T) {
-	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingQuestion: testPendingQuestion()})
-	if child.State != "ended" || child.AskPending || child.Question != nil {
-		t.Fatalf("stale subagent = state %q, ask %v, question %+v; want ended with no question", child.State, child.AskPending, child.Question)
-	}
-}
