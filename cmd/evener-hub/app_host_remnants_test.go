@@ -1827,19 +1827,26 @@ func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
 	}
 	// (c) A later retry is not falsely busy: the timed-out attempt is taken over
 	// and the run proceeds to completion once the wedge lifts.
+	//
+	// The first run's teardown outlived its deadline: its RemoveHost still waits
+	// for the gate the wedge holds, and runs once the wedge lifts. A free gate
+	// alone doesn't mean that run is done: it may not have taken the gate yet,
+	// and it takes it for "remove" the moment after, where the later retry would
+	// meet it busy (#3178). That run removes the host from the registry while it
+	// holds the gate, so the host gone from the registry and the gate free again
+	// is the point past which it no longer touches the name.
 	unwedge()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitFor(t, func() bool {
+		if _, registered := reg.Get("side"); registered {
+			return false
+		}
 		release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "probe"})
-		if gateErr == nil {
-			release()
-			break
+		if gateErr != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the gate was never released after the wedged run: %v", gateErr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		release()
+		return true
+	}, "the timed-out run never finished removing the host once the wedge lifted")
 	m.testOnlyBeforePinnedRun = nil
 	second, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
 	if err != nil {
