@@ -16,7 +16,9 @@ import { type PluginsScreenSlot, PluginsScreenSlotProvider, usePublishPluginsScr
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", error: null, activeProfile: null }) }));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({ state: "ready", error: null, activeProfile: null }),
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
@@ -52,11 +54,7 @@ function Publisher({ slot }: { slot: PluginsScreenSlot }) {
 	return null;
 }
 
-function page(
-	slot: PluginsScreenSlot | null,
-	navigation: { goBack: () => void; popTo: () => void },
-	pushed = true,
-) {
+function page(slot: PluginsScreenSlot | null, navigation: { goBack: () => void; popTo: () => void }, pushed = true) {
 	return (
 		<PluginsScreenSlotProvider>
 			{slot ? <Publisher slot={slot} /> : null}

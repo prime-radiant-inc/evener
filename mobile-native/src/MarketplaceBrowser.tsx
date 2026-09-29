@@ -587,7 +587,12 @@ function MarketplaceProblems({
 			{problem ? <GroupFooter tone="danger">{problem}</GroupFooter> : null}
 			{listError ? (
 				<Group>
-					<Row label="Retry marketplaces" tone="accent" disabled={!ready} onPress={whenReady(canUseConnection, retry)} />
+					<Row
+						label="Retry marketplaces"
+						tone="accent"
+						disabled={!ready}
+						onPress={whenReady(canUseConnection, retry)}
+					/>
 				</Group>
 			) : null}
 			{busy ? <Spinner label="Updating marketplace or plugin" /> : null}
