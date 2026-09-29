@@ -9,6 +9,7 @@ import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { useDocumentFacts } from "./DocumentChip";
 import { FreshDot } from "./FreshDot";
 import type { SessionDocument } from "./sessionDocuments";
@@ -65,6 +66,7 @@ function DocumentRow({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { kind, title, lines, age, spokenAge, freshness } = useDocumentFacts(
 		hubId,
 		sessionRef,
@@ -102,7 +104,7 @@ function DocumentRow({
 					numberOfLines={1}
 					style={{
 						flexShrink: 1,
-						fontFamily: fonts.serifSemibold,
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,

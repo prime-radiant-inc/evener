@@ -153,8 +153,17 @@ func fuzzScenarioLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *
 }
 
 func fuzzScenarioLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing.T) {
-	got := localDaemonSubscribeReadError(appwire.InternalError("read failed: i/o timeout"))
-	assertSessionUnavailable(t, got, "internal i/o timeout")
+	got := localDaemonSubscribeReadError(internalTransportFailure("read failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "synthesized transport failure")
+}
+
+func fuzzScenarioLocalDaemonSubscribeReadErrorPreservesDeliveredInternalError(t *testing.T) {
+	delivered := appwire.InternalError("read failed: i/o timeout")
+	got := localDaemonSubscribeReadError(delivered)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) || wire.Code != appwire.CodeInternalError || wire.Message != delivered.Message {
+		t.Fatalf("delivered InternalError rewritten: %+v", got)
+	}
 }
 
 func fuzzScenarioLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
@@ -187,8 +196,17 @@ func fuzzScenarioLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *tes
 }
 
 func fuzzScenarioLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
-	got := localDaemonInitializeError(appwire.InternalError("initialize failed: i/o timeout"))
-	assertSessionUnavailable(t, got, "internal i/o timeout")
+	got := localDaemonInitializeError(internalTransportFailure("initialize failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "synthesized transport failure")
+}
+
+func fuzzScenarioLocalDaemonInitializeErrorPreservesDeliveredInternalError(t *testing.T) {
+	delivered := appwire.InternalError("initialize failed: i/o timeout")
+	got := localDaemonInitializeError(delivered)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) || wire.Code != appwire.CodeInternalError || wire.Message != delivered.Message {
+		t.Fatalf("delivered InternalError rewritten: %+v", got)
+	}
 }
 
 func fuzzScenarioLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
