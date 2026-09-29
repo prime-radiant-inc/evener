@@ -143,6 +143,21 @@ describe("the hosts controller", () => {
 		expect(asked).toBe(2);
 	});
 
+	it("forgets a refused Connect's message once the hub lists the host attached", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client);
+		const refused = hosts.connect("paradise-park");
+		h.take("evener/host/attach").reject(new WireError("host key mismatch", -32000));
+		await settle();
+		h.take("evener/host/list").resolve({ hosts: [row("paradise-park")] });
+		await refused;
+		expect(hosts.getSnapshot().connectErrors.has("paradise-park")).toBe(true);
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("paradise-park", { attached: true })] });
+		await read;
+		expect(hosts.getSnapshot().connectErrors.has("paradise-park")).toBe(false);
+	});
+
 	it("asks the hub nothing once disposed", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client);

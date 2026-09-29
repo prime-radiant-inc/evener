@@ -92,7 +92,10 @@ export class HostsController {
 				this.again = false;
 				try {
 					const { hosts } = await this.client.request("evener/host/list", {});
-					this.publish({ rows: hosts.filter((row) => !row.removed), error: null });
+					// A refusal is moot once the host is attached, however it got there.
+					const connectErrors = new Map(this.state.connectErrors);
+					for (const row of hosts) if (row.attached) connectErrors.delete(row.name);
+					this.publish({ rows: hosts.filter((row) => !row.removed), error: null, connectErrors });
 				} catch (error) {
 					this.publish({ error: friendlyErrorMessage(error) });
 				}

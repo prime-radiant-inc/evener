@@ -139,6 +139,20 @@ it("connects a host, reading Connecting… while the hub attaches it", async () 
 	page.dispose();
 });
 
+it("drops Connecting… as soon as the rows say the host is attached", async () => {
+	const fleet = scriptedFleet([hostRow("attic", { attached: false })]);
+	fleet.attach.hold = true;
+	const page = await mount(fleet, "attic");
+	await act(async () => page.button("Connect")?.props.onPress());
+	// The hub's supervisor attaches it while the Connect is still out.
+	fleet.hosts = [hostRow("attic")];
+	await act(async () => page.hosts.read());
+	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Connected");
+	expect(page.button("Connecting…")).toBeNull();
+	await act(async () => fleet.releaseAttach());
+	page.dispose();
+});
+
 it("says why the hub refused to connect a host", async () => {
 	const fleet = scriptedFleet([hostRow("attic", { attached: false })]);
 	fleet.attach.refuse = "host key mismatch";

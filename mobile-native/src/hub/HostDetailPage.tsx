@@ -31,8 +31,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 	const drift = versionDriftTag(row, hubVersion);
 	const system = systemLabel(row);
 	const roots = row.roots ?? [];
-	// A refusal is moot once the hub has attached the host on its own.
-	const connectError = row.attached ? undefined : state.connectErrors.get(name);
+	const connectError = state.connectErrors.get(name);
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -64,7 +63,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 					</GroupFooter>
 				</>
 			) : null}
-			{status.canConnect || connecting ? (
+			{!row.attached && (status.canConnect || connecting) ? (
 				<Group>
 					<Row
 						label={connecting ? "Connecting…" : "Connect"}
