@@ -98,7 +98,11 @@ describe("the sheet's chrome", () => {
 
 		it("keeps the title's room when Done's label is long: the side slots share only what's left", () => {
 			const tree = render(
-				<Sheet title="Sign in to codex" onCancel={() => {}} done={{ label: "Terminer et enregistrer", onPress: () => {} }}>
+				<Sheet
+					title="Sign in to codex"
+					onCancel={() => {}}
+					done={{ label: "Terminer et enregistrer", onPress: () => {} }}
+				>
 					<Text>body</Text>
 				</Sheet>,
 			);
@@ -109,4 +113,3 @@ describe("the sheet's chrome", () => {
 		});
 	});
 });
-
