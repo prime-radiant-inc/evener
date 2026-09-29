@@ -1,7 +1,8 @@
-import { toolStepSummary } from "@evener/appwire-client";
+import { composeStepWords, toolStepWords } from "@evener/appwire-client";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
+import type { ActivityDetail } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
 import { stepEvidence } from "./evidence";
 import { RunRow } from "./RunRow";
@@ -35,10 +36,8 @@ function step(id: string, label: string, args: Record<string, unknown>, over: Pa
 		...over,
 	};
 	const { arguments: argumentsJSON, output } = built.detail;
-	return {
-		...built,
-		detail: { ...built.detail, summary: toolStepSummary({ toolName: label, argumentsJSON, output }) },
-	};
+	const words = toolStepWords({ toolName: label, argumentsJSON, output });
+	return { ...built, detail: { ...built.detail, summary: composeStepWords(words), words } };
 }
 
 const run: Run = {
@@ -107,6 +106,70 @@ describe("a run folded into one line", () => {
 	});
 });
 
+// Spec § Activity run: each step line is "intent sentence, target in Menlo,
+// and a status mark". The target is the package's words.target, whichever
+// sentence leads the line.
+describe("a step line's Menlo target", () => {
+	const menlo = (root: ReactTestInstance) =>
+		texts(root)
+			.filter((node) => node.props.style?.fontFamily === "Menlo")
+			.map(textOf);
+	const one = (detail: RunStep["detail"], label = "read_file"): Run => ({
+		kind: "run",
+		id: "run:w",
+		turnId: "t1",
+		steps: [{ kind: "activity", id: "w", label, family: "tool", state: "completed", detail }],
+	});
+	const drawn = (detail: RunStep["detail"], label?: string) =>
+		render(<RunRow run={one(detail, label)} live={false} expanded onToggle={() => {}} {...where} />);
+
+	it("sets a step's own words' target in Menlo, inside the sentence", () => {
+		const tree = drawn({
+			summary: "Read agent/tree.go · lines 1-4",
+			words: { verb: "Read", target: "agent/tree.go", detail: "lines 1-4" },
+		});
+		expect(menlo(tree.root)).toEqual(["agent/tree.go"]);
+		expect(texts(tree.root).map(textOf)).toContain("Read agent/tree.go · lines 1-4");
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Read agent/tree.go · lines 1-4, done").length,
+		).toBeGreaterThan(0);
+	});
+
+	it("keeps the text after the target, and a detail after that", () => {
+		const tree = drawn(
+			{
+				summary: 'Searched "func settle" in agent (*.go) · 2 hits',
+				words: { verb: "Searched", target: '"func settle"', after: "in agent (*.go)", detail: "2 hits" },
+			},
+			"grep",
+		);
+		expect(menlo(tree.root)).toEqual(['"func settle"']);
+		expect(texts(tree.root).map(textOf)).toContain('Searched "func settle" in agent (*.go) · 2 hits');
+	});
+
+	it("takes an intent's target from the words too", () => {
+		const tree = drawn(
+			{
+				description: "Show the new file",
+				arguments: JSON.stringify({ command: "cd /repo && cat a.go" }),
+				summary: "Ran cat a.go",
+				words: { verb: "Ran", target: "cat a.go" },
+			},
+			"shell",
+		);
+		expect(menlo(tree.root)).toEqual(["cat a.go"]);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Show the new file, cat a.go, done").length,
+		).toBeGreaterThan(0);
+	});
+
+	it("sets nothing in Menlo when the words name no target", () => {
+		const tree = drawn({ summary: "Used compact context", words: { verb: "Used compact context" } }, "compact_context");
+		expect(menlo(tree.root)).toEqual([]);
+		expect(texts(tree.root).map(textOf)).toContain("Used compact context");
+	});
+});
+
 describe("a run expanded into its steps", () => {
 	it("lists each step's intent, its Menlo target and its status mark", () => {
 		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} {...where} />);
@@ -125,12 +188,13 @@ describe("a run expanded into its steps", () => {
 			fontSize: 13,
 			lineHeight: 18,
 		});
-		// A step that reads as its words has no second, Menlo line repeating them.
+		// A step that reads as its words sets their target in Menlo inside them,
+		// with no second line repeating it.
 		expect(
 			texts(tree.root)
 				.filter((node) => node.props.style?.fontFamily === "Menlo")
 				.map(textOf),
-		).toEqual(["agent/session.go"]);
+		).toEqual(["agent/session.go", "go test ./agent/...", "go test ./agent/...", '"Turn"']);
 		const marks = tree.root.findAllByType("SymbolView" as never);
 		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([
 			["checkmark.circle.fill", INK_LOW],
@@ -148,7 +212,7 @@ describe("a run expanded into its steps", () => {
 	});
 
 	it("shows no target for a step whose arguments name none", () => {
-		const bare: Run = { ...run, steps: [step("e", "web_search", { query: "evener" })] };
+		const bare: Run = { ...run, steps: [step("e", "read_file", {})] };
 		const tree = render(<RunRow run={bare} live={false} expanded onToggle={() => {}} {...where} />);
 		expect(texts(tree.root).filter((node) => node.props.style?.fontFamily === "Menlo")).toEqual([]);
 	});
@@ -278,6 +342,61 @@ describe("a step's evidence", () => {
 		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
 			[{ kind: "tasks", tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }] }],
 		]);
+	});
+
+	// A watch step's evidence is its words (the projection's watchEvidence),
+	// which the row must hand on, not the footer the tool printed.
+	it("opens a job_watch step to its evidence in words, not the tool's footer", () => {
+		const run: Run = {
+			kind: "run",
+			id: "run:w",
+			turnId: "t1",
+			steps: [
+				step(
+					"w",
+					"job_watch",
+					{ operation: "create" },
+					{
+						detail: {
+							arguments: '{"operation":"create"}',
+							output: "[watching self · watch_id watch_x · after 300s note: Check the deploy finished.]",
+							watchEvidence: "Check the deploy finished.",
+						},
+					},
+				),
+			],
+		};
+		const tree = render(
+			<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-w" />,
+		);
+		act(() => line(tree.root, "job_watch: create, done").props.onPress());
+		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
+			[{ kind: "output", text: "Check the deploy finished.", lines: 1 }],
+		]);
+	});
+
+	// The row hands a step's whole detail on: a field added to ActivityDetail
+	// must be set here to compile (Required), and must reach stepEvidence.
+	it("hands every field of a step's detail on to its evidence", () => {
+		const detail: Required<ActivityDetail> = {
+			description: "Watch the deploy",
+			summary: "Remind me in 5m",
+			words: { verb: "Remind me in 5m" },
+			arguments: '{"operation":"create"}',
+			output: "[watching self · after 300s]",
+			error: "boom",
+			exitCode: 1,
+			durationMs: 2000,
+			callId: "call_w",
+			startedAtMs: 1,
+			endedAtMs: 2001,
+			tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }],
+			watchEvidence: "Check the deploy finished.",
+		};
+		const full: Run = { kind: "run", id: "run:full", turnId: "t1", steps: [{ ...step("f", "job_watch", {}), detail }] };
+		render(<RunRow run={full} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-full" />);
+		const handed = vi.mocked(stepEvidence).mock.calls.at(-1)?.[0];
+		expect(handed?.detail).toEqual(detail);
 	});
 
 	// Each projection parses the task list again: a new array, the same tasks.

@@ -119,7 +119,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const tokens = demoTokens(sub.tokens);
 		const reason = sub.state === "failed" ? (sub.line ?? "").replace(/^Failed:\s*/, "") : "";
 		const delegate = {
-			delegateId: `d-${sub.id}`,
+			delegateId: sub.id,
 			ownerSessionId,
 			childSessionId: sessionId,
 			childRef: ref,

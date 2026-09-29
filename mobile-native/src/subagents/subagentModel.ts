@@ -8,6 +8,7 @@ import {
 	type ActivityDelegate,
 	type ActivitySessionNode,
 	type ActivityTree,
+	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
 	delegateTiming,
@@ -255,7 +256,7 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const delegate = row.delegate;
-	if (row.state === "failed") return { word: "Failed", text: firstLine(delegate.reason ?? "", 120) };
+	if (row.state === "failed") return { word: "Failed", text: delegateEndingText(delegate) ?? "" };
 	if (row.state === "done") {
 		if (row.stopped) return { text: "Stopped" };
 		const report = typeof delegate.message === "string" ? firstLine(plainQuoteLine(delegate.message), 120) : "";
@@ -270,6 +271,22 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const quiet = delegateTiming(delegate, now).quietForMs;
 	if (quiet !== undefined && quiet >= QUIET_AFTER_MS) return { text: `Quiet ${compactDuration(quiet)}` };
 	return { text: "Working" };
+}
+
+// Each tree's rows by id, built once however many transcript rows ask of it.
+const rowsByTree = new WeakMap<ActivityTree, Map<string, SubagentRow>>();
+
+/** A finished subagent's outcome line from the coordinator's tree, as the
+ * Subagents list gives it (subagentWhy): its report's opening line, or
+ * "Finished" or "Stopped". Undefined while the tree doesn't show it done. */
+export function subagentOutcome(tree: ActivityTree, delegateId: string, now: number): string | undefined {
+	let rows = rowsByTree.get(tree);
+	if (!rows) {
+		rows = new Map(flattenSubagents(tree).map((row) => [row.id, row]));
+		rowsByTree.set(tree, rows);
+	}
+	const row = rows.get(delegateId);
+	return row?.state === "done" ? subagentWhy(row, now).text : undefined;
 }
 
 export interface SubagentLastLine {

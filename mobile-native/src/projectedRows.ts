@@ -44,6 +44,7 @@ import {
 	hasWarningText,
 	isActiveItem,
 	isSuppressedSteeringKind,
+	jobWatchEvidence,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
@@ -56,13 +57,15 @@ import {
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
-	toolStepSummary,
+	composeStepWords,
+	toolStepWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
 	SteeringFragment,
+	StepWords,
 	TaskRow,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
@@ -114,6 +117,9 @@ export interface ActivityDetail {
 	// · lines 1-40"): the package's toolStepSummary, the web's words, read once
 	// here from the whole step, since a summary-only row keeps no output.
 	summary?: string;
+	// The same words in parts (the package's toolStepWords), so a step line
+	// can set what the step acted on in Menlo.
+	words?: StepWords;
 	arguments?: string;
 	output?: string;
 	error?: string;
@@ -129,6 +135,10 @@ export interface ActivityDetail {
 	// state), read once here like summary. Absent for every other tool, and
 	// for a call from a daemon that didn't return one.
 	tasks?: readonly DetailTask[];
+	// What a job_watch step shows when opened, in words (the package's
+	// jobWatchEvidence): "" when its line says it all. Absent for every other
+	// step, and for a watch result this build can't read.
+	watchEvidence?: string;
 }
 
 // A task as a step's detail carries it: only what the checklist draws. The
@@ -335,10 +345,13 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId, summary } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary, words } = row.detail;
+	// Its words' target names what it acted on, which its line sets in Menlo
+	// under a rationale as under its own words.
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
+		...(words !== undefined ? { words } : {}),
 	};
 	// With no rationale of its own, the row keeps the step's words, read from
 	// the whole step before its output goes.
@@ -416,7 +429,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: toolLabel(it),
 			family: "tool",
 			state: activityState(it, context.turnStatus),
-			detail: { ...activityDetail(it), summary: toolStepSummary(it, { cwd: context.cwd }) },
+			detail: { ...activityDetail(it), ...stepWordsOf(it, context.cwd) },
 			...identity,
 		};
 	}
@@ -570,6 +583,12 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 	return start === null || end === null ? {} : { start, end };
 }
 
+// A tool step's words, in parts and composed, read once from the whole step.
+function stepWordsOf(it: ItemModel, cwd: string | undefined): Pick<ActivityDetail, "summary" | "words"> {
+	const words = toolStepWords(it, { cwd });
+	return { summary: composeStepWords(words), words };
+}
+
 /** A tool or reasoning item's expandable detail, read once from the item. */
 export function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
@@ -577,6 +596,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		it.toolName === "task_list"
 			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
 			: undefined;
+	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
@@ -588,6 +608,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		startedAtMs: start,
 		endedAtMs: end,
 		...(tasks ? { tasks } : {}),
+		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 	};
 }
 
@@ -1252,20 +1273,40 @@ export type BoundText = (text: string) => string;
 // description is the summary line a collapsed row shows
 // (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
 // as much as the output is.
+// A step's words, each part cut to the bound like the summary they compose
+// (a command can run long); the source words when nothing was cut.
+function boundWords(words: StepWords, bound: BoundText): StepWords {
+	const verb = bound(words.verb);
+	const target = words.target === undefined ? undefined : bound(words.target);
+	const after = words.after === undefined ? undefined : bound(words.after);
+	const detail = words.detail === undefined ? undefined : bound(words.detail);
+	if (verb === words.verb && target === words.target && after === words.after && detail === words.detail) return words;
+	return {
+		verb,
+		...(target === undefined ? {} : { target }),
+		...(after === undefined ? {} : { after }),
+		...(detail === undefined ? {} : { detail }),
+	};
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
+	const words = detail.words ? boundWords(detail.words, bound) : detail.words;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
+	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
 	if (
 		description === detail.description &&
 		summary === detail.summary &&
+		words === detail.words &&
 		args === detail.arguments &&
 		output === detail.output &&
-		error === detail.error
+		error === detail.error &&
+		watchEvidence === detail.watchEvidence
 	) {
 		return detail;
 	}
@@ -1273,9 +1314,11 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		...detail,
 		description,
 		summary,
+		words,
 		arguments: args,
 		output,
 		error,
+		watchEvidence,
 	};
 }
 

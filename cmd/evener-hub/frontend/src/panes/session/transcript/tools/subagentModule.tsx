@@ -5,6 +5,7 @@
 
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import {
+  delegateEndingText,
   delegateTiming,
   formatElapsed,
   type ItemModel,
@@ -229,7 +230,8 @@ function SubagentCard({
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
-  const reason = stable ? stable.reason : row.resultPreview;
+  // A stable delegate's reason is a code; its ending in words (#3327).
+  const reason = stable ? delegateEndingText(stable) : row.resultPreview;
   // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
@@ -378,7 +380,11 @@ export function rowFromDelegateItem(
   // never turn job_id into a delegate row.
   if (!delegateOutputHasCard(parsed)) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
-  const reason = parsed ? str(parsed, "reason") : undefined;
+  // The tool output's reason is a code; the card and its receipt say it in
+  // words (#3327).
+  const ending = parsed
+    ? delegateEndingText({ outcome: status, reason: str(parsed, "reason"), error: str(parsed, "error") })
+    : undefined;
   const exhaustionBudget = parsed ? str(parsed, "exhaustion_budget") : undefined;
   const exhaustionLimit = parsed && typeof parsed.exhaustion_limit === "number" ? parsed.exhaustion_limit : undefined;
   const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
@@ -393,7 +399,7 @@ export function rowFromDelegateItem(
       transcriptRef,
       startedAt: item.startedAt,
       completedAt: item.completedAt,
-      resultPreview: reason ?? "",
+      resultPreview: ending ?? "",
       exhaustionBudget,
       exhaustionLimit,
     },

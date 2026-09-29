@@ -13,9 +13,8 @@ import { KeybindingPreferencesScreen } from "../KeybindingPreferencesScreen";
 import { LaunchSettingsScreen } from "../LaunchSettingsScreen";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import { HeaderButton } from "../sheet/HeaderButton";
-import { sheetStackOptions } from "../sheet/sheetStack";
+import { useSheetStackOptions } from "../sheet/sheetStack";
 import type { Routes } from "../screens";
-import { useColors } from "../ui";
 import { AddHubPage } from "./AddHubPage";
 import { AlertsPage } from "./AlertsPage";
 import { DetailLevelPage } from "./DetailLevelPage";
@@ -46,7 +45,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	const { activeProfile } = useConnection();
 	const hubId = activeProfile?.id ?? "";
 	const { state, canUseConnection, renderClient } = useRetainedScreenConnection(hubId);
-	const { palette } = useColors();
+	const sheetStackOptions = useSheetStackOptions();
 	const close = useCallback(() => navigation.goBack(), [navigation]);
 	// With no hub selected, the Board under this sheet is stale: first run
 	// becomes the whole stack. (React Navigation 7's navigate would push a
@@ -73,7 +72,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	return (
 		<HubSheetProvider value={value}>
 			<PluginsScreenSlotProvider>
-				<HubStack.Navigator screenOptions={sheetStackOptions(palette)}>
+				<HubStack.Navigator screenOptions={sheetStackOptions}>
 					<HubStack.Screen
 						name="HubHome"
 						component={HubHome}

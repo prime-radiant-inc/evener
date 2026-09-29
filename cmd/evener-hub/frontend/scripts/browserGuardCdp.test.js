@@ -22,6 +22,7 @@ import { afterEach, test, vi } from "vitest";
 import {
   applyViewport,
   BOOT_RETRY_LIMIT,
+  CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
   createStartupDeadline,
@@ -3021,8 +3022,8 @@ test("a Network.enable that never answers still tears the Network domain down", 
 // poll owns the whole budget and the fonts.ready await races the remainder,
 // capped by FONT_READY_TIMEOUT_MS. RoboRev caught the two gaps this pins:
 // an unbounded fonts.ready await could overrun the evaluate() wrapper's
-// 30000ms ceiling and turn every diagnostic into an opaque Runtime.evaluate
-// timeout, and a registration budget shorter than the observed >10s
+// ceiling (CDP_EVALUATE_TRIPWIRE_MS) and turn every diagnostic into an opaque
+// Runtime.evaluate timeout, and a registration budget shorter than the observed >10s
 // stylesheet-application windows under load would let the poll expire early
 // and report a still-registering document as fontless.
 
@@ -3042,9 +3043,36 @@ test("the registration poll and the fonts.ready cap together stay under the eval
   assert.ok(
     FONT_POLL_DEADLINE_MS <= 20000,
     `the shared in-page deadline (${FONT_POLL_DEADLINE_MS}ms) bounds every wait in the page, and must leave ` +
-      `the 30000ms evaluate() wrapper headroom, or a fontless document dies as an opaque timeout instead ` +
+      `the ${CDP_EVALUATE_TRIPWIRE_MS}ms evaluate() wrapper headroom, or a fontless document dies as an opaque timeout instead ` +
       `of the diagnostic`,
   );
+});
+
+// #919: the Runtime.evaluate ceiling was a bare 30000 literal, so it could not
+// be referenced or held to the relationship it has with the guards -- it is the
+// ONE hard bound above every guard's in-page budget, and a guard whose own
+// tripwire overran it lost its structured blocker to an opaque
+// `timeout calling Runtime.evaluate after 30000ms` (the #900 diagnosis). Named
+// now, like the Go tripwires in PR #852 and PR #873, and kept above the guards'
+// in-page waits so the guard's own blocker reports first whenever the page is
+// still making progress.
+test("the evaluate ceiling is named and outlasts every in-page guard budget", async () => {
+  assert.ok(
+    CDP_EVALUATE_TRIPWIRE_MS > FONT_POLL_DEADLINE_MS,
+    `the evaluate ceiling (${CDP_EVALUATE_TRIPWIRE_MS}ms) must outlast the longest in-page guard budget ` +
+      `(${FONT_POLL_DEADLINE_MS}ms), or the guard's own blocker is pre-empted by an opaque timeout`,
+  );
+  // evaluate() actually rides this ceiling: a send that never answers rejects
+  // at exactly the named value, so the constant is the wired bound, not a
+  // decorative export beside a separate literal.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const pending = evaluate(() => new Promise(() => {}), "1 + 41");
+  const rejected = assert.rejects(
+    pending,
+    new RegExp(`timeout calling Runtime\\.evaluate after ${CDP_EVALUATE_TRIPWIRE_MS}ms`),
+  );
+  await vi.advanceTimersByTimeAsync(CDP_EVALUATE_TRIPWIRE_MS);
+  await rejected;
 });
 
 test("a fonts.ready that never settles is capped and reported as a stall", async () => {

@@ -364,3 +364,18 @@ func TestNavigationServesNoArchivedRows(t *testing.T) {
 		t.Fatal("archiving one more session left the project fingerprint unchanged")
 	}
 }
+
+// The out-of-range limit error states the range the parser accepts: 0 is
+// accepted as absent, so the message must not claim the minimum is 1.
+func TestParseNavigationArchivedListParamsLimitErrorNamesAcceptedRange(t *testing.T) {
+	const want = "limit must be between 0 and 50 (0 or absent means 50)"
+	for _, limit := range []int{-1, maxNavigationSectionRows + 1} {
+		_, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "project", Limit: limit})
+		if err == nil || err.Error() != want {
+			t.Fatalf("limit %d: error = %v, want %q", limit, err, want)
+		}
+	}
+	if _, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "project", Limit: 0}); err != nil {
+		t.Fatalf("limit 0 must be accepted as absent: %v", err)
+	}
+}

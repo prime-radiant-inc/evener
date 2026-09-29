@@ -57,3 +57,26 @@ func TestTrimLeadingPartial(t *testing.T) {
 		})
 	}
 }
+
+// Cut bounds a string to at most maxBytes without splitting a rune: a limit
+// that lands mid-rune walks back to that rune's start.
+func TestCut(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello", 3, "hel"},
+		{"a€b", 2, "a"},
+		{"a€b", 4, "a€"},
+		{"😀😀", 5, "😀"},
+		{"€", 0, ""},
+		{"", 4, ""},
+	} {
+		if got := Cut(tc.in, tc.max); got != tc.want {
+			t.Errorf("Cut(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+}

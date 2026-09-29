@@ -141,8 +141,13 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
-export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
-export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export type {
+  DelegateEndingFields,
+  DelegateModelFields,
+  DelegateTiming,
+  DelegateTimingFields,
+} from "./delegateDetails";
+export { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
@@ -246,6 +251,20 @@ export {
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
+export {
+  endReasonPhrase,
+  isRecognizedWatchResult,
+  type JobWatchStep,
+  jobWatchEvidence,
+  jobWatchOperation,
+  jobWatchSummary,
+  rowConditionPhrase,
+  type TimerSpec,
+  timerSpec,
+  WATCH_DELIVERY_BUDGET,
+  watchRowStateWord,
+} from "./jobWatchSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";
 export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
@@ -473,6 +492,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
+export { composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -545,9 +565,17 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
+export {
+  prettyJSON,
+  type ShellOutput,
+  shellOutput,
+  skillContext,
+  toolJSONResult,
+  webFetchResult,
+} from "./toolEvidence";
 export {
   applyPatchSummary,
+  askUserSummary,
   BINARY_PAYLOAD_HEADER,
   editFileSummary,
   fallbackToolSummary,
@@ -569,6 +597,7 @@ export {
   toolFamily,
   toolStepProgress,
   toolStepSummary,
+  toolStepWords,
   useSkillSummary,
   webFetchByteCount,
   webFetchSummary,
@@ -666,6 +695,12 @@ export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
+export {
+  filterSummaryPhrase,
+  type WatchTriggerPhrases,
+  watchEventLabel,
+  watchTriggerPhrases,
+} from "./watchConditionPhrase";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,

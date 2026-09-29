@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
 	ContentLevel,
@@ -215,6 +216,7 @@ describe("projectedRow — item entries", () => {
 			detail: {
 				description: "Run ls",
 				summary: "Ran ls",
+				words: { verb: "Ran", target: "ls" },
 				arguments: '{"cmd":"ls"}',
 				output: "a\nb",
 				callId: "call-1",
@@ -515,7 +517,7 @@ describe("projectedRow — intent entries", () => {
 			// The operator's summary-only ruling marks the row: it carries
 			// only its summary line, nothing to expand.
 			summaryOnly: true,
-			detail: { description: "Read a.ts" },
+			detail: { description: "Read a.ts", words: { verb: "Read a file" } },
 			turnId: "t1",
 		});
 	});
@@ -542,7 +544,7 @@ describe("projectedRow — intent entries", () => {
 	// layer renders the line without an expansion affordance. It keeps its
 	// two clock times as metadata, which nothing shows on the row itself, so
 	// the run it folds into can say how long it took (Jesse, 2026-09-27).
-	it("carries only its summary line, clock times and call id, dropping the rest of the source item's detail", () => {
+	it("carries only its summary line, clock times, call id and words, dropping the rest of the source item's detail", () => {
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -570,6 +572,8 @@ describe("projectedRow — intent entries", () => {
 				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 				callId: "call-1",
+				// What it acted on, which its line sets in Menlo under the rationale.
+				words: { verb: "Ran", target: "ls" },
 			},
 			turnId: "t1",
 		});
@@ -601,9 +605,21 @@ describe("projectedRow — intent entries", () => {
 			arguments: '{"cmd":"ls"}',
 			// The step's words, read before its output went.
 			summary: "Ran ls",
+			words: { verb: "Ran", target: "ls" },
 			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 		});
+	});
+
+	// A job_watch step's words come from the watch's state, not its footer
+	// text: a timer's line is its cadence and its note, a clear's the watch.
+	it("words a recorded job_watch step from the watch's state", () => {
+		const words = (call: "call_watch_timer" | "call_watch_clear") => {
+			const row = projectedRow(intentEntry(toolWireStep(call)));
+			return row?.kind === "activity" ? row.detail?.words : undefined;
+		};
+		expect(words("call_watch_timer")).toEqual({ verb: "Remind me in 5m", detail: "Check the deploy finished." });
+		expect(words("call_watch_clear")).toEqual({ verb: "Cleared", target: "watch_fixture_1" });
 	});
 
 	// The native attention rule outranks the projector's summarization (the
@@ -696,7 +712,7 @@ describe("projectedRow — critical entries", () => {
 			label: "shell",
 			family: "tool",
 			state: "failed",
-			detail: { error: "boom", summary: "Ran a command" },
+			detail: { error: "boom", summary: "Ran a command", words: { verb: "Ran a command" } },
 			turnId: "t1",
 		});
 	});
@@ -1246,6 +1262,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		detail: {
 			description: "  run the audit  ",
 			summary: "Ran a command",
+			words: { verb: "Ran a command" },
 			durationMs: 500,
 			callId: "call-1",
 			startedAtMs: 1000,
@@ -1261,6 +1278,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				detail: {
 					description: "  run the audit  ",
 					summary: "Ran a command",
+					words: { verb: "Ran a command" },
 					durationMs: 500,
 					callId: "call-1",
 					startedAtMs: 1000,
@@ -1273,7 +1291,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				label: "grep",
 				family: "tool",
 				state: "completed",
-				detail: { description: "grep the results", summary: "Searched files" },
+				detail: { description: "grep the results", summary: "Searched files", words: { verb: "Searched files" } },
 				turnId: "t1",
 			},
 		],
@@ -1284,7 +1302,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "shell",
 		family: "tool",
 		state: "failed",
-		detail: { error: "boom", exitCode: 1, summary: "Ran a command" },
+		detail: { error: "boom", exitCode: 1, summary: "Ran a command", words: { verb: "Ran a command" } },
 		turnId: "t1",
 	},
 	{
@@ -1327,7 +1345,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "read_file",
 		family: "tool",
 		state: "running",
-		detail: { description: "read config", summary: "Read a file" },
+		detail: { description: "read config", summary: "Read a file", words: { verb: "Read a file" } },
 		turnId: "t2",
 		members: [
 			{
@@ -1335,10 +1353,17 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				label: "read_file",
 				family: "tool",
 				state: "running",
-				detail: { description: "read config", summary: "Read a file" },
+				detail: { description: "read config", summary: "Read a file", words: { verb: "Read a file" } },
 				turnId: "t2",
 			},
-			{ id: "c5", label: "view", family: "tool", state: "completed", detail: { summary: "Used view" }, turnId: "t2" },
+			{
+				id: "c5",
+				label: "view",
+				family: "tool",
+				state: "completed",
+				detail: { summary: "Used view", words: { verb: "Used view" } },
+				turnId: "t2",
+			},
 		],
 	},
 	{
@@ -1493,6 +1518,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail).toEqual({
 					description: "  run the audit  ",
 					summary: "Ran a command",
+					words: { verb: "Ran a command" },
 					durationMs: 500,
 					callId: "call-1",
 					startedAtMs: 1000,
@@ -1511,7 +1537,12 @@ describe("the timeline projection delegates to the shared projector", () => {
 			if (c3?.kind !== "activity") throw new Error("differential lost c3");
 			expect(c3.state).toBe("failed");
 			expect(c3.summaryOnly).toBeUndefined();
-			expect(c3.detail).toEqual({ error: "boom", exitCode: 1, summary: "Ran a command" });
+			expect(c3.detail).toEqual({
+				error: "boom",
+				exitCode: 1,
+				summary: "Ran a command",
+				words: { verb: "Ran a command" },
+			});
 
 			// The running call is the same attention carve-out: full detail,
 			// running state, at every level.
@@ -1519,7 +1550,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 			if (c4?.kind !== "activity") throw new Error("differential lost the c4 cluster");
 			expect(c4.state).toBe("running");
 			expect(c4.summaryOnly).toBeUndefined();
-			expect(c4.detail).toEqual({ description: "read config", summary: "Read a file" });
+			expect(c4.detail).toEqual({ description: "read config", summary: "Read a file", words: { verb: "Read a file" } });
 			// The cluster's settled member is the summarized one.
 			expect(c4.members?.[1]?.summaryOnly).toBe(intentRows ? true : undefined);
 		},
@@ -1621,6 +1652,21 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 			expect(out.members?.[0]).toBe(row.members?.[0]);
 			expect(out.members?.[1]).not.toBe(row.members?.[1]);
 		}
+	});
+
+	it("bounds a watch's evidence like the rest of a step's text", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "job_watch",
+			family: "tool",
+			state: "completed",
+			detail: { watchEvidence: big },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
 	});
 
 	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {

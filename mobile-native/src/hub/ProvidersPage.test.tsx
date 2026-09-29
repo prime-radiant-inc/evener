@@ -23,7 +23,7 @@ import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
-import { Tag } from "../sheet/Grouped";
+import { SwitchRow, Tag } from "../sheet/Grouped";
 import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProvidersPage } from "./ProvidersPage";
 import {
@@ -1653,6 +1653,95 @@ it("lists every model with a switch, off for one that's disabled, in SF Pro (spe
 	expect(JSON.stringify(label.props.style)).not.toContain("Menlo");
 });
 
+// A provider such as OpenRouter lists hundreds of models; the detail mounts at
+// most MODEL_LIST_CAP switches and offers a search to reach the rest (issue
+// #3279, the same decision the web sheet makes).
+const withManyModels = (count: number) =>
+	instance({
+		authModes: ["apiKey"],
+		models: Array.from({ length: count }, (_, index) => ({ id: `model-${String(index).padStart(2, "0")}` })),
+	});
+
+it("caps a long model list, says how many are hidden, and reaches the rest by search", async () => {
+	providersHub([withManyModels(60)]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(50);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("Showing 50 of 60 models — search to narrow.");
+	act(() => control(tree, "Search models").props.onChangeText("model-59"));
+	expect(control(tree, "model-59").props.value).toBe(true);
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(1);
+});
+
+it("says so when the model search matches nothing", async () => {
+	providersHub([withManyModels(60)]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(0);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("No matching models.");
+});
+
+it("leaves a short model list uncapped, with no search field", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+	expect(hasControl(tree, "Search models")).toBe(false);
+});
+
+it("keeps the model search clearable when a refresh drops the list below the cap", async () => {
+	const fake = providersHub([withManyModels(60)]);
+	fake.on("evener/instance/refreshModels", () => ({
+		instances: [withManyModels(2)],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	// The filter is still active, so the field stays to clear it rather than hiding the rows.
+	act(() => control(tree, "Search models").props.onChangeText(""));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+});
+
+it("clears the model search when a notice opens a different provider", async () => {
+	providersHub([withManyModels(60), { ...withManyModels(2), name: "home", isDefault: false }]);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	await relink("home");
+	// The detail remounted on the new provider, so its models are not filtered by the old query.
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+	expect(control(tree, "model-00").props.value).toBe(true);
+});
+
+it("keeps the model search while only whitespace is typed, even below the cap", async () => {
+	const fake = providersHub([withManyModels(60)]);
+	fake.on("evener/instance/refreshModels", () => ({
+		instances: [withManyModels(2)],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("   "));
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	// Whitespace trims to no filter, so nothing is hidden, and the field stays to clear it.
+	expect(hasControl(tree, "Search models")).toBe(true);
+	act(() => control(tree, "Search models").props.onChangeText(""));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+});
+
 it("turns a model on or off through the hub", async () => {
 	const fake = providersHub([withModels()]);
 	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({
@@ -1834,7 +1923,7 @@ it("snaps a switch back and says so when the hub doesn't take the flip", async (
 	expect(text).not.toContain("providers.toml");
 });
 
-it("forgets a check for new models when the detail closes, and never reports it elsewhere", async () => {
+it("keeps a check's Checking state across a detail close, and never reports it elsewhere", async () => {
 	const fake = providersHub([withModels()]);
 	let fail: (reason: Error) => void = () => {};
 	fake.on(
@@ -1852,8 +1941,12 @@ it("forgets a check for new models when the detail closes, and never reports it 
 	press(tree, (label) => label === "Done");
 	await act(async () => {});
 	await openDetail(tree, "work");
-	expect(hasControl(tree, "Check for new models")).toBe(true);
-	// The check left behind fails while the detail is open again.
+	// The store owns which instance has a check out, so reopening the detail
+	// while the call is still in flight reads the same Checking state: the
+	// screen no longer forgets the check when the detail closes.
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
+	// The check left behind fails while the detail is open again; its failure
+	// still belongs to the visit that started it, so it is not reported here.
 	await act(async () => fail(new Error("upstream 502")));
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);

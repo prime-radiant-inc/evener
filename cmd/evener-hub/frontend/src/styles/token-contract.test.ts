@@ -495,6 +495,15 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // latest note, the hue is a glyph-level accent, and all panel text stays
 // on the ink scale.
 //
+// zoom-activity-surfaces PR 1: shell/activitybar/activitybar.module.css earns
+// the same exception for the same structural reason - it lives under
+// shell/activitybar/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its semantic reaches are the row glyphs' state
+// hues (.glyphAlive/.glyphAttention/.glyphDanger): the sidebar's agent and
+// job rows carry the same working/needs-you/failed glyph grammar
+// RailRow.module.css established for the rail's own activity rows - the hue
+// IS the state signal, and all text stays on the ink scale.
+//
 // reviewed-ux-fixes fix 1: panes/session/transcript/tools/sandboxescalation.
 // module.css earns the same exception for the same structural reason - it
 // lives under panes/session/transcript/tools/, not widgets/<name>/, so it
@@ -587,6 +596,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
   "panes/settings/sections/hosts.module.css",
   "panes/session/transcript/entityref.module.css",
+  "shell/activitybar/activitybar.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -605,6 +615,12 @@ test("the RailRow.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
+});
+
+test("the activitybar.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/activitybar/activitybar.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/activitybar.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/activitybar.module.css")).toBe(false);
 });
 
 test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

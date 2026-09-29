@@ -192,6 +192,78 @@ func TestStreamInbandErrorBecomesTypedError(t *testing.T) {
 	}
 }
 
+// TestStreamSurfacesMalformedChunk pins the tolerance policy for one
+// undecodable data event: the stream stays alive and still delivers the later
+// valid content, but the malformed bytes are surfaced as a raw passthrough
+// event instead of being silently discarded (LLM-04). This matches the
+// anthropic, google and responses transports, which keep the stream alive and
+// forward an undecodable event raw.
+func TestStreamSurfacesMalformedChunk(t *testing.T) {
+	const malformed = "{not valid json}"
+	body := "data: " + malformed + "\n\n" +
+		"data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	srv, _ := server(t, 200, body)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var passthrough []string
+	var final *llm.Response
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventProviderEvent:
+			raw, _ := ev.Raw["data"].(string)
+			passthrough = append(passthrough, raw)
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventFinish:
+			final = ev.Response
+		}
+	}
+	if len(passthrough) != 1 || passthrough[0] != malformed {
+		t.Fatalf("malformed passthrough = %q, want [%q]", passthrough, malformed)
+	}
+	if final == nil || final.Text() != "ok" {
+		t.Fatalf("final = %+v, want text %q (stream stays alive)", final, "ok")
+	}
+}
+
+// TestStreamRepeatedMalformedChunksAreAnnotated pins the second half of
+// LLM-04's regression obligation: a sequence of malformed events followed by
+// [DONE] may settle successfully, but it cannot settle as an *unannotated*
+// success — every dropped payload is surfaced, so corruption is distinguishable
+// from an empty successful stream.
+func TestStreamRepeatedMalformedChunksAreAnnotated(t *testing.T) {
+	body := "data: {bad-one}\n\n" +
+		"data: {bad-two}\n\n" +
+		"data: [DONE]\n\n"
+	srv, _ := server(t, 200, body)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var passthrough []string
+	var final *llm.Response
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventProviderEvent:
+			raw, _ := ev.Raw["data"].(string)
+			passthrough = append(passthrough, raw)
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventFinish:
+			final = ev.Response
+		}
+	}
+	if len(passthrough) != 2 || passthrough[0] != "{bad-one}" || passthrough[1] != "{bad-two}" {
+		t.Fatalf("malformed passthrough = %q, want both dropped payloads", passthrough)
+	}
+	if final == nil {
+		t.Fatal("expected the [DONE] stream to still settle")
+	}
+}
+
 func TestCompleteClassifiesHTTPErrorsWithHints(t *testing.T) {
 	srv, _ := server(t, 400, `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}`)
 	p := &Protocol{Client: srv.Client()}

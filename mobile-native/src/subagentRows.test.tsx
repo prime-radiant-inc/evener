@@ -3,18 +3,29 @@
 // subagentwire) through the same pipeline ConversationScreen runs, at every
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
-import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
+import {
+	ACTIVITY_REFRESH_MIN_INTERVAL_MS,
+	type EvenerDelegateInfo,
+	hydrateThread,
+	type JobsListResponse,
+	type Thread,
+	type ThreadItem,
+} from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
-import { subagentCallItems } from "@evener/appwire-client/testing/subagentWireFixtures";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { subagentCallItems, subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
+import { hasFinishedSubagentRow } from "./session/subagentLine";
+import { forgetSubagentTrees, holdSubagentTree, subagentTree } from "./subagents/subagentTree";
+import { useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 vi.mock("react-native", async () => ({
@@ -23,7 +34,6 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
@@ -34,6 +44,11 @@ const T0 = Date.parse("2026-09-28T20:00:00Z");
 // by identity, which a fresh parse would never match.
 const CALLS = subagentCallItems();
 const DELEGATE_CALL_ID = CALLS.find((item) => item.toolName === "delegate")?.callId;
+// The recorded delegate call's receipt: the subagent it launched, which the
+// hub reports under the same id and transcript.
+const RECEIPT = JSON.parse(
+	CALLS.find((item) => item.callId === DELEGATE_CALL_ID && item.output !== undefined)?.output ?? "{}",
+) as { delegate_id: string; transcript_ref: string };
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -42,7 +57,7 @@ type Level = (typeof LEVELS)[number];
 // so only the call id can find it.
 function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 	return {
-		delegateId: "dlg_1",
+		delegateId: RECEIPT.delegate_id,
 		type: "delegate",
 		lifecycle: "stable",
 		phase: "running",
@@ -54,7 +69,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 		description: "Fix race in tree settle",
 		originToolCallId: DELEGATE_CALL_ID,
 		originItemId: "fc_provider_item_1",
-		transcriptRef: "local:child1",
+		transcriptRef: RECEIPT.transcript_ref,
 		runStartedAt: new Date(T0).toISOString(),
 		latestActivityAt: new Date(T0 + 50_000).toISOString(),
 		...over,
@@ -143,7 +158,7 @@ describe("a subagent row", () => {
 		expect(renderedText(tree)).toContain("Fix race in tree settle");
 		expect(renderedText(tree)).toMatch(/running · \d+/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
+		expect(openSubagent).toHaveBeenCalledWith("local:02wMz5TxvChildSession1", "Fix race in tree settle");
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {
@@ -344,5 +359,229 @@ describe("Chat", () => {
 		const { rows, delegates } = rowsAt("chat");
 		const hits = findMatches(rows, "fix race in tree settle", delegates);
 		expect(hits.map((index) => rows[index]?.kind)).toContain("activity");
+	});
+});
+
+// A finished subagent's row reads its outcome as the Subagents list does
+// (spec 8.2: "it reads the same as in the Subagents list"). thread/read's
+// roster carries no report (appwire.SlimDelegateForRoster), so the screen
+// holds the coordinator's tree from evener/jobs/list, recorded in
+// agent/testdata/subagentwire/outcomes.json, and a row says what the roster
+// knows until the tree shows it done. The corpus's subagents have no child
+// sessions on disk, so each carries a branch.error and the tree reads as
+// partial; the outcome is on the delegate itself either way.
+describe("a finished subagent's outcome (audit G13)", () => {
+	const COORDINATOR = { ref: "local:root", threadId: "root" };
+	const finished = (delegateId: string, over: Partial<EvenerDelegateInfo> = {}) =>
+		subagent({
+			delegateId,
+			phase: "idle",
+			status: "idle",
+			outcome: "completed",
+			terminal: true,
+			runEndedAt: new Date(T0 + 30_000).toISOString(),
+			...over,
+		});
+	const harness: { client: FakeClient | null } = { client: null };
+	const jobsLists = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/jobs/list");
+
+	function hub(answer: () => unknown = () => subagentOutcomesResponse()) {
+		const client = new FakeClient("ready");
+		client.on("evener/jobs/list", async () => answer() as JobsListResponse);
+		harness.client = client;
+		return client;
+	}
+
+	type Activity = Extract<TimelineRow, { kind: "activity" }>;
+	/** One subagent row per delegate, each from its own recorded transcript. */
+	function subagentRows(delegates: EvenerDelegateInfo[]) {
+		return delegates.map((delegate) => {
+			const at = rowsAt("intent", delegate);
+			return { row: { ...(at.rows.find(isSubagent) as Activity), id: delegate.delegateId }, delegates: at.delegates };
+		});
+	}
+
+	/** The session screen's part: it holds the tree while its transcript has a
+	 * finished subagent row, and renders the rows the list has mounted. */
+	function Transcript({
+		delegates,
+		mounted = delegates.map((delegate) => delegate.delegateId),
+		inFront = true,
+		receivesUpdates = true,
+	}: {
+		delegates: EvenerDelegateInfo[];
+		mounted?: string[];
+		inFront?: boolean;
+		receivesUpdates?: boolean;
+	}) {
+		const rows = subagentRows(delegates);
+		const target = hasFinishedSubagentRow(
+			rows.map((entry) => entry.row),
+			delegates,
+		)
+			? COORDINATOR
+			: null;
+		const tree = useTranscriptSubagentTree("hub-1", target, harness.client, { inFront, receivesUpdates });
+		return (
+			<>
+				{rows
+					.filter((entry) => mounted.includes(entry.row.id))
+					.map((entry) => (
+						<TimelineItem
+							key={entry.row.id}
+							item={entry.row}
+							hubId="hub-1"
+							sessionRef="root"
+							delegates={entry.delegates}
+							subagentTree={tree}
+						/>
+					))}
+			</>
+		);
+	}
+
+	const screens: ReturnType<typeof render>[] = [];
+	function transcript(props: Parameters<typeof Transcript>[0]) {
+		const screen = render(<Transcript {...props} />);
+		screens.push(screen);
+		return screen;
+	}
+	const rowText = (screen: ReturnType<typeof render>, delegateId: string) =>
+		textOf(screen.root.find((node) => node.type === TimelineItem && node.props.item.id === delegateId));
+
+	afterEach(() => {
+		for (const screen of screens.splice(0)) act(() => screen.unmount());
+		forgetSubagentTrees("hub-1");
+		vi.useRealTimers();
+	});
+
+	it("says Finished until the tree comes, then the report's opening line", async () => {
+		const client = hub();
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		expect(renderedText(screen)).toContain("Finished");
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(screen)).not.toContain("Finished");
+		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
+		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("says Stopped for a subagent the user stopped, with no tree to read", async () => {
+		const client = hub();
+		const screen = transcript({ delegates: [finished("dlg_stopped", { outcome: "cancelled" })] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Stopped");
+		expect(renderedText(screen)).not.toContain("Stopped by the user.");
+		expect(jobsLists(client)).toHaveLength(0);
+	});
+
+	it("keeps saying Finished, with nothing loading, when jobs/list fails", async () => {
+		const client = hub(() => {
+			throw new Error("jobs/list unavailable");
+		});
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(jobsLists(client)).toHaveLength(1);
+		expect(renderedText(screen)).toContain("Finished");
+		expect(screen.root.findAll((node) => String(node.type) === "ActivityIndicator")).toHaveLength(0);
+	});
+
+	it("reads no tree while no subagent has finished", async () => {
+		const client = hub();
+		transcript({ delegates: [subagent({ delegateId: "dlg_reported" })] });
+		await act(async () => {});
+		expect(jobsLists(client)).toHaveLength(0);
+	});
+
+	it("leaves a failed row's reason as the roster gives it", async () => {
+		hub();
+		const failed = finished("dlg_failed", { status: "failed", outcome: "failed", reason: "go test exited 1" });
+		const screen = transcript({ delegates: [finished("dlg_reported"), failed] });
+		await act(async () => {});
+		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
+		expect(rowText(screen, "dlg_failed")).toContain("go test exited 1");
+		expect(rowText(screen, "dlg_failed")).not.toContain("provider returned 500");
+	});
+
+	it("shares the Subagents list's tree, so the list and two rows ask for it once", async () => {
+		const client = hub();
+		// The Subagents list holds the coordinator's tree, as useSubagentTree does.
+		const held = subagentTree("hub-1", COORDINATOR.ref, COORDINATOR.threadId);
+		const release = holdSubagentTree(held);
+		await act(async () => {
+			await held.setClient(client as never);
+		});
+		const screen = transcript({
+			delegates: [finished("dlg_reported"), finished("dlg_stopped", { outcome: "completed" })],
+		});
+		await act(async () => {});
+		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
+		expect(jobsLists(client)).toHaveLength(1);
+		release();
+	});
+
+	it("reads the tree once while finished rows scroll off and back on", async () => {
+		const client = hub();
+		const delegates = [finished("dlg_reported")];
+		const screen = transcript({ delegates });
+		await act(async () => {});
+		// The list recycles every finished row off screen, then brings one back.
+		act(() => screen.update(<Transcript delegates={delegates} mounted={[]} />));
+		act(() => screen.update(<Transcript delegates={delegates} />));
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("reads the report once the subagent finishes while the tree is held", async () => {
+		vi.useFakeTimers();
+		const recorded = subagentOutcomesResponse() as { data: { revision: number; root: { entries: unknown[] } } };
+		// The first read lands a revision earlier, while the subagent still runs:
+		// no outcome, no report.
+		const running = structuredClone(recorded);
+		running.data.revision -= 1;
+		for (const entry of running.data.root.entries as { delegate?: Record<string, unknown> }[]) {
+			if (entry.delegate?.delegateId !== "dlg_reported") continue;
+			entry.delegate.projectionRevision = running.data.revision;
+			for (const key of ["outcome", "terminal", "packetKind", "message", "runEndedAt"]) delete entry.delegate[key];
+		}
+		let answer: unknown = running;
+		const client = hub(() => answer);
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Finished");
+		answer = recorded;
+		await act(async () => {
+			client.emitNotification({
+				method: "evener/delegate/updated",
+				params: {
+					ref: COORDINATOR.ref,
+					threadId: COORDINATOR.threadId,
+					delegate: finished("dlg_reported", { projectionRevision: recorded.data.revision, packetKind: "reported" }),
+				},
+			});
+			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		});
+		expect(jobsLists(client)).toHaveLength(2);
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+	});
+
+	// A subagent's screen follows the subagent, so nothing announces that one
+	// of its own subagents finished to its coordinator's tree.
+	it.each([
+		["reads again when a subagent's screen comes back to the front", false, 2],
+		["leaves a coordinator's own screen to its delegates' updates", true, 1],
+	] as const)("%s", async (_name, receivesUpdates, reads) => {
+		vi.useFakeTimers();
+		const client = hub();
+		const delegates = [finished("dlg_reported")];
+		const screen = transcript({ delegates, receivesUpdates });
+		await act(async () => {});
+		act(() => screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} inFront={false} />));
+		await act(async () => {
+			screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} />);
+			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		});
+		expect(jobsLists(client)).toHaveLength(reads);
 	});
 });

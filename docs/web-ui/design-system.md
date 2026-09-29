@@ -586,6 +586,18 @@ thought is no longer the turn's current activity, and is the only animation the 
 adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
 decaying trace remains the honest liveness signal. Every other idle pulse or shimmer stays banned.
 
+### Spatial motion (2026-09-29, zoom activity surfaces)
+
+A fourth budget, `--motion-duration-spatial` (240ms, still `--motion-easing-standard`), for
+user-initiated geometry changes: the activity sidebar sliding in, a zoom column opening, a column
+collapsing to a spine. Spatial motion answers *where did it go* — a panel that arrives from the
+edge it lives on, a column that narrows into the spine it became. Motion that doesn't preserve
+spatial continuity is decoration and stays banned. Data arriving (a job finishing, a watch firing)
+never animates geometry: state change is what the attention hues are for. Architecture: one library
+(`motion`), one wrapper module (`src/motion`), one reduced-motion switch (`MotionProvider`,
+`reducedMotion="user"`), durations from tokens, never literals. Components import the wrapper, never
+the library.
+
 ---
 
 ## 6. Copy rules

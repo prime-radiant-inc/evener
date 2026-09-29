@@ -2214,6 +2214,7 @@ type delegateTerminalRunInputs struct {
 type delegateTerminalPacketMetadata struct {
 	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
 	Reason            string                          `json:"reason,omitempty"`
+	Error             string                          `json:"error,omitempty"`
 	Name              string                          `json:"name,omitempty"`
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
@@ -2260,10 +2261,16 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		Message:  rawMessage,
 		Warnings: append([]string(nil), inputs.warnings...),
 	}
+	// A failure's reason says which failure it was; the branches below
+	// replace it for a run that reported, exhausted, or was cancelled.
+	reason := "ended_without_report"
+	if inputs.runErr != nil {
+		reason = "run_error"
+	}
 	finish := delegateFinish{
 		outcome:     delegatestore.OutcomeFailed,
 		disposition: delegatestore.DispositionTerminalError,
-		reason:      "failed",
+		reason:      reason,
 		packet:      &packet,
 		endedAt:     inputs.endedAt,
 	}
@@ -2291,8 +2298,13 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 			packet.Message, _ = json.Marshal(delegateUserStopMessage)
 		}
 	}
+	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
+		firstLine, _, _ := strings.Cut(strings.TrimSpace(inputs.runErr.Error()), "\n")
+		finish.errorText = boundedFinishText(firstLine)
+	}
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
+	metadata.Error = finish.errorText
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}

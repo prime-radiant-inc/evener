@@ -136,7 +136,7 @@ test-native-bundle: native-preflight
 ##   pod is not checked), or the script's own tests
 ##   (check-podfile-lock.test.mjs) fail.
 check-podfile-lock: native-preflight
-	@scripts/native/check-podfile-lock.mjs && node --test scripts/native/check-podfile-lock.test.mjs
+	@status=0; scripts/native/check-podfile-lock.mjs || status=1; node --test scripts/native/check-podfile-lock.test.mjs || status=1; exit $$status
 
 # api-package-preflight turns the misleading failure a fresh checkout gets into
 # a message naming the missing install and the command to run (or repairs a

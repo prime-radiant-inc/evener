@@ -424,6 +424,7 @@ An embedded type contributes its own fields inline.
 | `userCode` | `string` |  |  |
 | `verificationUrl` | `string` |  |  |
 | `intervalSeconds` | `int` |  |  |
+| `expiresInSeconds` | `int` | yes |  |
 | `fallback` | `bool` | yes |  |
 
 
@@ -659,6 +660,7 @@ _(no fields)_
 | `status` | `string` |  |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` |  |  |
 | `needsAttention` | `bool` |  |  |
@@ -1464,6 +1466,7 @@ _(no fields)_
 | `projectionRevision` | `uint64` | yes |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` | yes |  |
 | `notResumableReason` | `string` | yes |  |

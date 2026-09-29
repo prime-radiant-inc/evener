@@ -69,6 +69,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore, closeSessionActivityPanes } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
@@ -1052,6 +1053,7 @@ function NavigationRail({
   scrollOwner = "rail",
 }: RailProps = {}) {
   const client = useClient();
+  const isMobile = useIsMobile();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -1388,6 +1390,13 @@ function NavigationRail({
         // A nested row (a fork original) is found through the row that carries
         // it, the location's top_level_ref.
         const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
+        // The count effect creates the list when navigation counts archived
+        // rows. A location can resolve to one while the count is still 0 (a
+        // lagging revision, a deep link ahead of the count), so fetch it here.
+        if (catalog && !list && (project?.archived_total ?? 0) === 0)
+          requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:first`, () =>
+            refreshArchivedList(catalog, location.project_key as string),
+          );
         if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
           const cursor = list.nextCursor;
           if (cursor)
@@ -1395,6 +1404,12 @@ function NavigationRail({
               loadMoreArchivedList(catalog, location.project_key as string),
             );
           else if (list.error === null) consumeReveal();
+          // A failed first page has no cursor to page from, and the count
+          // effect skips it (the count has not moved). Ask once per reveal.
+          else
+            requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:retry`, () =>
+              refreshArchivedList(catalog, location.project_key as string),
+            );
         }
       }
       return;
@@ -1549,6 +1564,19 @@ function NavigationRail({
           // navigates, it does not toggle - closing notes belongs to the
           // panel's own header and the palette's Toggle command.
           topNotesStore.getState().openAndFocus(session.ref);
+        } else if (pane === "activity") {
+          // Desktop Activity everywhere is the zoom system's sidebar, scoped
+          // by the just-focused session. On mobile there is no sidebar (the
+          // rail lives in the tree drawer), so the sessionActivity pane keeps
+          // its pre-sidebar behavior. Both idempotent opens: the rail
+          // navigates, it never toggles closed. The sidebar open also retires
+          // a leftover sessionActivity pane for this session - nothing on
+          // desktop can open or mark one anymore.
+          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+          else {
+            closeSessionActivityPanes(session.ref);
+            activitySidebarStore.getState().openWith();
+          }
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
@@ -1710,7 +1738,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, isMobile],
   );
   function closeDeleteDialog() {
     setDeleteTarget(null);
@@ -1940,6 +1968,7 @@ function NavigationRail({
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
+      data-testid="rail"
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
       {width !== undefined && onWidthChange && (

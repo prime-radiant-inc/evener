@@ -53,6 +53,7 @@ import {
   navigationRootContainerKey,
   navigationViewScope,
   nextNavigationOffset,
+  type ResourceState,
 } from "./types";
 
 // One store per test: the contract is about a store instance, not a singleton.
@@ -1933,6 +1934,57 @@ test("boot keeps one global four-request budget through first resources, pin sec
   expect(calls.filter((params) => params.resource === "project").length).toBe(4);
   expect(calls.filter((params) => params.resource === "project_page").length).toBe(0);
   expect(active).toBe(0);
+});
+
+test("boot hydrates default-expanded projects in catalog order, not resource-map order", async () => {
+  const m = emptyManifest({
+    sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 1 } },
+  });
+  // The store's resource map can hold the catalogs in any order (an
+  // invalidation or reconnect that loads a page first leaves an out-of-order
+  // insertion). Seed them out of catalog order to prove the boot fan-out still
+  // hydrates in the deterministic catalog order (projects, archived_projects,
+  // test_runs).
+  const catalogsByPosition = ["test_runs", "archived_projects", "projects"] as const;
+  const seeded = new Map<string, ResourceState>();
+  for (const catalog of catalogsByPosition) {
+    const key = { kind: "catalog", catalog, offset: 0, limit: 100 } as const;
+    seeded.set(keyID(key), {
+      key,
+      data: { projects: [{ key: catalog, default_expanded: true }] },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: null,
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: generation,
+    });
+  }
+  store.setState({ resources: seeded });
+  const projectCalls: string[] = [];
+  await init((params) => {
+    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "catalog" && params.catalog)
+      return wireV2(params, {
+        projects: [{ key: params.catalog, default_expanded: true }],
+        remaining: 0,
+      });
+    if (params.resource === "project" && params.projectKey) {
+      projectCalls.push(params.projectKey);
+      return wireV2(params, {
+        key: params.projectKey,
+        current: { sessions: [], remaining: 0 },
+        recent: { sessions: [], remaining: 0 },
+        archived: { sessions: [], remaining: 0 },
+      });
+    }
+    return wireV2(params, { sessions: [], remaining: 0 });
+  });
+  await flush();
+  expect(projectCalls).toEqual(["projects", "archived_projects", "test_runs"]);
 });
 
 test("zero-count pin descriptors and collapsed projects do not issue requests", async () => {

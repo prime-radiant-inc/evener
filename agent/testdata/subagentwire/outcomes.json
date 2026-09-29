@@ -1,0 +1,128 @@
+{
+  "note": "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
+  "response": {
+    "data": {
+      "revision": 3,
+      "root": {
+        "sessionId": "root",
+        "ref": "local:root",
+        "label": "root",
+        "aggregate": "failed",
+        "counts": {
+          "active": 0,
+          "failed": 1,
+          "completed": 2,
+          "complete": false
+        },
+        "entries": [
+          {
+            "kind": "delegate",
+            "delegate": {
+              "delegateId": "dlg_failed",
+              "ownerSessionId": "root",
+              "rootSessionId": "root",
+              "childSessionId": "child-dlg_failed",
+              "childRef": "local:child-dlg_failed",
+              "type": "delegate",
+              "lifecycle": "idle",
+              "phase": "idle",
+              "status": "idle",
+              "projectionRevision": 3,
+              "outcome": "failed",
+              "reason": "run_error",
+              "error": "provider returned 500",
+              "terminal": true,
+              "resumable": true,
+              "mandate": "Update the lockfile",
+              "task": "Update the lockfile",
+              "description": "Update the lockfile",
+              "agentType": "general",
+              "resolvedModel": "gpt-5.2",
+              "model": "gpt-5.2",
+              "runStartedAt": "2026-09-28T20:02:00Z",
+              "runEndedAt": "2026-09-28T20:02:30Z",
+              "latestActivityAt": "2026-09-28T20:02:30Z",
+              "durationMs": 30000,
+              "packetKind": "terminal_error",
+              "message": "provider returned 500\nretry-after: 30",
+              "turns": [],
+              "branch": {
+                "error": "child session \"child-dlg_failed\" unavailable in state directory"
+              }
+            }
+          },
+          {
+            "kind": "delegate",
+            "delegate": {
+              "delegateId": "dlg_reported",
+              "ownerSessionId": "root",
+              "rootSessionId": "root",
+              "childSessionId": "child-dlg_reported",
+              "childRef": "local:child-dlg_reported",
+              "type": "delegate",
+              "lifecycle": "idle",
+              "phase": "idle",
+              "status": "idle",
+              "projectionRevision": 3,
+              "outcome": "completed",
+              "terminal": true,
+              "resumable": true,
+              "mandate": "Fix race in tree settle",
+              "task": "Fix race in tree settle",
+              "description": "Fix race in tree settle",
+              "agentType": "general",
+              "resolvedModel": "gpt-5.2",
+              "model": "gpt-5.2",
+              "runStartedAt": "2026-09-28T20:00:00Z",
+              "runEndedAt": "2026-09-28T20:00:30Z",
+              "latestActivityAt": "2026-09-28T20:00:30Z",
+              "durationMs": 30000,
+              "packetKind": "reported",
+              "message": "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
+              "turns": [],
+              "branch": {
+                "error": "child session \"child-dlg_reported\" unavailable in state directory"
+              }
+            }
+          },
+          {
+            "kind": "delegate",
+            "delegate": {
+              "delegateId": "dlg_stopped",
+              "ownerSessionId": "root",
+              "rootSessionId": "root",
+              "childSessionId": "child-dlg_stopped",
+              "childRef": "local:child-dlg_stopped",
+              "type": "delegate",
+              "lifecycle": "idle",
+              "phase": "idle",
+              "status": "idle",
+              "projectionRevision": 3,
+              "outcome": "cancelled",
+              "reason": "cancelled",
+              "terminal": true,
+              "resumable": true,
+              "mandate": "Bisect the flaky test",
+              "task": "Bisect the flaky test",
+              "description": "Bisect the flaky test",
+              "agentType": "general",
+              "resolvedModel": "gpt-5.2",
+              "model": "gpt-5.2",
+              "runStartedAt": "2026-09-28T20:01:00Z",
+              "runEndedAt": "2026-09-28T20:01:30Z",
+              "latestActivityAt": "2026-09-28T20:01:30Z",
+              "durationMs": 30000,
+              "packetKind": "terminal_error",
+              "message": "Stopped by the user.",
+              "turns": [],
+              "branch": {
+                "error": "child session \"child-dlg_stopped\" unavailable in state directory"
+              }
+            }
+          }
+        ],
+        "branch": {}
+      }
+    }
+  }
+}

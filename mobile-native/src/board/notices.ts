@@ -1,4 +1,4 @@
-import type { AuthStatusResponse, NavigationSessionSummary, PluginEntry, Source } from "@evener/appwire-client";
+import type { HubNotice, Source } from "@evener/appwire-client";
 import { plural } from "./attention";
 
 /** A hub-level problem the Board shows under its chips (spec 7.1). The
@@ -9,53 +9,62 @@ export type Notice = { key: string; text: string } & (
 	| { kind: "plugin"; action: "Plugins"; pluginId: string; marketplace: string }
 );
 
-/** The Board's notices: every provider whose sign-in expired, every offline
- * host and every broken plugin, in that order.
+/** The Board's notices, as the hub derives them (S11: evener/notices/list and
+ * evener/notices/changed), in the hub's order: sign-ins, then hosts, then
+ * plugins. Each keeps the hub's id as its key, so an alert fires once for a
+ * new notice and not again when its count moves (spec 13.3).
  *
- * An offline host counts the sessions the Board has loaded that run on it,
- * each once however many sections loaded it. The hub sends no per-host
- * count, so a session on a page not yet loaded goes uncounted: the count can
- * fall short but never runs over, until a hub rollup (S11) replaces it. */
-export function notices(input: {
-	auth: AuthStatusResponse[];
-	sources: Source[];
-	plugins: PluginEntry[];
-	loadedRows: readonly NavigationSessionSummary[];
-}): Notice[] {
-	const result: Notice[] = [];
-	for (const { provider, needsLogin } of input.auth)
-		if (needsLogin)
-			result.push({
-				key: `signIn:${provider}`,
-				kind: "signIn",
-				text: `${provider} sign-in expired`,
-				action: "Sign in",
-				providerId: provider,
-			});
-	for (const source of input.sources) {
-		if (source.online) continue;
-		const refs = new Set(input.loadedRows.filter((row) => row.host_id === source.id).map((row) => row.ref));
-		result.push({
-			key: `host:${source.id}`,
-			kind: "host",
-			text: refs.size ? `${source.label} is offline · ${plural(refs.size, "session")}` : `${source.label} is offline`,
-			action: "Details",
-			sourceId: source.id,
-		});
-	}
-	// Two marketplaces can each ship a plugin of the same name: such plugins
-	// name their marketplace too.
-	const broken = input.plugins.filter((entry) => entry.broken);
-	for (const { plugin, marketplace } of broken) {
-		const shared = broken.filter((other) => other.plugin === plugin).length > 1;
-		result.push({
-			key: `plugin:${plugin}@${marketplace}`,
-			kind: "plugin",
-			text: `${shared ? `${plugin} from ${marketplace}` : plugin} is broken`,
-			action: "Plugins",
-			pluginId: plugin,
-			marketplace,
-		});
-	}
-	return result;
+ * A notice names the sessions it blocks when the hub counts them, as
+ * " · N sessions" with a no-break space in "N sessions". A host goes by its
+ * label from the manifest's sources, or by its id before the manifest lists
+ * it; two broken plugins sharing a name each name their marketplace. A kind
+ * this phone doesn't know is left out. */
+export function notices(input: { hubNotices: readonly HubNotice[]; sources: readonly Source[] }): Notice[] {
+	// The count keeps its noun on its line: a no-break space joins them.
+	const withCount = (sentence: string, notice: HubNotice) =>
+		notice.affectedSessions ? `${sentence} · ${plural(notice.affectedSessions, "session", "\u00a0")}` : sentence;
+	const brokenPlugins = input.hubNotices.filter((notice) => notice.kind === "pluginBroken");
+	return input.hubNotices.flatMap((notice): Notice[] => {
+		const key = notice.id;
+		switch (notice.kind) {
+			case "signInRequired":
+				return [
+					{
+						key,
+						kind: "signIn",
+						text: withCount(`${notice.subject} sign-in expired`, notice),
+						action: "Sign in",
+						providerId: notice.subject,
+					},
+				];
+			case "hostOffline": {
+				const label = input.sources.find((source) => source.id === notice.subject)?.label ?? notice.subject;
+				return [
+					{
+						key,
+						kind: "host",
+						text: withCount(`${label} is offline`, notice),
+						action: "Details",
+						sourceId: notice.subject,
+					},
+				];
+			}
+			case "pluginBroken": {
+				const marketplace = notice.marketplace ?? "";
+				const shared = brokenPlugins.filter((other) => other.subject === notice.subject).length > 1;
+				return [
+					{
+						key,
+						kind: "plugin",
+						text: `${shared ? `${notice.subject} from ${marketplace}` : notice.subject} is broken`,
+						action: "Plugins",
+						pluginId: notice.subject,
+						marketplace,
+					},
+				];
+			}
+			default:
+				return [];
+		}
+	});
 }

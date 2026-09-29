@@ -44,9 +44,12 @@ describe("DiagramViewer", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("offers a Copy source control wired to the source text", () => {
+  it("Copy source writes the diagram source text to the clipboard", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
     render(<DiagramViewer open svg={FIXTURE_SVG} source={"graph TD; A-->B"} onClose={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Copy source" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Copy source" }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("graph TD; A-->B");
   });
 
   it("zooms with the wheel and pans by dragging", () => {
@@ -76,5 +79,63 @@ describe("DiagramViewer", () => {
     expect(content.style.transform).not.toContain("scale(1)");
     fireEvent.click(screen.getByRole("button", { name: /reset zoom/i }));
     expect(content.style.transform).toContain("translate(0px, 0px) scale(1)");
+  });
+
+  it("ignores a horizontal wheel and stops a zoom from chain-scrolling the page", () => {
+    const { container } = render(<DiagramViewer open svg={FIXTURE_SVG} source={"graph TD; A-->B"} onClose={vi.fn()} />);
+    const content = container.querySelector<HTMLElement>(`.${ZOOM_CONTENT_CLASS}`)!;
+    const surface = content.parentElement!;
+
+    // A zero-deltaY (horizontal) wheel is not a zoom gesture: it must be left
+    // alone, not routed to the ternary's zoom-out branch.
+    fireEvent.wheel(surface, { deltaY: 0, clientX: 0, clientY: 0 });
+    expect(content.style.transform).toContain("scale(1)");
+
+    // A real zoom cancels the event, so it cannot bubble into a scrolling
+    // ancestor. fireEvent returns false exactly when preventDefault ran.
+    expect(fireEvent.wheel(surface, { deltaY: -100, clientX: 0, clientY: 0 })).toBe(false);
+    expect(content.style.transform).toContain("scale(1.2)");
+  });
+
+  it("anchors the zoom at the cursor after a drag", () => {
+    const { container } = render(<DiagramViewer open svg={FIXTURE_SVG} source={"graph TD; A-->B"} onClose={vi.fn()} />);
+    const content = container.querySelector<HTMLElement>(`.${ZOOM_CONTENT_CLASS}`)!;
+    const surface = content.parentElement!;
+    // jsdom's getBoundingClientRect is all zeros, which puts the cursor at the
+    // surface origin and makes an anchored zoom indistinguishable from a
+    // top-left one. A real rect puts the cursor away from the origin.
+    vi.spyOn(surface, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 300,
+      right: 400,
+      bottom: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    // Drag the diagram to (30, 20) first.
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 30, clientY: 20 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 30, clientY: 20 });
+    expect(content.style.transform).toContain("translate(30px, 20px)");
+
+    // Zoom in by 1.2 at cursor (100, 80). Keeping the point under the cursor
+    // stationary gives x = 100 - 1.2*(100-30) = 16 and y = 80 - 1.2*(80-20) = 8.
+    fireEvent.wheel(surface, { deltaY: -100, clientX: 100, clientY: 80 });
+    expect(content.style.transform).toContain("translate(16px, 8px)");
+    expect(content.style.transform).toContain("scale(1.2)");
+  });
+
+  it("clamps wheel zoom to the [0.25, 8] bounds", () => {
+    const { container } = render(<DiagramViewer open svg={FIXTURE_SVG} source={"graph TD; A-->B"} onClose={vi.fn()} />);
+    const content = container.querySelector<HTMLElement>(`.${ZOOM_CONTENT_CLASS}`)!;
+    const surface = content.parentElement!;
+    for (let i = 0; i < 20; i++) fireEvent.wheel(surface, { deltaY: -100, clientX: 0, clientY: 0 });
+    expect(content.style.transform).toContain("scale(8)");
+    for (let i = 0; i < 40; i++) fireEvent.wheel(surface, { deltaY: 100, clientX: 0, clientY: 0 });
+    expect(content.style.transform).toContain("scale(0.25)");
   });
 });

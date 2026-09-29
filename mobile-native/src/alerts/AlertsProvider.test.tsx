@@ -4,12 +4,13 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	answer,
-	answerAuth,
-	authUpdated,
+	answerNotices,
 	boundary,
-	expired,
+	fail,
 	type Hub,
+	hubNotice,
 	invalidate,
+	noticesChanged,
 	requestsFor,
 	session,
 	tick,
@@ -79,16 +80,16 @@ function mount() {
 		},
 	};
 }
-/** A client's first reads: Live, Needs you, the manifest and the sign-ins. */
+/** A client's first reads: Live, Needs you, the manifest and the notices. */
 async function firstReads(
 	hub: Hub,
-	{ live = [] as NavigationSessionSummary[], needsYou = [] as NavigationSessionSummary[], auth = [] as never[] } = {},
+	{ live = [] as NavigationSessionSummary[], needsYou = [] as NavigationSessionSummary[] } = {},
 ) {
 	await act(async () => {
 		answer(hub, "live", { sessions: live, remaining: 0 });
 		answer(hub, "needs_you", { sessions: needsYou, remaining: 0 });
 		answer(hub, "manifest", manifest({ sources }));
-		answerAuth(hub, auth);
+		answerNotices(hub, []);
 		await tick();
 	});
 }
@@ -131,7 +132,7 @@ it("reads Live's first page only, where a session moving up is no news unless it
 		answer(hub, "live", { sessions: [session("top")], remaining: 40 });
 		answer(hub, "needs_you", { sessions: [], remaining: 0 });
 		answer(hub, "manifest", manifest({ sources }));
-		answerAuth(hub, []);
+		answerNotices(hub, []);
 		await tick();
 	});
 	expect(requestsFor(hub, "live")).toHaveLength(1);
@@ -153,7 +154,7 @@ it("waits for every Needs you page before its baseline, so a second page alerts 
 		answer(hub, "live", { sessions: [], remaining: 0 });
 		answer(hub, "needs_you", { sessions: [failed("first")], remaining: 1 });
 		answer(hub, "manifest", manifest({ sources }));
-		answerAuth(hub, []);
+		answerNotices(hub, []);
 		await tick();
 		answer(hub, "needs_you", { sessions: [asking("second")], remaining: 0 });
 		await tick();
@@ -208,27 +209,53 @@ it("says nothing when a host goes offline and comes back (ruling 3)", async () =
 	expect(probe.snapshot?.banner).toBeNull();
 });
 
-it("alerts a sign-in that expires later, never one expired at first, and never reads plugins (ruling 5)", async () => {
+it("alerts a notice that appears later, never one there at first, never a count change, and never a plugin (ruling 5)", async () => {
 	const hub = boundary();
 	connect(hub.client);
 	mount();
-	// Live and the manifest land before the sign-ins do.
+	// Live and the manifest land before the notices do.
 	await act(async () => {
 		answer(hub, "live", { sessions: [], remaining: 0 });
 		answer(hub, "needs_you", { sessions: [], remaining: 0 });
 		answer(hub, "manifest", manifest({ sources }));
 		await tick();
-		answerAuth(hub, [expired("openai")]);
+		answerNotices(hub, [hubNotice("signInRequired", "openai", 1)]);
 		await tick();
 	});
 	expect(probe.snapshot?.banner).toBeNull();
 	await act(async () => {
-		authUpdated(hub, "anthropic");
-		answerAuth(hub, [expired("openai"), expired("anthropic")]);
+		noticesChanged(hub, [
+			hubNotice("signInRequired", "openai", 2),
+			hubNotice("signInRequired", "anthropic"),
+			hubNotice("pluginBroken", "go"),
+		]);
 		await tick();
 	});
-	expect(shownRefs()).toEqual(["signIn:anthropic"]);
-	expect(requestsFor(hub, "plugins")).toHaveLength(0);
+	expect(shownRefs()).toEqual(["signInRequired:anthropic"]);
+});
+
+it("takes a changed list as the notice baseline when the list read failed, and alerts what appears after", async () => {
+	const hub = boundary();
+	connect(hub.client);
+	mount();
+	await act(async () => {
+		answer(hub, "live", { sessions: [], remaining: 0 });
+		answer(hub, "needs_you", { sessions: [], remaining: 0 });
+		answer(hub, "manifest", manifest({ sources }));
+		fail(hub, "notices", "request timed out");
+		await tick();
+	});
+	await act(async () => {
+		// Its first list: the baseline, so it alerts nothing.
+		noticesChanged(hub, [hubNotice("signInRequired", "openai")]);
+		await tick();
+	});
+	expect(probe.snapshot?.banner).toBeNull();
+	await act(async () => {
+		noticesChanged(hub, [hubNotice("signInRequired", "openai"), hubNotice("hostOffline", "laptop")]);
+		await tick();
+	});
+	expect(shownRefs()).toEqual(["hostOffline:laptop"]);
 });
 
 it("holds a banner while you read or type, and counts what waits", async () => {

@@ -405,7 +405,7 @@ func TestCovSessionJobManager_NilSession(t *testing.T) {
 func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 	t.Parallel()
 	finish := stableDelegateFinish(nil, "result", nil)
-	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
+	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "ended_without_report" {
 		t.Fatalf("unreported finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
 	}
 	if finish.packet == nil || finish.packet.Kind != delegatestore.PacketTerminalError {
@@ -432,7 +432,7 @@ func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 func TestCovStableDelegateFinish_WithError(t *testing.T) {
 	t.Parallel()
 	finish := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
-	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
+	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "run_error" {
 		t.Fatalf("error finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
 	}
 	if finish.packet == nil || finish.packet.Kind != delegatestore.PacketTerminalError {

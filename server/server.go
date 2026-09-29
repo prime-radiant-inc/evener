@@ -115,6 +115,7 @@ type DelegateStatusInfo struct {
 	Status              string                       `json:"status"`
 	Outcome             string                       `json:"outcome,omitempty"`
 	Reason              string                       `json:"reason,omitempty"`
+	Error               string                       `json:"error,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
 	NeedsAttention      bool                         `json:"needs_attention"`

@@ -35,7 +35,6 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
@@ -145,7 +144,7 @@ describe("a failed turn (G5)", () => {
 });
 
 describe("system events (G7, G9)", () => {
-	// The shared projector shows a repair only at high verbosity.
+	// The shared projector shows a repair only at full.
 	it("reads a tool repair as a quiet event: never red, never an action", () => {
 		const row = rowFor("tool-repair", "full");
 		if (row?.kind !== "notice") throw new Error("no tool repair notice");

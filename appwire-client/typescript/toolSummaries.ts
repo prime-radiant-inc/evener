@@ -7,18 +7,22 @@
 // Every tool no summary covers, an MCP tool among them, still reads as words
 // ("Used github: create issue", "Used compact context"), never its raw name.
 
+import { parseAskUserQuestions } from "./askShared";
 import { diffStats, editDiffText } from "./editDiff";
+import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
+import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
+import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 import {
   findSessionsProgress,
-  findSessionsSummary,
+  findSessionsWords,
   readTranscriptProgress,
-  readTranscriptSummary,
+  readTranscriptWords,
 } from "./transcriptSteps";
-import { worktreeProgress, worktreeSummary } from "./worktreeSteps";
+import { worktreeProgress, worktreeWords } from "./worktreeSteps";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -42,6 +46,8 @@ export type ToolFamily =
   | "transcript"
   | "sessions"
   | "worktree"
+  | "ask"
+  | "jobs"
   | "mcp"
   | "tool";
 
@@ -60,11 +66,6 @@ function readLineRange(args: Record<string, unknown>, output: string): string | 
   const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
   if (count > 0) return `lines ${offset}-${offset + count - 1}`;
   return output === "" ? undefined : `lines ${offset}`;
-}
-
-// A summary's words, and the count its output adds once there is output.
-function withCount(text: string, count: string | undefined): string {
-  return count === undefined ? text : `${text} · ${count}`;
 }
 
 // What an output counts ("2 hits"), only once there is output to count.
@@ -87,32 +88,41 @@ export function filePathArg(step: Pick<ToolStep, "argumentsJSON">): string | und
 
 /** "Read agent/tree.go · lines 1-40", "Read <file>" for an image or a
  * document (base64 data, not lines), or "Read a file" when it names none. */
-export function readFileSummary(step: ToolStep): string {
+function readFileWords(step: ToolStep): StepWords {
   const target = filePathArg(step);
-  if (!target) return "Read a file";
-  if (BINARY_PAYLOAD_HEADER.test(step.output ?? "")) return `Read ${target}`;
-  return withCount(`Read ${target}`, readLineRange(parseArgs(step.argumentsJSON), step.output ?? ""));
+  if (!target) return { verb: "Read a file" };
+  if (BINARY_PAYLOAD_HEADER.test(step.output ?? "")) return { verb: "Read", target };
+  return withDetail({ verb: "Read", target }, readLineRange(parseArgs(step.argumentsJSON), step.output ?? ""));
 }
 
-function grepTarget(args: Record<string, unknown>): string | undefined {
+// The pattern a grep looked for, quoted, and where it looked.
+function grepTarget(args: Record<string, unknown>): { pattern: string; where: string } | undefined {
   const pattern = str(args, "pattern");
   if (!pattern) return undefined;
   const path = str(args, "path") ?? ".";
   const globFilter = str(args, "glob_filter");
-  return `"${clip(pattern, GREP_PATTERN_CLIP)}" in ${path}${globFilter ? ` (${globFilter})` : ""}`;
+  return {
+    pattern: `"${clip(pattern, GREP_PATTERN_CLIP)}"`,
+    where: `in ${path}${globFilter ? ` (${globFilter})` : ""}`,
+  };
 }
 
 /** 'Searched "func settle" in agent (*.go) · 2 hits', or "Searched files". */
-export function grepSummary(step: ToolStep): string {
+function grepWords(step: ToolStep): StepWords {
   const target = grepTarget(parseArgs(step.argumentsJSON));
-  return target ? withCount(`Searched ${target}`, outputCount(step.output, "hits")) : "Searched files";
+  if (!target) return { verb: "Searched files" };
+  return withDetail(
+    { verb: "Searched", target: target.pattern, after: target.where },
+    outputCount(step.output, "hits"),
+  );
 }
 
-function listTarget(args: Record<string, unknown>): string | undefined {
+// The directory a listing named and the pattern it filtered by, if any.
+function listTarget(args: Record<string, unknown>): { path: string; pattern?: string } | undefined {
   const path = str(args, "path");
   const pattern = str(args, "pattern");
   if (!path && !pattern) return undefined;
-  return `${path || "."}${pattern ? ` (${pattern})` : ""}`;
+  return { path: path || ".", ...(pattern ? { pattern: `(${pattern})` } : {}) };
 }
 
 // list_dir ends its listing with the count it returned: "3 entries" after a
@@ -142,9 +152,12 @@ function listDirCount(output: string | undefined): string | undefined {
 }
 
 /** "Listed agent/internal · 4 entries", or "Listed files". */
-export function listDirSummary(step: ToolStep): string {
+function listDirWords(step: ToolStep): StepWords {
   const target = listTarget(parseArgs(step.argumentsJSON));
-  return target ? withCount(`Listed ${target}`, listDirCount(step.output)) : "Listed files";
+  if (!target) return { verb: "Listed files" };
+  const words: StepWords = { verb: "Listed", target: target.path };
+  if (target.pattern) words.after = target.pattern;
+  return withDetail(words, listDirCount(step.output));
 }
 
 function globPattern(args: Record<string, unknown>): string | undefined {
@@ -152,9 +165,10 @@ function globPattern(args: Record<string, unknown>): string | undefined {
 }
 
 /** "Matched agent/**\/*_test.go · 3 matches", or "Searched files". */
-export function globSummary(step: ToolStep): string {
+function globWords(step: ToolStep): StepWords {
   const pattern = globPattern(parseArgs(step.argumentsJSON));
-  return pattern ? withCount(`Matched ${pattern}`, outputCount(step.output, "matches")) : "Searched files";
+  if (!pattern) return { verb: "Searched files" };
+  return withDetail({ verb: "Matched", target: pattern }, outputCount(step.output, "matches"));
 }
 
 // An edit's result: its diff's added and removed lines, or "ok" for none.
@@ -164,19 +178,19 @@ function diffResultText(text: string): string {
 }
 
 /** "Edited agent/tree.go · +3 -2", or "Edited a file". */
-export function editFileSummary(step: ToolStep): string {
+function editFileWords(step: ToolStep): StepWords {
   const path = filePathArg(step);
-  if (!path) return "Edited a file";
+  if (!path) return { verb: "Edited a file" };
   const args = parseArgs(step.argumentsJSON);
   const oldString = str(args, "old_string") ?? "";
   const newString = str(args, "new_string") ?? "";
-  return `Edited ${path} · ${diffResultText(editDiffText(path, oldString, newString))}`;
+  return { verb: "Edited", target: path, detail: diffResultText(editDiffText(path, oldString, newString)) };
 }
 
 /** "Wrote agent/tree_order.go", or "Wrote a file". */
-export function writeFileSummary(step: ToolStep): string {
+function writeFileWords(step: ToolStep): StepWords {
   const path = filePathArg(step);
-  return path ? `Wrote ${path}` : "Wrote a file";
+  return path ? { verb: "Wrote", target: path } : { verb: "Wrote a file" };
 }
 
 const PATCH_FILE_HEADER_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/;
@@ -196,10 +210,11 @@ function patchTargets(patch: string): string[] {
 }
 
 /** "Patched agent/tree.go, agent/tree_order.go · +3 -1", or "Patched files". */
-export function applyPatchSummary(step: ToolStep): string {
+function applyPatchWords(step: ToolStep): StepWords {
   const patch = str(parseArgs(step.argumentsJSON), "patch") ?? "";
   const targets = patchTargets(patch);
-  return targets.length > 0 ? `Patched ${targets.join(", ")} · ${diffResultText(patch)}` : "Patched files";
+  if (targets.length === 0) return { verb: "Patched files" };
+  return { verb: "Patched", target: targets.join(", "), detail: diffResultText(patch) };
 }
 
 // --- shell ------------------------------------------------------------------
@@ -225,9 +240,9 @@ function commandOf(step: Pick<ToolStep, "argumentsJSON">, ctx?: ToolSummaryConte
 
 /** "Ran go test ./agent/...", or "Ran a command". The exit code stays out: a
  * failed step says so with its own mark. */
-export function shellSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
+function shellWords(step: ToolStep, ctx?: ToolSummaryContext): StepWords {
   const command = commandOf(step, ctx);
-  return command ? `Ran ${command}` : "Ran a command";
+  return command ? { verb: "Ran", target: command } : { verb: "Ran a command" };
 }
 
 // --- web ----------------------------------------------------------------------
@@ -240,11 +255,11 @@ export function webFetchByteCount(output: string): number {
 
 /** "Fetched https://example.com/release-notes · 48213 bytes", or "Fetched a
  * page". */
-export function webFetchSummary(step: ToolStep): string {
+function webFetchWords(step: ToolStep): StepWords {
   const url = str(parseArgs(step.argumentsJSON), "url");
-  if (!url) return "Fetched a page";
+  if (!url) return { verb: "Fetched a page" };
   const output = step.output ?? "";
-  return withCount(`Fetched ${url}`, output ? formatByteCount(webFetchByteCount(output)) : undefined);
+  return withDetail({ verb: "Fetched", target: url }, output ? formatByteCount(webFetchByteCount(output)) : undefined);
 }
 
 /** The lines of a web search's output that are results. */
@@ -259,12 +274,12 @@ function searchQuery(args: Record<string, unknown>): string | undefined {
 
 /** 'Searched the web for "go race detector" · 2 results', or "Searched the
  * web". */
-export function webSearchSummary(step: ToolStep): string {
+function webSearchWords(step: ToolStep): StepWords {
   const query = searchQuery(parseArgs(step.argumentsJSON));
-  if (!query) return "Searched the web";
+  if (!query) return { verb: "Searched the web" };
   const output = step.output ?? "";
-  return withCount(
-    `Searched the web for "${query}"`,
+  return withDetail(
+    { verb: "Searched the web for", target: `"${query}"` },
     output ? `${webSearchResultLines(output).length} results` : undefined,
   );
 }
@@ -278,9 +293,9 @@ export function skillName(step: Pick<ToolStep, "argumentsJSON">): string {
 }
 
 /** "Activated skill: systematic-debugging", or "Activated a skill". */
-export function useSkillSummary(step: ToolStep): string {
+function useSkillWords(step: ToolStep): StepWords {
   const name = skillName(step);
-  return name ? `Activated skill: ${name}` : "Activated a skill";
+  return name ? { verb: "Activated skill:", target: name } : { verb: "Activated a skill" };
 }
 
 // --- tasks ----------------------------------------------------------------------
@@ -307,10 +322,22 @@ export function taskListChanges(step: Pick<ToolStep, "argumentsJSON">): boolean 
 // The latest task the call touched ("☑ Reproduce the race", "→ Fix the
 // drain"), as the web's task card folds it; a call that touched no task's
 // status says whether it changed the list or only read it.
-function taskListSummary(step: ToolStep): string {
+function taskListWords(step: ToolStep): StepWords {
   const touched = taskMutationSummary(step);
-  if (touched) return touched;
-  return taskListChanges(step) ? "Updated the task list" : "Checked the task list";
+  if (touched) return { verb: touched };
+  return { verb: taskListChanges(step) ? "Updated the task list" : "Checked the task list" };
+}
+
+// --- questions ------------------------------------------------------------------
+
+// "Asked: [Deploy]", the header of each question the call put, as the web's
+// ask_user row says it, or "Asked a question" when none parses. What the user
+// answered comes from their reply (askShared's answeredAskUserSuffix), which
+// a step alone doesn't carry.
+function askUserWords(step: ToolStep): StepWords {
+  const questions = parseAskUserQuestions(step);
+  if (!questions) return { verb: "Asked a question" };
+  return { verb: `Asked: ${questions.map((question) => `[${question.header}]`).join(", ")}` };
 }
 
 // --- every other tool ---------------------------------------------------------
@@ -368,10 +395,10 @@ function progressFor(
       }
       if (name === "list_dir" || name === "list_directory") {
         const target = listTarget(args);
-        return target ? `Listing ${target}` : "Listing files";
+        return target ? `Listing ${target.path}${target.pattern ? ` ${target.pattern}` : ""}` : "Listing files";
       }
       const target = grepTarget(args);
-      return target ? `Searching ${target}` : "Searching files";
+      return target ? `Searching ${target.pattern} ${target.where}` : "Searching files";
     }
     case "edit": {
       if (name === "apply_patch") {
@@ -406,6 +433,10 @@ function progressFor(
       return findSessionsProgress(step);
     case "worktree":
       return worktreeProgress(step);
+    case "ask":
+      return "Asking a question";
+    case "jobs":
+      return jobProgress(name, step) ?? `Using ${toolInWords(name)}`;
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -414,37 +445,71 @@ function progressFor(
 
 // --- the table ----------------------------------------------------------------
 
+type WordsOf = (step: ToolStep, ctx?: ToolSummaryContext) => StepWords;
+
 interface ToolEntry {
   family: ToolFamily;
-  summary: (step: ToolStep, ctx?: ToolSummaryContext) => string;
+  words: WordsOf;
 }
 
 const TOOLS: Record<string, ToolEntry> = {
-  read_file: { family: "read", summary: readFileSummary },
-  edit_file: { family: "edit", summary: editFileSummary },
-  write_file: { family: "edit", summary: writeFileSummary },
-  apply_patch: { family: "edit", summary: applyPatchSummary },
-  grep: { family: "search", summary: grepSummary },
-  grep_files: { family: "search", summary: grepSummary },
-  grep_search: { family: "search", summary: grepSummary },
-  glob: { family: "search", summary: globSummary },
-  list_dir: { family: "search", summary: listDirSummary },
-  list_directory: { family: "search", summary: listDirSummary },
-  web_fetch: { family: "fetch", summary: webFetchSummary },
-  web_search: { family: "webSearch", summary: webSearchSummary },
-  shell: { family: "shell", summary: shellSummary },
-  exec_command: { family: "shell", summary: shellSummary },
-  run_shell_command: { family: "shell", summary: shellSummary },
-  use_skill: { family: "skill", summary: useSkillSummary },
-  task_list: { family: "tasks", summary: taskListSummary },
-  read_transcript: { family: "transcript", summary: readTranscriptSummary },
-  read_session_transcript: { family: "transcript", summary: readTranscriptSummary },
-  find_session_transcripts: { family: "sessions", summary: findSessionsSummary },
-  manage_worktree: { family: "worktree", summary: worktreeSummary },
+  read_file: { family: "read", words: readFileWords },
+  edit_file: { family: "edit", words: editFileWords },
+  write_file: { family: "edit", words: writeFileWords },
+  apply_patch: { family: "edit", words: applyPatchWords },
+  grep: { family: "search", words: grepWords },
+  grep_files: { family: "search", words: grepWords },
+  grep_search: { family: "search", words: grepWords },
+  glob: { family: "search", words: globWords },
+  list_dir: { family: "search", words: listDirWords },
+  list_directory: { family: "search", words: listDirWords },
+  web_fetch: { family: "fetch", words: webFetchWords },
+  web_search: { family: "webSearch", words: webSearchWords },
+  shell: { family: "shell", words: shellWords },
+  exec_command: { family: "shell", words: shellWords },
+  run_shell_command: { family: "shell", words: shellWords },
+  use_skill: { family: "skill", words: useSkillWords },
+  task_list: { family: "tasks", words: taskListWords },
+  read_transcript: { family: "transcript", words: readTranscriptWords },
+  read_session_transcript: { family: "transcript", words: readTranscriptWords },
+  find_session_transcripts: { family: "sessions", words: findSessionsWords },
+  manage_worktree: { family: "worktree", words: worktreeWords },
+  ask_user: { family: "ask", words: askUserWords },
+  job_status: { family: "jobs", words: jobStatusWords },
+  // The retired name for reading a job; old transcripts still carry it.
+  job_read_output: { family: "jobs", words: jobStatusWords },
+  job_list: { family: "jobs", words: jobListWords },
+  job_stop: { family: "jobs", words: jobStopWords },
+  job_watch: { family: "jobs", words: jobWatchWords },
+};
+
+export const readFileSummary = summaryOf(readFileWords);
+export const grepSummary = summaryOf(grepWords);
+export const listDirSummary = summaryOf(listDirWords);
+export const globSummary = summaryOf(globWords);
+export const editFileSummary = summaryOf(editFileWords);
+export const writeFileSummary = summaryOf(writeFileWords);
+export const applyPatchSummary = summaryOf(applyPatchWords);
+export const shellSummary = summaryOf(shellWords);
+export const webFetchSummary = summaryOf(webFetchWords);
+export const webSearchSummary = summaryOf(webSearchWords);
+export const useSkillSummary = summaryOf(useSkillWords);
+export const askUserSummary = summaryOf(askUserWords);
+
+// Any other job_* tool, one this build has no words for, still counts as a
+// job step and says which operation it ran, in words.
+const JOB_FALLBACK: ToolEntry = {
+  family: "jobs",
+  words: (step) => {
+    const operation = str(parseArgs(step.argumentsJSON), "operation");
+    const verb = `Used ${toolInWords(step.toolName ?? "")}`;
+    return { verb: operation ? `${verb}: ${operation}` : verb };
+  },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {
-  return Object.hasOwn(TOOLS, toolName) ? TOOLS[toolName] : undefined;
+  if (Object.hasOwn(TOOLS, toolName)) return TOOLS[toolName];
+  return toolName.startsWith("job_") ? JOB_FALLBACK : undefined;
 }
 
 /** The family a run's summary counts a step of this tool under. */
@@ -452,10 +517,16 @@ export function toolFamily(toolName: string): ToolFamily {
   return entryFor(toolName)?.family ?? (mcpToolParts(toolName) ? "mcp" : "tool");
 }
 
-/** A step's one-line summary, for any tool. */
-export function toolStepSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
+/** A step's words in parts, for any tool: what it did, what it acted on
+ * (the target a client can set apart), and what it found. */
+export function toolStepWords(step: ToolStep, ctx?: ToolSummaryContext): StepWords {
   const entry = entryFor(step.toolName ?? "");
-  return entry ? entry.summary(step, ctx) : fallbackToolSummary(step);
+  return entry ? entry.words(step, ctx) : { verb: fallbackToolSummary(step) };
+}
+
+/** A step's one-line summary, for any tool: its words composed. */
+export function toolStepSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
+  return composeStepWords(toolStepWords(step, ctx));
 }
 
 /** What a running step is doing, for any tool: "Reading agent/tree.go",

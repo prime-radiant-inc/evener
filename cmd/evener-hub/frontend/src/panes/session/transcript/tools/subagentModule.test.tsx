@@ -269,6 +269,48 @@ test("a failed card carries the danger rail itself - there is no module chrome t
   expect(within(row).getByTestId("subagent-quote").textContent).toBe("✕ build error");
 });
 
+// The hub's reason is a code; a failed card leads with the run's cause, else
+// the code in words (#3327).
+test.each([
+  ["failed", { error: "provider returned 500" }, "✕ provider returned 500"],
+  ["runtime_lost", {}, "✕ runtime lost"],
+])("a failed card with reason %s says the ending in words", (reason, overrides, quote) => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail",
+    callId: "call_fail",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason }),
+  });
+  seedCurrentDelegate("ref_current", "job_f", "failed", reason, overrides);
+  render(<Body item={failed} live={false} sessionRef="ref_current" />);
+  expect(within(screen.getByTestId("subagent-row")).getByTestId("subagent-quote").textContent).toBe(quote);
+});
+
+// With no stable delegate to read, the card and its launch receipt read the
+// tool output's reason, a code too: both say it in words, never snake_case
+// (#3375 review).
+test("a failed card with no stable delegate says the tool output's reason code in words", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail_raw",
+    callId: "call_fail_raw",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({
+      delegate_id: "job_raw",
+      status: "failed",
+      transcript_ref: "ref_raw",
+      reason: "runtime_lost",
+    }),
+  });
+  render(<Body item={failed} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByTestId("subagent-quote").textContent).toContain("runtime lost");
+  expect(row.textContent).not.toContain("runtime_lost");
+});
+
 // 3zf8: a child deliberately killed with job_stop (or reconciled to
 // stopped/runtime_lost after a hub restart - agent/internal/jobstore/
 // reconcile.go) must never render byte-identical to one that finished its

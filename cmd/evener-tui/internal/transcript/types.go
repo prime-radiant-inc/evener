@@ -38,6 +38,7 @@ type SubagentRunInfo struct {
 	Status              string
 	Outcome             string
 	Reason              string
+	Error               string
 	Terminal            bool
 	Resumable           bool
 	NotResumableReason  string

@@ -848,9 +848,20 @@ type NoticesListResponse struct {
 	Notices []HubNotice `json:"notices"`
 }
 
+// ServerInfo names the serving hub and its machine: Name and Version identify
+// the build, while OS, Arch and Roots describe the hub's own machine — the same
+// system and project-root facts a HostRow carries for a host the hub reaches
+// over SSH. A client that already shows the hub's own machine (the phone's
+// Hosts) renders those fields instead of leaving the machine's system and roots
+// unknown. OS and Arch name the machine's system and are absent when a server
+// does not report them; Roots is the machine's project roots, absent when it
+// has none.
 type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	OS      string   `json:"os,omitempty"`
+	Arch    string   `json:"arch,omitempty"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
@@ -1626,6 +1637,7 @@ type EvenerDelegateInfo struct {
 	Status              string               `json:"status"`
 	Outcome             string               `json:"outcome,omitempty"`
 	Reason              string               `json:"reason,omitempty"`
+	Error               string               `json:"error,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	NeedsAttention      bool                 `json:"needsAttention"`
@@ -2733,6 +2745,7 @@ type JobActivityDelegate struct {
 	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
+	Error               string                 `json:"error,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
 	Resumable           bool                   `json:"resumable,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
@@ -3688,7 +3701,11 @@ type AuthDeviceStartResponse struct {
 	UserCode        string `json:"userCode"`
 	VerificationURL string `json:"verificationUrl"`
 	IntervalSeconds int    `json:"intervalSeconds"`
-	Fallback        bool   `json:"fallback,omitempty"`
+	// ExpiresInSeconds is how long the user code stays valid, so a client can
+	// say when it expires instead of repeating the hub's own TTL. Optional:
+	// zero (absent) leaves the client on its own wording.
+	ExpiresInSeconds int  `json:"expiresInSeconds,omitempty"`
+	Fallback         bool `json:"fallback,omitempty"`
 }
 
 // AuthDevicePollParams is the params for evener/auth/device/poll.

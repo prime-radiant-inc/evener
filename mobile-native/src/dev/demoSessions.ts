@@ -53,7 +53,7 @@ import {
 	type RawSubagent,
 } from "./demoFleet";
 import { demoRunStartedAt } from "./demoSubagents";
-import { recordedToolFamilies } from "./demoToolFamilies";
+import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -96,6 +96,8 @@ type Entry =
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
 	entries?: Entry[];
+	// The directory the session sits in, when it isn't its project's.
+	cwd?: string;
 	error?: TurnError;
 	model?: string;
 	effort?: string;
@@ -673,6 +675,10 @@ function genericEntries(session: FleetSession): Entry[] {
 	return entries;
 }
 
+// What a live thought has streamed so far: enough for the tray's estimate
+// ("Thinking… · 17 tokens").
+const DEMO_THOUGHT = "Weighing where the settle and drain passes each take the tree lock.";
+
 // A working row's activity line as the step it describes.
 function liveStep(activity = "Thinking"): Entry {
 	if (activity === "Thinking") return { thinking: true };
@@ -764,8 +770,10 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user, status: "completed" };
 		if ("steer" in entry) return { ...item, type: "steering", source: "user", text: entry.steer, status: "completed" };
 		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
-		// A thought with no text yet: the encoder leaves the empty text out.
-		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
+		// A live thought as the hub's overlay serves it: opened by a delta
+		// with text, and with no startedAt, which the wire never carries for
+		// reasoning.
+		if ("thinking" in entry) return { id: item.id, type: "reasoning", text: DEMO_THOUGHT, status: "inProgress" };
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
 		if ("notice" in entry)
 			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
@@ -997,6 +1005,8 @@ function askItem(
 // only when served, so the usual sessions never read agent/testdata.
 function toolFamiliesContent(): SessionContent {
 	return {
+		// The recorded shell calls cd here first, as a session's own directory.
+		cwd: recordedToolCwd(),
 		entries: [
 			{ user: "Show me one step of every tool family." },
 			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
@@ -1030,7 +1040,7 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string, l
 		createdAt: Math.floor((turn.startedAt ?? now) / 1000),
 		updatedAt,
 		status: { type: status },
-		cwd: session.workingDir,
+		cwd: content.cwd ?? session.workingDir,
 		projectPath: session.workingDir,
 		gitInfo: { branch: "main" },
 		cliVersion: "demo",

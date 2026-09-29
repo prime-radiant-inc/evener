@@ -66,11 +66,17 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect(thread.name).toBe(session.title);
 			expect(conversation.items.length).toBeGreaterThan(0);
 			expect(thread.evener.capabilities.sharedNotes).toBe(true);
-			// As the Go encoder writes items: your message is completed, and a
-			// thought with no text yet leaves the text out (omitempty).
+			// As the hub serves items: your message is completed, and a live
+			// thought has text, since the overlay opens its stream only on a
+			// delta with text, and no startedAt, which the wire never carries
+			// for reasoning. So the tray says "Thinking… · N tokens", as it does
+			// on a real hub.
 			for (const item of thread.turns?.flatMap((turn) => turn.items ?? []) ?? []) {
 				if (item.type === "userMessage") expect(item.status).toBe("completed");
-				if (item.type === "reasoning") expect(item).not.toHaveProperty("text");
+				if (item.type === "reasoning") {
+					expect(item.text).toBeTruthy();
+					expect(item).not.toHaveProperty("startedAt");
+				}
 			}
 		}
 	});
@@ -524,5 +530,16 @@ describe("the demo session with every tool family", () => {
 		const edit = steps.find((step) => step.toolName === "edit_file");
 		expect(edit?.argumentsJSON).toContain("old_string");
 		expect(edit?.output).toBe("edited agent/tree.go: 1 replacement");
+	});
+
+	// The recorded shell calls cd into the corpus's directory first; the session
+	// sits there too, so its step lines drop that cd as a real session's do.
+	it("sits in the directory the corpus was recorded in", () => {
+		expect(threadOf("s-tools", withTools).cwd).toBe("/home/jesse/git/evener");
+		const { rows } = open("s-tools", "tools", withTools);
+		const shell = runsOf(rows)
+			.flatMap((run) => run.steps)
+			.find((step) => step.label === "shell");
+		expect(shell?.detail.words?.target).toBe("cat agent/tree_order.go");
 	});
 });

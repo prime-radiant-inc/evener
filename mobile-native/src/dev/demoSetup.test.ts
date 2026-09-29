@@ -4,9 +4,10 @@
 import { WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { createDemoFleet } from "./demoFleet.js";
-import { createDemoSetup } from "./demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_PROVIDERS } from "./demoSetup.js";
 
-const setup = (offlineHost = false) => createDemoSetup(createDemoFleet({ offlineHost }), { offlineHost });
+const setup = (offlineHost = false) =>
+	createDemoSetup(createDemoFleet({ offlineHost, modelProviders: DEMO_MODEL_PROVIDERS }), { offlineHost });
 
 describe("hosts and updates", () => {
 	it("lists paradise-park from hub.toml, attached, on an older version", () => {
@@ -123,6 +124,33 @@ describe("providers", () => {
 		expect(statuses.map((status) => status.provider).sort()).toEqual(["codex-jesse-at-pr", "codex-jesse-fsck.com"]);
 		expect(statuses.find((status) => status.provider === "codex-jesse-fsck.com")?.needsLogin).toBe(true);
 		expect(statuses.filter((status) => status.needsLogin)).toHaveLength(1);
+	});
+});
+
+// The hub's notices (S11), as cmd/evener-hub/app_notices.go derives them: a
+// sign-in counts the live top-level sessions whose model runs on the provider
+// instance, and an offline host its sessions that were live when last reached.
+describe("notices", () => {
+	it("names the expired sign-in with the live sessions on its models, and no host while every host is attached", () => {
+		// s-retry is the one live top-level session on GPT-5.6; the other
+		// GPT-5.6 rows are subagents.
+		expect(setup().answer("evener/notices/list", {}).notices).toEqual([
+			{
+				id: "signInRequired:codex-jesse-fsck.com",
+				kind: "signInRequired",
+				subject: "codex-jesse-fsck.com",
+				affectedSessions: 1,
+			},
+		]);
+	});
+
+	it("adds paradise-park while it is offline, with its live sessions", () => {
+		const notices = setup(true).answer("evener/notices/list", {}).notices;
+		expect(notices.map((notice) => notice.id)).toEqual([
+			"signInRequired:codex-jesse-fsck.com",
+			"hostOffline:paradise-park",
+		]);
+		expect(notices[1]?.affectedSessions).toBeGreaterThan(0);
 	});
 });
 

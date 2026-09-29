@@ -202,6 +202,12 @@ export interface AuthDeviceStartResponse {
   userCode: string;
   verificationUrl: string;
   intervalSeconds: number;
+  /**
+   * ExpiresInSeconds is how long the user code stays valid, so a client can
+   * say when it expires instead of repeating the hub's own TTL. Optional:
+   * zero (absent) leaves the client on its own wording.
+   */
+  expiresInSeconds?: number;
   fallback?: boolean;
 }
 
@@ -498,6 +504,7 @@ export interface EvenerDelegateInfo {
   status: string;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable: boolean;
   needsAttention: boolean;
@@ -1757,6 +1764,7 @@ export interface JobActivityDelegate {
   projectionRevision?: number;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable?: boolean;
   notResumableReason?: string;
@@ -3079,6 +3087,9 @@ export interface SearchSnippetPart {
 export interface ServerInfo {
   name: string;
   version: string;
+  os?: string;
+  arch?: string;
+  roots?: string[];
 }
 
 export interface SessionActivity {

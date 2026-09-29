@@ -23,6 +23,7 @@ import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } 
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import {
   archivedListKey,
   archivedListStore,
@@ -35,6 +36,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -1794,6 +1796,114 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  test("a rail row's Activity action opens the session and the activity sidebar, never the old pane", async () => {
+    // The chrome menu's twin: desktop Activity everywhere is the sidebar (the
+    // zoom system's triage surface). The rail NAVIGATES, idempotently: open
+    // the session pane, open the sidebar scoped to it, never toggle closed.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(
+        workspaceStore
+          .getState()
+          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
+      ).toBe(true);
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      // The reset updates a store the row subscribes to; unwrapped it lands
+      // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Activity action on desktop closes a leftover sessionActivity pane for that session", async () => {
+    // An upgrade or a restored layout can carry the pre-sidebar pane into the
+    // desktop shell, where no affordance opens it and no ✓ marks it: an
+    // orphan. Opening the sidebar on that session supersedes the pane.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreActivityPane = registerPaneForTests({
+      id: "sessionActivity",
+      title: () => "activity",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      workspaceStore.getState().openPane("sessionActivity", { ref: "local:active" });
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      // Desktop never marks the orphan pane (RailRow.test.tsx pins that);
+      // the supersede still fires.
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      restoreActivityPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Activity action on mobile keeps the old pane (no sidebar exists there)", async () => {
+    // The sidebar is desktop chrome; on the phone the rail lives in the tree
+    // drawer and Activity keeps its pre-sidebar behavior: the sessionActivity
+    // pane. The desktop retarget must not leak into the mobile rail.
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreActivityPane = registerPaneForTests({
+      id: "sessionActivity",
+      title: () => "activity",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      await waitFor(() => {
+        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(true);
+      });
+      expect(activitySidebarStore.getState().open).toBe(false);
+    } finally {
+      restoreViewport();
+      restoreSessionPane();
+      restoreActivityPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
   test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
     topNotesStore.getState().resetForTests();
     const restoreSessionPane = registerPaneForTests({
@@ -3044,6 +3154,119 @@ describe("archived rows come from evener/archived/list", () => {
     render(<Rail revealTarget="local:old-2" />, client);
     await waitFor(() => expect(cursors).toEqual(["cursor-1", "cursor-2"]));
     await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-2"]')).not.toBeNull());
+    restoreScroll();
+  });
+
+  test("a reveal of an archived session fetches the first page when navigation counts none", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(0),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
+  // A counted project whose archived session is the reveal target. Folds start
+  // open, so the reveal reaches the list on the count effect's own commit
+  // rather than a re-run after it.
+  function installRevealIntoCountedProject() {
+    installState([
+      archivedCatalog(1),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    localStorage.setItem(
+      EXPANSION_STORAGE_KEY,
+      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
+    );
+  }
+
+  test("a reveal of an archived session in a counted project fetches its list once", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
+  test("a reveal retries a failed first archived-list fetch and renders the row", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      if (requests === 1) throw new Error("hub busy");
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    restoreScroll();
+  });
+
+  test("a hub that keeps failing the archived list is asked once more per reveal", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      throw new Error("hub down");
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(requests).toBe(2));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe("hub down");
     restoreScroll();
   });
 

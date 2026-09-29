@@ -9,6 +9,7 @@ import {
 	diffStats,
 	editDiffText,
 	filePathOf,
+	jobStatusDisplay,
 	freshNotes,
 	lineCount,
 	parseArgs,
@@ -19,6 +20,7 @@ import {
 	skillContext,
 	str,
 	toolFamily,
+	toolJSONResult,
 	turns,
 	webFetchResult,
 	worktreeMessage,
@@ -88,6 +90,45 @@ function shellNotes(run: ShellOutput): Evidence[] {
 	return notes;
 }
 
+// A code the job tools print ("cancelled_by_request") in words ("cancelled by
+// request"). A local stand-in until a shared code-to-words helper lands
+// (#3327); swap this for it then.
+const JOB_CODE_RE = /^[a-z]+(?:_[a-z]+)+$/;
+function codeInWords(text: string): string {
+	return JOB_CODE_RE.test(text) ? text.replace(/_/g, " ") : text;
+}
+
+// A line's trailing bracketed codes in words: a stop's footer, a listing
+// row's "[<started · reason · exit · bytes>]".
+function bracketCodesInWords(line: string): string {
+	const bracket = /\[([^\]]*)\]\s*$/.exec(line);
+	if (!bracket) return line;
+	return `${line.slice(0, bracket.index)}[${(bracket[1] ?? "").split(" · ").map(codeInWords).join(" · ")}]`;
+}
+
+// A job listing's codes in words: each row's status column and bracketed
+// codes. Only those: a command in a row's label keeps its own spelling
+// ("tree_order.go"). A row reads "<id>  <type>  <status>  <label>
+// [<started · reason · exit · bytes>]", its header "# …".
+function jobListInWords(text: string): string {
+	return text
+		.split("\n")
+		.map((line) => {
+			const columns = bracketCodesInWords(line).split("  ");
+			if (columns.length >= 4 && !line.startsWith("#")) columns[2] = codeInWords(columns[2] ?? "");
+			return columns.join("  ");
+		})
+		.join("\n");
+}
+
+// A job stop's footer, its first line, with its codes in words. A delegate's
+// provenance lines under it (who asked, a scratch path, live watches) read
+// as printed.
+function jobStopInWords(text: string): string {
+	const [footer = "", ...rest] = text.split("\n");
+	return [bracketCodesInWords(footer), ...rest].join("\n");
+}
+
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
 // checklist, a transcript a read returned, what a worktree operation says it
@@ -142,6 +183,21 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		case "worktree":
 			// What the operation says it did, not the JSON around it.
 			return rawOutput(worktreeMessage(text) ?? text);
+		case "jobs": {
+			// A job check: its status and what it runs, not the JSON around
+			// them. A watch's rows, trigger and note in words, not the
+			// footer around them. A list and a stop print lines of their own,
+			// their codes in words; anything else reads as printed.
+			if (detail.watchEvidence !== undefined) return rawOutput(detail.watchEvidence);
+			if (label === "job_list") return rawOutput(jobListInWords(text));
+			if (label === "job_stop") return rawOutput(jobStopInWords(text));
+			const job = toolJSONResult(text);
+			const status = job ? str(job, "status") : undefined;
+			if (!job || !status) return rawOutput(text);
+			const description = str(job, "description");
+			const line = jobStatusDisplay(status, str(job, "reason"));
+			return rawOutput(description ? `${line} — ${description}` : line);
+		}
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
@@ -162,7 +218,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
-	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode" | "tasks">;
+	detail: ActivityDetail;
 };
 
 export function stepEvidence(step: EvidenceSource): Evidence[] {

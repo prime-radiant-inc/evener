@@ -371,7 +371,7 @@ function watchOverflowId(parentRowID: string): string {
  * so summing descendants here would print a subagent's watch on every ancestor
  * row as well as on the subagent's own - one watch, several counts. A receiver
  * watch belongs to the session whose summary carries it. */
-export function activeWatchCount(node: RailSession): number {
+export function activeWatchCount(node: NavigationSessionSummary): number {
   // Include the armed rows the hub omitted: past the per-session cap they are
   // not on `node.watches`, but they are still this session's armed watches, and
   // counting only the retained rows understates the total.
@@ -415,6 +415,40 @@ export function watchCountLabel(armed: number, retained: number, omitted: number
   }
   const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
   return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
+}
+
+// The states a subagent still has live work in, read through displayState
+// (approval_pending displays as "awaiting"). The same set marks every level:
+// a subagent is current when its own state is here, when it has a running
+// job, or when any descendant is current by this same rule - so an idle
+// subagent whose child awaits the user never folds as "inactive".
+const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
+  "active",
+  "awaiting",
+  "warning",
+  "restartRequired",
+  "notLoaded",
+  // Not "done" in the fold's sense: a failed subagent needs the user (its
+  // row paints danger), and warning - the less severe signal - is current.
+  "errored",
+]);
+
+// The wire's children carry fork originals (kind "fork") beside subagents -
+// the rail renders those as nested session rows, and the activity surfaces
+// count and list agents only.
+export function subagentChildrenOf(session: NavigationSessionSummary): NavigationSessionSummary[] {
+  return (session.children ?? []).filter((child) => child.kind === "subagent");
+}
+
+// The activity sidebar's Agents tab splits its scope's children on this; the
+// rail itself no longer does (its rows follow the wire's order below). Reads
+// displayState, not the raw wire state: approval_pending displays as
+// "awaiting" (the rail's needs-you badge counts it), so a blocked subagent
+// is current here too, never folded as inactive about the same node.
+export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
+  if (CURRENT_SUBAGENT_STATES.has(displayState(child))) return true;
+  if ((child.running_jobs ?? []).length > 0) return true;
+  return child.children.some(subagentIsCurrent);
 }
 
 // Builds one parent's children: its nested rows (fork originals)

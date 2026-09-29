@@ -8,8 +8,10 @@
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { rmSync } from "node:fs";
 
-import { Driver } from "./run.mjs";
+import { CHROME_SOCKET_PATH_LIMIT, chromeSingletonSocketPath } from "../browserGuardProcess.mjs";
+import { Driver, skillGuardChromeProfileDir } from "./run.mjs";
 
 const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
 
@@ -145,5 +147,25 @@ describe("selectAll holds the whole-text selection", () => {
     expect(ranges.length).toBe(4);
     // The fourth, last attempt fails the guard instead of announcing a retry.
     expect(consoleError.mock.calls).toEqual([[reselecting(1)], [reselecting(2)], [reselecting(3)]]);
+  });
+});
+
+// The guard runs under a deep ambient TMPDIR (a test harness nested in an agent
+// sandbox is two temp layers deep). Minting the profile straight under
+// os.tmpdir() there pushed Chrome's singleton socket past sun_path, so Chrome
+// aborted with "Socket path too long" before DevTools was ready and the guard
+// failed on a path-length accident (issue #3198). The profile must be minted
+// under a short root and its derived socket path must fit, whatever TMPDIR is.
+describe("skillguard Chrome profile fits the singleton socket budget", () => {
+  test("mints under a short root when the ambient TMPDIR is too deep", () => {
+    const ambient = `/tmp/${"nested/".repeat(16)}sandbox`;
+    expect(ambient.length).toBeGreaterThan(CHROME_SOCKET_PATH_LIMIT);
+    const dir = skillGuardChromeProfileDir({ ambient });
+    try {
+      expect(chromeSingletonSocketPath(dir).length).toBeLessThanOrEqual(CHROME_SOCKET_PATH_LIMIT);
+      expect(dir.startsWith(ambient)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
