@@ -463,6 +463,17 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		expect(translateY(chipsRow(tree))).toBe(-48);
 	});
 
+	// With every row gone while they're slid away, nothing is left to slide:
+	// the glass comes back down to cover the bar, with no clear band under it.
+	it("brings the glass back to the bar when the rows go while slid away", async () => {
+		const tree = render(header({ chips: [goal], glassTop: 64, hidden: true }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(glassSlide(tree)).toBe(-48);
+		act(() => tree.update(header({ glassTop: 64, hidden: true })));
+		expect(glassSlide(tree)).toBe(0);
+	});
+
 	it("still draws the glass behind the bar with no rows under it", () => {
 		const tree = render(header({ glassTop: 64 }));
 		expect(glass(tree)).toHaveLength(1);

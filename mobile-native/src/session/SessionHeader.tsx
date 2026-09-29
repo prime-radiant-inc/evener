@@ -64,8 +64,10 @@ export function SessionHeader({
 	// The find bar never slides away: it stays put while the list scrolls from
 	// match to match, whatever hides the chips.
 	const slidAway = (hidden || typing) && find == null;
-	const offset = useSlide(slidAway ? -rowHeight : 0);
 	const hasRow = chips.length > 0 || notes != null || find != null;
+	// With no rows left there is nothing slid away, whatever height they last
+	// had, so the glass comes back down to the bar.
+	const offset = useSlide(slidAway && hasRow ? -rowHeight : 0);
 	const onGlass = glassTop !== undefined;
 	if (!onGlass && status === null && !hasRow) return null;
 	return (
