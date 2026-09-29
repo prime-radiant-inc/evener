@@ -503,20 +503,29 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
 }
 
 // An evener/archived/list row is a plain summary with its children (fork
-// originals) nested inline, as the hub projects them.
-function sessionTreeValue(value: unknown, depth: number): boolean {
+// originals) nested inline, as the hub projects them. Every row and nested
+// child counts against `budget`, which starts at the entity bound a
+// navigation session may hold.
+function sessionTreeValue(value: unknown, depth: number, budget: { nodes: number }): boolean {
   return (
     depth <= MAX_NAVIGATION_DEPTH &&
+    --budget.nodes >= 0 &&
     sessionFieldsValue(value) &&
-    value.children.every((child) => sessionTreeValue(child, depth + 1))
+    value.children.every((child) => sessionTreeValue(child, depth + 1, budget))
   );
 }
 
-/** Validates the `sessions` of an evener/archived/list response: plain
- * session summaries whose children are nested inline. Throws on any
- * malformed row. */
+/** Validates the `sessions` of an evener/archived/list response: at most one
+ * page of plain session summaries whose children are nested inline. Throws on
+ * any malformed row or an oversized page. */
 export function decodeArchivedListSessions(value: unknown): NavigationSessionSummary[] {
-  if (!Array.isArray(value) || !value.every((row) => sessionTreeValue(row, 1))) throw schemaError("archived list");
+  const budget = { nodes: MAX_NAVIGATION_SESSION_ENTITIES };
+  if (
+    !Array.isArray(value) ||
+    value.length > NAVIGATION_SECTION_LIMIT ||
+    !value.every((row) => sessionTreeValue(row, 1, budget))
+  )
+    throw schemaError("archived list");
   return value as NavigationSessionSummary[];
 }
 
@@ -826,7 +835,7 @@ export function validateGraphForResource(
             ownerEntity.key === anchorKey &&
             ["current", "recent", "archived"].includes(ownerSlot);
       if (!allowed) throw schemaError("resource graph");
-      if (item.children.length > 50) throw schemaError("resource graph");
+      if (item.children.length > NAVIGATION_SECTION_LIMIT) throw schemaError("resource graph");
       const owned = slots.get(ownerEntity.key) ?? new Set<string>();
       owned.add(ownerSlot);
       slots.set(ownerEntity.key, owned);
