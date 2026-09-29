@@ -4,8 +4,10 @@ package execenv
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -85,11 +87,17 @@ func (c *drainingCommandRuntime) Kill() { c.killCalls++ }
 // drainBufferedOutput mirrors the production runtime's bounded join: it stops
 // the copier and waits for it to exit before returning, so any buffer access
 // after the drain cannot race a live write.
-func (c *drainingCommandRuntime) drainBufferedOutput() {
+func (c *drainingCommandRuntime) drainBufferedOutput() error {
 	c.drainCalls++
 	c.drainOnce.Do(func() { close(c.drained) })
 	<-c.copierDone
+	return nil
 }
+
+// The fake must satisfy the same optional capability production is asserted
+// against; a signature drift here is what let an earlier revision pass while
+// the production barrier silently failed to engage.
+var _ bufferedOutputDrainer = (*drainingCommandRuntime)(nil)
 
 type drainingCommandFactory struct{ runtime *drainingCommandRuntime }
 
@@ -148,27 +156,51 @@ func TestExecArgvDrainsBufferedOutputBeforeReadingWhenWaitOutstanding(t *testing
 
 // TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe exercises the owned
 // buffered lifecycle end to end: a same-group child inherits stdout and outlives
-// its leader. Before the owned-pipe change os/exec's own copier kept Wait
-// blocked on the still-open pipe for the child's whole lifetime; now the
-// runtime owns the pipe, drains within the termination grace, and the leader's
-// output is still captured.
+// its leader for far longer than the command's grace. Before the owned-pipe
+// change os/exec's own copier kept Wait blocked on the still-open pipe for the
+// child's whole lifetime; now the runtime owns the pipe, terminates the group
+// within the termination grace (mirroring streaming), reclaims the child, and
+// still captures the leader's output.
 func TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
-	grace := 300 * time.Millisecond
+	grace := 200 * time.Millisecond
 	env.terminationGrace = &grace
 
 	done := make(chan ExecResult, 1)
+	start := time.Now()
 	go func() {
-		res, _ := env.ExecCommand(context.Background(), `sleep 2 & printf 'LEADER\n'`, 10_000, "", nil)
+		res, _ := env.ExecCommand(context.Background(), `sleep 30 & echo CHILD=$!; printf 'LEADER\n'`, 30_000, "", nil)
 		done <- res
 	}()
 
+	var childPID int
 	select {
 	case res := <-done:
 		if !strings.Contains(res.Stdout, "LEADER") {
 			t.Fatalf("buffered stdout = %q, want the leader's output", res.Stdout)
 		}
-	case <-time.After(5 * time.Second):
+		if rest, ok := strings.CutPrefix(res.Stdout, "CHILD="); ok {
+			fields := strings.Fields(rest)
+			if len(fields) > 0 {
+				childPID, _ = strconv.Atoi(fields[0])
+			}
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("buffered ExecCommand took %s; a child holding the pipe should be reclaimed within the grace, not run for its 30s lifetime", elapsed)
+		}
+	case <-time.After(10 * time.Second):
 		t.Fatal("buffered ExecCommand did not return while a same-group child held the output pipe")
+	}
+
+	if childPID <= 0 {
+		t.Fatal("did not capture the backgrounded child pid")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(childPID, 0) != syscall.ESRCH && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(childPID, 0); err != syscall.ESRCH {
+		t.Fatalf("backgrounded child %d survived after buffered Wait returned: same-group writers must be reclaimed, not abandoned", childPID)
 	}
 }

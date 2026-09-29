@@ -2492,8 +2492,8 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	select {
 	case <-done:
 	default:
-		if drainer, ok := cmd.(interface{ drainBufferedOutput() }); ok {
-			drainer.drainBufferedOutput()
+		if drainer, ok := cmd.(bufferedOutputDrainer); ok {
+			_ = drainer.drainBufferedOutput()
 		}
 	}
 
