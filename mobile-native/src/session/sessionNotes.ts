@@ -140,8 +140,8 @@ export class NotesController {
 	/** The notes this flush's save chain has sent, newest last. A hub value
 	 * among them is this chain's own echo (even a late, out-of-order broadcast),
 	 * not a third writer. Scoped to the chain, so a remote write that restores
-	 * an older value is not mistaken for one; bounded so a chain cannot grow it
-	 * without limit (RoboRev #2769 round 5). */
+	 * an older value is not mistaken for one, and kept whole for the chain's
+	 * life so an early echo is never evicted (RoboRev #2769 round 5, round 6). */
 	private chainSent: string[] = [];
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
@@ -327,7 +327,6 @@ export class NotesController {
 			// Remember every note this chain sends: an echo of any of them arriving
 			// mid-flight (even a late one from an earlier save in the chain) is ours.
 			this.chainSent.push(response.note);
-			if (this.chainSent.length > 8) this.chainSent.shift();
 			if (this.state.text === text) {
 				this.clearDraft();
 				const hub = this.options.savedNote();

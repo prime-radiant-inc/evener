@@ -304,6 +304,22 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
+	it("keeps the whole chain's sent notes, so an early echo is not evicted (RoboRev #2769 round 6)", async () => {
+		let notes!: NotesController;
+		const hub = harness({
+			beforeRequest: (call) => {
+				// Nine edits keep the chain going; on the tenth save the first
+				// save's own echo arrives, after nine later values were sent.
+				if (call <= 9) notes.edit(`v${call}`);
+				else hub.setSaved("v0");
+			},
+		});
+		notes = hub.make();
+		notes.edit("v0");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "v9", phase: "saved" });
+	});
+
 	it("forgets the draft for newer text the hub already holds when an in-flight save settles (RoboRev #2769)", async () => {
 		const hub = harness();
 		hub.setSaved("A");
