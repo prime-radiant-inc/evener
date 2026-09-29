@@ -1209,18 +1209,28 @@ describe("following the live end (spec 8.2)", () => {
 		// Recorded items carry their transcript positions, as a hub's do, so
 		// the recorded reply lands after them.
 		const served = working("ref-follow-recorded");
-		const positioned = (turn: { items: Record<string, unknown>[] }, entry: number) => ({
-			...turn,
-			items: turn.items.map((item, index) => ({
-				...item,
-				transcriptKey: `${item.turnId}:${entry + index}:0`,
-				position: { entry: entry + index, item: 0 },
-			})),
+		const at = (turnId: string, entry: number) => ({
+			turnId,
+			status: "completed",
+			transcriptKey: `${turnId}:${entry}:0`,
+			position: { entry, item: 0 },
 		});
-		const turns = (served as unknown as { turns: { items: Record<string, unknown>[] }[] }).turns;
 		(served as unknown as { turns: unknown[] }).turns = [
-			positioned(turns[0], 0),
-			{ ...positioned(turns[1], 2), items: positioned(turns[1], 2).items.slice(0, 1) },
+			{
+				id: "turn_1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{ id: "u-turn_1", type: "userMessage", text: "ask turn_1", ...at("turn_1", 0) },
+					{ id: "a-turn_1", type: "agentMessage", text: "reply turn_1", ...at("turn_1", 1) },
+				],
+			},
+			{
+				id: "turn_2",
+				status: "inProgress",
+				itemsView: "default",
+				items: [{ id: "u-turn_2", type: "userMessage", text: "ask turn_2", ...at("turn_2", 2) }],
+			},
 		];
 		const { tree, hub } = await mount(served);
 		stream(hub, served, "s1");
