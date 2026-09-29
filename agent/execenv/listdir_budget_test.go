@@ -283,6 +283,9 @@ func TestListDirectoryBudget_ScanCapBoundsScan(t *testing.T) {
 	if !budget.Truncated() {
 		t.Fatal("scan-capped walk did not report truncation")
 	}
+	if !budget.Incomplete() {
+		t.Fatal("scan-capped walk did not report the listing incomplete")
+	}
 	if scanned >= 10 {
 		t.Fatalf("scan-capped walk read the whole 10-entry directory despite a %d-entry cap", maxListDirScanEntries)
 	}
@@ -291,5 +294,47 @@ func TestListDirectoryBudget_ScanCapBoundsScan(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Fatal("scan-capped walk returned no entries though the directory had some")
+	}
+}
+
+// A scan-capped child directory must not hide later siblings: the scan cap marks
+// the listing incomplete but leaves budget, so the walk keeps descending.
+func TestListDirectoryBudget_IncompleteChildDoesNotHideSiblings(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "d00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "d01"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		if err := os.WriteFile(filepath.Join(dir, "d00", fmt.Sprintf("f%02d", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	restoreChunk := listDirChunk
+	listDirChunk = 1
+	defer func() { listDirChunk = restoreChunk }()
+	restoreCap := maxListDirScanEntries
+	maxListDirScanEntries = 3
+	defer func() { maxListDirScanEntries = restoreCap }()
+
+	budget := NewListDirBudget(100)
+	got, err := env.ListDirectoryBudget(context.Background(), "", 2, budget)
+	if err != nil {
+		t.Fatalf("ListDirectoryBudget: %v", err)
+	}
+	if !budget.Incomplete() {
+		t.Fatal("walk whose child directory hit the scan cap did not report the listing incomplete")
+	}
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[e.Name] = true
+	}
+	if !seen["d00"] || !seen["d01"] {
+		t.Fatalf("listing %v hidden later sibling: want both d00 and d01 present", dirNames(got))
 	}
 }

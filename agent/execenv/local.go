@@ -2079,12 +2079,22 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 		if !budget.chargeListing() {
 			return nil
 		}
+		if budget.remainingEntries() == 0 {
+			// The page is already full; any entry here is unreachable without
+			// more budget, so do not spend I/O reading the directory to confirm.
+			budget.truncated = true
+			return nil
+		}
 		// Stream the directory in chunks, keeping only the smallest entries the
 		// page can still use, so a one-entry page never materializes a whole huge
 		// directory yet still returns the true sorted prefix.
 		res, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries(), budget.scanBudget())
 		if err != nil {
 			return err
+		}
+		if res.incomplete {
+			budget.incomplete = true
+			budget.truncated = true
 		}
 		ents := res.entries
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
@@ -2117,16 +2127,15 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 				if err := walk(filepath.Join(absDir, name), relName, d-1); err != nil {
 					return err
 				}
-				if budget.truncated {
+				// Abort remaining siblings when a child spent the budget; a
+				// scan-cap trip (incomplete) leaves room, so keep descending.
+				if budget.truncated && !budget.incomplete {
 					return nil
 				}
 			}
 		}
-		if res.more || res.incomplete {
+		if res.more {
 			budget.truncated = true
-		}
-		if res.incomplete {
-			budget.incomplete = true
 		}
 		return nil
 	}
