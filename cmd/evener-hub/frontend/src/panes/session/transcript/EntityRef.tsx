@@ -11,6 +11,7 @@ import {
   plainQuoteLine,
   sourceLabel,
   stableDelegateDisplayStatus,
+  watchTriggerPhrases,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useEntityViews } from "../../../transcriptDisplay/entityViews";
@@ -21,7 +22,6 @@ import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/act
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
-import { watchTriggerPhrases } from "./watchConditionPhrase";
 
 export interface EntityRefProps {
   view?: EntityView;

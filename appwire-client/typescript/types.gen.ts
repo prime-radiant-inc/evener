@@ -202,6 +202,12 @@ export interface AuthDeviceStartResponse {
   userCode: string;
   verificationUrl: string;
   intervalSeconds: number;
+  /**
+   * ExpiresInSeconds is how long the user code stays valid, so a client can
+   * say when it expires instead of repeating the hub's own TTL. Optional:
+   * zero (absent) leaves the client on its own wording.
+   */
+  expiresInSeconds?: number;
   fallback?: boolean;
 }
 

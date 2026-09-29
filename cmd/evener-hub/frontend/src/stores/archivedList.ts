@@ -66,40 +66,73 @@ function patch(key: string, change: (list: ArchivedList) => Partial<ArchivedList
   });
 }
 
-async function fetchPage(catalog: ArchivedListCatalog, projectKey: string, cursor: string | undefined): Promise<void> {
-  const key = archivedListKey(catalog, projectKey);
+// startRequest moves the list's generation on, so any request already in
+// flight for it is dropped, and returns a check for whether this one is still
+// the newest.
+function startRequest(key: string): () => boolean {
   const generation = (generations.get(key) ?? 0) + 1;
   generations.set(key, generation);
   patch(key, () => ({ loading: true, error: null }));
+  return () => generations.get(key) === generation;
+}
+
+async function requestPage(catalog: ArchivedListCatalog, projectKey: string, cursor: string | undefined) {
   const params: ArchivedListParams = { catalog, projectKey, ...(cursor ? { cursor } : {}) };
+  const response = await requireClient().request("evener/archived/list", params);
+  return {
+    rows: decodeArchivedListSessions(response.sessions),
+    nextCursor: response.nextCursor,
+    total: response.total,
+  };
+}
+
+async function loadMore(catalog: ArchivedListCatalog, projectKey: string, cursor: string): Promise<void> {
+  const key = archivedListKey(catalog, projectKey);
+  const isNewest = startRequest(key);
   try {
-    const response = await requireClient().request("evener/archived/list", params);
-    if (generations.get(key) !== generation) return;
-    const rows = decodeArchivedListSessions(response.sessions);
+    const page = await requestPage(catalog, projectKey, cursor);
+    if (!isNewest()) return;
     patch(key, (list) => ({
-      rows: cursor ? [...list.rows, ...rows] : rows,
-      nextCursor: response.nextCursor,
-      total: response.total,
+      rows: [...list.rows, ...page.rows],
+      nextCursor: page.nextCursor,
+      total: page.total,
       loaded: true,
       loading: false,
     }));
   } catch (err) {
-    if (generations.get(key) !== generation) return;
+    if (!isNewest()) return;
     patch(key, () => ({ loading: false, error: errorText(err) }));
   }
 }
 
-/** Fetches the first page of the project's archived list, replacing any rows
- * already loaded. Opening a fold and refreshing it are the same request. */
-export function refreshArchivedList(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
-  return fetchPage(catalog, projectKey, undefined);
+/** Reloads the project's archived list from its first page, through as many
+ * pages as the list already held (at least one), so a refresh does not undo
+ * the user's "+N older" paging. The rows are swapped in once, when the last
+ * page has arrived. Opening a fold and refreshing it are the same request. */
+export async function refreshArchivedList(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
+  const key = archivedListKey(catalog, projectKey);
+  const wanted = archivedListStore.getState().lists[key]?.rows.length ?? 0;
+  const isNewest = startRequest(key);
+  try {
+    let page = await requestPage(catalog, projectKey, undefined);
+    const rows = [...page.rows];
+    while (isNewest() && rows.length < wanted && page.nextCursor) {
+      page = await requestPage(catalog, projectKey, page.nextCursor);
+      rows.push(...page.rows);
+    }
+    if (!isNewest()) return;
+    patch(key, () => ({ rows, nextCursor: page.nextCursor, total: page.total, loaded: true, loading: false }));
+  } catch (err) {
+    if (!isNewest()) return;
+    patch(key, () => ({ loading: false, error: errorText(err) }));
+  }
 }
 
 /** Appends the next page; does nothing on the last page or before the first. */
 export function loadMoreArchivedList(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
   const cursor = archivedListStore.getState().lists[archivedListKey(catalog, projectKey)]?.nextCursor;
   if (!cursor) return Promise.resolve();
-  return fetchPage(catalog, projectKey, cursor);
+  return loadMore(catalog, projectKey, cursor);
 }
 
 /** Refreshes every loaded list: an archive, unarchive, pin, unpin or delete
