@@ -71,6 +71,12 @@ export const OUTPUT_TAIL_WINDOW = 8192;
 /** At most this many cuts are tried. */
 export const MAX_OUTPUT_TAIL_CUTS = 16;
 
+/** Where the last OUTPUT_TAIL_WINDOW characters of a text begin: the only
+ * part a reader searches for how the text ends. */
+function tailStart(text: string): number {
+  return Math.max(0, text.length - OUTPUT_TAIL_WINDOW);
+}
+
 /** Where a tool's own output may end: the whole output, then the output cut
  * at each blank line from the last back, within the output's last
  * OUTPUT_TAIL_WINDOW characters and at most MAX_OUTPUT_TAIL_CUTS of them.
@@ -81,7 +87,7 @@ export const MAX_OUTPUT_TAIL_CUTS = 16;
  * footer yet and is read on every render. */
 export function outputTails(output: string): string[] {
   const tails = [output];
-  const floor = output.length - OUTPUT_TAIL_WINDOW;
+  const floor = tailStart(output);
   for (
     let cut = output.lastIndexOf("\n\n");
     cut > 0 && cut >= floor && tails.length <= MAX_OUTPUT_TAIL_CUTS;
@@ -99,7 +105,7 @@ function withoutTrailingNewlines(text: string): string {
 function readBracketed(text: string): ShellOutput | undefined {
   // The footer ends the text, so only its last OUTPUT_TAIL_WINDOW characters
   // are searched: a running command's output grows without one.
-  const start = Math.max(0, text.length - OUTPUT_TAIL_WINDOW);
+  const start = tailStart(text);
   const tail = text.slice(start);
   let footer: RegExpMatchArray | undefined;
   for (const match of tail.matchAll(BRACKETED_RE)) {
