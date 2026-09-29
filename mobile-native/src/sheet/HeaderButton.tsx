@@ -11,9 +11,9 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
  * over the default 17 (Apple's Dynamic Type sizes). */
 const XXXL_SCALE = 23 / 17;
 
-/** How much a header button's label grows: with Dynamic Type, up to
- * xxxLarge. */
-function useHeaderButtonScale(): number {
+/** How much a sheet header's text grows, its buttons and its title alike:
+ * with Dynamic Type, up to xxxLarge. */
+export function useHeaderTextScale(): number {
 	return Math.min(useTextScale(), XXXL_SCALE);
 }
 
@@ -32,7 +32,7 @@ export function HeaderButton({
 	onPress(): void;
 }) {
 	const { palette } = useColors();
-	const scale = useHeaderButtonScale();
+	const scale = useHeaderTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
