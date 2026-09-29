@@ -599,9 +599,8 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 	}()
 	started := time.Now()
 	var stats navigationBuildStats
-	stats.phase = "capture"
 	defer func() {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if flight.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			stats.Total = time.Since(started)
 			s.statsLog.timedOut(stats)
 		}
@@ -621,7 +620,6 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			restarts := stats.Restarts
 			stats = snapshot.Stats
 			stats.Restarts = restarts
-			stats.phase = "projection"
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -634,10 +632,10 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		inputs := snapshot.Inputs
 		inputs.GenerationID = generation
 		inputs.Revision = 0 // semantic fingerprints never include transport revision.
+		stats.phase = "projection"
 		phaseStart := time.Now()
 		projection, err := buildNavigationServiceProjectionContext(ctx, inputs)
 		stats.Projection = time.Since(phaseStart)
-		stats.phase = "fingerprints"
 		if err != nil {
 			if ctx.Err() != nil {
 				flight.err = navigationUnavailable(ctx.Err())
@@ -646,11 +644,11 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			return
 		}
+		stats.phase = "fingerprints"
 		phaseStart = time.Now()
 		fingerprints, dependencies, err := navigationLogicalFingerprintsContext(ctx, projection)
 		stats.Fingerprints = time.Since(phaseStart)
 		stats.Resources = len(fingerprints)
-		stats.phase = "next_states"
 		if err != nil {
 			if ctx.Err() != nil {
 				flight.err = navigationUnavailable(ctx.Err())
@@ -681,13 +679,15 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			s.mu.Unlock()
 			expected = after
-			stats.Restarts++
+			if ctx.Err() == nil {
+				stats.Restarts++
+			}
 			continue
 		}
+		stats.phase = "next_states"
 		phaseStart = time.Now()
 		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies)
 		stats.NextStates = time.Since(phaseStart)
-		stats.phase = "commit"
 		if err != nil {
 			s.mu.Unlock()
 			if ctx.Err() != nil {

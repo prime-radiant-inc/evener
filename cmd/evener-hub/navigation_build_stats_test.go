@@ -195,3 +195,26 @@ func TestNavigationBuildTimeoutAlwaysLogs(t *testing.T) {
 		t.Errorf("restarts = %q, want 0", got)
 	}
 }
+
+// The timeout line names the phase that was running, not the next one.
+func TestNavigationBuildTimeoutNamesProjectionPhase(t *testing.T) {
+	old := buildNavigationServiceProjectionContext
+	buildNavigationServiceProjectionContext = func(ctx context.Context, _ navigationBuildInputs) (navigationProjection, error) {
+		<-ctx.Done()
+		return navigationProjection{}, ctx.Err()
+	}
+	t.Cleanup(func() { buildNavigationServiceProjectionContext = old })
+	logs := &navigationStatsLog{}
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Logf = logs.Logf
+		cfg.BuildTimeout = 20 * time.Millisecond
+	})
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err == nil {
+		t.Fatal("refresh with a stuck projection succeeded")
+	}
+	lines := logs.buildLines()
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "navigation build timed out in projection: ") {
+		t.Fatalf("build lines = %q, want one timeout line naming projection", lines)
+	}
+}

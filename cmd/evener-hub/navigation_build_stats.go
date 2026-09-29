@@ -34,7 +34,7 @@ type navigationBuildStats struct {
 // already holds: one pass over the metas, and the archived tier of each
 // project in the built tree. It does no I/O.
 func (s *navigationBuildStats) countNavigationSessions(metas []schema.SessionMeta, live []hubcore.LiveEntry, tree hubcore.Tree) {
-	dirs := make(map[string]struct{})
+	dirs := make(map[string]struct{}, len(metas))
 	for _, meta := range metas {
 		if meta.IsSubagent {
 			s.Subagents++
