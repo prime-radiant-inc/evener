@@ -67,10 +67,12 @@ it("lets go of a client the connection has left, so a start on it doesn't wait f
 
 it("puts back the form underneath when the newer one on a store goes (#3104)", () => {
 	const store = creationStore("hub-a");
-	const front = (): FormFront => ({
-		navigation: { isFocused: () => true, getParent: () => undefined },
-		latest: { current: { ready: true, client: null } },
-	});
+	// Only which form is in front matters here, so the navigation is a stub.
+	const front = () =>
+		({
+			navigation: { isFocused: () => true, getParent: () => undefined },
+			latest: { current: { ready: true, client: null } },
+		}) as FormFront;
 	const older = front();
 	const newer = front();
 	const releaseOlder = showForm(store, older);
