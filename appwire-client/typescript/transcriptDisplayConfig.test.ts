@@ -286,7 +286,7 @@ describe("transcript display config", () => {
     });
   });
 
-  test("inventory shows informational notices at full only (reasoning is the field only full turns on)", () => {
+  test("inventory shows informational notices at full only, and for a custom vector that is full's", () => {
     expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "full" })).visible).toContain(
       "informationalNotices",
     );
@@ -302,9 +302,20 @@ describe("transcript display config", () => {
           toolIntent: true,
           toolCalls: true,
           reasoning: true,
-          expandByDefault: false,
+          expandByDefault: true,
         }),
       ).visible,
+    ).toContain("informationalNotices");
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: false,
+          toolCalls: false,
+          reasoning: true,
+          expandByDefault: false,
+        }),
+      ).hidden,
     ).toContain("informationalNotices");
   });
 

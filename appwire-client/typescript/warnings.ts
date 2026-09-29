@@ -9,10 +9,11 @@
 //     attention-chip block, for the levels that do show it.
 
 import type { ItemModel } from "./model";
+import { isPlainObject } from "./plainObject";
 
 /**
  * The context-budget notices (an output-allocation clamp, a context-usage
- * heads-up). Bound by test to the daemon's own constant in
+ * heads-up, a predictive checkpoint that fell back to the deterministic one). Bound by test to the daemon's own constant in
  * agent/events/payloads.go, the way errors.ts binds its discriminants to
  * appwire/errors.go.
  */
@@ -42,8 +43,6 @@ export function isInformationalWarning(item: ItemModel): boolean {
 // The code an overlay warning notice carries on its raw, or undefined. Raw is
 // untyped wire JSON, so every step is checked.
 function noticeWarningCode(raw: unknown): unknown {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const warning = (raw as { warning?: unknown }).warning;
-  if (typeof warning !== "object" || warning === null) return undefined;
-  return (warning as { code?: unknown }).code;
+  if (!isPlainObject(raw) || !isPlainObject(raw.warning)) return undefined;
+  return raw.warning.code;
 }

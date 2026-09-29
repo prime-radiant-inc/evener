@@ -161,11 +161,11 @@ export function contentVectorForConfig(config: TranscriptDisplayConfigV1): Conte
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
  * warnings, and tool-repair notices - the repair already succeeded) show only
- * at full, the level that shows everything. reasoning is the content-vector
- * field only the full preset turns on, the sole field separating activity
- * from full, and a custom vector opts the notices in by showing reasoning. */
+ * at full, the level that shows everything: the full preset, or a custom
+ * vector with every field of full's turned on. */
 export function informationalNoticesVisible(vector: ContentVector): boolean {
-  return vector.reasoning;
+  const full = CONTENT_VECTORS.full;
+  return (Object.keys(full) as (keyof ContentVector)[]).every((field) => vector[field] === full[field]);
 }
 
 export function normalizeContent(content: ContentSelection): ContentSelection {

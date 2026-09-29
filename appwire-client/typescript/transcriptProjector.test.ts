@@ -309,13 +309,16 @@ describe("transcript projector", () => {
       expect(projection.anchors).toEqual([]);
     });
 
-    test("a custom vector gates informational warnings on reasoning, the field only full turns on", () => {
+    test("a custom vector shows informational warnings only when it is the full vector", () => {
       const model = threadWith(informational());
       expect(
-        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: true })),
+        entriesFor(model, custom({ toolIntent: false, toolCalls: false, reasoning: true, expandByDefault: false })),
       ).toEqual([]);
       expect(
         entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true })),
       ).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
     });
 
@@ -445,13 +448,16 @@ describe("transcript projector", () => {
       expect(projection.anchors).toEqual([]);
     });
 
-    test("a custom vector gates repair notices on reasoning, the field only full turns on", () => {
+    test("a custom vector shows repair notices only when it is the full vector", () => {
       const model = threadWith(repair());
       expect(
-        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: true })),
+        entriesFor(model, custom({ toolIntent: false, toolCalls: false, reasoning: true, expandByDefault: false })),
       ).toEqual([]);
       expect(
         entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true })),
       ).toEqual([expect.objectContaining({ kind: "critical", id: "repair" })]);
     });
 
@@ -567,7 +573,7 @@ describe("transcript projector", () => {
     );
 
     // tool_repair stays in the vocabulary above - the projector must still
-    // know the kind - but it is the one member gated on high verbosity
+    // know the kind - but it is the one member gated on the full level
     // rather than the Advanced diagnostics flags, so it does not render at
     // this chat-level config. The tool-repair notices block pins its own
     // visibility matrix.
