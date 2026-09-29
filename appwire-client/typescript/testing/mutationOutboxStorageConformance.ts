@@ -72,6 +72,46 @@ function conformanceNoteIntent(note: string, targetRef = CONFORMANCE_TARGET): Mu
   };
 }
 
+// The fixture the note-supersede contracts share: the ref's earlier refused and
+// orphaned note recovery rows (a later save supersedes both), a settling note,
+// a newer note, a recovery row of another method on the same ref, and a note
+// recovery row on another ref.
+async function seedSupersededNoteScenario(storage: MutationOutboxStorage) {
+  const refusedOlder = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
+  await storage.transferToRecovery(refusedOlder.clientMutationId, "rejected", "note refused");
+  const orphanedOlder = await storage.enqueueIntent(conformanceNoteIntent("orphaned older"));
+  await storage.transferToRecovery(orphanedOlder.clientMutationId, "orphaned");
+  const settling = await storage.enqueueIntent(conformanceNoteIntent("settling now"));
+  const newer = await storage.enqueueIntent(conformanceNoteIntent("newer still"));
+  await storage.transferToRecovery(newer.clientMutationId, "rejected", "note refused");
+  const otherMethod = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
+  await storage.transferToRecovery(otherMethod.clientMutationId, "rejected", "turn refused");
+  const otherTarget = await storage.enqueueIntent(conformanceNoteIntent("elsewhere", CONFORMANCE_OTHER_TARGET));
+  await storage.transferToRecovery(otherTarget.clientMutationId, "orphaned");
+  return { refusedOlder, orphanedOlder, settling, newer, otherMethod, otherTarget };
+}
+
+// The supersede is not a "refused"-only rule: the web oracle discards every
+// earlier notes/human/set recovery row for the ref whatever its kind, so an
+// older orphaned note goes too. The other method, the other ref, and the newer
+// note must all survive.
+async function expectSupersedeDroppedEarlierNotes(
+  storage: MutationOutboxStorage,
+  ids: Awaited<ReturnType<typeof seedSupersededNoteScenario>>,
+) {
+  await expect(storage.getRecovery(ids.refusedOlder.clientMutationId)).resolves.toBeUndefined();
+  await expect(storage.getRecovery(ids.orphanedOlder.clientMutationId)).resolves.toBeUndefined();
+  await expect(storage.getRecovery(ids.newer.clientMutationId)).resolves.toMatchObject({
+    clientMutationId: ids.newer.clientMutationId,
+  });
+  await expect(storage.getRecovery(ids.otherMethod.clientMutationId)).resolves.toMatchObject({
+    clientMutationId: ids.otherMethod.clientMutationId,
+  });
+  await expect(storage.getRecovery(ids.otherTarget.clientMutationId)).resolves.toMatchObject({
+    clientMutationId: ids.otherTarget.clientMutationId,
+  });
+}
+
 // The MutationOutboxStorage port's behavioral contracts, run against any
 // host's factory. Every assertion goes through the port's public methods:
 // nothing here reads a host's raw rows, so the suite is the one set of
@@ -306,60 +346,36 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
     });
 
     // The shared settlement contract's note supersede: a settled notes/human/set
-    // discards the SAME ref's earlier refused-note recovery rows (a later save
-    // is the note editor's only retry), while leaving other methods, other
-    // targets, and newer rows exactly where they were. A structural interface
-    // cannot express this semantic side effect, so both hosts must run it.
+    // discards the SAME ref's earlier note recovery rows (a later save is the
+    // note editor's only retry), while leaving other methods, other targets,
+    // and newer rows exactly where they were. A structural interface cannot
+    // express this semantic side effect, so both hosts must run it.
     test("settleReceipt discards a ref's superseded note recovery rows and preserves the rest", async () => {
-      const older = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
-      await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
-      const settling = await storage.enqueueIntent(conformanceNoteIntent("accepted now"));
-      const newer = await storage.enqueueIntent(conformanceNoteIntent("newer still"));
-      await storage.transferToRecovery(newer.clientMutationId, "rejected", "note refused");
-      const otherMethod = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
-      await storage.transferToRecovery(otherMethod.clientMutationId, "rejected", "turn refused");
-      const otherTarget = await storage.enqueueIntent(conformanceNoteIntent("elsewhere", CONFORMANCE_OTHER_TARGET));
-      await storage.transferToRecovery(otherTarget.clientMutationId, "orphaned");
-
-      await expect(storage.settleReceipt(settling.clientMutationId, "pending")).resolves.toBe(true);
-
-      await expect(storage.getRecovery(older.clientMutationId)).resolves.toBeUndefined();
-      await expect(storage.getRecovery(newer.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: newer.clientMutationId,
-      });
-      await expect(storage.getRecovery(otherMethod.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: otherMethod.clientMutationId,
-      });
-      await expect(storage.getRecovery(otherTarget.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: otherTarget.clientMutationId,
-      });
+      const ids = await seedSupersededNoteScenario(storage);
+      await expect(storage.settleReceipt(ids.settling.clientMutationId, "pending")).resolves.toBe(true);
+      await expectSupersedeDroppedEarlierNotes(storage, ids);
     });
 
     // The same supersede rides settleApplied's transaction: an applied note is
-    // authoritative too, so it retires the ref's earlier refused-note recovery
-    // rows just as a receipt does.
+    // authoritative too, so it retires the ref's earlier note recovery rows just
+    // as a receipt does.
     test("settleApplied discards a ref's superseded note recovery rows and preserves the rest", async () => {
-      const older = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
-      await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
-      const settling = await storage.enqueueIntent(conformanceNoteIntent("applied now"));
-      const newer = await storage.enqueueIntent(conformanceNoteIntent("newer still"));
-      await storage.transferToRecovery(newer.clientMutationId, "rejected", "note refused");
-      const otherMethod = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
-      await storage.transferToRecovery(otherMethod.clientMutationId, "rejected", "turn refused");
-      const otherTarget = await storage.enqueueIntent(conformanceNoteIntent("elsewhere", CONFORMANCE_OTHER_TARGET));
-      await storage.transferToRecovery(otherTarget.clientMutationId, "orphaned");
+      const ids = await seedSupersededNoteScenario(storage);
+      await expect(storage.settleApplied(ids.settling.clientMutationId)).resolves.toBe(true);
+      await expectSupersedeDroppedEarlierNotes(storage, ids);
+    });
 
-      await expect(storage.settleApplied(settling.clientMutationId)).resolves.toBe(true);
-
-      await expect(storage.getRecovery(older.clientMutationId)).resolves.toBeUndefined();
-      await expect(storage.getRecovery(newer.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: newer.clientMutationId,
-      });
-      await expect(storage.getRecovery(otherMethod.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: otherMethod.clientMutationId,
-      });
-      await expect(storage.getRecovery(otherTarget.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: otherTarget.clientMutationId,
+    // The guard: only a settling NOTE supersedes note recovery rows. Settling
+    // another method on the ref (here a turn) must leave the refused note row
+    // where it is - without this case the method guard could be removed and no
+    // contract would notice.
+    test("settling a non-note intent preserves the ref's refused note recovery rows", async () => {
+      const refused = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
+      await storage.transferToRecovery(refused.clientMutationId, "rejected", "note refused");
+      const settling = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
+      await expect(storage.settleReceipt(settling.clientMutationId, "pending")).resolves.toBe(true);
+      await expect(storage.getRecovery(refused.clientMutationId)).resolves.toMatchObject({
+        clientMutationId: refused.clientMutationId,
       });
     });
   });

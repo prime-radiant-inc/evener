@@ -498,13 +498,13 @@ test("settleReceipt reports false for a record that is in none of the three tabl
 	await expect(storage.settleReceipt("missing", "pending")).resolves.toBe(false);
 });
 
-// The note supersede rides settleReceipt's own savepoint (the port's shared
-// settlement contract), so a sweep fault leaves NO part of the settlement
-// behind: the refused earlier note survives and the settling note is still in
-// the outbox, instead of the sweep half-applying and the record retiring. The
-// web adapter proves the same atomicity through its beforeCommit seam
-// (mutationOutbox.test.ts).
-test("a failed superseded-note sweep rolls the whole settlement back", async () => {
+// A sweep fault leaves NO part of the settlement behind: the earlier note
+// survives and the settling note is still in the outbox, instead of the sweep
+// half-applying and the record retiring. Falsified by a trigger that aborts the
+// sweep's delete; the trigger is dropped in the finally so no schema state
+// leaks past the contract. The web adapter proves the same atomicity through
+// its beforeCommit seam (mutationOutbox.test.ts).
+async function expectFailedSweepRollsBackSettlement(settle: (clientMutationId: string) => Promise<boolean>) {
 	const older = await storage.enqueueIntent(noteIntent("refused older"));
 	await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
 	const settling = await storage.enqueueIntent(noteIntent("accepted now"));
@@ -514,10 +514,21 @@ test("a failed superseded-note sweep rolls the whole settlement back", async () 
 		 WHEN OLD.client_mutation_id = '${older.clientMutationId}'
 		 BEGIN SELECT RAISE(ABORT, 'supersede failed'); END`,
 	);
+	try {
+		await expect(settle(settling.clientMutationId)).rejects.toThrow("supersede failed");
+		expect(rawRow("mutation_recovery", older.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+		expect(rawRow("mutation_outbox", settling.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+	} finally {
+		database.exec("DROP TRIGGER reject_supersede");
+	}
+}
 
-	await expect(storage.settleReceipt(settling.clientMutationId, "pending")).rejects.toThrow("supersede failed");
-	expect(rawRow("mutation_recovery", older.clientMutationId)).toMatchObject({ method: "notes/human/set" });
-	expect(rawRow("mutation_outbox", settling.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+test("a failed superseded-note sweep rolls settleReceipt back", async () => {
+	await expectFailedSweepRollsBackSettlement((id) => storage.settleReceipt(id, "pending"));
+});
+
+test("a failed superseded-note sweep rolls settleApplied back", async () => {
+	await expectFailedSweepRollsBackSettlement((id) => storage.settleApplied(id));
 });
 
 // Oracle: settleReceipt resolves "outbox ?? recovery ?? optimistic" as its

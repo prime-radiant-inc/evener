@@ -11,9 +11,10 @@
 // Stop write with the stop-epoch barrier enqueueIntent compares at commit,
 // nextDispatchable blocked by an earlier blockedUnknown on the same target
 // only while skipping canceled rows, restoreProvenAbsent reopening only
-// what the authoritative snapshot omits) without the web's Blob handling,
-// cross-tab identity or shared-notes recovery-superseding, none of which
-// the port declares.
+// what the authoritative snapshot omits, and the settlement note-supersede
+// discardSupersededNoteRecovery runs inside both settleReceipt and
+// settleApplied) without the web's Blob handling or cross-tab identity,
+// neither of which the port declares.
 import * as Crypto from "expo-crypto";
 import type {
 	MutationAttachmentRef,
@@ -391,12 +392,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	// The shared settlement contract's note supersede, run inside the same
 	// settlement transaction (the web adapter's #discardSupersededNoteRecovery):
-	// a settled notes/human/set supersedes the SAME ref's earlier refused-note
-	// recovery rows - a later save is the note editor's only retry - and
-	// nothing else. Every other method, every other target, and every newer
-	// row (including a note saved after this one) stays; the port declares no
-	// separate discard method for it, because it is the settlement's own side
-	// effect.
+	// a settled notes/human/set supersedes the SAME ref's earlier
+	// notes/human/set recovery rows whatever their recoveryKind - a later save
+	// is the note editor's only retry - and nothing else. Every other method,
+	// every other target, and every newer row (including a note saved after
+	// this one) stays; the port declares no separate discard method for it,
+	// because it is the settlement's own side effect.
 	protected discardSupersededNoteRecovery(source: MutationRecord<A>): void {
 		if (source.method !== "notes/human/set") return;
 		this.db.runSync(
