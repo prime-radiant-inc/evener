@@ -291,6 +291,20 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A parenthesis inside a quoted title, or one a backslash escapes, is
+	// literal: it neither ends the destination early nor lets it overrun into
+	// the text after the image (#3289).
+	it("does not count a parenthesis a title or an escape makes literal", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions:
+				'# Diagrams\n\n![a](https://x.test/a.png "t)") and ![b](https://x.test/d.png "see (") and ![c](https://x.test/a\\(b) more)',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and b and c more)" },
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
