@@ -4,10 +4,12 @@
 // and where the credential is kept. The page owns the draft and the write;
 // this is the form.
 import { getStringAsync } from "expo-clipboard";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { FormError, Group, GroupedPage, GroupFooter, Row, TextFieldRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
+
+const EMPTY_CLIPBOARD = "The clipboard held no credential JSON. Copy it again, then Paste.";
 
 export function CredentialPasteSheet({
 	title,
@@ -40,10 +42,17 @@ export function CredentialPasteSheet({
 	// shown: the sheet says only how much was pasted. The paste itself reads the
 	// clipboard, so the secret stays in the page's draft and off the screen.
 	const [active, setActive] = useState(AppState.currentState === "active");
+	// A read that lands after the sheet is gone must not repopulate the draft.
+	const live = useRef(true);
 	useEffect(() => {
+		live.current = true;
 		const subscription = AppState.addEventListener("change", (state) => setActive(state === "active"));
-		return () => subscription.remove();
+		return () => {
+			live.current = false;
+			subscription.remove();
+		};
 	}, []);
+	const [pasteError, setPasteError] = useState<string | null>(null);
 	async function pasteJson() {
 		let text = "";
 		try {
@@ -51,10 +60,19 @@ export function CredentialPasteSheet({
 		} catch {
 			// An unreadable clipboard reads as an empty one; nothing to paste.
 		}
-		if (text.trim()) onChangeText(text);
+		if (!live.current) return;
+		if (!text.trim()) {
+			setPasteError(EMPTY_CLIPBOARD);
+			return;
+		}
+		setPasteError(null);
+		onChangeText(text);
 	}
 	// FormError speaks each new report, so the same words land as one report.
-	const report = useMemo(() => (error ? { message: error } : null), [error]);
+	const report = useMemo(() => {
+		const message = error ?? pasteError;
+		return message ? { message } : null;
+	}, [error, pasteError]);
 	// Save and the keyboard's Done run through one gate: never while a save
 	// runs, and only when Save could.
 	const save = () => {

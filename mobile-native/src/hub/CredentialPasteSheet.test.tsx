@@ -58,6 +58,14 @@ function Harness() {
 	);
 }
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((settle) => {
+		resolve = settle;
+	});
+	return { promise, resolve };
+}
+
 it("never renders a pasted credential JSON, only how much was pasted", async () => {
 	const secret = '{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBg"}';
 	clipboard.getStringAsync.mockResolvedValue(secret);
@@ -71,6 +79,43 @@ it("never renders a pasted credential JSON, only how much was pasted", async () 
 	expect(renderedText(tree)).not.toContain("BEGIN PRIVATE KEY");
 	// The sheet says only how much was pasted.
 	expect(renderedText(tree)).toContain(`${secret.length} characters`);
+});
+
+it("says the clipboard held no credential JSON rather than doing nothing", async () => {
+	clipboard.getStringAsync.mockResolvedValue("   ");
+	const tree = render(<Harness />);
+	const paste = control(tree, "Paste credential JSON");
+	if (!paste) throw new Error("no paste control");
+	act(() => paste.props.onPress());
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("held no credential JSON");
+});
+
+it("drops a clipboard read that lands after the sheet is gone", async () => {
+	const read = deferred<string>();
+	clipboard.getStringAsync.mockReturnValue(read.promise);
+	const onChangeText = vi.fn();
+	const tree = render(
+		<CredentialPasteSheet
+			title="Set credential JSON"
+			kind="credentialJson"
+			value=""
+			onChangeText={onChangeText}
+			busy={false}
+			canSave={false}
+			error={null}
+			onSave={() => {}}
+			onCancel={() => {}}
+		/>,
+	);
+	const paste = control(tree, "Paste credential JSON");
+	if (!paste) throw new Error("no paste control");
+	act(() => paste.props.onPress());
+	act(() => tree.unmount());
+	await act(async () => {
+		read.resolve("{}");
+	});
+	expect(onChangeText).not.toHaveBeenCalled();
 });
 
 it("covers the sheet while the app is inactive, so the snapshot holds no secret", () => {
