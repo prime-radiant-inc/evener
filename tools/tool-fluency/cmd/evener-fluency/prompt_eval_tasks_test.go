@@ -208,6 +208,62 @@ func TestFirstCommitCheckJudgesACommittedChangeCorrectly(t *testing.T) {
 	}
 }
 
+// TestExistingTestsKeptAllowsAddedTestsAndRefusesRemovedOnes: the tasks
+// guard against an agent weakening the tests it was given, not against an
+// agent adding coverage. Appending a new test function must pass the check;
+// deleting a line of an existing test must fail it.
+func TestExistingTestsKeptAllowsAddedTestsAndRefusesRemovedOnes(t *testing.T) {
+	t.Parallel()
+	for task, testFile := range map[string]string{
+		"ambiguous-export.yaml":  "export/export_test.go",
+		"bugfix-tally.yaml":      "tally/sum_test.go",
+		"delegate-textutil.yaml": "textutil/textutil_test.go",
+	} {
+		t.Run(task, func(t *testing.T) {
+			t.Parallel()
+			probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, task))
+			var check checkSpec
+			for _, c := range probe.Expect.Checks {
+				if c.Name == "existing tests kept" {
+					check = c
+				}
+			}
+			if check.Run == "" {
+				t.Fatalf("%s has no %q check", task, "existing tests kept")
+			}
+			original := probe.Fixture.Files[testFile]
+
+			added := filepath.Join(t.TempDir(), "work")
+			if err := materializeFixture(added, probe.Fixture); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, filepath.Join(added, testFile), original+"\nfunc TestAddedByTheAgent(t *testing.T) {}\n")
+			if ok, detail := runCheck(added, check, checkTimeout); !ok {
+				t.Errorf("adding a test failed %q: %s", check.Name, detail)
+			}
+
+			removed := filepath.Join(t.TempDir(), "work")
+			if err := materializeFixture(removed, probe.Fixture); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(original, "\n")
+			var kept []string
+			dropped := false
+			for _, l := range lines {
+				if !dropped && strings.Contains(l, "t.") {
+					dropped = true
+					continue
+				}
+				kept = append(kept, l)
+			}
+			mustWrite(t, filepath.Join(removed, testFile), strings.Join(kept, "\n"))
+			if ok, _ := runCheck(removed, check, checkTimeout); ok {
+				t.Errorf("removing a line of an existing test passed %q", check.Name)
+			}
+		})
+	}
+}
+
 func failingChecks(workDir string, checks []checkSpec) []string {
 	var names []string
 	for _, c := range checks {
