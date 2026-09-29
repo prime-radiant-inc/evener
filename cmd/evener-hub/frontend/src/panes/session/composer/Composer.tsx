@@ -1605,7 +1605,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       )}
       {mutationStorageWedged && (
         <div className={CLASS.storageStatus} role="alert" aria-label="Message storage stuck">
-          {`Message storage is stuck. ${STORAGE_WEDGED_GUIDANCE}`}
+          {STORAGE_WEDGED_GUIDANCE}
         </div>
       )}
       {/* The ask dock no longer renders here: pending questions are the

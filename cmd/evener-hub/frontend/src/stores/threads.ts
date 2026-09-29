@@ -46,7 +46,6 @@ import {
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
-import { pushToast } from "../widgets/toast/store";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -63,7 +62,7 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB, STORAGE_RESET_NOTICE } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
@@ -753,8 +752,6 @@ const wireSubscribedRefs = new Set<string>();
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
-  // This tab's half of the cross-tab reset broadcast (see MUTATION_RESET_CHANNEL_NAME).
-  resetChannel: MutationResetChannel;
   // Bound to the attachment shape this host stages, like the outbox above.
   dispatcher: MutationDispatcher<MutationAttachment>;
   // The web's attachments carry bytes, so its outbox is the shared class bound
@@ -767,28 +764,6 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-
-// The web runtime's OWN reset broadcast. A reset deletes a database shared
-// across tabs; a sibling holding a connection gets versionchange and silently
-// loses its queued/optimistic rows. This channel is separate from the package's
-// own wakeup channel ("evener-mutation-outbox-v1") so the two cannot collide,
-// and it is owned here rather than in the shared package.
-const MUTATION_RESET_CHANNEL_NAME = "evener-mutation-outbox-reset-v1";
-/** The one message the reset channel carries. Exported so the test seam can craft it. */
-export const MUTATION_STORAGE_RESET_MESSAGE = "evener-mutation-storage-reset";
-interface MutationResetChannel {
-  postMessage(message: unknown): void;
-  close(): void;
-  onmessage: ((event: MessageEvent) => void) | null;
-}
-export type MutationResetChannelFactory = (name: string) => MutationResetChannel;
-let createMutationResetChannelForTests: MutationResetChannelFactory | undefined;
-function defaultMutationResetChannelFactory(name: string): MutationResetChannel {
-  if (typeof BroadcastChannel === "undefined") {
-    return { postMessage() {}, close() {}, onmessage: null };
-  }
-  return new BroadcastChannel(name) as unknown as MutationResetChannel;
-}
 
 type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
 const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
@@ -806,28 +781,6 @@ function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: Mut
       // A projection listener cannot change the result of a durable write.
       console.error("Mutation persistence listener failed", error);
     }
-  }
-}
-
-// A sibling tab's reset deleted the shared database. This tab's outbox,
-// optimistic and recovery rows went with it, and nothing else observes that -
-// the package's own channel announces commits, not deletion. Surface the same
-// notice and republish every ref this tab tracks through the existing
-// persistence feed, whose subscribers (the pending-turns projection, the note
-// drafts) re-read and drop the vanished rows; the pin refresh unpins the refs
-// that no longer hold anything.
-function handleStorageResetFromSibling(runtime: MutationRuntime): void {
-  if (!isCurrentMutationRuntime(runtime)) return;
-  pushToast("error", STORAGE_RESET_NOTICE);
-  const refs = new Set<string>([
-    ...pinnedMutationRefs,
-    ...threadsStore.getState().threads.keys(),
-    ...threadsStore.getState().watchedThreads.keys(),
-    ...threadsStore.getState().mutationReconciliationFailures,
-  ]);
-  notifyMutationPersistence(refs);
-  for (const targetRef of refs) {
-    void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
   }
 }
 
@@ -1053,14 +1006,6 @@ function getMutationRuntime(): MutationRuntime | null {
   if (!globalThis.indexedDB) return null;
 
   let runtime: MutationRuntime | null = null;
-  const resetChannel = (createMutationResetChannelForTests ?? defaultMutationResetChannelFactory)(
-    MUTATION_RESET_CHANNEL_NAME,
-  );
-  resetChannel.onmessage = (event) => {
-    if (!isCurrentMutationRuntime(runtime)) return;
-    if (event?.data !== MUTATION_STORAGE_RESET_MESSAGE) return;
-    handleStorageResetFromSibling(runtime);
-  };
   const storage =
     mutationStorageForTests ??
     new MutationOutboxIndexedDB({
@@ -1069,16 +1014,6 @@ function getMutationRuntime(): MutationRuntime | null {
       },
       onStorageWedged: (wedged) => {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationStorageWedged: wedged });
-      },
-      onStorageReset: () => {
-        if (!isCurrentMutationRuntime(runtime)) return;
-        // The reset deleted queued rows it could not read first, so tell the
-        // user once rather than let the loss be silent.
-        pushToast("error", STORAGE_RESET_NOTICE);
-        // ...and tell sibling tabs: they share the deleted database, so their
-        // queued/optimistic rows are gone too and they would otherwise keep
-        // rendering rows that no longer exist.
-        resetChannel.postMessage(MUTATION_STORAGE_RESET_MESSAGE);
       },
     });
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
@@ -1170,7 +1105,6 @@ function getMutationRuntime(): MutationRuntime | null {
   });
   const initializedRuntime: MutationRuntime = {
     storage,
-    resetChannel,
     dispatcher,
     outbox,
     start: Promise.resolve(),
@@ -1535,14 +1469,6 @@ export async function resendRecoveryMutation(
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
   if (mutationRuntime) throw new Error("setMutationStorageForTests must run before the mutation runtime starts");
   mutationStorageForTests = storage;
-}
-
-// The reset channel's test seam, mirroring setMutationStorageForTests: install
-// before the runtime starts so a test can capture this tab's broadcast and
-// deliver a sibling's, with no real BroadcastChannel.
-export function setMutationResetChannelForTests(factory: MutationResetChannelFactory): void {
-  if (mutationRuntime) throw new Error("setMutationResetChannelForTests must run before the mutation runtime starts");
-  createMutationResetChannelForTests = factory;
 }
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
@@ -4550,11 +4476,9 @@ export function resetThreadsStoreForTests(): void {
     mutationRuntime.active = false;
     void mutationRuntime.outbox.stop();
     mutationRuntime.storage.close();
-    mutationRuntime.resetChannel.close();
     mutationRuntime = null;
   }
   mutationStorageForTests = null;
-  createMutationResetChannelForTests = () => ({ postMessage() {}, close() {}, onmessage: null });
   createMutationBroadcastChannelForTests = () => {
     const channel = new EventTarget();
     return Object.assign(channel, {

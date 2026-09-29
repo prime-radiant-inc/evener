@@ -34,9 +34,6 @@ export interface MutationOutboxIndexedDBOptions {
   now?: () => number;
   onWriteStalled?: (waiting: boolean) => void;
   onStorageWedged?: (wedged: boolean) => void;
-  // Fired once when a reset actually deletes the database and reopens it. The
-  // delete is destructive, so the owner reports it to the user.
-  onStorageReset?: () => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
 }
@@ -56,11 +53,6 @@ const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
-// A wedged database is probed with a throwaway database first, then deleted and
-// reopened. Both waits are shorter than the storage watchdog: each bounds a
-// step that either answers or latches the adapter wedged, never a durable write.
-const PROBE_WAIT_MS = 3_000;
-const DELETE_WAIT_MS = 5_000;
 // How long the wedged latch fails fast before the normal ladder is allowed to
 // try the origin again. A stuck coordinator usually stays stuck, but a released
 // multi-tab hold or a recovered origin can heal, and the cooldown is what lets
@@ -79,22 +71,16 @@ export class MutationStorageTimeoutError extends Error {
   }
 }
 
-// The wedged case: open() never fired, a reset could not clear it, and the
-// adapter has latched. Unlike the timeout above, retrying in this tab cannot
-// help - the storage coordinator is stuck and only a reload or clearing the
-// site's data recovers it.
+// The wedged case: two consecutive open() timeouts, and the adapter has latched
+// (the cooldown in #open lets a later call retry after a while). Unlike the
+// timeout above, retrying immediately cannot help - the storage coordinator is
+// stuck and only a reload or clearing the site's data recovers it.
 export const STORAGE_WEDGED_GUIDANCE =
-  "Reload the page; if it stays stuck, clear this site's data in your browser settings.";
-
-// The one-line notice for a successful destructive reset: the rows the delete
-// discarded could not be read first (see #runOpenRecovery), so the user is told
-// rather than left to discover the loss.
-export const STORAGE_RESET_NOTICE =
-  "Message storage had to be reset. Queued messages from before the reset could not be recovered.";
+  "Message storage is stuck and cannot be recovered automatically. Reload the page; if it stays stuck, clear this site's data in your browser settings.";
 
 export class MutationStorageWedgedError extends Error {
   constructor() {
-    super(`Message storage is stuck and could not be reset automatically. ${STORAGE_WEDGED_GUIDANCE}`);
+    super(STORAGE_WEDGED_GUIDANCE);
     this.name = "MutationStorageWedgedError";
   }
 }
@@ -165,7 +151,6 @@ export class MutationOutboxIndexedDB {
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
   readonly #onStorageWedged: ((wedged: boolean) => void) | undefined;
-  readonly #onStorageReset: (() => void) | undefined;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
   #wedged = false;
@@ -175,14 +160,6 @@ export class MutationOutboxIndexedDB {
   #database: IDBDatabase | undefined;
   // Terminal once set by close(): no open is issued and no connection installs.
   #closed = false;
-  // The one in-flight deletion request, reused across attempts until it settles.
-  #deletion: IDBOpenDBRequest | undefined;
-  // The reset notice fires at most once per reset EPISODE, the moment the
-  // deletion actually lands (even after the watchdog, even after a later
-  // close()). #deleteWedgedDatabase clears it when it issues a fresh deletion
-  // request, so a later, second reset in this adapter's life is reported too;
-  // retries and a late completion of one request keep the latch.
-  #resetNotified = false;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
@@ -195,7 +172,6 @@ export class MutationOutboxIndexedDB {
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onStorageWedged = options.onStorageWedged;
-    this.#onStorageReset = options.onStorageReset;
   }
 
   close(): void {
@@ -983,11 +959,10 @@ export class MutationOutboxIndexedDB {
   // The single gate every transaction passes. A first open timeout hands off to
   // #runOpenRecovery below, deduped so concurrent callers share one ladder.
   async #openWithRecovery(): Promise<IDBDatabase> {
-    // Join an in-flight recovery BEFORE opening: during the probe/delete window
-    // #database/#databasePromise are already cleared, so a fresh open here would
-    // install a connection the recovery's reset or latch then closes, leaving
-    // this caller with a closed connection. The recovery owns the connection
-    // until it settles.
+    // Join an in-flight recovery BEFORE opening: while the retry is in flight a
+    // fresh open here would race the ladder, and a close() (or latch) could then
+    // leave this caller with a connection the recovery closes. The recovery
+    // owns the connection until it settles.
     if (this.#recoveryPromise) return await this.#recoveryPromise;
     try {
       return await this.#open();
@@ -1001,7 +976,7 @@ export class MutationOutboxIndexedDB {
 
   // Starts the one recovery, or joins the one already running. The promise is
   // assigned synchronously before #runOpenRecovery's first await, so a caller
-  // that arrives during the probe/delete window joins instead of opening beside
+  // that arrives while the retry is in flight joins instead of opening beside
   // it. Cleared when it settles.
   #startRecovery(): Promise<IDBDatabase> {
     if (this.#recoveryPromise) return this.#recoveryPromise;
@@ -1014,174 +989,24 @@ export class MutationOutboxIndexedDB {
     return recovery;
   }
 
-  // The retry/reset ladder, kept out of #open so a failed reset cannot recurse
-  // into itself or split the wedged-latch invariant.
+  // The retry ladder, kept out of #open so a failed retry cannot recurse into
+  // itself or split the wedged-latch invariant.
   async #runOpenRecovery(): Promise<IDBDatabase> {
     // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
-    // watchdog and answer on the very next request. Retry once BEFORE touching
-    // durable state, because the reset below deletes the database and would lose
-    // queued intents a transient timeout preserved.
+    // watchdog and answer on the very next request. Retry once.
     try {
       return await this.#open();
     } catch (retryError) {
       if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
     }
-    // A close() between the first timeout and this retry retires the adapter: do
-    // not probe or delete a database nobody will use again.
+    // After the awaited retry, a close() that landed mid-recovery retires the
+    // adapter: propagate the closed error rather than the wedged one.
     if (this.#closed) throw new MutationStorageClosedError();
-    // Two timeouts in a row: the wedged-coordinator signature. Probe, delete,
-    // and reopen at most once, and latch wedged if that fails.
-    //
-    // The reset is destructive: it deletes the database, so queued
-    // outbox/optimistic/recovery rows are gone. A drain is impossible here - the
-    // wedged database's reads run through the same #open that never settles, so
-    // no record can be read or exported before the delete - and the user's own
-    // alternative, clearing the site's data, discards the same records. That is
-    // why the delete is reported through onStorageReset rather than hidden.
-    if (!(await this.#resetWedgedDatabase())) {
-      this.#wedge();
-      throw new MutationStorageWedgedError();
-    }
-    // The reset notice fired from the deletion's own success listener, the
-    // moment the rows were actually removed - including a deletion that lands
-    // after DELETE_WAIT_MS and after this ladder has given up.
-    try {
-      // A closed adapter throws MutationStorageClosedError here; a successful
-      // open clears the latch.
-      return await this.#open();
-    } catch (finalError) {
-      if (finalError instanceof MutationStorageTimeoutError) {
-        this.#wedge();
-        throw new MutationStorageWedgedError();
-      }
-      throw finalError;
-    }
-  }
-
-  // The reset path for a timed-out open. Probe first: if the origin's
-  // IndexedDB is generally not answering - a throwaway probe open also
-  // stalls - the wedge is not this database's alone, and deleting our own store
-  // would neither help nor be safe to attempt.
-  async #resetWedgedDatabase(): Promise<boolean> {
-    if (this.#closed) throw new MutationStorageClosedError();
-    if (!(await this.#probeIndexedDBHealthy())) return false;
-    // A close() during the probe retires the adapter: do not delete.
-    if (this.#closed) throw new MutationStorageClosedError();
-    this.#database?.close();
-    this.#database = undefined;
-    this.#databasePromise = undefined;
-    return await this.#deleteWedgedDatabase();
-  }
-
-  // Runs one IndexedDB request under a bounded wait: true on success (running
-  // onSuccess first), false on error - and on "blocked" when the caller treats
-  // a blocked request as its verdict - and false when the watchdog fires first.
-  #boundedRequest(
-    request: IDBRequest,
-    waitMs: number,
-    options: { failOnBlocked?: boolean; onSuccess?: () => void } = {},
-  ): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const done = (ok: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        resolve(ok);
-      };
-      timer = setTimeout(() => done(false), waitMs);
-      request.addEventListener(
-        "success",
-        () => {
-          options.onSuccess?.();
-          done(true);
-        },
-        { once: true },
-      );
-      request.addEventListener("error", () => done(false), { once: true });
-      if (options.failOnBlocked) request.addEventListener("blocked", () => done(false), { once: true });
-    });
-  }
-
-  #probeIndexedDBHealthy(): Promise<boolean> {
-    // ONE fixed name, not a unique one: a leftover probe from an earlier reset
-    // is then exactly the database this open reuses, so the cleanup below is
-    // idempotent instead of leaking one database per reset.
-    const probeName = `${this.#databaseName}-probe`;
-    let request: IDBOpenDBRequest;
-    try {
-      request = this.#indexedDB.open(probeName, 1);
-    } catch {
-      return Promise.resolve(false);
-    }
-    return this.#boundedRequest(request, PROBE_WAIT_MS, {
-      failOnBlocked: true,
-      onSuccess: () => {
-        try {
-          request.result.close();
-        } catch {
-          // A probe connection that cannot close is still a healthy origin.
-        }
-        // Best-effort cleanup of the throwaway probe database; its outcome
-        // never changes the verdict.
-        try {
-          const deletion = this.#indexedDB.deleteDatabase(probeName);
-          deletion.addEventListener("error", () => {}, { once: true });
-          deletion.addEventListener("blocked", () => {}, { once: true });
-        } catch {
-          // Ignore.
-        }
-      },
-    });
-  }
-
-  // The one destructive deletion, owned by the adapter so a blocked attempt
-  // awaited by a bounded wait is reused by the next attempt instead of issuing
-  // a duplicate delete (and a duplicate notice).
-  #deleteWedgedDatabase(): Promise<boolean> {
-    if (!this.#deletion) {
-      // A brand-new deletion request begins a new reset episode: clear the
-      // previous episode's notice latch so this one can report its own loss.
-      // Retries reuse an in-flight request (the branch above) and keep the
-      // latch, so one episode still fires the notice at most once - including
-      // a request whose success lands after the watchdog.
-      this.#resetNotified = false;
-      let request: IDBOpenDBRequest;
-      try {
-        request = this.#indexedDB.deleteDatabase(this.#databaseName);
-      } catch {
-        return Promise.resolve(false);
-      }
-      this.#deletion = request;
-      // The deletion is destructive even when it lands AFTER the watchdog, so
-      // the notice is attached to the request itself and fires whenever it
-      // succeeds - at most once per adapter, regardless of a later close().
-      request.addEventListener(
-        "success",
-        () => {
-          if (this.#deletion === request) this.#deletion = undefined;
-          this.#notifyResetOnce();
-        },
-        { once: true },
-      );
-      request.addEventListener(
-        "error",
-        () => {
-          if (this.#deletion === request) this.#deletion = undefined;
-        },
-        { once: true },
-      );
-    }
-    // A "blocked" deletion can still settle later, so it is not a verdict by
-    // itself; a timeout leaves #deletion set for the next attempt to reuse.
-    return this.#boundedRequest(this.#deletion, DELETE_WAIT_MS);
-  }
-
-  #notifyResetOnce(): void {
-    if (this.#resetNotified) return;
-    this.#resetNotified = true;
-    this.#notifyQuietly(() => this.#onStorageReset?.());
+    // Two timeouts in a row are the wedged-coordinator signature. Latch wedged
+    // and report the actionable error; nothing is deleted. The cooldown in
+    // #open is what lets a later call retry the ladder once the origin heals.
+    this.#wedge();
+    throw new MutationStorageWedgedError();
   }
 
   // Latch wedged and drop the connection state. The notification fires once,
