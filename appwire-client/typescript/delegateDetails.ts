@@ -132,12 +132,15 @@ export function delegatePacket(
 // The daemon's reason codes (agent/delegate_*.go, subagents.go,
 // session_budget.go) said plainly. A reason is a code; a failed run's cause
 // in words rides beside it as `error` (#3327). delegateDetails.test.ts reads
-// the Go source and fails when a code there has no words here.
+// the Go source and fails when a code there has no words here; the TUI's
+// transcript.SubagentEndingText mirrors this table, and its test holds the two
+// alike.
 const ENDING_WORDS = new Map([
+  // A journal written by an older daemon, before failures named their kind.
   ["failed", "failed"],
-  // run_error and ended_without_report are what #3327's PR C makes a failed
-  // run's reason, in place of the bare "failed".
+  // A run that failed on an error; its cause rides in `error`.
   ["run_error", "failed with an error"],
+  // A run that ended with neither an error nor a report.
   ["ended_without_report", "ended without reporting"],
   ["terminal_error", "ended with an error"],
   ["missing_terminal", "ended without reporting"],

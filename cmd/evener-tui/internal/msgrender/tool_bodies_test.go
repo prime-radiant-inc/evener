@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
@@ -234,6 +235,30 @@ func TestRenderSubagentRailShowsAFailedRunsCause(t *testing.T) {
 	}
 }
 
+// With no error, the rail says the reason code in words, never snake_case,
+// as the web and phone do (delegateEndingText).
+func TestRenderSubagentRailSaysAReasonCodeInWords(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "update lockfile", Status: "idle", Outcome: "failed", Terminal: true, Reason: "ended_without_report"},
+	}
+	out := RenderSubagentRail(runs, 80)
+	if !strings.Contains(out, "ended without reporting") || strings.Contains(out, "ended_without_report") {
+		t.Fatalf("failed row should say its reason code in words: %q", out)
+	}
+}
+
+// A long cause is cut on a character boundary, never mid-rune.
+func TestRenderSubagentRailCutsALongCauseOnARune(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "t", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: strings.Repeat("é", 40)},
+	}
+	if out := RenderSubagentRail(runs, 200); !utf8.ValidString(out) {
+		t.Fatalf("rail split a character: %q", out)
+	}
+}
+
 func TestSubagentRailClass_CommandOutcomes(t *testing.T) {
 	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
 		if got := subagentRailClass(status); got != "failed" {
@@ -285,7 +310,8 @@ func TestSubagentRailClass_Exhausted(t *testing.T) {
 		t.Fatalf("subagent body did not retain exhausted status: %q", body)
 	}
 	rail := RenderSubagentRail([]transcript.SubagentRunInfo{run}, 80)
-	if !strings.Contains(rail, "1 failed") || !strings.Contains(rail, "tool_round_budget_exhausted") {
+	// The reason code reads in words (#3327).
+	if !strings.Contains(rail, "1 failed") || !strings.Contains(rail, "ran out of tool rounds") {
 		t.Fatalf("exhausted rail did not retain terminal non-success reason: %q", rail)
 	}
 	if strings.Contains(rail, "running") || strings.Contains(rail, "1 done") {
