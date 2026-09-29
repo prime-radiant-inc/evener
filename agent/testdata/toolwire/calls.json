@@ -1,0 +1,344 @@
+{
+  "note": "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Arguments follow each tool's definition; outputs are hand-written in each tool's shape. cwd is the session directory the shell case's cd names.",
+  "cwd": "/home/jesse/git/evener",
+  "notes": {
+    "call_apply_patch": "A v4a patch updating one file and adding another.",
+    "call_edit_file": "One replacement in one file.",
+    "call_glob": "A glob match.",
+    "call_grep": "A search in a path, filtered by a glob.",
+    "call_list_dir": "A directory listing.",
+    "call_mcp": "An MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
+    "call_mcp_hyphenated": "An MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
+    "call_read_file": "A whole-file read: the line range comes from the output's line count.",
+    "call_read_file_range": "A read with an offset and a limit.",
+    "call_shell": "A command run from the session's own directory, prefixed with cd to it.",
+    "call_shell_failed": "A command that exited 1.",
+    "call_unknown": "A tool no step summary covers yet.",
+    "call_use_skill": "A skill activation.",
+    "call_web_fetch": "A fetched page: the output is the tool's JSON result, with size_bytes.",
+    "call_web_search": "A web search: one result per line.",
+    "call_write_file": "A new file written whole."
+  },
+  "items": [
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_0",
+      "turnId": "turn_1",
+      "toolName": "read_file",
+      "callId": "call_read_file",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_1",
+      "turnId": "turn_1",
+      "toolName": "read_file",
+      "callId": "call_read_file_range",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"limit\":40,\"offset\":120}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_2",
+      "turnId": "turn_1",
+      "toolName": "grep",
+      "callId": "call_grep",
+      "argumentsJson": "{\"glob_filter\":\"*.go\",\"path\":\"agent\",\"pattern\":\"func settle\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_3",
+      "turnId": "turn_1",
+      "toolName": "glob",
+      "callId": "call_glob",
+      "argumentsJson": "{\"pattern\":\"agent/**/*_test.go\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_4",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir",
+      "argumentsJson": "{\"path\":\"agent/internal\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_5",
+      "turnId": "turn_1",
+      "toolName": "edit_file",
+      "callId": "call_edit_file",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"\\tsettle()\\n\\tdrain()\\n\",\"old_string\":\"\\tdrain()\\n\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_6",
+      "turnId": "turn_1",
+      "toolName": "write_file",
+      "callId": "call_write_file",
+      "argumentsJson": "{\"content\":\"package agent\\n\",\"file_path\":\"agent/tree_order.go\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_7",
+      "turnId": "turn_1",
+      "toolName": "apply_patch",
+      "callId": "call_apply_patch",
+      "argumentsJson": "{\"patch\":\"*** Begin Patch\\n*** Update File: agent/tree.go\\n@@\\n-\\tdrain()\\n+\\tsettle()\\n+\\tdrain()\\n*** Add File: agent/tree_order.go\\n+package agent\\n*** End Patch\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_8",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell",
+      "argumentsJson": "{\"command\":\"cd /home/jesse/git/evener \\u0026\\u0026 go test ./agent/...\",\"description\":\"\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_9",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_failed",
+      "argumentsJson": "{\"command\":\"go vet ./agent/...\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_10",
+      "turnId": "turn_1",
+      "toolName": "web_fetch",
+      "callId": "call_web_fetch",
+      "argumentsJson": "{\"question\":\"What changed in the settle pass?\",\"url\":\"https://example.com/release-notes\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_11",
+      "turnId": "turn_1",
+      "toolName": "web_search",
+      "callId": "call_web_search",
+      "argumentsJson": "{\"query\":\"go race detector settle drain\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_12",
+      "turnId": "turn_1",
+      "toolName": "use_skill",
+      "callId": "call_use_skill",
+      "argumentsJson": "{\"skill_name\":\"systematic-debugging\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_13",
+      "turnId": "turn_1",
+      "toolName": "github__create_issue",
+      "callId": "call_mcp",
+      "argumentsJson": "{\"body\":\"Seen in go test -race.\",\"title\":\"Tree settle races the drain\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_14",
+      "turnId": "turn_1",
+      "toolName": "linear_app__list_issues",
+      "callId": "call_mcp_hyphenated",
+      "argumentsJson": "{\"team\":\"EVE\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_15",
+      "turnId": "turn_1",
+      "toolName": "compact_context",
+      "callId": "call_unknown",
+      "argumentsJson": "{\"note_to_self\":\"Next: run the race detector.\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_0",
+      "turnId": "turn_1",
+      "toolName": "read_file",
+      "callId": "call_read_file",
+      "output": "package agent\n\nfunc settle() {}\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_1",
+      "turnId": "turn_1",
+      "toolName": "read_file",
+      "callId": "call_read_file_range",
+      "output": "func settle() {\n}\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_2",
+      "turnId": "turn_1",
+      "toolName": "grep",
+      "callId": "call_grep",
+      "output": "agent/tree.go:12:func settle() {}\nagent/tree_test.go:40:func settleForTest() {}\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_3",
+      "turnId": "turn_1",
+      "toolName": "glob",
+      "callId": "call_glob",
+      "output": "agent/tree_test.go\nagent/drain_test.go\nagent/settle_test.go\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_4",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir",
+      "output": "tool/\nmcp/\ncontextmgr/\ndelegatestore/\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_5",
+      "turnId": "turn_1",
+      "toolName": "edit_file",
+      "callId": "call_edit_file",
+      "output": "edited agent/tree.go: 1 replacement(s)",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_6",
+      "turnId": "turn_1",
+      "toolName": "write_file",
+      "callId": "call_write_file",
+      "output": "wrote 14 bytes to agent/tree_order.go",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_7",
+      "turnId": "turn_1",
+      "toolName": "apply_patch",
+      "callId": "call_apply_patch",
+      "output": "applied patch: 2 files",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_8",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell",
+      "output": "ok  \tprimeradiant.com/evener/agent\t12.3s\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_9",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_failed",
+      "error": "agent/tree.go:14:2: unreachable code\nexit status 1\n",
+      "status": "failed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_10",
+      "turnId": "turn_1",
+      "toolName": "web_fetch",
+      "callId": "call_web_fetch",
+      "output": "{\"answer\":\"The release notes list three fixes to the tree settle pass.\",\"content_type\":\"text/html\",\"raw_file\":\"/tmp/evener/web/release-notes.html\",\"size_bytes\":48213,\"url\":\"https://example.com/release-notes\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_11",
+      "turnId": "turn_1",
+      "toolName": "web_search",
+      "callId": "call_web_search",
+      "output": "Go race detector docs https://go.dev/doc/articles/race_detector\nData races in Go https://example.com/races\n",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_12",
+      "turnId": "turn_1",
+      "toolName": "use_skill",
+      "callId": "call_use_skill",
+      "output": "# Systematic debugging\n\nFind the root cause first.",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_13",
+      "turnId": "turn_1",
+      "toolName": "github__create_issue",
+      "callId": "call_mcp",
+      "output": "{\"number\":3210,\"url\":\"https://github.com/prime-radiant-inc/evener/issues/3210\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_14",
+      "turnId": "turn_1",
+      "toolName": "linear_app__list_issues",
+      "callId": "call_mcp_hyphenated",
+      "output": "{\"issues\":[]}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_15",
+      "turnId": "turn_1",
+      "toolName": "compact_context",
+      "callId": "call_unknown",
+      "output": "compacted",
+      "status": "completed",
+      "completedAt": 1790625602000
+    }
+  ]
+}
