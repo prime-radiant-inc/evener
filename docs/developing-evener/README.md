@@ -41,6 +41,29 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
   identifiers, working in the `go.work` multi-module workspace, and running
   a fleet of agents against this repo without them stepping on each other.
 
+## Git hooks
+
+`make hooks` sets `core.hooksPath=scripts/hooks` in the clone's shared git
+config, so every worktree runs its own checkout's hooks. The one hook today is
+`scripts/hooks/pre-commit`: it formats the staged TypeScript and re-stages it,
+so formatting never reaches review as a finding.
+
+- `mobile-native/src` and `mobile/src` go through mobile-native's Biome
+  (`format --write`); `cmd/evener-hub/frontend/src` and
+  `appwire-client/typescript` go through the frontend's (`check --write` with
+  the linter off, which also organizes imports). Each runs from its own tree
+  with its own config and pinned version, never from the repo root.
+- Only staged files are touched, and a tree with nothing staged costs nothing.
+  A file with unstaged edits on top of its staged version is refused, because
+  re-staging would sweep the edits into the commit.
+- A tree whose `node_modules` has no Biome fails the commit and prints the
+  command that installs it. It never skips.
+- The hook then runs `.git/hooks/pre-commit` if you have one. `make hooks`
+  refuses to run when another `core.hooksPath` is set or another hook is
+  installed in `.git/hooks`, since either would stop running.
+
+The tests for both scripts are in `hooks_test.go` (part of `make test`).
+
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/repo.mk, then run `make generate`. -->
@@ -49,6 +72,7 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 | `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |
 | `make tools-golangci` | Install the CI-pinned golangci-lint version from .tool-versions. |
 | `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
+| `make hooks` | Install the checked-in git hooks (core.hooksPath=scripts/hooks): pre-commit formats staged TypeScript with each tree's own pinned Biome. |
 | `make refresh-model-catalog` | Replace the embedded models.dev snapshot in llm/registry/data/ with the current upstream and run the converter tests and overlay report. |
 | `make generate` | Run the appwire and maketargetsdoc `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, and the per-family make-target tables in docs/developing-evener/. |
 | `make clean` | Remove the built binaries from the repo root. |
