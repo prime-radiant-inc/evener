@@ -184,7 +184,12 @@ export function MarketplaceBrowser({
 			/>
 			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
-				<GroupFooter>No marketplaces on this hub. Add one to browse its plugins.</GroupFooter>
+				// Add marketplace is on the Marketplaces segment only.
+				<GroupFooter>
+					{segment === "marketplaces"
+						? "No marketplaces on this hub. Add one to browse its plugins."
+						: "No marketplaces on this hub. Add one on Marketplaces to browse its plugins."}
+				</GroupFooter>
 			) : null}
 			{rows.length > 0 ? (
 				<Group>
