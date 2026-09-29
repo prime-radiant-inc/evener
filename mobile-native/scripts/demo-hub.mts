@@ -237,6 +237,8 @@ export async function createDemoHub(
 			modelList: true,
 			directoryComplete: false,
 			auth: demoFleet !== null,
+			// The fleet's setup keeps the hub's transcript display defaults.
+			transcriptDisplaySettings: demoFleet !== null,
 		},
 	};
 	let turnNumber = 0;
