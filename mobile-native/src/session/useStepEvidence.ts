@@ -3,8 +3,8 @@
 // the store may rebuild a row's detail too, so the memo keys on the strings
 // themselves, never on an object. A task_list step's task list is parsed
 // afresh by each projection, so it keys the memo as its JSON.
-import type { TaskRow } from "@evener/appwire-client";
 import { useMemo } from "react";
+import type { DetailTask } from "../projectedRows";
 import { type Evidence, type EvidenceSource, stepEvidence } from "./evidence";
 
 export function useStepEvidence(step: EvidenceSource): Evidence[] {
@@ -12,7 +12,7 @@ export function useStepEvidence(step: EvidenceSource): Evidence[] {
 	const { arguments: args, output, error, exitCode, tasks } = step.detail;
 	const tasksJSON = tasks === undefined ? undefined : JSON.stringify(tasks);
 	return useMemo(() => {
-		const parsed = tasksJSON === undefined ? undefined : (JSON.parse(tasksJSON) as readonly TaskRow[]);
+		const parsed = tasksJSON === undefined ? undefined : (JSON.parse(tasksJSON) as readonly DetailTask[]);
 		return stepEvidence({ label, summaryOnly, detail: { arguments: args, output, error, exitCode, tasks: parsed } });
 	}, [label, summaryOnly, args, output, error, exitCode, tasksJSON]);
 }
