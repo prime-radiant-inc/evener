@@ -10,7 +10,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { keyboard, render, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
@@ -292,6 +292,8 @@ it("keeps one fork callback across the same re-render", async () => {
 	expect(forkOf(tree)).toBe(before);
 });
 
+afterEach(() => keyboard.reset());
+
 // The keyboard rising or falling changes only what folds or steps aside over
 // the composer (the queue, Next, the header's chips); each reads the keyboard
 // itself, so the flip never re-renders the screen or its transcript rows. A
@@ -306,5 +308,4 @@ it("re-renders no transcript row when the keyboard comes up or goes down", async
 	act(() => keyboard.hide());
 	await settle();
 	expect(rows.renders).toBe(0);
-	keyboard.reset();
 });

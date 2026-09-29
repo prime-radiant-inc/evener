@@ -10,7 +10,7 @@ import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { useKeyboardShown } from "../useKeyboardShown";
+import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -40,10 +40,8 @@ export function SessionHeader({
 	chips: readonly ContextChip[];
 	/** A downward scroll hid the chips. */
 	hidden: boolean;
-	/** Whether a keyboard up now would be the composer's: then you're typing,
-	 * and the chips and note step aside too. The header reads the keyboard
-	 * itself, so the keyboard coming and going re-renders it alone, never the
-	 * screen around it (#3247). */
+	/** Whether a keyboard up would be the composer's (useComposerTyping): then
+	 * the chips and note step aside too. */
 	composerKeyboard?: boolean;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
@@ -54,7 +52,7 @@ export function SessionHeader({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
-	const typing = useKeyboardShown() && composerKeyboard;
+	const typing = useComposerTyping(composerKeyboard);
 	// The find bar never slides away: it stays put while the list scrolls from
 	// match to match, whatever hides the chips.
 	const slidAway = (hidden || typing) && find == null;

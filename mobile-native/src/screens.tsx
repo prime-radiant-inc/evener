@@ -2470,13 +2470,10 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Whether a keyboard up now would be the composer's, which is typing: Next
-	// and the header's chips and note step aside, and the queue folds to one
-	// line, so the transcript keeps its room. A keyboard up for a dock's field
-	// or the find bar is not this: the find bar's own field raises it with the
-	// composer still mounted. Each of those reads the keyboard itself, so the
-	// keyboard coming and going never re-renders this screen or its transcript
-	// (#3247). (The header keeps the find bar in place, whatever hides the chips.)
+	// Whether a keyboard up would be the composer's (useComposerTyping). The
+	// find bar's own field raises it with the composer still mounted, so find
+	// open means it isn't. (The header keeps the find bar in place, whatever
+	// hides the chips.)
 	const composerKeyboard = composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
