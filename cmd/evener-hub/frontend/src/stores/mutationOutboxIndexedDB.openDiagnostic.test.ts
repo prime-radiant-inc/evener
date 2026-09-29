@@ -99,6 +99,29 @@ test("the open watchdog records the timeout path once", async () => {
   storage.close();
 });
 
+test("a timeout while the upgrade transaction is live records versionchangeTransaction true", async () => {
+  const indexedDB = new IDBFactory();
+  const request = upgradableRequest();
+  // The upgrade has begun - its versionchange transaction is live on the open
+  // request - but never commits: the "upgrade in progress but wedged" shape the
+  // field exists to tell apart from an open with no upgrade at all.
+  request.transaction = {} as IDBTransaction;
+  vi.spyOn(indexedDB, "open").mockImplementation(() => request as unknown as IDBOpenDBRequest);
+  const { diagnostics, report } = collect();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const storage = new MutationOutboxIndexedDB({ indexedDB, onOpenDiagnostic: report });
+  const failure = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  vi.advanceTimersByTime(10_000);
+  expect(diagnostics).toEqual([
+    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: true },
+  ]);
+  expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
+  storage.close();
+});
+
 test("an upgradeneeded for a superseded attempt records the abandoned path, and the upgrade still commits", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "evener-mutation-outbox-superseded-upgrade";
