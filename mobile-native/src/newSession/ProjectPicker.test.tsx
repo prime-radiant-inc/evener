@@ -76,3 +76,10 @@ it("browses from the chosen project's folder, or from home with none", () => {
 	act(() => pressable(none.tree, "Browse folders on paradise-park…")?.props.onPress());
 	expect(none.navigation.navigate).toHaveBeenCalledWith("Browse", { dir: "" });
 });
+
+it("says when the host's recent projects couldn't be loaded", () => {
+	const picker = mount("");
+	act(() => picker.store.setState({ projects: [], metadataError: "Couldn't load this host's recent projects." }));
+	expect(renderedText(picker.tree)).toContain("Couldn't load this host's recent projects.");
+	expect(pressable(picker.tree, "Browse folders on paradise-park…")).toBeDefined();
+});

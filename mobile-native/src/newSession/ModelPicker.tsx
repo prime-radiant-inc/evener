@@ -9,6 +9,7 @@ import { View } from "react-native";
 import { useStore } from "zustand";
 import { ChoiceRow, ModelPicker as ModelList } from "../ModelPicker";
 import { creationModel } from "../newSession";
+import { GroupFooter } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { useColors } from "../ui";
@@ -19,7 +20,8 @@ const RECENT_LIMIT = 5;
 
 export function ModelPicker({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Model">) {
 	const { store } = useNewSession();
-	const { models, recentModels, model, launchOverrides, loadingModels, submitting, selectModel } = useStore(store);
+	const { models, recentModels, model, launchOverrides, loadingModels, modelError, submitting, selectModel } =
+		useStore(store);
 	const { palette } = useColors();
 	const [query, setQuery] = useState("");
 	const chosen = creationModel(models, model, launchOverrides);
@@ -33,6 +35,7 @@ export function ModelPicker({ navigation }: NativeStackScreenProps<NewSessionRou
 			<View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
 				<SearchField label="Search models" value={query} onChangeText={setQuery} />
 			</View>
+			{modelError ? <GroupFooter tone="danger">{modelError}</GroupFooter> : null}
 			<ModelList
 				catalog={loadingModels ? null : { data: models, recent: recentModels.slice(0, RECENT_LIMIT) }}
 				loading={loadingModels}

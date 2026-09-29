@@ -3,7 +3,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { pressable, render, textOf } from "../renderNative.testkit";
+import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import { ModelPicker } from "./ModelPicker";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -108,4 +108,16 @@ it("shows quiet rows while the host's models load", () => {
 	const picker = mount({ loadingModels: true });
 	picker.store.setState({ models: [] });
 	expect(picker.tree.root.findAll((node) => node.props.testID === "model-skeleton").length).toBeGreaterThan(0);
+});
+
+it("says when the host's models couldn't be loaded, and keeps Hub default", () => {
+	const picker = mount({});
+	act(() =>
+		picker.store.setState({
+			models: [],
+			modelError: "Couldn't load this host's models. The hub's default model still works.",
+		}),
+	);
+	expect(renderedText(picker.tree)).toContain("Couldn't load this host's models. The hub's default model still works.");
+	expect(picker.titles()).toEqual(["Hub default"]);
 });

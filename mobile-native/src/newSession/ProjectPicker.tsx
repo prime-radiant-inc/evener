@@ -6,7 +6,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { View } from "react-native";
 import { useStore } from "zustand";
-import { Group, GroupedPage, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { projectName } from "./launchSetup";
@@ -14,7 +14,7 @@ import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 
 export function ProjectPicker({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Project">) {
 	const { store, hostLabel } = useNewSession();
-	const { source, cwd, projects, setCwd } = useStore(store);
+	const { source, cwd, projects, metadataError, setCwd } = useStore(store);
 	const [query, setQuery] = useState("");
 	const host = hostLabel(source);
 	const chosen = cwd.trim();
@@ -26,6 +26,7 @@ export function ProjectPicker({ navigation }: NativeStackScreenProps<NewSessionR
 			<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 				<SearchField label={`Projects on ${host}`} value={query} onChangeText={setQuery} />
 			</View>
+			{metadataError ? <GroupFooter tone="danger">{metadataError}</GroupFooter> : null}
 			{shown.length > 0 ? (
 				<>
 					<GroupLabel>{`Recent on ${host}`}</GroupLabel>
