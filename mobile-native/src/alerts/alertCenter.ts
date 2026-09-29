@@ -118,6 +118,9 @@ export class AlertCenter {
 	private releasing: unknown = null;
 	private touching = false;
 	private held: Alert[] = [];
+	/** A session you started that waited out a hold behind sessions needing
+	 * you: it shows once their banner goes, so it's never lost. */
+	private afterBanner: Alert | null = null;
 	private recent: string[] = [];
 	private holds = new Map<symbol, HoldKind>();
 	private screen: AlertScreen = { kind: "other" };
@@ -209,7 +212,7 @@ export class AlertCenter {
 	dismiss(): void {
 		if (this.banner === null) return;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 	}
 
 	/** Tapped: the banner goes, and the caller opens where it points. */
@@ -217,7 +220,7 @@ export class AlertCenter {
 		const banner = this.banner;
 		if (banner === null) return null;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
 		return only.kind === "notice"
@@ -240,6 +243,7 @@ export class AlertCenter {
 		this.stopBanner();
 		this.cancelRelease();
 		this.held = [];
+		this.afterBanner = null;
 		this.recent = [];
 		this.screen = { kind: "other" };
 		this.publish();
@@ -252,8 +256,11 @@ export class AlertCenter {
 		const held = this.held.filter((alert) => !about(alert));
 		const shown = this.banner?.alerts ?? [];
 		const kept = shown.filter((alert) => !about(alert));
-		if (held.length === this.held.length && kept.length === shown.length) return false;
+		const afterBanner = this.afterBanner !== null && about(this.afterBanner) ? null : this.afterBanner;
+		if (held.length === this.held.length && kept.length === shown.length && afterBanner === this.afterBanner)
+			return false;
 		this.held = held;
+		this.afterBanner = afterBanner;
 		if (this.banner !== null) {
 			if (kept.length === 0) this.stopBanner();
 			else this.banner = { id: this.banner.id, alerts: kept };
@@ -313,17 +320,25 @@ export class AlertCenter {
 		const current = this.banner;
 		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
+		const latest = [...waiting].reverse();
+		const started = latest.find((alert) => alert.kind === "started");
 		if (sessions.length === 0) {
 			// A held notice, or a session you started, shows only when no session
 			// waits, a banner still up included, and then only the latest, the
 			// started session first; the Board lists both either way (the
 			// prototype's releaseHeld).
-			const latest = [...waiting].reverse();
-			const next = latest.find((alert) => alert.kind === "started") ?? latest.find((alert) => alert.kind === "notice");
-			if (next === undefined || showing.length > 0) this.publish();
-			else this.show(next);
+			const next = started ?? latest.find((alert) => alert.kind === "notice");
+			if (next !== undefined && showing.length === 0) {
+				this.show(next);
+				return;
+			}
+			if (started !== undefined) this.afterBanner = started;
+			this.publish();
 			return;
 		}
+		// Sessions that need you come first; a session you started follows
+		// their banner rather than being lost.
+		if (started !== undefined) this.afterBanner = started;
 		// Held banners show when you leave, combined (spec 13.3). A banner about
 		// sessions that need you that is still up takes them in, as a burst
 		// does, so nothing on it drops out.
@@ -370,7 +385,24 @@ export class AlertCenter {
 			return;
 		}
 		this.banner = null;
-		this.publish();
+		this.showAfterBanner();
+	}
+
+	/** A banner went: a session you started that waited behind it shows now,
+	 * unless a hold began meanwhile (it then waits out that hold). */
+	private showAfterBanner(): void {
+		const next = this.afterBanner;
+		this.afterBanner = null;
+		if (next === null || !this.wanted(next)) {
+			this.publish();
+			return;
+		}
+		if (this.holding()) {
+			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(next)), next];
+			this.publish();
+			return;
+		}
+		this.show(next);
 	}
 
 	private stopBanner(): void {

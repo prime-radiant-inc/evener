@@ -173,6 +173,34 @@ describe("what alerts at all", () => {
 		expect(shown(alerts)).toEqual(["a"]);
 	});
 
+	it.each(["expires", "is swiped away"] as const)(
+		"shows a started session that waited with a session needing you once that banner %s",
+		(end) => {
+			const { alerts } = center();
+			const release = alerts.hold("quiet");
+			alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+			alerts.offer(session("q"));
+			release();
+			vi.advanceTimersByTime(RELEASE_MS);
+			expect(shown(alerts)).toEqual(["q"]);
+			if (end === "expires") vi.advanceTimersByTime(BANNER_MS);
+			else alerts.dismiss();
+			expect(shown(alerts)).toEqual(["s"]);
+		},
+	);
+
+	it("drops a started session that waited once you look at it", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		alerts.setScreen({ kind: "session", ref: "s" });
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(alerts.getSnapshot().banner).toBeNull();
+	});
+
 	it("shows a waiting started session before a waiting notice", () => {
 		const { alerts } = center();
 		const release = alerts.hold("covered");
