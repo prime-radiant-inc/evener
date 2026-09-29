@@ -9,7 +9,7 @@ vi.mock("react-native", async () => ({
 
 it("names its action for VoiceOver in the accent ink, semibold when it finishes the page", () => {
 	const onPress = vi.fn();
-	const tree = render(<HeaderButton label="Save" emphasized onPress={onPress} />);
+	const tree = render(<HeaderButton label="Save" strong onPress={onPress} />);
 	const button = tree.root.findByProps({ accessibilityRole: "button" });
 	expect(button.props.accessibilityLabel).toBe("Save");
 	expect(tree.root.findByType("Text" as never).props.style).toMatchObject({

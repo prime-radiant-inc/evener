@@ -78,7 +78,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					initialParams={{ hubId }}
 					options={{
 						title: activeProfile.name,
-						headerRight: () => <HeaderButton label="Done" emphasized onPress={close} />,
+						headerRight: () => <HeaderButton label="Done" strong onPress={close} />,
 					}}
 				/>
 				<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />

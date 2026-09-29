@@ -1,20 +1,23 @@
-// A sheet's header action (Done, Cancel, Save): accent ink, semibold for the
-// action that finishes the page, dimmed and inert while it can't run.
-import { Pressable, Text } from "react-native";
-import { useColors } from "../ui";
+// A sheet's header action (Done, Cancel, Save): accent ink, semibold when it
+// finishes the page, a 44pt target that dims while pressed or while it can't
+// run, following Dynamic Type on iOS.
+import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
+import { allowFontScaling, useColors } from "../ui";
 
 export function HeaderButton({
 	label,
-	onPress,
-	emphasized = false,
+	strong = false,
 	disabled = false,
+	onPress,
 }: {
 	label: string;
-	onPress(): void;
-	emphasized?: boolean;
+	strong?: boolean;
 	disabled?: boolean;
+	onPress(): void;
 }) {
 	const { palette } = useColors();
+	const { fontScale } = useWindowDimensions();
+	const scale = Platform.OS === "ios" ? fontScale : 1;
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -23,13 +26,21 @@ export function HeaderButton({
 			disabled={disabled}
 			hitSlop={8}
 			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				minWidth: 44,
+				justifyContent: "center",
+				paddingHorizontal: 8,
+				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+			})}
 		>
 			<Text
+				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.accentInk,
-					fontSize: 17,
-					fontWeight: emphasized ? "600" : "400",
-					opacity: disabled ? 0.4 : 1,
+					fontSize: 17 * scale,
+					lineHeight: 24 * scale,
+					fontWeight: strong ? "600" : "400",
 				}}
 			>
 				{label}
