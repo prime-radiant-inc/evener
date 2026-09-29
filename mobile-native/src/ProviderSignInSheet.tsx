@@ -6,7 +6,8 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, AppState, Modal, Pressable, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, Text, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { fonts } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
@@ -112,7 +113,7 @@ export function ProviderSignInSheet({
 		</Text>
 	);
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
 			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
 				<Header title={`Sign in to ${name}`} close={authorized ? "Done" : "Cancel"} onClose={onClose} />
 				<SheetStatus />
@@ -274,7 +275,7 @@ export function ProviderSignInSheet({
 					{localError ? <GroupFooter tone="danger">{localError}</GroupFooter> : null}
 				</GroupedPage>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
 

@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { addEnvironmentVariable, assertEnvironmentCurrent, collectEnvironment } from "./launchEnvironment";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -36,7 +37,7 @@ export function LaunchEnvironmentEditor({
 		}
 	}
 	return (
-		<Modal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
+		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<Action onPress={close}>Cancel</Action>
@@ -134,6 +135,6 @@ export function LaunchEnvironmentEditor({
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

@@ -62,6 +62,8 @@ const navigationState = vi.hoisted(() => ({
 }));
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// Who alerted you most recently, and Next's word that it moved you on.
+const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -164,6 +166,11 @@ vi.mock("expo-secure-store", () => ({
 }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
+}));
+vi.mock("./alerts/alertsContext", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./alerts/alertsContext")>()),
+	useAlertedRecently: () => alerts.recent,
+	useNextUsed: () => alerts.nextUsed,
 }));
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
@@ -2071,6 +2078,8 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		vi.mocked(navigation.replace).mockClear();
 		vi.mocked(navigation.goBack).mockClear();
 		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		alerts.recent = [];
+		alerts.nextUsed.mockClear();
 	});
 
 	/** The Back the screen set last, rendered as the header renders it. */
@@ -2150,6 +2159,31 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		});
 		act(() => choose(2));
 		expect(navigation.push).toHaveBeenCalledTimes(1);
+	});
+
+	it("serves what alerted you first, on Next and on its list, and tells alerts it moved you on (spec 8.3)", async () => {
+		alerts.recent = ["local:ask"];
+		const { tree } = await mount(thread("ref-alerted", "idle"));
+		const next = pressable(tree, "Next, Pick a name");
+		if (!next) throw new Error("no Next capsule for the session that alerted");
+		act(() => next.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Pick a name", "Fix retry loop", "Cancel"]);
+		act(() => choose(2));
+		expect(alerts.nextUsed).not.toHaveBeenCalled();
+		act(() => choose(1));
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(1);
+		await act(async () => next.props.onPress());
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(2);
+		expect(navigation.push).toHaveBeenLastCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
 	});
 
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {

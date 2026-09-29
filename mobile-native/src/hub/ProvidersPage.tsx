@@ -7,7 +7,8 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from "react-native";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
@@ -487,7 +488,7 @@ function Providers({
 					</>
 				) : null}
 			</GroupedPage>
-			<Modal
+			<HoldingModal
 				visible={!!instance || configuration === "create"}
 				animationType="slide"
 				presentationStyle="pageSheet"
@@ -751,7 +752,7 @@ function Providers({
 						)}
 					</GroupedPage>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }
