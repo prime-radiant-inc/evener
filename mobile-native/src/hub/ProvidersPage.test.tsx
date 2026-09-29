@@ -1293,7 +1293,7 @@ it("replaces a key in place, saving it against the endpoint the row was read fro
 	expect(input.props.placeholder).toBe("Paste the API key");
 	expect(input.props.secureTextEntry).toBe(true);
 	act(() => input.props.onChangeText(" sk-fixture "));
-	press(tree, (label) => label === "Save key");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 	const save = fake.calls.find((call) => call.method === "evener/auth/apiKey/set");
@@ -1374,7 +1374,8 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 	expect(hasControl(tree, "API key")).toBe(false);
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	// A swipe on the key's own sheet (the innermost modal) asks.
+	act(() => tree.root.findAllByType("Modal" as never).at(-1)?.props.onRequestClose());
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	choose("Keep editing");
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
@@ -1407,11 +1408,12 @@ it("holds a swipe down while a pasted key is being saved, without asking", async
 	await openWork(tree);
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	press(tree, (label) => label === "Save key");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	// The key's own sheet takes the swipe; it stays while its save runs.
+	act(() => tree.root.findAllByType("Modal" as never).at(-1)?.props.onRequestClose());
 	expect(alertRequests).toHaveLength(0);
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 });
 
 it("closes the editor without asking once its save lands", async () => {
@@ -1540,4 +1542,66 @@ it("calls a shadowed environment variable what it is, never a stored credential"
 	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
 	expect(hasControl(tree, shadowed)).toBe(true);
 	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
+});
+
+async function openDetailOf(tree: ReactTestRenderer, name: string) {
+	press(tree, (label) => label.startsWith(`${name},`));
+	await act(async () => {});
+}
+
+it("pastes a key in its own sheet: the action as its title, Cancel and Save, and where the key is kept", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => ({ provider: "work", activeSource: "store" }) as never);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetailOf(tree, "work");
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	press(tree, (label) => label === "Replace key");
+	const modals = tree.root.findAllByType("Modal" as never);
+	expect(modals).toHaveLength(2);
+	const sheet = modals[1];
+	if (!sheet) throw new Error("no key sheet");
+	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Replace key");
+	expect(subtreeText(sheet)).toContain("The key is stored on the hub, not on this phone.");
+	const save = () => sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save" });
+	expect(save().props.disabled).toBe(true);
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	expect(save().props.disabled).toBe(false);
+	await act(async () => {
+		save().props.onPress();
+	});
+	await act(async () => {});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(fake.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true);
+});
+
+it("says why a key didn't save in its own sheet, which stays open with the key", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => {
+		throw new Error("provider said no");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetailOf(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no key sheet");
+	expect(subtreeText(sheet)).toContain("The hub didn't confirm the credential was saved.");
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+});
+
+it("titles a Google provider's paste sheet for its credential JSON", async () => {
+	providersHub([instance({ auth: "gcp-adc", authModes: ["credentialJson"], hasStoredFile: false })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetailOf(tree, "work");
+	press(tree, (label) => label === "Set credential JSON");
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no credential sheet");
+	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Set credential JSON");
+	expect(control(tree, "Google credential JSON").props.multiline).toBe(true);
 });

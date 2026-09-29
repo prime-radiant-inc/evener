@@ -35,13 +35,14 @@ import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
+import { CredentialPasteSheet } from "./CredentialPasteSheet";
 import { useAuthStatuses } from "./useAuthStatuses";
 import {
 	appliedButFailed,
@@ -278,6 +279,27 @@ function Providers({
 			fingerprint: target.endpointFingerprint,
 		});
 		setKey("");
+	}
+	function saveCredential() {
+		if (!instance || !editingCredential) return;
+		// A destination the hub cannot fingerprint has no endpoint to assert, so
+		// the save is refused here rather than stored without an assertion; and
+		// the clear happens on act()'s own success path, never here - clearing
+		// before knowing whether the request could even be sent would lose input
+		// act() is about to refuse to send.
+		if (fingerprintUnavailable(instance)) {
+			setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
+			return;
+		}
+		const value = key.trim();
+		const name = instance.name;
+		void act(
+			() =>
+				editingCredential === "credentialJson"
+					? surface.setCredentialJson(name, value, credentialTarget?.fingerprint)
+					: surface.setApiKey(name, value, credentialTarget?.fingerprint),
+			{ secret: true, endpointAsserted: true },
+		);
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
 	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
@@ -532,70 +554,8 @@ function Providers({
 							{instance ? (
 								<>
 									<ProviderFacts instance={instance} auth={auth} />
-									{editingCredential ? (
-										<>
-											<Group>
-												<TextFieldRow
-													label={editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}
-													placeholder={
-														editingCredential === "credentialJson" ? "Paste the credential JSON" : "Paste the API key"
-													}
-													multiline={editingCredential === "credentialJson"}
-													secure={editingCredential === "apiKey"}
-													value={key}
-													onChangeText={setKey}
-													disabled={surface.busy}
-												/>
-												<Row
-													label="Save"
-													accessibilityLabel={
-														editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"
-													}
-													tone="accent"
-													disabled={surface.busy || stale || !key.trim() || !ready}
-													onPress={() => {
-														// A destination the hub cannot fingerprint has no
-														// endpoint to assert, so the save is refused here
-														// rather than stored without an assertion; and the
-														// clear happens on act()'s own success path
-														// (below), never here - clearing before knowing
-														// whether the request could even be sent would
-														// lose input act() is about to refuse to send.
-														if (fingerprintUnavailable(instance)) {
-															setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
-															return;
-														}
-														const value = key.trim();
-														void act(
-															() =>
-																editingCredential === "credentialJson"
-																	? surface.setCredentialJson(instance.name, value, credentialTarget?.fingerprint)
-																	: surface.setApiKey(instance.name, value, credentialTarget?.fingerprint),
-															{ secret: true, endpointAsserted: true },
-														);
-													}}
-												/>
-												<Row
-													label="Cancel"
-													tone="accent"
-													disabled={surface.busy}
-													onPress={() => {
-														leaveKey(() => {
-															setEditingCredential(null);
-															setKey("");
-														});
-													}}
-												/>
-											</Group>
-											<GroupFooter>
-												{editingCredential === "credentialJson"
-													? "Paste a service-account key or application_default_credentials.json. The hub validates and stores it."
-													: "The key is stored on the hub, not on this phone."}
-											</GroupFooter>
-										</>
-									) : (
-										<>
-											<Group>
+									<>
+										<Group>
 												{instance.authModes?.includes("oauth") && (
 													<Row
 														label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
@@ -647,12 +607,10 @@ function Providers({
 													<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
 												)
 											) : null}
-										</>
-									)}
+									</>
 									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
 									{surface.busy && <Spinner label="Updating provider" />}
-									{editingCredential ? null : (
 										<>
 											<Group label="Manage">
 												<Row
@@ -733,7 +691,24 @@ function Providers({
 												)}
 											</Group>
 										</>
-									)}
+									{editingCredential ? (
+										<CredentialPasteSheet
+											title={credentialTitle(editingCredential, instance)}
+											kind={editingCredential}
+											value={key}
+											onChangeText={setKey}
+											busy={surface.busy}
+											canSave={!stale && !!key.trim() && ready}
+											error={actionError}
+											onSave={saveCredential}
+											onCancel={() =>
+												leaveKey(() => {
+													setEditingCredential(null);
+													setKey("");
+												})
+											}
+										/>
+									) : null}
 								</>
 							) : null}
 						</GroupedPage>
@@ -807,4 +782,10 @@ function ProviderFacts({
 			)}
 		</>
 	);
+}
+
+/** The paste sheet's title: the action that opened it. */
+function credentialTitle(kind: "apiKey" | "credentialJson", instance: InstanceEntry): string {
+	if (kind === "credentialJson") return instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON";
+	return instance.hasStoredFile ? "Replace key" : "Set key";
 }
