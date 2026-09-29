@@ -42,6 +42,34 @@ it("tells its listeners once per real change", () => {
 	expect(heard).toBe(1);
 });
 
+it("stores a choice again when the same choice is made after its store failed", () => {
+	const values = new Map<string, string>();
+	let full = true;
+	const prefs = new DisplayPreferences({
+		getItemSync: (key) => values.get(key) ?? null,
+		setItemSync: (key, value) => {
+			if (full) throw new Error("disk full");
+			values.set(key, value);
+		},
+	});
+	expect(() => prefs.set({ appearance: "dark" })).toThrow("disk full");
+	full = false;
+	prefs.set({ appearance: "dark" });
+	expect(JSON.parse(values.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ appearance: "dark" });
+});
+
+it("stores a choice again when a listener threw before the store", () => {
+	const storage = memory();
+	const prefs = new DisplayPreferences(storage);
+	const stop = prefs.subscribe(() => {
+		throw new Error("listener failed");
+	});
+	expect(() => prefs.set({ readingFont: "sans" })).toThrow("listener failed");
+	stop();
+	prefs.set({ readingFont: "sans" });
+	expect(JSON.parse(storage.values.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ readingFont: "sans" });
+});
+
 it("maps each appearance to React Native's override", () => {
 	expect((["system", "light", "dark"] as const).map(colorSchemeFor)).toEqual(["unspecified", "light", "dark"]);
 });

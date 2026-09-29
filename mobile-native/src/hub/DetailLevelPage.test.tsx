@@ -324,10 +324,52 @@ it("says a choice hasn't reached the hub while the phone holds it unsaved, and s
 it.each([
 	["the phone is away from the hub", {}, false],
 	["the hub's setting is loading", { loading: true }, true],
-	["the phone can't keep a change", { storageUnavailable: true }, true],
 ])("holds Save it while %s", (_name, over, connected) => {
 	const { button } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, ...over }), connected);
 	expect(button("Save it")?.props.accessibilityState.disabled).toBe(true);
+});
+
+it("says only that the phone couldn't update its copy after the hub confirmed the save", () => {
+	// A confirmed save whose local cleanup failed keeps the draft.
+	const { tree, button } = mount(
+		transcript({
+			draft: { revision: 3, config: CUSTOM },
+			storageUnavailable: true,
+			error: "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.",
+		}),
+	);
+	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
+	expect(renderedText(tree)).not.toContain("This change hasn't reached the hub yet.");
+	expect(button("Save it")).toBeNull();
+});
+
+it.each([
+	["Keep mine", "rebaseTranscriptDraft", transcript({ conflict: true, draft: { revision: 2, config: CUSTOM } })],
+	[
+		"Discard it",
+		"discardTranscriptDraft",
+		transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }),
+	],
+] as const)("says %s didn't go through when the phone or hub refuses it", async (label, method, state) => {
+	const { tree, fake, press } = mount(state);
+	fake[method].mockRejectedValueOnce(new Error("refused"));
+	await press(label);
+	expect(renderedText(tree)).toContain("That didn't go through. Try it again.");
+});
+
+it("leaves a refused conflict action to the storage footer when the phone can't keep a change", async () => {
+	const { tree, fake, press } = mount(
+		transcript({
+			conflict: true,
+			draft: { revision: 2, config: CUSTOM },
+			storageUnavailable: true,
+			error: "Could not save the transcript draft locally.",
+		}),
+	);
+	fake.rebaseTranscriptDraft.mockRejectedValueOnce(new Error("refused"));
+	await press("Keep mine");
+	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
+	expect(renderedText(tree)).not.toContain("That didn't go through.");
 });
 
 it("offers no Save it while the hub's setting is being checked or a conflict needs resolving", () => {
