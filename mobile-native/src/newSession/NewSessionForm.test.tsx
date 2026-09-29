@@ -1008,3 +1008,28 @@ it("says a changed draft's failed start couldn't start, not that it may have (#3
 		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
 	]);
 });
+
+it("opens Start again, the draft intact, after a hub switch cut off a start the hub never got (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["superpowers"] } },
+		holdPreview: true,
+	});
+	await debounce();
+	await act(async () => void form.header("headerRight").props.onPress());
+	expect(form.header("headerRight").props).toMatchObject({ label: "Starting…", disabled: true });
+	// Another hub is selected while the plugin check is out, then this one again.
+	await act(async () => form.alerts.reset());
+	await form.setReady(false);
+	await form.setReady(true);
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.header("headerRight").props).toMatchObject({ label: "Start", disabled: false });
+	expect(form.prompt().props.value).toBe("go");
+	expect(form.store.getState()).toMatchObject({
+		error: null,
+		launchOverrides: { enabledPlugins: ["superpowers"] },
+	});
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: false });
+	expect(form.alerts.getSnapshot().banner).toBeNull();
+	form.dispose();
+});

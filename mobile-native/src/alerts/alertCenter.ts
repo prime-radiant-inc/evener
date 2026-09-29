@@ -162,6 +162,9 @@ export class AlertCenter {
 	 * you, oldest first, and a held notice that came with them: each shows in
 	 * turn once the banner ahead of it goes, so none is lost. */
 	private afterBanner: Alert[] = [];
+	/** Alerts that have buzzed once: one shown again (a failed start a hub
+	 * switch keeps) doesn't buzz again. */
+	private buzzed = new WeakSet<Alert>();
 	private recent: string[] = [];
 	private holds = new Map<symbol, HoldKind>();
 	private screen: AlertScreen = { kind: "other" };
@@ -374,7 +377,10 @@ export class AlertCenter {
 			};
 		} else {
 			this.replaceBanner([alert]);
-			if (!quiet(alert)) this.buzz(alert.kind === "failed" || alert.kind === "startFailed" ? "warning" : "light");
+			if (!quiet(alert) && !this.buzzed.has(alert)) {
+				this.buzzed.add(alert);
+				this.buzz(alert.kind === "failed" || alert.kind === "startFailed" ? "warning" : "light");
+			}
 		}
 		this.shownAt = now;
 		this.armExpiry();

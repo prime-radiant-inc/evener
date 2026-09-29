@@ -708,3 +708,14 @@ describe("a New session start that failed after its sheet closed (#3104)", () =>
 		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
 	});
 });
+
+it("buzzes a failed start once, not again when a hub switch shows it again (#3104)", () => {
+	const { alerts, haptics } = center();
+	alerts.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false });
+	expect(haptics).toEqual(["warning"]);
+	alerts.reset();
+	expect(alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
+	]);
+	expect(haptics).toEqual(["warning"]);
+});
