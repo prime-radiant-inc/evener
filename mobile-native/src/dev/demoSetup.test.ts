@@ -217,6 +217,36 @@ describe("transcript display", () => {
 	});
 });
 
+describe("device sign-in", () => {
+	it("starts a device flow for a Codex provider, as app_auth.go's DeviceStart answers", () => {
+		const started = setup().answer("evener/auth/device/start", { provider: "codex-jesse-fsck.com" });
+		expect(started).toEqual({
+			provider: "codex-jesse-fsck.com",
+			flowId: expect.any(String),
+			userCode: "WDJB-MJHT",
+			verificationUrl: "https://example.com/device",
+			intervalSeconds: 5,
+		});
+	});
+
+	it("keeps a started flow pending, and calls one it never started expired", () => {
+		const demo = setup();
+		const { flowId } = demo.answer("evener/auth/device/start", { provider: "codex-jesse-fsck.com" });
+		expect(demo.answer("evener/auth/device/poll", { provider: "codex-jesse-fsck.com", flowId })).toEqual({
+			state: "pending",
+		});
+		expect(demo.answer("evener/auth/device/poll", { provider: "codex-jesse-fsck.com", flowId: "nope" })).toEqual({
+			state: "expired",
+		});
+	});
+
+	it("refuses a provider that doesn't sign in with an account, as requiresCodex does", () => {
+		expect(() => setup().answer("evener/auth/device/start", { provider: "lunaroute" })).toThrow(
+			'OAuth is not supported for instance "lunaroute"',
+		);
+	});
+});
+
 describe("models", () => {
 	it("carries fifteen models and three recent ones", () => {
 		const models = setup().answer("model/list", {});
