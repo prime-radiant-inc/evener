@@ -10,7 +10,13 @@
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
 
-import { formatClockTime, formatElapsed, scopedDisclosureId, splitMandate } from "@evener/appwire-client";
+import {
+  delegateEndingText,
+  formatClockTime,
+  formatElapsed,
+  scopedDisclosureId,
+  splitMandate,
+} from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
@@ -298,6 +304,8 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   const envRows = environmentRows(state);
   const tools = state.tools ?? [];
   const transcriptRef = state.transcript_ref;
+  // The last run's reason is a code; say it in words (#3327).
+  const lastEnding = delegateEndingText({ outcome: state.last_outcome?.status, reason: state.last_outcome?.reason });
   // Copy the structured state, not item.output: the output text may carry
   // breaker/annotation text appended after the JSON, so re-serializing the
   // validated state gives the reader valid JSON on paste.
@@ -353,7 +361,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
       )}
       {state.last_outcome?.reason && isExhausted(state.last_outcome.status) && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-          <div className={CLASS.diagnosticBody}>Last run exhausted: {state.last_outcome.reason}</div>
+          <div className={CLASS.diagnosticBody}>Last run exhausted: {lastEnding}</div>
         </div>
       )}
       {state.last_outcome?.reason &&
@@ -361,14 +369,14 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
         classifyJobStatus(state.last_outcome.status) === "failed" && (
           <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
             <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
-              Last run failed: {state.last_outcome.reason}
+              Last run failed: {lastEnding}
             </div>
           </div>
         )}
       {state.last_outcome?.reason && classifyJobStatus(state.last_outcome.status) === "stopped" && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
           <div className={CLASS.diagnosticBody}>
-            Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {state.last_outcome.reason}
+            Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {lastEnding}
           </div>
         </div>
       )}

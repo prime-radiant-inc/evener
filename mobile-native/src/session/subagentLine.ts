@@ -2,7 +2,7 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import { delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
+import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, subagentState } from "../subagents/subagentModel";
 import { hubTime } from "../board/attention";
 import type { TimelineRow } from "../timeline";
@@ -72,7 +72,8 @@ export function subagentLine(
 	const stateText = since === undefined ? state : `${state} · ${compactDuration(since)}`;
 	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef, delegateId: delegate.delegateId };
 	if (state === "failed") {
-		if (delegate.reason) line.activity = delegate.reason;
+		const ending = delegateEndingText(delegate);
+		if (ending) line.activity = ending;
 	} else if (state === "done" || state === "stopped") {
 		// What the roster knows. The report itself is only in the coordinator's
 		// tree (thread/read's roster drops it), which the row reads when it can.

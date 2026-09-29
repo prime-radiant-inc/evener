@@ -2,7 +2,9 @@
 
 import { expect, test } from "vitest";
 import type { ActivityDelegate } from "./activityData";
-import { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+import { parseActivityTree } from "./activityData";
+import { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+import { subagentOutcomesResponse } from "./testing/subagentWireFixtures";
 
 function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
   return {
@@ -195,4 +197,41 @@ test("omits packets that JSON cannot serialize", () => {
   const circular: Record<string, unknown> = {};
   circular.self = circular;
   expect(delegatePacket(circular)).toBeUndefined();
+});
+
+// How a subagent's run ended, in words (#3327): the hub's error when it sent
+// one, else the reason code said plainly. A snake_case code never shows.
+test("says a failed run's cause as the hub recorded it", () => {
+  const tree = parseActivityTree(subagentOutcomesResponse().data);
+  const failed = tree?.root.entries.find((entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_failed");
+  if (failed?.kind !== "delegate") throw new Error("no failed delegate in the corpus");
+  expect(failed.delegate.reason).toBe("failed");
+  expect(delegateEndingText(failed.delegate)).toBe("provider returned 500");
+});
+
+test.each([
+  ["failed", "failed", "failed"],
+  ["failed", "run_error", "failed with an error"],
+  ["failed", "ended_without_report", "ended without reporting"],
+  ["failed", "terminal_error", "ended with an error"],
+  ["failed", "missing_terminal", "ended without reporting"],
+  ["failed", "runtime_lost", "runtime lost"],
+  ["failed", "input_persist_failed", "couldn't save its input"],
+  ["cancelled", "cancelled", "cancelled"],
+  ["stopped", "stopped_by_parent", "stopped by its coordinator"],
+  ["exhausted", "tool_round_budget_exhausted", "ran out of tool rounds"],
+  ["exhausted", "turn_budget_exhausted", "ran out of turns"],
+])("says %s's reason %s as %j", (outcome, reason, words) => {
+  expect(delegateEndingText({ outcome, reason })).toBe(words);
+});
+
+test("never shows a code it doesn't know, but keeps a reason already in words", () => {
+  expect(delegateEndingText({ outcome: "failed", reason: "quota_window_closed" })).toBe("failed");
+  expect(delegateEndingText({ outcome: "stopped", reason: "parent_went_away" })).toBe("stopped");
+  expect(delegateEndingText({ outcome: "failed", reason: "model refused the task" })).toBe("model refused the task");
+});
+
+test("says nothing for a run that ended well", () => {
+  expect(delegateEndingText({ outcome: "completed" })).toBeUndefined();
+  expect(delegateEndingText({})).toBeUndefined();
 });

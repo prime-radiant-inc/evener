@@ -8,6 +8,7 @@ import {
 	type ActivityDelegate,
 	type ActivitySessionNode,
 	type ActivityTree,
+	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
 	delegateTiming,
@@ -255,7 +256,7 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const delegate = row.delegate;
-	if (row.state === "failed") return { word: "Failed", text: firstLine(delegate.reason ?? "", 120) };
+	if (row.state === "failed") return { word: "Failed", text: firstLine(delegateEndingText(delegate) ?? "", 120) };
 	if (row.state === "done") {
 		if (row.stopped) return { text: "Stopped" };
 		const report = typeof delegate.message === "string" ? firstLine(plainQuoteLine(delegate.message), 120) : "";

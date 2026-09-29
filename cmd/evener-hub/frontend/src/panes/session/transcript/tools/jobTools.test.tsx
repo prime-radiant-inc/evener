@@ -384,6 +384,19 @@ test("job_status: body renders failed outcome reason in danger text", () => {
   expect(screen.getByText(/Last run failed: exec: command not found/)).toBeTruthy();
 });
 
+// A reason is a code; the card says it in words, never as snake_case (#3327).
+test.each([
+  ["failed", "runtime_lost", /Last run failed: runtime lost/],
+  ["exhausted", "tool_round_budget_exhausted", /Last run exhausted: ran out of tool rounds/],
+])("job_status: body says a %s outcome's code %s in words", (status, reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ status: "idle", last_outcome: { status, reason } });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
 test("job_status: body renders exhausted outcome reason without danger text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
@@ -409,7 +422,8 @@ test("job_status: body renders stopped outcome reason without danger text", () =
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   const diag = screen.getByTestId("delegate-outcome-reason");
   expect(diag).toBeTruthy();
-  expect(screen.getByText(/Last run stopped: stopped_by_parent/)).toBeTruthy();
+  // The reason is a code; the card says it in words (#3327).
+  expect(screen.getByText(/Last run stopped: stopped by its coordinator/)).toBeTruthy();
   expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
 });
 

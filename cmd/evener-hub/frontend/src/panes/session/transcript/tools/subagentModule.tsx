@@ -5,6 +5,7 @@
 
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import {
+  delegateEndingText,
   delegateTiming,
   formatElapsed,
   type ItemModel,
@@ -229,7 +230,8 @@ function SubagentCard({
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
-  const reason = stable ? stable.reason : row.resultPreview;
+  // A stable delegate's reason is a code; its ending in words (#3327).
+  const reason = stable ? delegateEndingText(stable) : row.resultPreview;
   // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));

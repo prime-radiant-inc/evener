@@ -239,6 +239,17 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		expect(subagentWhy(rowOf(failed("f")), NOW)).toEqual({ word: "Failed", text: "" });
 	});
 
+	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
+	it("names a failure by its cause, else its reason code in words", () => {
+		expect(
+			subagentWhy(rowOf(failed("f", { reason: "failed", error: "provider returned 500" })), NOW),
+		).toEqual({ word: "Failed", text: "provider returned 500" });
+		expect(subagentWhy(rowOf(failed("f", { reason: "runtime_lost" })), NOW)).toEqual({
+			word: "Failed",
+			text: "runtime lost",
+		});
+	});
+
 	it("opens a finished report, and says Stopped or Finished when there's nothing to quote", () => {
 		expect(subagentWhy(rowOf(done("d", { message: "## Report\n**Tests pass** on both platforms." })), NOW)).toEqual({
 			text: "Tests pass on both platforms.",

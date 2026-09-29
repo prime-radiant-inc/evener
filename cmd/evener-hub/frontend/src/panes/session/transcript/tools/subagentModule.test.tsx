@@ -269,6 +269,25 @@ test("a failed card carries the danger rail itself - there is no module chrome t
   expect(within(row).getByTestId("subagent-quote").textContent).toBe("✕ build error");
 });
 
+// The hub's reason is a code; a failed card leads with the run's cause, else
+// the code in words (#3327).
+test.each([
+  ["failed", { error: "provider returned 500" }, "✕ provider returned 500"],
+  ["runtime_lost", {}, "✕ runtime lost"],
+])("a failed card with reason %s says the ending in words", (reason, overrides, quote) => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail",
+    callId: "call_fail",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason }),
+  });
+  seedCurrentDelegate("ref_current", "job_f", "failed", reason, overrides);
+  render(<Body item={failed} live={false} sessionRef="ref_current" />);
+  expect(within(screen.getByTestId("subagent-row")).getByTestId("subagent-quote").textContent).toBe(quote);
+});
+
 // 3zf8: a child deliberately killed with job_stop (or reconciled to
 // stopped/runtime_lost after a hub restart - agent/internal/jobstore/
 // reconcile.go) must never render byte-identical to one that finished its

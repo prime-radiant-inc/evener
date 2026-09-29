@@ -141,8 +141,13 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
-export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
-export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export type {
+  DelegateEndingFields,
+  DelegateModelFields,
+  DelegateTiming,
+  DelegateTimingFields,
+} from "./delegateDetails";
+export { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
