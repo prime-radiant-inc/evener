@@ -252,10 +252,15 @@ func TestRenderSubagentRailSaysAReasonCodeInWords(t *testing.T) {
 func TestRenderSubagentRailCutsALongCauseOnARune(t *testing.T) {
 	withTestColorProfile(t)
 	runs := []transcript.SubagentRunInfo{
-		{DelegateID: "dlg_1", Task: "t", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: strings.Repeat("é", 40)},
+		{DelegateID: "dlg_1", Task: "t", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: strings.Repeat("é", 60)},
 	}
-	if out := RenderSubagentRail(runs, 200); !utf8.ValidString(out) {
+	out := RenderSubagentRail(runs, 200)
+	if !utf8.ValidString(out) {
 		t.Fatalf("rail split a character: %q", out)
+	}
+	// The cause is longer than the row's 40 columns, so it was cut.
+	if !strings.Contains(out, "é…") {
+		t.Fatalf("a 60-rune cause was not cut: %q", out)
 	}
 }
 

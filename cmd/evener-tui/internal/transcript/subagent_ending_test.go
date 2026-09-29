@@ -3,6 +3,8 @@ package transcript
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -29,21 +31,44 @@ func TestSubagentEndingText(t *testing.T) {
 	}
 }
 
-// The TUI's words match appwire-client's delegateEndingText table, which the
-// web and phone use, so the three surfaces say an ending the same way.
+// The TUI's words match appwire-client's delegateEndingText tables, which
+// the web and phone use, so the three surfaces say an ending the same way:
+// each table read from delegateDetails.ts entry by entry, both ways.
 func TestSubagentEndingWordsMatchTheClientTable(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "appwire-client", "typescript", "delegateDetails.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(raw)
-	for code, words := range subagentEndingWords {
-		entry := `["` + code + `", "` + words + `"]`
-		if !strings.Contains(source, entry) {
-			t.Errorf("delegateDetails.ts has no entry %s", entry)
+	for _, table := range []struct {
+		name string
+		want map[string]string
+	}{
+		{"ENDING_WORDS", subagentEndingWords},
+		{"OUTCOME_WORDS", subagentOutcomeWords},
+	} {
+		got := clientWordTable(t, string(raw), table.name)
+		if !reflect.DeepEqual(got, table.want) {
+			t.Errorf("%s: delegateDetails.ts has %v, the TUI %v", table.name, got, table.want)
 		}
 	}
-	if got, want := strings.Count(source, `", "`), len(subagentEndingWords)+len(subagentOutcomeWords); got != want {
-		t.Errorf("delegateDetails.ts has %d word entries, the TUI %d: the tables differ", got, want)
+}
+
+// clientWordTable reads `const NAME = new Map([ ["code", "words"], … ]);`
+// from delegateDetails.ts.
+func clientWordTable(t *testing.T, source, name string) map[string]string {
+	t.Helper()
+	start := strings.Index(source, "const "+name+" = new Map([")
+	if start < 0 {
+		t.Fatalf("delegateDetails.ts has no %s table", name)
 	}
+	end := strings.Index(source[start:], "]);")
+	if end < 0 {
+		t.Fatalf("delegateDetails.ts's %s table has no end", name)
+	}
+	entries := regexp.MustCompile(`\["([^"]+)", "([^"]+)"\]`).FindAllStringSubmatch(source[start:start+end], -1)
+	table := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		table[entry[1]] = entry[2]
+	}
+	return table
 }
