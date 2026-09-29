@@ -896,9 +896,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 }
 
 func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project, sessionIsIndexed map[string]bool) Tree {
-	sort.SliceStable(metas, func(i, j int) bool {
-		return sessionMetaLess(metas[i], metas[j])
-	})
+	sortSessionMetas(metas)
 	// Metadata can be malformed or concurrently assembled with duplicate IDs.
 	// The sorted (newest-first) order makes the canonical policy deterministic:
 	// retain the first record for each ID, then build all lineage indexes from
@@ -1290,9 +1288,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		// Children are fork originals only; a subagent has no row.
 		forks := slices.Clone(childrenByParent[m.ID])
-		sort.SliceStable(forks, func(i, j int) bool {
-			return sessionMetaLess(forks[i], forks[j])
-		})
+		sortSessionMetas(forks)
 		seenChildren := make(map[string]struct{}, len(forks))
 		for _, c := range forks {
 			if path[c.ID] {
@@ -1371,9 +1367,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		acc := projects[path]
 
 		// Sort top-level sessions by the Hub session ordering contract.
-		sort.SliceStable(acc.topLevel, func(i, j int) bool {
-			return sessionMetaLess(acc.topLevel[i], acc.topLevel[j])
-		})
+		sortSessionMetas(acc.topLevel)
 
 		sessions := make([]TreeNode, 0, len(acc.topLevel))
 		for _, m := range acc.topLevel {

@@ -589,6 +589,20 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeDelegateAttentionRestore identifies a failed attempt to get a
+// delegate's owed attention where it belongs: restoring its cold runtime to
+// deliver it, or escalating it to the root when a closed ancestor fences it
+// off. The session retries on its own and warns once per failure episode, so
+// clients show this warning only at their most detailed level, by this stable
+// code.
+const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
+
+// WarningCodeAttentionPaused identifies the notice that a permanent provider
+// failure (a dead credential, a spent quota) has paused delivering background
+// updates to a session until something changes. Unlike the informational
+// codes, clients show it at every level: it is news the user must act on.
+const WarningCodeAttentionPaused = "attention_paused"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`

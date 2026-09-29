@@ -122,6 +122,13 @@ type subagent struct {
 	disposeGated bool
 }
 
+// startBlockedLocked reports whether the child can't take a new generation
+// now: a run, a drive or a finalizer is in flight, or worktree disposal holds
+// it. The caller holds a.mu.
+func (a *subagent) startBlockedLocked() bool {
+	return a.running || a.driving || a.finalizing || a.disposeGated
+}
+
 type preparedSubagentRun struct {
 	sub                *subagent
 	input              string
@@ -2026,6 +2033,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if stableRun && a.sess.delegateController != nil {
 		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
+		}
+		if hook := a.sess.cfg.testOnly.subagentAfterFinalizationQuiesced; hook != nil {
+			hook(a)
 		}
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is

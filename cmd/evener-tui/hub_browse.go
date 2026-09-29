@@ -101,8 +101,8 @@ func (m *hubModel) moveBrowsePage(direction int) {
 // moveBrowseSelection moves the browse cursor to the next renderable message in
 // the given direction (skipping ones that render empty) and scrolls the viewport
 // so the newly-selected row stays visible. Moving the selection is the only way
-// to reach a user message to fork; f forks the selected user message. At either
-// end the selection is left unchanged.
+// to reach a user message to fork; ctrl+f forks the selected user message. At
+// either end the selection is left unchanged.
 func (m *hubModel) moveBrowseSelection(direction int) {
 	if len(m.session.messages) == 0 {
 		m.browseSelected = -1

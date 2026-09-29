@@ -20,6 +20,21 @@ import { isPlainObject } from "./plainObject";
 export const WarningCodeContextBudget = "context_budget";
 
 /**
+ * A failed attempt to get a delegate's owed attention where it belongs:
+ * restoring its cold runtime to deliver it, or escalating it to the root when
+ * a closed ancestor fences it off. The daemon retries on its own and warns
+ * once per failure episode, so it is detail for Full, not an alarm at every
+ * level. Bound by test to agent/events/payloads.go.
+ */
+export const WarningCodeDelegateAttentionRestore = "delegate_attention_restore";
+
+// The codes whose warnings show only at Full.
+const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+]);
+
+/**
  * True when a warning is an informational notice rather than an actionable
  * failure: demote it (quiet line) and show it only at full. A warning reaches
  * a client two ways: a `warning` item (the hub's own warning notification,
@@ -32,11 +47,11 @@ export const WarningCodeContextBudget = "context_budget";
  * wording.
  */
 export function isInformationalWarning(item: ItemModel): boolean {
-  if (item.type === "warning") return item.warning?.code === WarningCodeContextBudget;
+  if (item.type === "warning") return INFORMATIONAL_WARNING_CODES.has(item.warning?.code);
   return (
     item.type === "systemMessage" &&
     item.eventKind === "warning" &&
-    noticeWarningCode(item.raw) === WarningCodeContextBudget
+    INFORMATIONAL_WARNING_CODES.has(noticeWarningCode(item.raw))
   );
 }
 

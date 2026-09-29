@@ -9,7 +9,7 @@ import { describe, expect, test } from "vitest";
 import payloadsGo from "../../agent/events/payloads.go?raw";
 import type { ItemModel } from "./model";
 import { goConstantValue } from "./testing/goConstants";
-import { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
+import { isInformationalWarning, WarningCodeContextBudget, WarningCodeDelegateAttentionRestore } from "./warnings";
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go
 // (goConstants.ts's own header says why reading the source is what makes the
@@ -21,6 +21,10 @@ function goWarningCode(name: string): string {
 describe("the informational context-budget code is bound to agent/events/payloads.go", () => {
   test("the exported value is the daemon's own constant", () => {
     expect(WarningCodeContextBudget).toBe(goWarningCode("WarningCodeContextBudget"));
+  });
+
+  test("the delegate-attention restore code is the daemon's own constant", () => {
+    expect(WarningCodeDelegateAttentionRestore).toBe(goWarningCode("WarningCodeDelegateAttentionRestore"));
   });
 });
 
@@ -49,6 +53,21 @@ describe("isInformationalWarning", () => {
       raw: { warning: { title: "Context budget", code: WarningCodeContextBudget } },
     });
     expect(isInformationalWarning(notice)).toBe(true);
+  });
+
+  // A failed restore of a cold delegate's attention: the daemon retries it on
+  // its own, so it is detail for Full, not an alarm at every level.
+  test("true for a delegate-attention restore warning, as an item or a notice", () => {
+    expect(isInformationalWarning(warningItem({ warning: { code: WarningCodeDelegateAttentionRestore } }))).toBe(true);
+    expect(
+      isInformationalWarning(
+        warningItem({
+          type: "systemMessage",
+          eventKind: "warning",
+          raw: { warning: { title: "Evener error", code: WarningCodeDelegateAttentionRestore } },
+        }),
+      ),
+    ).toBe(true);
   });
 
   test("false for an uncoded warning notice, and for a coded notice of another kind", () => {

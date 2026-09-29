@@ -1290,12 +1290,13 @@ lags, bubbletea reports every printable rune of one read as a single
 KeyMsg, and a command mode that matches on `msg.String()` reads "kkf" as
 one unmatchable message instead of three keys (kata fazd — reproducible on
 an idle machine with one `send-keys -l` write). The dashboard replays such
-bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`), but
-browse mode's batch-as-text behavior is pinned pending a design decision
-(kata 7hh0), so its command sequences must never coalesce in the first
-place: see `TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the
-selection render after each `k`. Arrow and control keys are escape
-sequences and immune; only printable runes batch.
+bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`).
+Browse is text-first (kata 7hh0): every printable rune is composer text at any
+delivery timing, so its commands — Escape to leave, ctrl+up/ctrl+down to move
+the selection, ctrl+f to fork — are all escape sequences and immune to
+batching. Only printable runes batch: see
+`TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the selection render
+after each ctrl+up.
 
 ## A Test That Never Runs
 

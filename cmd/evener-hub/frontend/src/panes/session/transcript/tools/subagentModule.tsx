@@ -6,6 +6,7 @@
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import {
   delegateEndingText,
+  delegateSummary,
   delegateTiming,
   formatElapsed,
   type ItemModel,
@@ -68,16 +69,6 @@ const CLASS = {
 
 // Keep stable projections and frozen tool output on the same classification.
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
-
-const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
-
-// Footer fields are optional, so status cannot be read by position.
-export function statusWordFromText(text: string): string | undefined {
-  for (const status of KNOWN_JOB_STATUSES) {
-    if (new RegExp(`\\b${status}\\b`).test(text)) return status;
-  }
-  return undefined;
-}
 
 // A Quote is one child-authored line. Folded hero quotes are always italic;
 // `msg` preserves source-specific italics only in the expanded activity list.
@@ -444,9 +435,7 @@ registerToolRenderer({
   match: "delegate",
   fold: "never", // a delegate card is never folded away into a run
   icon: "delegate",
-  summary(item: ItemModel) {
-    return item.description ?? "";
-  },
+  summary: delegateSummary,
   // open ⤢ rides the delegate row's trailing slot (visible folded or not) -
   // ToolCallItem owns the control; the descriptor declares WHAT it targets.
   openTranscriptRef(item: ItemModel) {
