@@ -79,7 +79,9 @@
 # A bless writes every package it measured and leaves the rest of the file
 # alone: a narrowed run (--modules, --no-web, or a frontend that is not checked
 # out) refreshes the packages it measured instead of deleting the ones it did
-# not, so a rebaseline can never drop a budget nobody measured this time.
+# not, so a narrowed rebaseline can never drop a budget nobody measured this
+# time. A full rebaseline is the exception: it drops entries go list no longer
+# reports, and records the metric marker the ratio check reads.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -418,21 +420,30 @@ if bless:
 	# A bless records what this run measured and never deletes an entry it did
 	# not measure: a narrowed run (--modules, --no-web, or a frontend that is
 	# not checked out) would otherwise silently drop every package it skipped
-	# from the one file whose whole job is to be the checked-in baseline.
+	# from the one file whose whole job is to be the checked-in baseline. A FULL
+	# bless is different — go list enumerated every package, so an entry with no
+	# measurement this run is a package gone from the tree, not one skipped, and
+	# is dropped below.
 	order = list(packages) + sorted(pkg for pkg in sums if pkg not in packages)
-	budget["packages"] = {
-		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
-	}
-	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
-	# The marker says every number in the file is package wall time. That holds
-	# when the file already carried it (a narrowed bless refreshes a subset and
-	# preserves the rest, all still wall time) or when this run measured the
-	# whole surface (bless_full), so no old-unit entry is left behind. A narrowed
-	# bless of a file that is NOT yet wall time must not add the marker: that
-	# would enable enforcement against the old-unit entries it preserved, the
-	# incomparability the stale-units warn path exists for (issue #172 review).
-	if had_metric or bless_full:
+	measured = {pkg: round(sums[pkg], 2) for pkg in sums}
+	if bless_full:
+		# Full surface: every recorded package was measured, so the whole file is
+		# package wall time. Drop entries go list no longer reports (they hold
+		# the old units, and keeping one would either enforce it as wall time or
+		# pin the file to the old units forever) and stamp the marker.
+		budget["packages"] = {pkg: measured[pkg] for pkg in order if pkg in measured}
 		budget["metric"] = WALL_METRIC
+	else:
+		budget["packages"] = {
+			pkg: (measured[pkg] if pkg in measured else packages[pkg]) for pkg in order
+		}
+		# A narrowed bless keeps an existing marker — the entries it preserves
+		# are already wall time — but never adds one: stamping a stale file here
+		# would enforce ratios against the old-unit entries it preserved (issue
+		# #172 review).
+		if had_metric:
+			budget["metric"] = WALL_METRIC
+	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
 		# does not reformat all ~130 lines and bury the real change in

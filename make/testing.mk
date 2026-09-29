@@ -256,7 +256,9 @@ vet:
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
-##   per-test ceiling.
+##   per-test ceiling. Ratio enforcement is suspended (warn-only) while the
+##   budget file's metric marker is absent, which the checked-in pre-#172
+##   baseline is until a rebaseline rewrites it under package wall time.
 ## trigger: Local/on-demand; not required CI — deliberately not part of make
 ##   merge-approval-gate, since measuring durations means a second full test
 ##   run. CHECK=1 enforces the ratios; bare invocation only measures and
@@ -265,12 +267,14 @@ vet:
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: A broken measurement — go list or go test exiting nonzero, or a
 ##   go list package with no terminal event in the stream — is nonzero in every
-##   mode, and --bless refuses it. A bless writes every package it measured and
-##   preserves the rest of the file, so a narrowed run refreshes part of the
-##   file instead of deleting the entries it did not measure. Under CHECK=1 in a
-##   CI-shaped environment a package over 1.5x its budget or any per-test
-##   ceiling breach is nonzero too; a missing or empty budget file always
-##   exits zero.
+##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
+##   measured and preserves the rest of the file instead of deleting entries it
+##   did not measure; a full rebaseline also drops entries go list no longer
+##   reports. Under CHECK=1 in a CI-shaped environment a package over 1.5x its
+##   budget or any per-test ceiling breach is nonzero too, but only once the
+##   budget file carries the wall-time metric marker: while the marker is absent
+##   (as for the checked-in pre-#172 baseline) the ratios are warn-only and the
+##   run exits zero. A missing or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
