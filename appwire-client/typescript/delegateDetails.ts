@@ -192,3 +192,30 @@ export function delegateEndingText(delegate: DelegateEndingFields): string | und
   if (!CODE.test(reason)) return firstLine(reason, ENDING_MAX) || undefined;
   return OUTCOME_WORDS.get(delegate.outcome ?? "");
 }
+
+// The two codes a delegate's resumability closes with that the run-ending
+// vocabulary doesn't carry (agent/delegate_runtime.go,
+// session_tools_worktree_dispose.go). The other closure codes -
+// construction_failed, launch_failed, artifacts_dir_failed,
+// input_admission_failed, turn_budget_exhausted - are run-ending reasons too,
+// so delegateEndingText already has their words.
+const NOT_RESUMABLE_WORDS = new Map([
+  ["missing_child_session_meta", "its session metadata is missing"],
+  ["isolation_disposed", "its isolation was disposed"],
+]);
+
+// A code this client doesn't know still says something rather than a raw code.
+const NOT_RESUMABLE_GENERIC = "its resumability was closed";
+
+/** Why a delegate can no longer be resumed, in words, or undefined when there
+ * is nothing to say. Shares delegateEndingText's vocabulary for the codes both
+ * carry; a code this client doesn't know reads as a generic phrase, so a
+ * snake_case code never reaches the screen, and a reason already in words
+ * (an older hub's) shows as it is. */
+export function delegateNotResumableText(reason: string | undefined): string | undefined {
+  const code = reason?.trim();
+  if (!code) return undefined;
+  const words = NOT_RESUMABLE_WORDS.get(code);
+  if (words) return words;
+  return delegateEndingText({ reason: code }) ?? NOT_RESUMABLE_GENERIC;
+}

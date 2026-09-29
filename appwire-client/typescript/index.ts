@@ -147,7 +147,13 @@ export type {
   DelegateTiming,
   DelegateTimingFields,
 } from "./delegateDetails";
-export { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
 export {
   type DelegateSendFooterInfo,
   type DelegateSendRawState,

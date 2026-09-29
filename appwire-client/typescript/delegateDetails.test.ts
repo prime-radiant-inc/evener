@@ -11,7 +11,13 @@ import sessionBudgetGo from "../../agent/session_budget.go?raw";
 import subagentsGo from "../../agent/subagents.go?raw";
 import type { ActivityDelegate } from "./activityData";
 import { parseActivityTree } from "./activityData";
-import { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+import {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
 import { subagentOutcomesResponse } from "./testing/subagentWireFixtures";
 
 function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
@@ -250,6 +256,20 @@ test("never shows a code it doesn't know, but keeps a reason already in words", 
 test("says nothing for a run that ended well", () => {
   expect(delegateEndingText({ outcome: "completed" })).toBeUndefined();
   expect(delegateEndingText({})).toBeUndefined();
+});
+
+// A delegate's resumability closes with its own codes (#3362). The run-ending
+// vocabulary covers most of them; the closure-only codes and an unknown code
+// still say words rather than a raw snake_case code.
+test("says why a delegate isn't resumable in words", () => {
+  expect(delegateNotResumableText("turn_budget_exhausted")).toBe("ran out of turns");
+  expect(delegateNotResumableText("construction_failed")).toBe("couldn't be set up");
+  expect(delegateNotResumableText("missing_child_session_meta")).toBe("its session metadata is missing");
+  expect(delegateNotResumableText("isolation_disposed")).toBe("its isolation was disposed");
+  expect(delegateNotResumableText("some_new_code")).toBe("its resumability was closed");
+  expect(delegateNotResumableText("Delegate was disposed")).toBe("Delegate was disposed");
+  expect(delegateNotResumableText("  ")).toBeUndefined();
+  expect(delegateNotResumableText(undefined)).toBeUndefined();
 });
 
 // Every consumer shows one line: the helper clamps the cause itself.

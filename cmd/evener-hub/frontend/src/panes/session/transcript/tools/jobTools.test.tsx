@@ -374,6 +374,21 @@ test("job_status: body renders not-resumable reason diagnostic", () => {
   expect(screen.getByText(/Not resumable: Delegate was disposed/)).toBeTruthy();
 });
 
+// not_resumable_reason carries its own codes; the card says them in words too
+// (#3362). turn_budget_exhausted and isolation_disposed are the two the daemon
+// writes that the run-ending table does not already carry.
+test.each([
+  ["turn_budget_exhausted", /Not resumable: ran out of turns/],
+  ["isolation_disposed", /Not resumable: its isolation was disposed/],
+])("job_status: body says not-resumable code %s in words", (reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ not_resumable_reason: reason });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
 test("job_status: body renders failed outcome reason in danger text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
