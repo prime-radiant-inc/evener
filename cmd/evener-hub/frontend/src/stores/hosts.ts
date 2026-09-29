@@ -81,7 +81,8 @@ interface HostsStoreState {
    */
   reReadForced: () => Promise<boolean>;
   add: (entry: HostEntry) => Promise<HostRow>;
-  update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
+  /** expected is the pair of the row the edit dialog opened on. */
+  update: (params: { name: string; entry: HostEntry; expected: HostMutationPair }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;

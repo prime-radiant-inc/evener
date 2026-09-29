@@ -291,7 +291,11 @@ describe("mutations", () => {
       let outcome: { status: "resolved"; row: HostRow } | { status: "rejected"; error: unknown } | undefined;
       const done = hostsStore
         .getState()
-        .update({ name: "side", entry: { address: "edited.example" } })
+        .update({
+          name: "side",
+          entry: { address: "edited.example" },
+          expected: { generation: 1, incarnationId: "inc-1" },
+        })
         .then(
           (result) => {
             outcome = { status: "resolved", row: result };
@@ -300,16 +304,14 @@ describe("mutations", () => {
             outcome = { status: "rejected", error };
           },
         );
-      // The guarded update needs the row's pair and none is held, so the store
-      // lists first: that read must answer before the update frame exists.
+      // The update carries the pair its dialog opened on, so it goes out
+      // without reading the list first.
       const listFrames = () =>
         socket.sent
           .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
           .filter((frame) => frame.method === "evener/host/list");
-      const pairRequest = listFrames()[0];
-      if (typeof pairRequest?.id !== "number") throw new Error("missing pair-read evener/host/list request id");
-      socket.receive({ id: pairRequest.id, result: { hosts: [row("side")] } });
       await vi.advanceTimersByTimeAsync(0);
+      expect(listFrames()).toEqual([]);
       const updateRequest = socket.sent
         .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
         .find((frame) => frame.method === "evener/host/update");
@@ -323,8 +325,7 @@ describe("mutations", () => {
       // the store promise must resolve rather than merely avoiding the 30s error.
       socket.receive({ id: updateRequest.id, result: { outcome: "committed", host: updatedRow } });
       await vi.advanceTimersByTimeAsync(0);
-      const rereadFrames = listFrames().filter((frame) => frame.id !== pairRequest.id);
-      const listRequest = rereadFrames[rereadFrames.length - 1];
+      const listRequest = listFrames().at(-1);
       if (typeof listRequest?.id !== "number") throw new Error("missing post-update evener/host/list request id");
       socket.receive({ id: listRequest.id, result: { hosts: [updatedRow] } });
       await done;
@@ -411,6 +412,7 @@ describe("mutations", () => {
     const updated = await hostsStore.getState().update({
       name: "alpha",
       entry: { address: "a2.example", user: "operator" },
+      expected: { generation: 1, incarnationId: "inc-1" },
     });
 
     expect(updated.address).toBe("a2.example");
@@ -424,7 +426,7 @@ describe("mutations", () => {
     expect(updateParams.name).toBe("alpha");
     expect(updateParams.entry).toEqual({ address: "a2.example", user: "operator" });
     // The guarded-mutation fields the hub now requires (registry spec 08 §4):
-    // a fresh opaque key and the pair of the row the store held.
+    // a fresh opaque key and the pair of the row the edit opened on.
     expect(typeof updateParams.mutationId).toBe("string");
     expect(updateParams.mutationId.length).toBeGreaterThan(0);
     expect(updateParams.expectedGeneration).toBe(1);
@@ -441,9 +443,11 @@ describe("mutations", () => {
     await hostsStore.getState().fetch();
 
     fake.on("evener/host/update", () => Promise.reject(new Error('host "alpha": missing ssh destination')));
-    await expect(hostsStore.getState().update({ name: "alpha", entry: { address: "" } })).rejects.toThrowError(
-      /missing ssh destination/,
-    );
+    await expect(
+      hostsStore
+        .getState()
+        .update({ name: "alpha", entry: { address: "" }, expected: { generation: 1, incarnationId: "inc-1" } }),
+    ).rejects.toThrowError(/missing ssh destination/);
 
     const load = hostsStore.getState().load;
     expect(load.phase).toBe("ready");
@@ -486,20 +490,20 @@ describe("mutations", () => {
     expect(removeParams.expectedIncarnationId).toBe("inc-7");
   });
 
-  test("a guarded mutation with no held row lists first instead of fabricating a pair", async () => {
+  test("a remove with no held row lists first instead of fabricating a pair", async () => {
     const fake = connectFakeClient();
     // The store never fetched, so no row is held; the first list read answers
-    // the pair, and the update echoes that — never a defaulted pair.
+    // the pair, and the remove echoes that — never a defaulted pair.
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 3, incarnationId: "inc-3" }] }));
-    fake.on("evener/host/update", () => ({ outcome: "committed", host: { ...row("alpha"), address: "a2.example" } }));
-    await hostsStore.getState().update({ name: "alpha", entry: { address: "a2.example" } });
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: { ...row("alpha"), removed: true } }));
+    await hostsStore.getState().remove("alpha");
 
-    const updateParams = fake.calls.find((c) => c.method === "evener/host/update")?.params as {
+    const removeParams = fake.calls.find((c) => c.method === "evener/host/remove")?.params as {
       expectedGeneration: number;
       expectedIncarnationId: string;
     };
-    expect(updateParams.expectedGeneration).toBe(3);
-    expect(updateParams.expectedIncarnationId).toBe("inc-3");
+    expect(removeParams.expectedGeneration).toBe(3);
+    expect(removeParams.expectedIncarnationId).toBe("inc-3");
   });
 
   test("a guarded mutation for a name the registry does not list refuses locally", async () => {
@@ -509,7 +513,36 @@ describe("mutations", () => {
     expect(fake.calls.some((c) => c.method === "evener/host/remove")).toBe(false);
   });
 
-  test("a stale-entry refusal re-reads and retries once with a new mutationId", async () => {
+  test("an edit sends the pair its dialog opened on, and a stale refusal after a refresh surfaces unretried", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
+    await hostsStore.getState().fetch();
+    // The dialog opens on generation 1. Someone else edits the host, and the
+    // background poll brings generation 2 while the dialog is still open.
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 2, incarnationId: "inc-1" }] }));
+    await hostsStore.getState().refresh();
+
+    const sent: Array<{ expectedGeneration: number }> = [];
+    fake.on("evener/host/update", (params: { expectedGeneration: number }) => {
+      sent.push(params);
+      throw new WireError('host "alpha": the entry moved', -32013, {
+        evenerErrorInfo: "stale-entry",
+        binding: "generation",
+      });
+    });
+    await expect(
+      hostsStore.getState().update({
+        name: "alpha",
+        entry: { address: "a2.example" },
+        expected: { generation: 1, incarnationId: "inc-1" },
+      }),
+    ).rejects.toThrowError(/the entry moved/);
+    // One attempt, against the row the person saw: never a retry that would
+    // overwrite the other edit.
+    expect(sent.map((params) => params.expectedGeneration)).toEqual([1]);
+  });
+
+  test("a remove refused as stale re-reads and retries once with a new mutationId", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
@@ -519,7 +552,7 @@ describe("mutations", () => {
     // pair with a NEW key, then land.
     const sent: Array<{ mutationId: string; expectedGeneration: number; expectedIncarnationId: string }> = [];
     fake.on(
-      "evener/host/update",
+      "evener/host/remove",
       (params: { mutationId: string; expectedGeneration: number; expectedIncarnationId: string }) => {
         sent.push(params);
         if (sent.length === 1) {
@@ -528,18 +561,12 @@ describe("mutations", () => {
             binding: "generation",
           });
         }
-        return {
-          outcome: "committed",
-          host: { ...row("alpha"), address: "a2.example", generation: 2, incarnationId: "inc-1" },
-        };
+        return { outcome: "committed", host: { ...row("alpha"), removed: true } };
       },
     );
-    fake.on("evener/host/list", () => ({
-      hosts: [{ ...row("alpha"), generation: 2, incarnationId: "inc-1", address: "a2.example" }],
-    }));
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 2, incarnationId: "inc-1" }] }));
 
-    const updated = await hostsStore.getState().update({ name: "alpha", entry: { address: "a2.example" } });
-    expect(updated.generation).toBe(2);
+    await hostsStore.getState().remove("alpha");
     expect(sent).toHaveLength(2);
     expect(sent[0]?.expectedGeneration).toBe(1);
     expect(sent[1]?.expectedGeneration).toBe(2);
@@ -547,13 +574,13 @@ describe("mutations", () => {
     expect(sent[1]?.mutationId).not.toBe(sent[0]?.mutationId);
   });
 
-  test("a second stale-entry refusal surfaces to the caller", async () => {
+  test("a second stale-entry refusal of a remove surfaces to the caller", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
 
     let attempts = 0;
-    fake.on("evener/host/update", () => {
+    fake.on("evener/host/remove", () => {
       attempts++;
       throw new WireError('host "alpha": the entry moved', -32013, {
         evenerErrorInfo: "stale-entry",
@@ -562,9 +589,7 @@ describe("mutations", () => {
     });
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 2, incarnationId: "inc-1" }] }));
 
-    await expect(
-      hostsStore.getState().update({ name: "alpha", entry: { address: "a2.example" } }),
-    ).rejects.toThrowError(/the entry moved/);
+    await expect(hostsStore.getState().remove("alpha")).rejects.toThrowError(/the entry moved/);
     expect(attempts).toBe(2);
   });
 
@@ -581,9 +606,11 @@ describe("mutations", () => {
         field: "address",
       });
     });
-    await expect(hostsStore.getState().update({ name: "alpha", entry: { address: "" } })).rejects.toThrowError(
-      /missing ssh destination/,
-    );
+    await expect(
+      hostsStore
+        .getState()
+        .update({ name: "alpha", entry: { address: "" }, expected: { generation: 1, incarnationId: "inc-1" } }),
+    ).rejects.toThrowError(/missing ssh destination/);
     expect(attempts).toBe(1);
   });
 
