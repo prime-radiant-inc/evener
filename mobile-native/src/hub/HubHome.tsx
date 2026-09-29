@@ -56,7 +56,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		}, [hosts]),
 	);
 	const fleet = fleetSummary(useOptionalSnapshot(hosts)?.rows ?? null, check?.currentVersion);
-	const installedPlugins = useInstalledPluginCount(ready ? client : null);
+	// Gated on canUseConnection, so a re-key window never reads the previous
+	// hub's list.
+	const installedPlugins = useInstalledPluginCount(canUseConnection() ? client : null);
 	return (
 		<GroupedPage>
 			<Text

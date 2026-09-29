@@ -36,6 +36,11 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+// Shown once, as a page that stays in front.
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
+});
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const props = {

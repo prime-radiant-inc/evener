@@ -42,6 +42,25 @@ vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// The page's focus: each registered effect runs once, as on first showing,
+// and refocus() runs them again, as coming back to the page does.
+const focus = vi.hoisted(() => ({ effects: new Set<() => void>() }));
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return {
+		useFocusEffect: (effect: () => undefined | (() => void)) =>
+			useEffect(() => {
+				focus.effects.add(effect);
+				effect();
+				return () => {
+					focus.effects.delete(effect);
+				};
+			}, [effect]),
+	};
+});
+function refocus() {
+	for (const effect of [...focus.effects]) effect();
+}
 
 const marketplace: MarketplaceEntry = {
 	name: "acme",
@@ -2864,6 +2883,43 @@ it("says Already up to date when an upgrade changes neither version nor commit",
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Already up to date");
 	expect(renderedText(tree)).not.toContain("Upgraded to");
+});
+
+it("shows no upgrade result for a plugin the answering list no longer carries", async () => {
+	// The detail shows only a listed plugin, so an upgrade whose answer drops
+	// it closes the detail; "Already up to date" is never said for it.
+	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc" })]);
+	hub.on("evener/plugin/upgrade", () => ({ plugins: [] }));
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "demo-plugin");
+	await act(async () => {
+		detail.findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
+	});
+	await act(async () => {});
+	expect(
+		tree.root.findAll((node) => String(node.type) === "HoldingModal" || String(node.type) === "Modal"),
+	).toHaveLength(0);
+	expect(renderedText(tree)).not.toContain("Already up to date");
+});
+
+it("reads the installed list again on coming back to the page after a read failed, with nothing to press", async () => {
+	const hub = pageHub([entry("demo-plugin")]);
+	let reads = 0;
+	hub.on("evener/plugin/list", () => {
+		reads += 1;
+		if (reads === 1) throw new Error("hub busy");
+		return { plugins: [entry("demo-plugin")] };
+	});
+	const { tree } = await mountPage(hub);
+	await act(async () => {});
+	expect(reads).toBe(1);
+	expect(renderedText(tree)).not.toMatch(/\bRetry\b/);
+	await act(async () => {
+		refocus();
+	});
+	await act(async () => {});
+	expect(reads).toBe(2);
+	expect(renderedText(tree)).toContain("demo-plugin");
 });
 
 it("says Upgraded to the new version when the upgrade's list carries one", async () => {

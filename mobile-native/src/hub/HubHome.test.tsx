@@ -74,6 +74,8 @@ async function mount(
 	options: {
 		check?: UpdateCheckResponse | Error;
 		ready?: boolean;
+		/** Whether a control that needs the hub may act (a re-key window says no). */
+		usable?: boolean;
 		fleet?: ScriptedFleet;
 		client?: HubSheetContextValue["client"];
 	} = {},
@@ -81,7 +83,7 @@ async function mount(
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
-	const live = { usable: options.ready ?? true };
+	const live = { usable: options.usable ?? options.ready ?? true };
 	updates = createPhoneHubUpdates(fake.client, readiness);
 	context = {
 		hubId: "hub-1",
@@ -220,6 +222,14 @@ it("pushes Plugins inside the sheet, valued with the number installed", async ()
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	expect(find("Plugins, 4")).not.toBeNull();
+});
+
+it("reads no plugins while the connection can't be used, even when it says ready", async () => {
+	// A re-key window: the client may still be the previous hub's.
+	const { client } = pluginHub(3);
+	const { find } = await mount({ client, usable: false });
+	expect(find("Plugins, 3")).toBeNull();
+	expect(find("Plugins")).not.toBeNull();
 });
 
 it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {

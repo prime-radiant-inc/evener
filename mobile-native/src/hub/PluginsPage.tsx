@@ -4,6 +4,7 @@
 // marketplaces' catalogs to install from. The mutation gate, the applied-removal
 // guard and the stores live here, above the connection's early returns, and the
 // details open as sheets over the list so that machinery stays with it.
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
 	Fragment,
@@ -475,6 +476,17 @@ function Plugins({
 		);
 	}
 	const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
+	// A failed installed list reads again when the page comes back to the
+	// front, as evener/plugin/updated already does; nothing asks you to (no
+	// pull-to-refresh, no button: Task 15). Refs keep the effect's identity
+	// fixed, so it runs on focus alone.
+	const failed = useRef(false);
+	failed.current = state.pluginsError !== null;
+	useFocusEffect(
+		useCallback(() => {
+			if (failed.current) void model.getState().fetchPlugins();
+		}, [model]),
+	);
 	return (
 		<GroupedPage>
 			<SheetStatus />
