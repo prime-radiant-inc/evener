@@ -222,12 +222,27 @@ export function isEndpointConflict(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorEndpointConflict;
 }
 
+// The two ways a credential action is refused over its destination, in spec 5
+// plain words: what happened, what didn't, and the one thing to do. Each
+// client names what it didn't do (`result`), such as "nothing was changed".
+
+// endpointMoved: the hub refused the asserted destination - the provider now
+// points somewhere else than the row on screen said.
+export function endpointMoved(result: string, action = "try again"): string {
+  return `This provider now points somewhere else, so ${result}. Review where it points and ${action}.`;
+}
+
+// endpointUncheckable: the row has a destination the hub can't fingerprint
+// right now, so the action is refused before it is sent.
+export function endpointUncheckable(result: string): string {
+  return `The hub can't check where this provider points right now, so ${result}. Try again in a moment.`;
+}
+
 // ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub
 // refuses its asserted destination: the name moved since the listing the row
 // was read from, so testing again has to start from the destination now on
 // screen.
-export const ENDPOINT_CHANGED_TEST_MESSAGE =
-  "This connection changed to a different endpoint. Check its destination and test again.";
+export const ENDPOINT_CHANGED_TEST_MESSAGE = endpointMoved("the test didn't run", "test again");
 
 // CONNECTION_REPLACED_ERROR is what any action says when the STORE refused it
 // (stores/credentials.ts's requireWritableClient): the rows on screen, and
@@ -238,23 +253,21 @@ export const ENDPOINT_CHANGED_TEST_MESSAGE =
 // waits on. Named once because the refusal reaches the user through several
 // surfaces (a dialog's inline error, the sheet's form error, a toast).
 export const CONNECTION_REPLACED_ERROR =
-  "The hub connection was replaced and its instances have not loaded yet, so nothing was sent. Check the current list and try again.";
+  "The hub connection changed and its providers haven't loaded yet, so nothing was sent. Try again once they have.";
 
 // FINGERPRINT_UNAVAILABLE_ERROR is what a credential write says when the row has
 // a destination but serves no fingerprint: the hub accepts an empty assertion
 // rather than validating it, so the save is refused locally with the same
 // "review its destination" remedy as a moved endpoint - the listing that carries
 // the fingerprint again is what makes the save work.
-export const FINGERPRINT_UNAVAILABLE_ERROR =
-  "The hub cannot check this endpoint right now, so the key was not sent. Review its destination and try again once it can be checked.";
+export const FINGERPRINT_UNAVAILABLE_ERROR = endpointUncheckable("the key wasn't sent");
 
 // FINGERPRINT_UNAVAILABLE_TEST_MESSAGE is what a credential test says when the
 // row has a destination but no fingerprint to assert: the hub would have
 // nothing to compare and would dial whatever the name resolves to now, so the
 // check is refused before it is sent (instanceDialogs refuses a write the same
 // way).
-export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE =
-  "The hub cannot check this endpoint right now, so the test was not run. Review its destination and try again once it can be checked.";
+export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE = endpointUncheckable("the test didn't run");
 
 // fingerprintUnavailable reports the row a credential test must not run for: it
 // has a destination, and the listing could not key a fingerprint for it. A row

@@ -150,13 +150,20 @@ func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture 
 	t.Helper()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	// credentials.toml gets its own directory so a test that blocks its writes
+	// (breakCredentialWrites) does not also block the providers.toml write in the
+	// same mutation.
+	credsDir := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tomlPath := filepath.Join(dir, "providers.toml")
-	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, env)
+	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, env)
 	return &instancesFixture{
 		ctl:       ctl,
 		tomlPath:  tomlPath,
 		stateDir:  stateDir,
-		credsPath: filepath.Join(dir, "credentials.toml"),
+		credsPath: filepath.Join(credsDir, "credentials.toml"),
 		store:     ctl.auth.creds,
 	}
 }
@@ -171,8 +178,12 @@ func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int
 	t.Helper()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	credsDir := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tomlPath := filepath.Join(dir, "providers.toml")
-	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil, instancesControllerHooks{
+	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, nil, instancesControllerHooks{
 		seed: func(store *credentials.Store) {
 			if storedKeyFor == "" {
 				return
@@ -195,7 +206,7 @@ func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int
 		ctl:       ctl,
 		tomlPath:  tomlPath,
 		stateDir:  stateDir,
-		credsPath: filepath.Join(dir, "credentials.toml"),
+		credsPath: filepath.Join(credsDir, "credentials.toml"),
 		store:     ctl.auth.creds,
 	}
 }
@@ -1940,6 +1951,7 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 // the name the caller re-authors after being told the removal failed, so they
 // still go back - losing them would report the failure and take the secret too.
 func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1955,22 +1967,16 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 	// rollback write is what has to fail here. It is broken through the
 	// registry's own load callback, so no stub stands in for the write: the
 	// removal's reload is the second load the replacement registry serves (the
-	// first primes it over the clean file) and it turns the writer's temp path
-	// into a directory, which is the same disk that refuses any full disk or
-	// read-only root. The first write's temp file is gone once its rename
-	// landed, so the removal's own write still succeeds and only the rollback
-	// after it cannot land.
+	// first primes it over the clean file) and it leaves the writer's directory
+	// unwritable, which is the same disk that refuses any full disk or read-only
+	// root. The first write has already landed when this load runs, so the
+	// removal's own write still succeeds and only the rollback after it cannot
+	// land.
 	var loads int
 	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		loads++
 		if loads == 2 {
-			resolved, err := filepath.EvalSymlinks(f.tomlPath)
-			if err != nil {
-				t.Errorf("EvalSymlinks(%s): %v", f.tomlPath, err)
-			}
-			if err := os.Mkdir(resolved+".tmp", 0o700); err != nil {
-				t.Errorf("Mkdir(%s): %v", resolved+".tmp", err)
-			}
+			blockProvidersWrites(t, f.tomlPath)
 		}
 		opts := append(
 			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
@@ -4093,22 +4099,22 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 	}
 }
 
-// breakCredentialWrites makes every later credentials.toml save fail for a
-// real filesystem reason rather than a stubbed one: the store writes through
-// <path>.tmp and renames, so a directory occupying that name refuses the open
-// whoever the test runs as. What the rename does with that refusal is then
-// the real store, the real move and the real providers.toml write.
+// breakCredentialWrites makes every later credentials.toml save fail for a real
+// filesystem reason rather than a stubbed one: the store stages its temp file
+// under a random name in the target's directory, so the directory is made
+// unwritable and the exclusive create is refused. What the save does with that
+// refusal is then the real store, the real move and the real providers.toml
+// write. The caller must have passed requireWritableDirRefusal.
 func breakCredentialWrites(t *testing.T, credsPath string) {
 	t.Helper()
-	if err := os.Mkdir(credsPath+".tmp", 0o700); err != nil {
-		t.Fatalf("blocking the credentials temp path: %v", err)
-	}
+	blockWritesInDir(t, filepath.Dir(credsPath))
 }
 
 // A store that refuses the write is the one failure that could lose a
 // credential, and the move is one persist: the entry stays under the old name
 // in memory and in the file, and the rename says what it left behind.
 func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -4176,6 +4182,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 // reach between the move and that reload, so the unreadable config is written
 // from there.
 func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)

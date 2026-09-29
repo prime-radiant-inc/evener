@@ -22,6 +22,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	systemGlass,
 	textOf,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -30,6 +31,8 @@ import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure"
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { FindBar } from "./session/FindBar";
+import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
@@ -330,6 +333,7 @@ afterEach(() => {
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
+	systemGlass.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -1507,6 +1511,93 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toHaveLength(1);
 	act(() => tree.unmount());
 	expect(inScope()).toEqual([]);
+});
+
+// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
+// system's glass over the transcript (spec 16.3), and the header's glass runs
+// on under the chips and note: the transcript runs under both, and its top
+// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
+// is opaque and the screen starts below it.
+describe("the nav bar's glass (spec 16.3)", () => {
+	// The bar's options: transparent, and clear, since react-native-screens
+	// draws a transparent bar's background only when its color is itself
+	// clear; and no system edge effect where the header's own glass is drawn.
+	const lastBar = () => {
+		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+			.map(([options]) => options)
+			.findLast((options) => "headerTransparent" in options);
+		if (options?.headerTransparent === undefined) return undefined;
+		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
+		expect(background === "transparent").toBe(options.headerTransparent);
+		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
+	};
+	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const layout = (tree: ReactTestRenderer) => ({
+		headerTop: Object.assign({}, ...[header(tree).parent?.props.style].flat(Number.POSITIVE_INFINITY)).top,
+		glassTop: header(tree).props.glassTop,
+		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
+		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
+			.keyboardVerticalOffset,
+	});
+	const measureHeader = (tree: ReactTestRenderer, height: number) =>
+		act(() => header(tree).parent?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+
+	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass"));
+		await act(async () => {});
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		// Before the header has measured, the list keeps the bar's room.
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		// The header's height covers the bar's room and the rows under it.
+		measureHeader(tree, 64 + 48);
+		expect(layout(tree).listTop).toBe(16 + 64 + 48);
+		// The find bar, in the chips' place, draws clear on the glass too.
+		chooseMenu("Find in session");
+		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
+	});
+
+	// Turning the bar glass or opaque moves the list's frame by the bar's
+	// height and its top padding by the same, so the rows stay where they are
+	// with no scroll of the list's own; only the rows block growing or
+	// shrinking asks for one.
+	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass-flip"));
+		await act(async () => {});
+		measureHeader(tree, 64 + 48);
+		scrollTo(tree, 500);
+		flatListCalls.length = 0;
+		act(() => systemGlass.setReduceTransparency(true));
+		measureHeader(tree, 48);
+		act(() => systemGlass.setReduceTransparency(false));
+		measureHeader(tree, 64 + 48);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+		// The rows block itself growing (the connection line arriving) still does.
+		measureHeader(tree, 64 + 48 + 24);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
+		]);
+	});
+
+	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
+		const { tree } = await mount(twoTurns("ref-no-glass"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+	});
+
+	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
 });
 
 it("moves the Session with the keyboard through the keyboard controller", async () => {

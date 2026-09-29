@@ -45,8 +45,8 @@ var (
 
 	// ErrVersionMismatch marks a build the controller INSTALLED that does not carry
 	// the identity the controller expects: the installer fallback fetched an
-	// artifact whose commit is not this controller's (a moved channel tag), and the
-	// refusal is terminal because re-fetching the same tag cannot converge.
+	// artifact whose commit is not this controller's (a moved channel), and the
+	// refusal is terminal because re-fetching the same artifact cannot converge.
 	//
 	// It is not an attach-time version gate. A host that answers the launch-check
 	// speaks this controller's protocol, and its build label does not decide whether

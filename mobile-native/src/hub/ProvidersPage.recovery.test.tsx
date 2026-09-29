@@ -156,7 +156,7 @@ it("reports a superseded instance write as unconfirmed, not as success", async (
 	});
 	write.resolve(listing);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("could not be confirmed");
+	expect(renderedText(tree)).toContain("didn't confirm the change");
 });
 
 it("refuses a credential save for a destination the hub cannot fingerprint", async () => {
@@ -180,7 +180,7 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
 	pressLabel(tree, "Save key");
 	await act(async () => {});
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
-	expect(renderedText(tree)).toContain("credential was not saved");
+	expect(renderedText(tree)).toContain("so nothing was saved");
 });
 
 it("refuses a credential-JSON save for a destination the hub cannot fingerprint", async () => {
@@ -202,7 +202,7 @@ it("refuses a credential-JSON save for a destination the hub cannot fingerprint"
 	act(() => input.props.onChangeText("{}"));
 	pressLabel(tree, "Save credential JSON");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("credential was not saved");
+	expect(renderedText(tree)).toContain("so nothing was saved");
 	expect(scripted.methods).not.toContain("evener/auth/credentialJson/set");
 });
 
@@ -221,8 +221,8 @@ it("does not report a destination change for a conflict on a non-asserting write
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Make default");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("changed to a different endpoint");
-	expect(renderedText(tree)).toContain("could not be confirmed");
+	expect(renderedText(tree)).not.toContain("now points somewhere else");
+	expect(renderedText(tree)).toContain("didn't confirm the change");
 });
 
 it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
@@ -242,7 +242,7 @@ it("refuses endpoint-sensitive destructive actions without a fingerprint, with a
 		// Not silently greyed out: pressing says why it cannot proceed.
 		pressLabel(tree, label);
 		await act(async () => {});
-		expect(renderedText(tree)).toContain("action was not run");
+		expect(renderedText(tree)).toContain("so nothing was changed");
 		// The guard returns before the confirmation, so no write can go out.
 		expect(alerts.alert).not.toHaveBeenCalled();
 		expect(scripted.methods).not.toContain("evener/instance/remove");
@@ -441,7 +441,7 @@ it("names a changed endpoint and re-reads when a credential save is refused", as
 	const listsBefore = lists;
 	pressLabel(tree, "Save key");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("changed to a different endpoint");
+	expect(renderedText(tree)).toContain("now points somewhere else");
 	expect(lists).toBeGreaterThan(listsBefore);
 });
 

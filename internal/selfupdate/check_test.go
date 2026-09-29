@@ -2,14 +2,23 @@ package selfupdate
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// fakeGitHub serves the two GitHub REST endpoints Check uses under
-// /repos/prime-radiant-inc/evener/... and records the paths it saw.
+// fakeRepoURL shapes a RepoURL whose owner/repo path lands on fakeGitHub's
+// snapshot download path.
+func fakeRepoURL(server *httptest.Server) string {
+	return server.URL + "/prime-radiant-inc/evener"
+}
+
+// fakeGitHub serves the GitHub REST endpoints Check uses under
+// /repos/prime-radiant-inc/evener/..., the snapshot release's version.txt
+// under /prime-radiant-inc/evener/releases/download/snapshot/, and records
+// the paths it saw.
 func fakeGitHub(t *testing.T, latestTag, tagCommit string, status int) (*httptest.Server, *[]string, *[]string) {
 	t.Helper()
 	var paths []string
@@ -25,6 +34,9 @@ func fakeGitHub(t *testing.T, latestTag, tagCommit string, status int) (*httptes
 		switch {
 		case r.URL.Path == "/repos/prime-radiant-inc/evener/releases/latest":
 			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": latestTag})
+		case r.URL.Path == "/prime-radiant-inc/evener/releases/download/snapshot/version.txt":
+			// The workflow stamps the built commit into version.txt.
+			fmt.Fprintf(w, "%s\n", tagCommit)
 		case strings.HasPrefix(r.URL.Path, "/repos/prime-radiant-inc/evener/commits/"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": tagCommit})
 		default:
@@ -35,9 +47,11 @@ func fakeGitHub(t *testing.T, latestTag, tagCommit string, status int) (*httptes
 	return server, &paths, &userAgents
 }
 
+// TestCheckSnapshotUpToDate proves the snapshot channel resolves the commit
+// through the snapshot release's version.txt asset, never the git tag.
 func TestCheckSnapshotUpToDate(t *testing.T) {
 	server, paths, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
-	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", APIURL: server.URL})
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", RepoURL: fakeRepoURL(server)})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -45,14 +59,14 @@ func TestCheckSnapshotUpToDate(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	if len(*paths) != 1 || (*paths)[0] != "/repos/prime-radiant-inc/evener/commits/snapshot" {
+	if len(*paths) != 1 || (*paths)[0] != "/prime-radiant-inc/evener/releases/download/snapshot/version.txt" {
 		t.Fatalf("paths = %v", *paths)
 	}
 }
 
 func TestCheckSnapshotStale(t *testing.T) {
 	server, _, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
-	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "3b1c5f8", APIURL: server.URL})
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "3b1c5f8", RepoURL: fakeRepoURL(server)})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -81,7 +95,7 @@ func TestCheckReleaseResolvesLatestTagThenCommit(t *testing.T) {
 
 func TestCheckEmptyCurrentSHAIsStale(t *testing.T) {
 	server, _, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
-	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "", APIURL: server.URL})
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "", RepoURL: fakeRepoURL(server)})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -91,13 +105,43 @@ func TestCheckEmptyCurrentSHAIsStale(t *testing.T) {
 }
 
 func TestCheckRateLimitSurfacesGitHubMessage(t *testing.T) {
-	server, _, _ := fakeGitHub(t, "", "", http.StatusForbidden)
-	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", APIURL: server.URL})
+	server, _, _ := fakeGitHub(t, "v0.2.0", "", http.StatusForbidden)
+	_, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "API rate limit exceeded") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// TestCheckSnapshotDownloadStatusSurfacesError proves a failing version.txt
+// download reports the HTTP status verbatim: the release asset CDN does not
+// answer with GitHub's JSON error surface, so the status is all the error
+// can carry.
+func TestCheckSnapshotDownloadStatusSurfacesError(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", RepoURL: fakeRepoURL(server)})
+	if err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("error = %v, want the HTTP status surfaced", err)
+	}
+}
+
+// TestCheckSnapshotIgnoresAPIURL pins the split resolution contract: the
+// snapshot channel resolves through RepoURL's release download URL and
+// never consults the API, so a dead APIURL cannot break a snapshot check.
+func TestCheckSnapshotIgnoresAPIURL(t *testing.T) {
+	server, paths, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", APIURL: "http://127.0.0.1:1", RepoURL: fakeRepoURL(server)})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if got.LatestCommit != "be7002918fdc60dbdeab71d9dd17e00d3d006c56" || got.UpdateAvailable {
+		t.Fatalf("got %+v", got)
+	}
+	if len(*paths) != 1 || (*paths)[0] != "/prime-radiant-inc/evener/releases/download/snapshot/version.txt" {
+		t.Fatalf("paths = %v", *paths)
 	}
 }
 
@@ -118,8 +162,8 @@ func TestCheckReleaseEmptyTagNameErrors(t *testing.T) {
 
 func TestCheckEmptyCommitSHAErrors(t *testing.T) {
 	server, _, _ := fakeGitHub(t, "", "", http.StatusOK)
-	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "abc", APIURL: server.URL})
-	if err == nil || !strings.Contains(err.Error(), "resolved to no commit") {
+	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "abc", RepoURL: fakeRepoURL(server)})
+	if err == nil || !strings.Contains(err.Error(), "names no commit") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -128,14 +172,18 @@ func TestCheckUsesRepoURLOwnerAndName(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "abc"})
+		if r.URL.Path == "/acme/widgets/releases/download/snapshot/version.txt" {
+			fmt.Fprint(w, "abc\n")
+			return
+		}
+		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "abc", APIURL: server.URL, RepoURL: "https://github.com/acme/widgets/"})
+	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "abc", RepoURL: server.URL + "/acme/widgets"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if gotPath != "/repos/acme/widgets/commits/snapshot" {
+	if gotPath != "/acme/widgets/releases/download/snapshot/version.txt" {
 		t.Fatalf("path = %q", gotPath)
 	}
 }
@@ -144,7 +192,7 @@ func TestCheckUsesRepoURLOwnerAndName(t *testing.T) {
 // stable product User-Agent: GitHub requires a UA (403 otherwise), Go's
 // default Go-http-client/2.0 happens to satisfy that today, but a product
 // string identifies our traffic for rate-limit attribution and survives
-// transport changes. Fails today: getJSON sets only Accept.
+// transport changes.
 func TestCheckSendsProductUserAgent(t *testing.T) {
 	server, _, agents := fakeGitHub(t, "v0.2.0", "0123456789abcdef0123456789abcdef01234567", http.StatusOK)
 	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "nope", APIURL: server.URL}); err != nil {
@@ -164,10 +212,9 @@ func TestCheckSendsProductUserAgent(t *testing.T) {
 // be current: builds stamp a 7-char short SHA, so a 1-6 char prefix match
 // against the channel's full commit hides an available update on collision.
 // Such a short input must fail open (update available), never up to date.
-// Fails today: any HasPrefix match reports current.
 func TestCheckShortPrefixIsStale(t *testing.T) {
 	server, _, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
-	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70", APIURL: server.URL})
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70", RepoURL: fakeRepoURL(server)})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

@@ -9,9 +9,10 @@ import (
 // channel, so they ship only from version tags on main rather than on every
 // commit that touches the mobile trees. A pull request reports this workflow as
 // "skipping", so CI green on a PR proves nothing about these conditions, and
-// the mutable `snapshot` tag that binaries.yml force-moves on every green main
-// build must not be mistaken for a release. These tests pin the trigger shape
-// and the exact job guards, which the rest of CI structurally cannot see.
+// no mutable ref — the `snapshot` channel binaries.yml refreshes on every
+// green main build — may be mistaken for a release. These tests pin the
+// trigger shape and the exact job guards, which the rest of CI structurally
+// cannot see.
 
 const (
 	iosWorkflowPath = ".github/workflows/ios-testflight.yml"
@@ -32,7 +33,7 @@ func TestIOSWorkflowTriggersOnlyOnVersionTags(t *testing.T) {
 
 	push := workflow.On.Push
 	if !reflect.DeepEqual(push.Tags, []string{"v[0-9]*"}) {
-		t.Errorf("ios-testflight push tags = %#v, want exactly [\"v[0-9]*\"] so the snapshot tag cannot build", push.Tags)
+		t.Errorf("ios-testflight push tags = %#v, want exactly [\"v[0-9]*\"] so no non-version tag can build", push.Tags)
 	}
 	if len(push.Branches) != 0 {
 		t.Errorf("ios-testflight push branches = %#v, want none (branch pushes must not build)", push.Branches)

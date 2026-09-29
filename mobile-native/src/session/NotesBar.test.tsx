@@ -14,6 +14,19 @@ const texts = (tree: ReactTestRenderer) => tree.root.findAll((node) => String(no
 const symbol = (tree: ReactTestRenderer) => tree.root.find((node) => String(node.type) === "SymbolView");
 
 describe("the notes bar (spec 8.8)", () => {
+	// Under the nav bar's glass the bar draws clear on it; elsewhere on the page.
+	it("draws clear on the header's glass, and on the page off it", () => {
+		const fill = (onGlass?: boolean) => {
+			const tree = render(
+				<NotesBar preview={{ glyph: "person", text: "Your note" }} onPress={() => {}} onGlass={onGlass} />,
+			);
+			return tree.root.find((node) => String(node.type) === "Pressable").props.style({ pressed: false })
+				.backgroundColor;
+		};
+		expect(fill()).toBe(palette.page);
+		expect(fill(true)).toBe("transparent");
+	});
+
 	it.each([
 		["person", "Your note: keep the tests", "person"],
 		["sparkles", "Agent's note: reading the router", "sparkles"],

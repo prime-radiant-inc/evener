@@ -4,6 +4,7 @@
 // behind the bar with a transform, so the list's layout, and the reader's
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
+import { GlassView } from "expo-glass-effect";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, Text, View } from "react-native";
 import { UPDATE_NEEDED } from "../board/connectionStatus";
@@ -12,6 +13,7 @@ import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
+import { headerRowFill } from "./headerGlass";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
@@ -35,6 +37,7 @@ export function SessionHeader({
 	onChip,
 	notes,
 	find,
+	glassTop,
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
@@ -48,6 +51,11 @@ export function SessionHeader({
 	/** The find bar, in the chips' place while find is open (spec 8.7). It
 	 * stays put while the list scrolls from match to match. */
 	find?: ReactNode;
+	/** Where the nav bar is the system's glass, its height: the header then
+	 * starts at the screen's top, leaves the bar that room, and spans one
+	 * glass under the bar and its rows, the iOS pattern for a bar with a
+	 * search field or segmented control (spec 16.3). */
+	glassTop?: number;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -56,22 +64,40 @@ export function SessionHeader({
 	// The find bar never slides away: it stays put while the list scrolls from
 	// match to match, whatever hides the chips.
 	const slidAway = (hidden || typing) && find == null;
-	const offset = useSlide(slidAway ? -rowHeight : 0);
 	const hasRow = chips.length > 0 || notes != null || find != null;
-	if (status === null && !hasRow) return null;
+	// With no rows left there is nothing slid away, whatever height they last
+	// had, so the glass comes back down to the bar.
+	const offset = useSlide(slidAway && hasRow ? -rowHeight : 0);
+	const onGlass = glassTop !== undefined;
+	if (!onGlass && status === null && !hasRow) return null;
 	return (
-		// Clipping keeps the slid-away row from drawing over the nav bar, and
 		// box-none lets touches on the list's uncovered top reach the list.
-		<View pointerEvents="box-none" style={{ overflow: "hidden" }}>
+		<View pointerEvents="box-none">
+			{onGlass ? (
+				// The glass moves with the rows, so as they slide away its lower
+				// edge rises with them to the bar's.
+				<Animated.View
+					pointerEvents="none"
+					style={{
+						position: "absolute",
+						top: 0,
+						left: 0,
+						right: 0,
+						bottom: 0,
+						transform: [{ translateY: offset }],
+					}}
+				>
+					<GlassView glassEffectStyle="regular" colorScheme="auto" style={{ flex: 1 }} />
+				</Animated.View>
+			) : null}
+			{onGlass ? <View testID="nav-bar-room" pointerEvents="none" style={{ height: glassTop }} /> : null}
 			{status !== null ? (
 				<View
 					style={{
 						minHeight: 24,
 						justifyContent: "center",
 						paddingHorizontal: 16,
-						backgroundColor: palette.page,
-						// Above the chips row, which slides up behind it.
-						zIndex: 1,
+						backgroundColor: headerRowFill(onGlass, palette),
 					}}
 				>
 					<Text
@@ -95,28 +121,40 @@ export function SessionHeader({
 				</View>
 			) : null}
 			{hasRow ? (
-				<Animated.View
-					onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
-					style={{ transform: [{ translateY: offset }] }}
-					// Slid away behind the nav bar, the row is out of VoiceOver's reach.
-					accessibilityElementsHidden={slidAway}
-					importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
-				>
-					{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
-					{notes}
-				</Animated.View>
+				// Clipping at the row's own top keeps it from drawing over the
+				// status line or the bar as it slides away.
+				<View pointerEvents="box-none" style={{ overflow: "hidden" }}>
+					<Animated.View
+						onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
+						style={{ transform: [{ translateY: offset }] }}
+						// Slid away behind the nav bar, the row is out of VoiceOver's reach.
+						accessibilityElementsHidden={slidAway}
+						importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
+					>
+						{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} onGlass={onGlass} /> : null)}
+						{notes}
+					</Animated.View>
+				</View>
 			) : null}
 		</View>
 	);
 }
 
-function ChipsRow({ chips, onChip }: { chips: readonly ContextChip[]; onChip: (kind: ChipKind) => void }) {
+function ChipsRow({
+	chips,
+	onChip,
+	onGlass,
+}: {
+	chips: readonly ContextChip[];
+	onChip: (kind: ChipKind) => void;
+	onGlass: boolean;
+}) {
 	const { palette } = useColors();
 	const [viewportWidth, setViewportWidth] = useState(0);
 	const [contentWidth, setContentWidth] = useState(0);
 	const overflows = viewportWidth > 0 && contentWidth > viewportWidth;
 	return (
-		<View style={{ backgroundColor: palette.page }}>
+		<View testID="chips-row" style={{ backgroundColor: headerRowFill(onGlass, palette) }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
@@ -128,7 +166,9 @@ function ChipsRow({ chips, onChip }: { chips: readonly ContextChip[]; onChip: (k
 					<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
 				))}
 			</ScrollView>
-			{overflows ? (
+			{/* The fade is into the page color, so on the glass it would paint an
+			    opaque band; there the chips run under the glass's edge instead. */}
+			{overflows && !onGlass ? (
 				<View
 					testID="chips-fade"
 					pointerEvents="none"
