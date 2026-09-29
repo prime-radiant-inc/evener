@@ -28,7 +28,7 @@ vi.mock("react-native", async () => ({
 vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaView: "SafeAreaView",
 }));
-// ConnectionStatus, embedded in the browser's sheets, imports the connection
+// SheetStatus, embedded in the browser's sheets, imports the connection
 // provider; this suite renders only the ready state, so the banner never
 // calls the hook - but the module must load without the native expo graph
 // the provider pulls in.

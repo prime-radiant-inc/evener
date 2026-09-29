@@ -248,7 +248,7 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	const lastAddMarketplaces: {
 		current: readonly MarketplaceEntry[] | null;
 	} = { current: null };
-	// ConnectionStatus inside the modal reads the connection itself, so the
+	// SheetStatus inside the modal reads the connection itself, so the
 	// harness must say what the browser's connectionState prop says - this
 	// test does not inherit the state a sibling test leaves behind.
 	harness.connection = connection(hub, "ready");
