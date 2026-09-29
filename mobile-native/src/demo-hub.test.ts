@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { WebSocketLike } from "@evener/appwire-client";
+import type { NavigationReadParams, WebSocketLike } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
@@ -1005,22 +1005,30 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("moves a fleet session's Board row with its turn, out of Working on Stop and back on send", async () => {
 		await withHub({}, async (client) => {
 			const ref = fleetSessionRef("s-pr2138");
-			const rowState = async () => {
-				const live = await client.request("evener/navigation/read", {
+			const rowState = async (resource: { resource: string; section?: string; sectionId?: string }) => {
+				const read = await client.request("evener/navigation/read", {
 					representationVersion: 2,
-					resource: "section",
-					section: "live",
-				});
-				const entities = (live.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;
+					...resource,
+				} as NavigationReadParams);
+				const entities = (read.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;
 				return entities.find((entity) => entity.value.session_id === demoSessionId("s-pr2138"))?.value.state;
 			};
+			const liveState = () => rowState({ resource: "section", section: "live" });
+			// s-pr2138 is pinned in the release section, whose rows carry the
+			// same state, so its turn reaches that section too.
+			const pinnedState = () => rowState({ resource: "pin_section", sectionId: "release" });
 			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
 			const expectedInstanceId = thread.evener.instanceId ?? "";
-			expect(await rowState()).toBe("active");
+			expect(await liveState()).toBe("active");
+			expect(await pinnedState()).toBe("active");
 			const stopped = navigationInvalidated(client);
 			await client.request("turn/interrupt", { ref, expectedInstanceId, clientMutationId: "stop-pr2138" });
-			await stopped;
-			expect(await rowState()).toBe("idle");
+			const stoppedPayload = (await stopped) as { targets: { kind: string; sectionId?: string }[] };
+			expect(stoppedPayload.targets).toEqual(
+				expect.arrayContaining([expect.objectContaining({ kind: "pin_section", sectionId: "release" })]),
+			);
+			expect(await liveState()).toBe("idle");
+			expect(await pinnedState()).toBe("idle");
 			const restarted = navigationInvalidated(client);
 			await client.request("turn/start", {
 				ref,
@@ -1029,7 +1037,8 @@ describe("native demonstration hub's fleet sessions", () => {
 				input: [{ type: "text", text: "Keep going" }],
 			});
 			await restarted;
-			expect(await rowState()).toBe("active");
+			expect(await liveState()).toBe("active");
+			expect(await pinnedState()).toBe("active");
 		});
 	});
 

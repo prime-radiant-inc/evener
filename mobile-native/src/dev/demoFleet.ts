@@ -898,10 +898,11 @@ export interface DemoFleetOptions {
 	// offline and every one of its rows offline, for the offline frames.
 	offlineHost?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_EMPTY: serves a hub with nothing live -- zero
-	// sessions, so the manifest, sections, pin catalog, project catalogs and
-	// search all come back empty. The sources still name a host (a real empty
-	// hub is still a hub), so only offlineHost touches them. For the Board's
-	// EmptyBoard state.
+	// sessions, so the manifest, sections, project catalogs and search all come
+	// back empty. The pin catalog still names both durable pin sections, each
+	// with count 0, as the real hub keeps them. The sources still name a host
+	// (a real empty hub is still a hub), so only offlineHost touches them. For
+	// the Board's EmptyBoard state.
 	empty?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_ASK_AFTER: that many seconds after the demo
 	// hub starts, the working row s-gateway ("Design Gateway Token Command
@@ -1016,13 +1017,16 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const changedAgo = (startupMs - clock()) / 1000;
 		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, state, ago: changedAgo } : raw));
 		// The resources a real hub invalidates for one row's state change
-		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
-		// Board sections, and the row's project. Search has no invalidation
-		// target; the next search simply answers from the changed fleet.
+		// (cmd/evener-hub/navigation_service.go's commitTargetsLocked): the
+		// manifest's counts, both Board sections, the row's own pin section when
+		// it sits in one (its rows' state is part of the section's fingerprint),
+		// and the row's project. Search has no invalidation target; the next
+		// search simply answers from the changed fleet.
 		return commit(changed, (revision) => [
 			{ kind: "manifest", revision },
 			{ kind: "section", section: "live", revision },
 			{ kind: "section", section: "needs_you", revision },
+			...(target.category ? [{ kind: "pin_section" as const, sectionId: target.category, revision }] : []),
 			{ kind: "project", projectKey: projectKeyOf(target), revision },
 		]);
 	}

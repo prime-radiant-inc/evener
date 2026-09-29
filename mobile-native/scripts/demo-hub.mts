@@ -224,10 +224,10 @@ export async function createDemoHub(
 		},
 	};
 	let turnNumber = 0;
-	// The Board-row change a fleet session's turn just made, if any:
-	// setTurnRunning records it and the message handler broadcasts it after
-	// answering, the way it broadcasts an archive's invalidation.
-	let turnNavigation: NavigationInvalidatedPayload | null = null;
+	// The Board-row changes a fleet session's turns made while answering one
+	// message: setTurnRunning appends them, and the handler broadcasts every one
+	// after it answers, the way it broadcasts an archive's invalidation.
+	const turnNavigations: NavigationInvalidatedPayload[] = [];
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
@@ -361,7 +361,8 @@ export async function createDemoHub(
 			else restFleetSession(thread, "idle", Date.now());
 			// The Board follows the turn: a running turn reads Working, a
 			// stopped one Idle, so a Stop leaves the row where its thread is.
-			turnNavigation = requireFleet().setSessionState(thread.evener.ref, turn ? "working" : "idle");
+			const invalidated = requireFleet().setSessionState(thread.evener.ref, turn ? "working" : "idle");
+			if (invalidated) turnNavigations.push(invalidated);
 			return;
 		}
 		const running = turn !== undefined;
@@ -381,7 +382,6 @@ export async function createDemoHub(
 		socket.on("close", () => subscribers.delete(socket));
 		socket.on("message", (raw) => {
 			let id: unknown = null;
-			turnNavigation = null;
 			try {
 				const request = JSON.parse(raw.toString());
 				id = request.id;
@@ -755,7 +755,6 @@ export async function createDemoHub(
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
-				if (turnNavigation) broadcastNavigation(turnNavigation);
 			} catch (error) {
 				socket.send(
 					JSON.stringify({
@@ -769,6 +768,9 @@ export async function createDemoHub(
 						},
 					}),
 				);
+			} finally {
+				for (const invalidated of turnNavigations) broadcastNavigation(invalidated);
+				turnNavigations.length = 0;
 			}
 		});
 	});
