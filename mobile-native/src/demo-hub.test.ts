@@ -1299,6 +1299,34 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("stages each step on the session's own thread too, so a banner opens a session that agrees with its row", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const read = async (slug: string) =>
+			(await client.request("thread/read", { ref: fleetSessionRef(slug), includeTurns: false })).thread;
+		const sequences: number[] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				sequences.push((notification.params as { sequence: number }).sequence);
+		});
+		try {
+			await client.connect();
+			commands.write("failure\napproval\nfinish\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1, 2, 3]));
+			expect((await read("s-readintent")).status.type).toBe("systemError");
+			const landing = await read("s-landing");
+			expect(landing.status.type).toBe("active");
+			expect(landing.evener.pendingEscalations).toHaveLength(1);
+			const resume = await read("s-resume");
+			expect(resume.status.type).toBe("idle");
+			expect(resume.evener.activeTurnId).toBeUndefined();
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});

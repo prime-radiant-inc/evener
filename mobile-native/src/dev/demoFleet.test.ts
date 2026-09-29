@@ -817,6 +817,12 @@ describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
 		expect(findRow(liveRows(demo), slug)).toMatchObject(shape);
 	});
 
+	it("changes nothing, and never throws, when a step's session isn't in the fleet", () => {
+		const empty = createDemoFleet({ now: STARTUP, empty: true });
+		expect(() => empty.step("question")).not.toThrow();
+		expect(liveRows(empty)).toEqual([]);
+	});
+
 	it("finish leaves s-resume awaiting you with no question, outside Needs you", () => {
 		const demo = fleet();
 		demo.step("finish");

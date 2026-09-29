@@ -24,6 +24,7 @@ import {
 	type DemoFleetOptions,
 	type DemoStep,
 	fleetSessionRef,
+	ROW_STEPS,
 	fleetSessions,
 } from "../src/dev/demoFleet.js";
 import { createDemoDocuments, SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "../src/dev/demoSubagents.js";
@@ -37,6 +38,7 @@ import {
 	resolveEscalation,
 	restFleetSession,
 	setHumanNote,
+	stageFleetState,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
 import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
@@ -246,8 +248,18 @@ export async function createDemoHub(
 	}
 	// Plays one scripted event for every connected client.
 	function play(step: DemoStep) {
-		if (step === "question") askQuestion();
-		else broadcastNavigation(requireFleet().step(step));
+		if (step === "question") {
+			askQuestion();
+			return;
+		}
+		broadcastNavigation(requireFleet().step(step));
+		if (step === "host-offline" || step === "host-online") return;
+		// The session's own thread follows its row, as askQuestion's does.
+		const [id, state] = ROW_STEPS[step];
+		const thread = threads.get(fleetSessionRef(id));
+		if (thread?.status.type !== "active") return;
+		stageFleetState(thread, state as "failed" | "approval" | "yourmove", Date.now());
+		resync(thread);
 	}
 	// The command input: a step's name plays it, "burst" plays three at once.
 	const commandLines =

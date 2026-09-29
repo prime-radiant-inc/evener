@@ -964,7 +964,7 @@ export type DemoStep = "question" | "failure" | "approval" | "finish" | "host-of
 // The row each row step changes, and the state it moves to. An approval
 // stays "active" on the wire and joins needs_you, as the hub promotes an
 // escalation; a finish is a turn ending with the ball in your court.
-const ROW_STEPS: Record<Exclude<DemoStep, "host-offline" | "host-online">, [string, ProtoState]> = {
+export const ROW_STEPS: Record<Exclude<DemoStep, "host-offline" | "host-online">, [string, ProtoState]> = {
 	question: [ASKING_SESSION_ID, "question"],
 	failure: ["s-readintent", "failed"],
 	approval: ["s-landing", "approval"],
@@ -1012,7 +1012,14 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		}
 		const [id, state] = ROW_STEPS[name];
 		const target = sessionsList.find((raw) => raw.id === id);
-		if (!target) throw new Error(`Unknown demonstration session: ${id}`);
+		// A fleet without the row (EVENER_DEMO_FLEET_EMPTY) changes nothing,
+		// and the step still answers at a new revision, as askQuestion did.
+		if (!target)
+			return commit(sessionsList, (revision) => [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+			]);
 		// A negative `ago` puts updated_at at the moment of the change, after
 		// startup, the way a real hub stamps a row when its state changes.
 		const changedAgo = (startupMs - clock()) / 1000;
