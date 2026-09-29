@@ -256,11 +256,12 @@ let offsetHeightDescriptor: PropertyDescriptor | undefined;
 let mutationStorage: MutationOutboxIndexedDB;
 
 // jsdom computes no layout, so the transcript's scroll port reads as
-// zero-tall (scrollHeight === clientHeight === 0) - exactly the "too short to
-// fill the port" shape LoadOlderRow's geometry check fills. A pane rendered
-// here therefore pages on its own, the way a real browser's short first page
-// does. LoadOlderRow's own suite drives the geometry and the resize re-check
-// explicitly.
+// zero-tall (every scroll* property is 0). The offsetHeight stub below is what
+// gives it a rendered box, which is what scrollMetrics.shouldAutoLoadOlder
+// requires before it reads "nothing overflows" as the "too short to fill"
+// shape - so a pane rendered here pages on its own, the way a real browser's
+// short first page does. LoadOlderRow's own suite drives the geometry and the
+// resize re-check explicitly.
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -1755,10 +1756,11 @@ test("the liveness line renders in the reserved footer beside the composer, neve
 
 // --- older-turn paging failure (round-3 C3) ------------------------------
 //
-// Paging is automatic (LoadOlderRow's own IntersectionObserver sentinel), so a
-// failure has no user gesture to report back to and would be silent. It surfaces
-// INLINE, at the top of the transcript where history stops, with a Retry - not
-// as a toast, which is reserved for actions the user actually initiated.
+// Paging is automatic (LoadOlderRow's geometry fill and the near-top trigger),
+// so a failure has no user gesture to report back to and would be silent. It
+// surfaces INLINE, at the top of the transcript where history stops, with a
+// Retry - not as a toast, which is reserved for actions the user actually
+// initiated.
 test("a failed older-page fetch surfaces inline with a retry instead of failing silently", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
@@ -1785,13 +1787,13 @@ test("a failed older-page fetch surfaces inline with a retry instead of failing 
     </ClientProvider>,
   );
 
-  // No click anywhere: the sentinel's own visibility is what fetched, which is
+  // No click anywhere: the automatic paging trigger is what fetched, which is
   // the whole point of C3. The failure still has to be visible.
   await screen.findByText(/couldn't load older turns: boom/i);
   expect(screen.getByTestId("load-older-retry")).toBeTruthy();
 });
 
-test("older turns load with no click at all once the paging sentinel is in view", async () => {
+test("older turns load with no click at all once the paging trigger fires", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {

@@ -12,7 +12,7 @@
 // scrollMetrics, so both surfaces page at the same distance from the top.
 import { type RefObject, useEffect, useRef } from "react";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
-import { isNearTop } from "./scrollMetrics";
+import { isNearTop, PORT_RETRY_WINDOW_MS } from "./scrollMetrics";
 
 export interface UseNearTopLoadOlderOptions {
   listRef: RefObject<VirtualListHandle | null>;
@@ -34,12 +34,32 @@ export function useNearTopLoadOlder({ listRef, loadOlder, enabled }: UseNearTopL
 
   useEffect(() => {
     if (!enabled) return undefined;
-    const el = listRef.current?.getScrollElement();
-    if (!el) return undefined;
-    const onScroll = () => {
-      if (isNearTop(el.scrollTop)) loadOlderRef.current();
+    let detach: (() => void) | null = null;
+    const attach = (): boolean => {
+      const el = listRef.current?.getScrollElement();
+      if (el === undefined || el === null) return false;
+      const onScroll = () => {
+        if (isNearTop(el.scrollTop)) loadOlderRef.current();
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      detach = () => el.removeEventListener("scroll", onScroll);
+      return true;
     };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    // `enabled` flips in the commit that mounts the list, so the port is
+    // normally there already; the bounded retry only keeps a late mount from
+    // leaving this surface with no paging trigger at all.
+    let frame: number | null = null;
+    if (!attach()) {
+      const deadline = performance.now() + PORT_RETRY_WINDOW_MS;
+      const retry = () => {
+        if (attach() || performance.now() > deadline) return;
+        frame = requestAnimationFrame(retry);
+      };
+      frame = requestAnimationFrame(retry);
+    }
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      detach?.();
+    };
   }, [enabled, listRef]);
 }

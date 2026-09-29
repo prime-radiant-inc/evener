@@ -25,7 +25,9 @@ import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets"
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
+import { isAtBottom, readScrollMetrics } from "../session/transcript/flow/scrollMetrics";
 import { useNearTopLoadOlder } from "../session/transcript/flow/useNearTopLoadOlder";
+import { scrollToLastRow } from "../session/transcript/flow/useTranscriptScroll";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
@@ -105,6 +107,24 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
       listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
     }
   }, [turnCount]);
+
+  // A leading-edge change (older history paged in above) shifts every row's
+  // index, and the mount landing's own reconcile loop would otherwise keep
+  // re-targeting the stale one - dragging a reader who was at the bottom up
+  // above the latest. The live pane's useTranscriptScroll makes this same
+  // correction; this pane shares the geometry fill that pages, and it has no
+  // jump-to-latest pill to recover with, so it needs the correction too.
+  const firstTurnId = model?.turns[0]?.id;
+  const prevFirstTurnIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const previous = prevFirstTurnIdRef.current;
+    prevFirstTurnIdRef.current = firstTurnId;
+    if (previous === undefined || firstTurnId === undefined || firstTurnId === previous) return;
+    const el = listRef.current?.getScrollElement();
+    if (el === null || el === undefined) return;
+    if (!isAtBottom(readScrollMetrics(el))) return;
+    scrollToLastRow(listRef, turnCount);
+  }, [firstTurnId, turnCount]);
 
   // The live pane gets the near-top rule from useTranscriptScroll; this pane
   // mounts no scroll coordinator, so it registers the same rule (and the same

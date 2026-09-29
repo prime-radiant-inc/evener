@@ -30,7 +30,7 @@
 import { useEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./loadolderrow.module.css";
-import { shouldAutoLoadOlder } from "./scrollMetrics";
+import { PORT_RETRY_WINDOW_MS, shouldAutoLoadOlder } from "./scrollMetrics";
 
 export interface LoadOlderRowProps {
   // Fetches the next older page. Called automatically by the geometry check
@@ -54,12 +54,6 @@ const CLASS = {
   error: requireClass(styles.error, "loadolderrow.module.css", "error"),
   retry: requireClass(styles.retry, "loadolderrow.module.css", "retry"),
 };
-
-// How many frames to keep looking for a scroll element that has not mounted
-// yet. The row and the list render in the same commit, so the first check
-// normally finds it; this only keeps a late mount from silently disabling
-// paging for the pane's whole life.
-const PORT_RETRY_FRAMES = 5;
 
 export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlderRowProps) {
   // Latest-ref so the observer - attached once - never calls a stale
@@ -98,8 +92,9 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
     // Both halves of the geometry the decision reads are observed: the port's
     // (a pane resize) and its content's (the rows settling, or the transcript
     // shrinking below the port). Re-resolving every time matters because a
-    // transcript can hand back a different element (or none, before the list
-    // mounts) and watching a node it has moved on from would never fire again.
+    // transcript can swap either node - a new port, or a new content child
+    // inside the same port - and watching one it has moved on from would never
+    // fire again.
     const sync = () => {
       if (observer === null) return;
       const el = scrollElementRef.current();
@@ -108,13 +103,14 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
         if (content !== null) observer.unobserve(content);
         port = el;
         content = null;
-        if (port !== null) {
-          observer.observe(port);
-          const child = port.firstElementChild;
-          if (child instanceof HTMLElement) {
-            observer.observe(child);
-            content = child;
-          }
+        if (port !== null) observer.observe(port);
+      }
+      if (port !== null) {
+        const child = port.firstElementChild;
+        if (child !== content) {
+          if (content !== null) observer.unobserve(content);
+          content = child instanceof HTMLElement ? child : null;
+          if (content !== null) observer.observe(content);
         }
       }
       maybeLoad();
@@ -122,10 +118,9 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
     observer = new ResizeObserver(sync);
     sync();
     let frame: number | null = null;
-    let remaining = PORT_RETRY_FRAMES;
+    const retryDeadline = performance.now() + PORT_RETRY_WINDOW_MS;
     const retryUntilMounted = () => {
-      if (port !== null || remaining <= 0) return;
-      remaining -= 1;
+      if (port !== null || performance.now() > retryDeadline) return;
       frame = requestAnimationFrame(() => {
         sync();
         retryUntilMounted();

@@ -139,9 +139,9 @@ test("isEndBelowFold: true for a shortfall inside isAtBottom's tolerance", () =>
   expect(isEndBelowFold(shortByFour)).toBe(true);
 });
 
-// shouldAutoLoadOlder: the sentinel is always in view (see the helper), so
-// this decides whether it may load: not while the transcript overflows, but
-// yes while the page is too short to scroll - the trigger's blind spot.
+// shouldAutoLoadOlder: the geometry fill, which covers the one case the
+// near-top trigger cannot see - a page too short to scroll, so no scroll event
+// ever fires.
 test("shouldAutoLoadOlder: false once the content overflows its port", () => {
   const el = document.createElement("div");
   Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
@@ -153,6 +153,28 @@ test("shouldAutoLoadOlder: true while the content does not fill the port (nothin
   const el = document.createElement("div");
   Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+// A port with no rendered box has not been laid out yet (or is hidden):
+// "nothing overflows" is vacuously true there, and reading that as "the page
+// is too short" would load older history before the transcript is visible.
+test("shouldAutoLoadOlder: false for a port with no rendered box", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "offsetHeight", { configurable: true, value: 0 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+// Laid out but with no content height yet: an empty transcript (this is also
+// the shape jsdom's fixed zeros present, which is why the box check reads
+// offsetHeight as well as clientHeight).
+test("shouldAutoLoadOlder: true for a laid-out port with no content height", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "offsetHeight", { configurable: true, value: 500 });
   expect(shouldAutoLoadOlder(el)).toBe(true);
 });
 

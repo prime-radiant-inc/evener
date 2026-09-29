@@ -135,9 +135,8 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
   );
 });
 
-// ?paged=1: the read answers with a page plus an olderCursor, so the
-// LoadOlderRow paging sentinel mounts - the open-with-history shape the other
-// passes lack.
+// ?paged=1: the read answers with a page plus an olderCursor, so the paging row
+// mounts - the open-with-history shape the other passes lack.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
 const OLDER_CURSOR = "cursor_page_1";
 const OLDER_PAGE_TURNS = 12;
@@ -340,7 +339,7 @@ function nextFrame(): Promise<void> {
 const SETTLE_TRIPWIRE_MS = 15_000;
 
 // ?paged=1 readiness: the model AND the geometry both holding still. The bug
-// this pass exists for is the paging sentinel's prepend landing DURING the
+// this pass exists for is the paging row's prepend landing DURING the
 // mount's own settle and stranding the reader, so this wait cannot assume
 // "the mount landed, that's the end of it" - it has to let any auto-loaded
 // page land and the virtualizer's reconcile finish before it reads the
