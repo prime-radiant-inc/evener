@@ -421,6 +421,15 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if len(probes) == 0 {
 		return errors.New("no probes selected")
 	}
+	// Only the CLI harness's cliProbeArgs wires --ask-responder from a
+	// person: block; the live harness (runLiveProbe) never does, so a
+	// person-carrying task under --harness live would silently never ask.
+	// Fail up front rather than run the whole suite for nothing to answer.
+	for _, probe := range probes {
+		if cfg.harness == "live" && probe.Person != nil {
+			return fmt.Errorf("probe %q has a person: block, which --harness live does not support (it never asks); use --harness cli", probe.ID)
+		}
+	}
 	// Report the actual selected set, honestly, before any live request is
 	// launched (including the catalog session below). "--probe all" always
 	// selects every probe under --probes-dir; this makes that scope visible

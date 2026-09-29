@@ -141,6 +141,25 @@ func TestRunSuiteRefusesAnOutDirThatHoldsResults(t *testing.T) {
 	}
 }
 
+// TestRunSuiteRefusesPersonUnderLiveHarness: the live harness never wires
+// --ask-responder (only the CLI harness's cliProbeArgs does), so a task with
+// a person: block would silently never ask under --harness live. That must
+// fail loudly up front rather than run the whole suite and let the question
+// go unasked.
+func TestRunSuiteRefusesPersonUnderLiveHarness(t *testing.T) {
+	t.Parallel()
+	probesDir := t.TempDir()
+	mustWrite(t, filepath.Join(probesDir, "task.yaml"), "schema: 1\nid: prose.x\nprompt: p\nperson:\n  brief: hi\n")
+	cfg := runConfig{
+		repetitions: 1, maxRounds: 1, harness: "live", probesDir: probesDir, probeFilter: "all",
+		outDir: filepath.Join(t.TempDir(), "out"),
+	}
+	err := runSuiteWithConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "person") || !strings.Contains(err.Error(), "live") {
+		t.Fatalf("runSuiteWithConfig = %v, want a refusal naming person and the live harness", err)
+	}
+}
+
 // TestRunMatrixCommandRunsEveryPairOnTheCLIHarness: each version-model pair
 // reaches the suite runner on the CLI harness with the shared run flags. Not
 // parallel: it replaces the package's suite runner.

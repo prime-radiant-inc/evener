@@ -16,7 +16,13 @@ import (
 
 // respondSystemPromptTemplate instructs the model to play the person the
 // task's person: block describes, from the brief alone, in their own voice.
-const respondSystemPromptTemplate = `You are playing a specific person who a coding agent is asking questions. Answer only using the facts in the brief below, speaking in the person's own voice. Keep answers short -- a sentence or two per question. If the brief does not cover what is being asked, say "I don't know."
+// Answer every question: a real eval run once saw the model reply to only
+// the first of two pending questions, so the instruction spells out the
+// numbered-reply shape explicitly and ties it to the numbering
+// renderQuestionsForRespond gives each question in the user turn.
+const respondSystemPromptTemplate = `You are playing a specific person who a coding agent is asking questions. Answer only using the facts in the brief below, speaking in the person's own voice. Keep answers short -- a sentence or two per question.
+
+The user turn below lists every question, numbered. Answer every question, in that same order, as one short numbered answer per question matching its number exactly (for example: "1. ...\n2. ..."). Never skip a question or answer only the first one. If the brief does not cover what a question asks, answer that question's number with "I don't know."
 
 Brief:
 %s`
@@ -89,13 +95,18 @@ func runRespond(args []string) error {
 
 // renderQuestionsForRespond renders the pending questions as plain text for
 // the model's user turn, options and details included.
+// renderQuestionsForRespond renders the pending questions as plain text for
+// the model's user turn, numbered "1.", "2.", ... unambiguously — the same
+// numbers the system prompt tells the model to echo back, one answer per
+// question, so a multi-question round can't collapse into an answer for
+// only the first one.
 func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 	var b strings.Builder
 	for i, q := range questions {
 		if q.Header != "" {
-			fmt.Fprintf(&b, "Question %d (%s): %s\n", i+1, q.Header, q.Question)
+			fmt.Fprintf(&b, "%d. (%s) %s\n", i+1, q.Header, q.Question)
 		} else {
-			fmt.Fprintf(&b, "Question %d: %s\n", i+1, q.Question)
+			fmt.Fprintf(&b, "%d. %s\n", i+1, q.Question)
 		}
 		for _, o := range q.Options {
 			if o.Detail != "" {

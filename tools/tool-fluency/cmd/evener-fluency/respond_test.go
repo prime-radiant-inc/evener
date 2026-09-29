@@ -120,6 +120,96 @@ func TestRunRespondAnswersFromBriefWithFakeModel(t *testing.T) {
 	}
 }
 
+// TestRunRespondPromptListsAllQuestionsNumbered: with two pending
+// questions, the prompt the model receives must list both, numbered
+// unambiguously ("1. ...", "2. ..."), and the system prompt must instruct
+// the model to answer every one of them, in order, one numbered answer
+// per question — a real eval run saw the model answer only the first of
+// two questions ("What is the new name?" / "Which records should carry
+// the new name?"), replying with just the new name. The logged
+// question/answer pairs still map every question to the model's one full
+// reply (respond makes a single call covering the whole round).
+func TestRunRespondPromptListsAllQuestionsNumbered(t *testing.T) {
+	const fullReply = "1. Acme Robotics Ltd\n2. Leave invoices unchanged, per the brief."
+	adapter := &respondFakeAdapter{name: "fakeprovider", answer: fullReply}
+	installRespondFakeAdapter(t, adapter)
+
+	dir := t.TempDir()
+	briefPath := filepath.Join(dir, "brief.txt")
+	if err := os.WriteFile(briefPath, []byte("You are Alex. The new name is Acme Robotics Ltd. Invoices keep the old name."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "asks.jsonl")
+
+	stdin := `{"questions":[` +
+		`{"question":"What is the new name?","options":[{"label":"Acme Robotics Ltd","detail":"the new legal name"}]},` +
+		`{"question":"Which records should carry the new name?","options":[{"label":"All records","detail":""},{"label":"Only new records","detail":""}]}` +
+		`]}`
+
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	go func() {
+		defer w.Close()
+		w.WriteString(stdin)
+	}()
+
+	stdout := captureStdout(t, func() error {
+		return run([]string{"respond", "--brief-file", briefPath, "--model", "fakeprovider/fake-model", "--log", logPath})
+	})
+	if got := strings.TrimSpace(stdout); got != fullReply {
+		t.Fatalf("stdout = %q, want the model's full reply", got)
+	}
+
+	if len(adapter.requests) != 1 {
+		t.Fatalf("model called %d times, want 1", len(adapter.requests))
+	}
+	var promptText string
+	for _, m := range adapter.requests[0].Messages {
+		promptText += m.Text() + "\n"
+	}
+	for _, want := range []string{"1.", "What is the new name?", "2.", "Which records should carry the new name?"} {
+		if !strings.Contains(promptText, want) {
+			t.Errorf("prompt = %q, want it to contain %q", promptText, want)
+		}
+	}
+	var sawEveryQuestionInstruction bool
+	for _, m := range adapter.requests[0].Messages {
+		if strings.Contains(m.Text(), "every question") {
+			sawEveryQuestionInstruction = true
+		}
+	}
+	if !sawEveryQuestionInstruction {
+		t.Errorf("system prompt never instructed the model to answer every question: %q", promptText)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log has %d lines, want 2 (one per question)", len(lines))
+	}
+	wantQuestions := []string{"What is the new name?", "Which records should carry the new name?"}
+	for i, line := range lines {
+		var logged askExchange
+		if err := json.Unmarshal([]byte(line), &logged); err != nil {
+			t.Fatalf("log line %d %q: %v", i, line, err)
+		}
+		if logged.Question != wantQuestions[i] {
+			t.Errorf("log line %d question = %q, want %q", i, logged.Question, wantQuestions[i])
+		}
+		if logged.Answer != fullReply {
+			t.Errorf("log line %d answer = %q, want the full reply %q", i, logged.Answer, fullReply)
+		}
+	}
+}
+
 // TestRunRespondRequiresBriefFileAndModel: missing required flags fail
 // loudly instead of calling the model with nothing to say.
 func TestRunRespondRequiresBriefFileAndModel(t *testing.T) {
