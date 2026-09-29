@@ -331,12 +331,16 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)
 
-	// TRIPWIRE: the driver single-steps a frozen fake clock with
-	// hand-synchronized channels; nothing here waits on real I/O or a real
-	// clock. 30s only bounds a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	d := newStallDriver(ctx, sess)
+	// The driver single-steps a frozen fake clock with hand-synchronized
+	// channels; nothing here waits on real I/O or a real clock. The context is
+	// deliberately deadline-free: drainJobTreeWith returns ctx.Err() when the
+	// caller's context ends, so a wall-clock deadline spanning all of this
+	// test's handshake steps lets host-load scheduling turn the give-up's nil
+	// return into a spurious "context deadline exceeded" at the d.err check
+	// below (#2680). t.Context() is cancelled at test cleanup, which still
+	// releases a parked driver; the per-step "// TRIPWIRE:" selects are the
+	// hang guards.
+	d := newStallDriver(t.Context(), sess)
 	d.releaseKick(t)
 	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
