@@ -26,6 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpen } from "./nativeDisclosure";
+import { rowDisclosureId, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -1428,6 +1430,21 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	const { tree } = await mount(thread("ref-empty", "idle"));
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
+});
+
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", ordinal: 0, steps: [] };
+	act(() => setDisclosureOpen(rowDisclosureId("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
 });
 
 it("loads older history as you drag near the top", async () => {

@@ -127,6 +127,40 @@ describe("runs of steps (spec 8.2)", () => {
 	});
 });
 
+describe("run ordinals", () => {
+	const runs = (rows: TimelineRow[]) =>
+		rows.flatMap((row) =>
+			row.kind === "run" ? [{ turnId: row.turnId, ordinal: row.ordinal, first: row.steps[0]?.id }] : [],
+		);
+
+	it("numbers each turn's runs in order", () => {
+		const rows = sessionRows(
+			[
+				step("a", "read_file", { turnId: "turn_1" }),
+				user("u1", "turn_1"),
+				step("b", "grep", { turnId: "turn_1" }),
+				step("c", "shell", { turnId: "turn_2" }),
+			],
+			[],
+		);
+		expect(runs(rows)).toEqual([
+			{ turnId: "turn_1", ordinal: 0, first: "a" },
+			{ turnId: "turn_1", ordinal: 1, first: "b" },
+			{ turnId: "turn_2", ordinal: 0, first: "c" },
+		]);
+	});
+
+	// A parallel call that settles after the one beside it joins the run at
+	// its front: the run's first step changes, its place in the turn doesn't.
+	it("keeps a run's ordinal when a parallel call settles ahead of it", () => {
+		const b = step("b", "grep", { turnId: "turn_1" });
+		const before = sessionRows([step("a", "read_file", { turnId: "turn_1", state: "running" }), b], []);
+		const after = sessionRows([step("a", "read_file", { turnId: "turn_1" }), b], []);
+		expect(runs(before)).toEqual([{ turnId: "turn_1", ordinal: 0, first: "b" }]);
+		expect(runs(after)).toEqual([{ turnId: "turn_1", ordinal: 0, first: "a" }]);
+	});
+});
+
 describe("time markers", () => {
 	const turns = [
 		turn("turn_1", at(12, 0), at(12, 5)),

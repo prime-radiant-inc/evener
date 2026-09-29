@@ -61,6 +61,8 @@ export function sessionRows(
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
 	const marked = new Set<string>();
+	// Runs so far in each turn (a turn's rows can resume after another turn's).
+	const runsInTurn = new Map<string | undefined, number>();
 	for (const row of rows) {
 		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
@@ -85,10 +87,13 @@ export function sessionRows(
 		}
 		if (isStep(row)) {
 			if (!run) {
+				const ordinal = runsInTurn.get(row.turnId) ?? 0;
+				runsInTurn.set(row.turnId, ordinal + 1);
 				run = {
 					kind: "run",
 					id: `run:${row.id}`,
 					steps: [],
+					ordinal,
 					...(row.turnId ? { turnId: row.turnId } : {}),
 					...(row.transcriptKey ? { transcriptKey: row.transcriptKey } : {}),
 					...(row.position ? { position: row.position } : {}),

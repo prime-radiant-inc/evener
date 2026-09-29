@@ -1,4 +1,4 @@
-import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
+import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -9,6 +9,7 @@ import { MarkdownResponse } from "./MarkdownResponse";
 import { setDisclosureOpen, toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
+import { rowDisclosureId } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { NotificationCards } from "./session/NotificationCards";
@@ -23,21 +24,6 @@ import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
-
-// What a row's open state is stored under. A run's id is its first step's
-// row id, which changes when history records a call the overlay showed
-// (tool:call:<callId> becomes item_tool_<entry>_<part>); the call id is the
-// same on both, so a run keys by it and stays open across the change. A run
-// whose first step changes (a parallel call settling before it) still starts
-// a new key. The turn rides along, since call ids are the provider's and a
-// run never spans a turn.
-function disclosureKey(item: TimelineRow): string[] {
-	if (item.kind === "run") {
-		const callId = item.steps[0]?.detail.callId;
-		if (callId) return ["run-call", item.turnId ?? "", callId];
-	}
-	return [item.kind, item.id];
-}
 
 export function TimelineItem({
 	item,
@@ -85,16 +71,18 @@ export function TimelineItem({
 	 * decides which documents a message names and where a chip opens. */
 	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
 }) {
-	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(disclosureKey(item)));
+	const disclosureId = rowDisclosureId(hubId, sessionRef, item);
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	// Nothing collapses on its own: a run held open while it is live stays
 	// open once it finishes, until the reader folds it.
 	const heldOpen = item.kind === "run" && live && liveRunsOpen;
+	// Pinned even where the level already opens every run, or a switch to a
+	// level that doesn't would fold it.
 	useEffect(() => {
-		if (heldOpen && !expanded) setDisclosureOpen(disclosureId, true);
-	}, [heldOpen, expanded, disclosureId]);
+		if (heldOpen) setDisclosureOpen(disclosureId, true);
+	}, [heldOpen, disclosureId]);
 	const colors = useColors();
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.
