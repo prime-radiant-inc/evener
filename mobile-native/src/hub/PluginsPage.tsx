@@ -519,11 +519,16 @@ function Plugins({
 					{state.plugins === null && state.pluginsLoading ? (
 						<ActivityIndicator accessibilityLabel="Loading installed plugins" />
 					) : null}
-					{state.plugins?.length ? (
+					{/* The field stays while a filter is set, so it can always be cleared. */}
+					{state.plugins?.length || query !== "" ? (
 						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
 					) : null}
-					{state.plugins?.length === 0 ? <GroupFooter>No plugins installed on this hub.</GroupFooter> : null}
-					{state.plugins?.length && visible.length === 0 ? <GroupFooter>No matching plugins.</GroupFooter> : null}
+					{state.plugins?.length === 0 && query === "" ? (
+						<GroupFooter>No plugins installed on this hub.</GroupFooter>
+					) : null}
+					{state.plugins !== null && query !== "" && visible.length === 0 ? (
+						<GroupFooter>No matching plugins.</GroupFooter>
+					) : null}
 					{byMarketplace(visible).map(([marketplace, plugins]) => (
 						<Fragment key={marketplace}>
 							<GroupLabel machine>{marketplace}</GroupLabel>

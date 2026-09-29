@@ -2923,6 +2923,26 @@ it("filters installed plugins by plugin or marketplace", async () => {
 	expect(renderedText(tree)).toContain("No matching plugins.");
 });
 
+it("keeps the filter field while a filter is set, even once the list empties", async () => {
+	let plugins = [entry("demo-plugin")];
+	const hub = pageHub(plugins);
+	hub.on("evener/plugin/list", () => ({ plugins }));
+	const { tree } = await mountPage(hub);
+	const fields = () =>
+		tree.root.findAll(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Filter installed plugins",
+		);
+	act(() => fields()[0]?.props.onChangeText("demo"));
+	plugins = [];
+	await act(async () => {
+		hub.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+	});
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 300));
+	});
+	expect(fields()).toHaveLength(1);
+});
+
 it("reads the installed list again on coming back to the page after a read failed, with nothing to press", async () => {
 	const hub = pageHub([entry("demo-plugin")]);
 	let reads = 0;
