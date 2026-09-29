@@ -210,7 +210,11 @@ describe("transcript display", () => {
 		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
 		let refusal: unknown;
 		try {
-			demo.answer("evener/settings/transcriptDisplay/patch", { layout: "mobile", expectedRevision: 4, config: mobile.config });
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 4,
+				config: mobile.config,
+			});
 		} catch (error) {
 			refusal = error;
 		}
