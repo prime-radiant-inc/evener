@@ -452,9 +452,7 @@ describe("a run's transcript reads and session searches", () => {
 
 	it("counts the transcripts a run read", () => {
 		expect(texts([step("a", "read_transcript")])).toEqual(["read a transcript"]);
-		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual([
-			"read 2 transcripts",
-		]);
+		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual(["read 2 transcripts"]);
 	});
 
 	it("says how often a run searched sessions", () => {
