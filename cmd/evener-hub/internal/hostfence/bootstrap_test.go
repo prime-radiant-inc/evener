@@ -51,7 +51,12 @@ func (s *scriptedStore) checkIdentity(arm string, identity BootstrapIdentity) er
 	return nil
 }
 
-func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.record, nil }
+func (s *scriptedStore) Provisioning(_ string, identity BootstrapIdentity) (Provisioning, error) {
+	if err := s.checkIdentity("read", identity); err != nil {
+		return Provisioning{}, err
+	}
+	return s.record, nil
+}
 
 // PersistAttemptFence mirrors the real store's conditional write: a record that
 // already carries a fence is returned unchanged, never overwritten. foreignFence,
@@ -1262,7 +1267,10 @@ type convergingOnClaimStore struct {
 	reads int
 }
 
-func (s *convergingOnClaimStore) Provisioning(host string) (Provisioning, error) {
+func (s *convergingOnClaimStore) Provisioning(host string, identity BootstrapIdentity) (Provisioning, error) {
+	if err := s.checkIdentity("read", identity); err != nil {
+		return Provisioning{}, err
+	}
 	s.reads++
 	if s.reads >= 2 {
 		return Provisioning{
@@ -1270,7 +1278,7 @@ func (s *convergingOnClaimStore) Provisioning(host string) (Provisioning, error)
 			HelperInstalled: true, HelperVersion: HelperVersion,
 		}, nil
 	}
-	return s.scriptedStore.Provisioning(host)
+	return s.scriptedStore.Provisioning(host, identity)
 }
 
 // TestBootstrapRecoveryReplaysWhenTheOwnerFinalizedDuringTheClaim pins the
@@ -1349,5 +1357,32 @@ func TestBootstrapRefusesAStaleIdentityOnEveryWriteArm(t *testing.T) {
 				t.Fatalf("a stale arm converged helperInstalled: %+v", store.record)
 			}
 		})
+	}
+}
+
+// TestBootstrapRefusesAStaleIdentityBeforeTheClaim pins round 10: an attempt
+// entered with a registration the host no longer carries refuses at the entry
+// read — before the claim arbiter and before the probe — so a stale attempt can
+// never touch the current incarnation.
+func TestBootstrapRefusesAStaleIdentityBeforeTheClaim(t *testing.T) {
+	reAdded := BootstrapIdentity{Generation: 2, IncarnationID: "inc-2", PresenceEpoch: 2}
+	store := &scriptedStore{
+		record:        Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}, AttemptToken: "tok"},
+		boundIdentity: &reAdded,
+	}
+	quiesce := &scriptedQuiesce{report: bareClaim()}
+	probe := &scriptedProbe{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(),
+		Store: store, Runner: &scriptedRunner{}, Quiesce: quiesce, Probe: probe,
+	})
+	if _, ok := errors.AsType[*StaleAttemptError](err); !ok {
+		t.Fatalf("err = %v, want a typed StaleAttemptError from the entry read", err)
+	}
+	if quiesce.calls != 0 {
+		t.Fatalf("the claim primitive was called %d times before the identity was validated, want 0", quiesce.calls)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("the probe was called %d times before the identity was validated, want 0", probe.calls)
 	}
 }

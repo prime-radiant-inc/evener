@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HostRow, WireError } from "@evener/appwire-client";
-import { HOST_GATE_TIMEOUT_MS, HOST_POLL_MS, HostsController } from "./hostsController";
+import { HOST_GATE_TIMEOUT_MS } from "@evener/appwire-client";
+import { HOST_POLL_MS, HostsController } from "./hostsController";
 
 const row = (name: string, over: Partial<HostRow> = {}): HostRow => ({
 	name,
@@ -181,5 +182,101 @@ describe("the hosts controller", () => {
 		);
 		void hosts.connect("paradise-park");
 		expect(hosts.getSnapshot().connectErrors.has("paradise-park")).toBe(false);
+	});
+});
+
+describe("editing and removing a host (spec 12)", () => {
+	const ids = () => {
+		let next = 0;
+		return () => `m${++next}`;
+	};
+
+	it("edits a host with the pair its form opened on, then reads the hub's hosts again", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic", { generation: 4 })] });
+		await read;
+		const edit = hosts.update("attic", { address: "attic.lan" }, { generation: 4, incarnationId: "incarnation-1" });
+		await settle();
+		const sent = h.take("evener/host/update");
+		expect(sent.params).toEqual({
+			name: "attic",
+			entry: { address: "attic.lan" },
+			mutationId: "m1",
+			expectedGeneration: 4,
+			expectedIncarnationId: "incarnation-1",
+		});
+		expect(sent.opts).toEqual({ timeoutMs: HOST_GATE_TIMEOUT_MS });
+		sent.resolve({ outcome: "committed", host: row("attic", { address: "attic.lan", generation: 5 }) });
+		await settle();
+		h.take("evener/host/list").resolve({ hosts: [row("attic", { address: "attic.lan", generation: 5 })] });
+		await edit;
+		expect(hosts.getSnapshot().rows?.[0]?.address).toBe("attic.lan");
+	});
+
+	it("hands an edit the hub found stale back to its form, never retried", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic", { generation: 2 })] });
+		await read;
+		const edit = hosts.update("attic", { address: "attic.lan" }, { generation: 1, incarnationId: "incarnation-1" });
+		await settle();
+		const sent = h.take("evener/host/update");
+		expect(sent.params).toMatchObject({ expectedGeneration: 1 });
+		sent.reject(new WireError("the entry moved", -32013, { evenerErrorInfo: "stale-entry" }));
+		await expect(edit).rejects.toThrow("the entry moved");
+		expect(h.count("evener/host/update")).toBe(0);
+		expect(h.count("evener/host/list")).toBe(0);
+	});
+
+	it("hands a refused edit back to the page that asked", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic")] });
+		await read;
+		const edit = hosts.update("attic", { address: "" }, { generation: 1, incarnationId: "incarnation-1" });
+		await settle();
+		h.take("evener/host/update").reject(
+			new WireError("missing ssh destination", -32602, { evenerErrorInfo: "invalidHostField", field: "address" }),
+		);
+		await expect(edit).rejects.toThrow("missing ssh destination");
+	});
+
+	it("drops a removed host from its rows even when the read after it fails", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic"), row("studio")] });
+		await read;
+		const removal = hosts.remove("attic");
+		await settle();
+		h.take("evener/host/remove").resolve({
+			outcome: "committed",
+			host: { name: "attic", generation: 1, incarnationId: "incarnation-1" },
+		});
+		await settle();
+		h.take("evener/host/list").reject(new Error("connection lost"));
+		await removal;
+		expect(hosts.getSnapshot().rows?.map((candidate) => candidate.name)).toEqual(["studio"]);
+	});
+
+	it("removes the host it holds, then reads the hub's hosts again", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic")] });
+		await read;
+		const removal = hosts.remove("attic");
+		await settle();
+		const sent = h.take("evener/host/remove");
+		expect(sent.params).toMatchObject({ name: "attic", expectedGeneration: 1, expectedIncarnationId: "incarnation-1" });
+		sent.resolve({ outcome: "committed", host: { name: "attic", generation: 1, incarnationId: "incarnation-1" } });
+		await settle();
+		h.take("evener/host/list").resolve({ hosts: [] });
+		await removal;
+		expect(hosts.getSnapshot().rows).toEqual([]);
 	});
 });

@@ -1,4 +1,5 @@
 import {
+  HOST_CHANGED_MESSAGE,
   type HostPlan,
   type HostRow,
   type OperationRecord,
@@ -217,6 +218,45 @@ test("a validation refusal lands on the input the hub blamed", async () => {
   expect(inlineError.textContent).toMatch(/missing ssh destination/);
   expect(inlineError.id).toBe(`${addressInput.id}-error`);
   expect(within(dialog).queryByText(/Something went wrong/)).toBeNull();
+});
+
+test("an edit made while someone else changed the host is refused and never saved over theirs", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let current = row({ name: "beta", address: "b.example", generation: 1, incarnationId: "inc-1" });
+  fake.on("evener/host/list", () => ({ hosts: [current] }));
+  // The hub's guard: only the current pair may change the entry.
+  const sentGenerations: number[] = [];
+  fake.on("evener/host/update", (params: { expectedGeneration: number }) => {
+    sentGenerations.push(params.expectedGeneration);
+    if (params.expectedGeneration !== current.generation) {
+      throw new WireError('host "beta": the entry moved', -32013, {
+        evenerErrorInfo: "stale-entry",
+        binding: "generation",
+      });
+    }
+    return { outcome: "committed", host: current };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const rowEl = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog");
+
+  // Another client edits beta, and the section's poll brings it in while this
+  // dialog is still open on generation 1.
+  current = row({ name: "beta", address: "b-other.example", generation: 2, incarnationId: "inc-1" });
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+
+  await user.clear(within(dialog).getByLabelText("SSH address"));
+  await enterText(user, within(dialog).getByLabelText("SSH address"), "b2.example");
+  await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+  const alert = await within(dialog).findByRole("alert");
+  expect(alert.textContent).toBe(HOST_CHANGED_MESSAGE);
+  // One attempt, carrying the pair of the row the dialog opened on.
+  expect(sentGenerations).toEqual([1]);
 });
 
 test("an edit refusal blaming the unrendered name is form-level", async () => {

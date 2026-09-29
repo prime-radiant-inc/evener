@@ -4,9 +4,9 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ToastController } from "../Toast";
 import type { ClassifiedRow } from "./attention";
-import { archiveSession, archiveTarget, type RowActionContext, swipeActions } from "./rowActions";
+import type { NavigationActions } from "../navigationActions";
+import { archiveTarget, type JournalOutcome, journalOutcome, type RowActionContext, swipeActions } from "./rowActions";
 import type { SwipeAction } from "./SwipeRow";
-import { type BoardOrganization, organizationOpen } from "./useBoardOrganization";
 
 /** The actions a Board row's swipes can do. */
 export type SwipeRowAction = "archive" | "unarchive" | "stop" | "pin" | "more";
@@ -45,22 +45,32 @@ export function rowSwipes(
 }
 
 /** Archive or Unarchive a row through the Board's organization journal.
- * Confirmed, the toast says so and offers Undo, which makes the opposite
- * change the same way. Not confirmed, it says nothing: the journal is settled
- * once, and the row then shows wherever the hub has it. */
+ * Confirmed, the toast says so and offers `undo`. Unconfirmed, it says
+ * nothing: the journal is settled once, and the row then shows wherever the
+ * hub has it. Resolves how it went, so a change the journal didn't take can
+ * be held. */
 export async function archiveRow(
-	organization: BoardOrganization,
+	actions: NavigationActions,
 	row: NavigationSessionSummary,
 	archived: boolean,
 	toast: Pick<ToastController, "show">,
+	undo: () => void,
+): Promise<JournalOutcome> {
+	const outcome = await journalOutcome(actions, () => archiveRequest(actions, row, archived));
+	if (outcome === "confirmed")
+		toast.show({ text: archived ? "Archived" : "Unarchived", action: { label: "Undo", run: undo } });
+	else if (outcome === "unconfirmed") void actions.reconcile();
+	return outcome;
+}
+
+/** The journal request that archives or unarchives a row; none for a row
+ * the journal can't confirm (archiveTarget), which the journal then reports
+ * as not taken. */
+export function archiveRequest(
+	actions: NavigationActions,
+	row: NavigationSessionSummary,
+	archived: boolean,
 ): Promise<void> {
 	const target = archiveTarget(row);
-	const actions = organization.actions;
-	if (!target || !actions || !organizationOpen(organization)) return;
-	if (await archiveSession(actions, target, archived))
-		toast.show({
-			text: archived ? "Archived" : "Unarchived",
-			action: { label: "Undo", run: () => void archiveRow(organization, row, !archived, toast) },
-		});
-	else void actions.reconcile();
+	return target ? actions.archive(target, archived) : Promise.resolve();
 }

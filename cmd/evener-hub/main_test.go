@@ -140,6 +140,7 @@ func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -432,6 +433,7 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -492,6 +494,10 @@ func TestRunMainPrefetchSeamStaysOffline(t *testing.T) {
 	deps.startLivePrefetch = func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
 		atomic.AddInt32(&calls, 1)
 	}
+	var launchCalls int32
+	deps.startLaunchPrefetch = func(context.Context, *WebServer, time.Duration, func(func())) {
+		atomic.AddInt32(&launchCalls, 1)
+	}
 	var stderr bytes.Buffer
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
 		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
@@ -499,6 +505,9 @@ func TestRunMainPrefetchSeamStaysOffline(t *testing.T) {
 	_ = root
 	if calls != 1 {
 		t.Fatalf("runMain invoked the prefetch seam %d times, want exactly once: startup must route its live prefetch through deps.startLivePrefetch", calls)
+	}
+	if launchCalls != 1 {
+		t.Fatalf("runMain invoked the launch warm seam %d times, want exactly once: startup must route its launch warm through deps.startLaunchPrefetch", launchCalls)
 	}
 }
 
@@ -542,6 +551,7 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 		loadCredentials: credentials.LoadStore,
 		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},

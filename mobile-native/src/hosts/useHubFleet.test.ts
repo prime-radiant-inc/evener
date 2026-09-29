@@ -1,6 +1,7 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
+import { hostRow, scriptedFleet } from "./hostsTestUtils";
 import { useHubFleet, useOptionalSnapshot } from "./useHubFleet";
 
 vi.mock("react-native", async () => ({
@@ -84,4 +85,16 @@ it("reads a store's snapshot and follows it, and reads null while there is no st
 	expect(hook.result.current).toBe(2);
 	hook.unmount();
 	expect(listeners.size).toBe(0);
+});
+
+it("edits hosts with the mutation ids the sheet hands it", async () => {
+	const fleet = scriptedFleet([hostRow("attic")]);
+	const hook = renderHook(() => useHubFleet(fleet.client, fleet.newMutationId));
+	const hosts = hook.result.current.hosts;
+	await hosts?.read();
+	await hosts?.update("attic", { address: "attic.lan" }, { generation: 1, incarnationId: "attic-1" });
+	expect(fleet.calls.find((call) => call.method === "evener/host/update")?.params).toMatchObject({
+		mutationId: "mutation-1",
+	});
+	hook.unmount();
 });

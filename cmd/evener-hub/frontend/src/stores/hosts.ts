@@ -1,5 +1,5 @@
-import type { AppwireClientLike, HostEntry, HostRow, MethodTypes, RemovedRow } from "@evener/appwire-client";
-import { errorText, WireError } from "@evener/appwire-client";
+import type { AppwireClientLike, HostEntry, HostMutationPair, HostRow } from "@evener/appwire-client";
+import { committedMutationRow, createHostMutations, errorText, HOST_GATE_TIMEOUT_MS } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
 import { createSecureUUID } from "./secureUUID";
@@ -75,13 +75,14 @@ interface HostsStoreState {
    * owned the publish). `refresh` coalesces on the in-flight promise, and that
    * response was captured before the caller's refusal proved the snapshot
    * stale - a retry that waited on it would echo the same stale answer (the
-   * deploy/restart stale-entry retry is the caller; guardedMutation reads
-   * quietReRead directly for the same reason). Still a quiet read: no loading
+   * deploy/restart stale-entry retry is the caller; the guarded remove's retry
+   * re-reads through quietReRead directly for the same reason). Still a quiet read: no loading
    * flip, and a failure keeps the last snapshot.
    */
   reReadForced: () => Promise<boolean>;
   add: (entry: HostEntry) => Promise<HostRow>;
-  update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
+  /** expected is the pair of the row the edit dialog opened on. */
+  update: (params: { name: string; entry: HostEntry; expected: HostMutationPair }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;
@@ -91,10 +92,10 @@ interface HostsStoreState {
 // store - the shared port (stores/connection.ts), not a hand-rolled twin.
 const { requireClient } = connectedClientPort("hosts");
 
-// HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
-// side queues on or holds the per-host gate. A supervisor may hold that gate
-// for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
-export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
+// The guarded-mutation core and its constants live in the shared package
+// (hostMutations.ts); this store's callers keep importing them from here.
+export type { HostMutationPair } from "@evener/appwire-client";
+export { ErrorStaleEntry, HOST_GATE_TIMEOUT_MS } from "@evener/appwire-client";
 
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
@@ -185,19 +186,6 @@ async function listHosts(): Promise<{ client: AppwireClientLike; hosts: HostRow[
 // a row the registry answered — the held snapshot, or a fresh list read — never
 // from a fabricated or defaulted value.
 
-/** ErrorStaleEntry is the hub's discriminator for a guarded-mutation refusal
- * whose expected pair no longer matches the live entry (appwire.ErrorStaleEntry,
- * appwire/errors.go, spec 08 §12). The retry path matches this string, never
- * the numeric code - siblings share the code. */
-export const ErrorStaleEntry = "stale-entry";
-
-/** HostMutationPair is the (generation, incarnationId) pair a guarded mutation
- * echoes back to the hub. */
-export interface HostMutationPair {
-  generation: number;
-  incarnationId: string;
-}
-
 /** heldPairFor reads name's pair from the store's current ready snapshot, or
  * undefined when no row for the name is held. */
 function heldPairFor(name: string): HostMutationPair | undefined {
@@ -208,99 +196,16 @@ function heldPairFor(name: string): HostMutationPair | undefined {
   return { generation: row.generation, incarnationId: row.incarnationId };
 }
 
-/** pairForMutation returns the pair a guarded mutation must send for name: the
- * held row's pair, or - when no row is held - the pair a fresh list read
- * answers. A name the registry does not list has no pair to echo, so the store
- * refuses locally rather than fabricating one. */
-async function pairForMutation(name: string): Promise<HostMutationPair> {
-  const held = heldPairFor(name);
-  if (held !== undefined) return held;
-  await quietReRead();
-  const reread = heldPairFor(name);
-  if (reread === undefined) {
-    throw new Error(`host "${name}" is not listed, so there is no guarded pair to send with the request`);
-  }
-  return reread;
-}
-
-/**
- * The mutation-result union the registry's add/update/remove methods return
- * (registry spec 08 §11). The generated client types each method's result as the
- * union of its arm interfaces but publishes no alias for it, so the store names
- * the union off the catalog every arm registration rides: the three methods
- * share one registration, and naming the first of them keeps the alias in step
- * with the generated schema instead of restating the arm list by hand.
- */
-type HostMutationResult = MethodTypes["evener/host/add"]["result"];
-
-/** committedMutationRow narrows the mutation-result union to the row a
- * successful mutation committed. The union's other arms are NOT success and
- * must never read as one (registry spec 08 §11): a
- * `committed-with-teardown-failure` arm names a committed mutation whose rebind
- * needs forward repair through `evener/host/teardown-retry` with the
- * `remnantId` it carries; a `collision-dropped` arm names a foreign hub.toml
- * edit that won the race, so nothing the caller asked for landed; and a
- * keyless add's `ambiguous` arm claims no commit at all. Each throws, naming
- * what happened, so the caller's failure path runs instead of its success path.
- * The retry/recover affordances themselves are slice 16's. */
-function committedMutationRow(result: HostMutationResult, method: string): HostRow {
-  // The generated interfaces carry `outcome: string` rather than a literal
-  // union, so the arms are narrowed by the fields only one of them declares —
-  // the same discriminator the union's registration pins, read structurally.
-  if ("observedRow" in result) {
-    throw new Error(
-      `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
-    );
-  }
-  if ("droppedEntry" in result) {
-    throw new Error(
-      `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
-    );
-  }
-  if ("seam" in result) {
-    throw new Error(
-      `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
-    );
-  }
-  if (!("host" in result)) {
-    throw new Error(`${method}: the response carries no arm this client knows`);
-  }
-  return result.host as HostRow;
-}
-
-/** committedRemovedRow is committedMutationRow for `remove`, whose committed arm
- * carries the dedicated removed-row shape. */
-function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
-  committedMutationRow(result, method);
-  if (!("host" in result)) {
-    throw new Error("evener/host/remove: the response carries no committed row");
-  }
-  return result.host as RemovedRow;
-}
-
-/** guardedMutation sends a guarded update/remove and implements the UI retry
- * path the spec's `stale-entry` refusal promises: the row the caller held moved
- * under it, so the store re-reads the current pair and retries ONCE with a
- * fresh mutationId (a replay under the old key would legitimately return the
- * old receipt instead of applying the caller's intent). A second stale-entry
- * surfaces to the caller - the row moved twice, and only a person can decide
- * what to do next. */
-async function guardedMutation<T>(
-  name: string,
-  send: (pair: HostMutationPair, mutationId: string) => Promise<T>,
-): Promise<T> {
-  try {
-    return await send(await pairForMutation(name), createSecureUUID());
-  } catch (error) {
-    if (!(error instanceof WireError) || error.evenerErrorInfo !== ErrorStaleEntry) throw error;
-    // The held row is exactly what the refusal just proved stale, so the retry
-    // re-reads before it echoes anything: pairForMutation after this forced
-    // read answers the current row (or refuses locally when the registry no
-    // longer lists the name).
-    await quietReRead();
-    return await send(await pairForMutation(name), createSecureUUID());
-  }
-}
+// The shared guarded update/remove (hostMutations.ts), reading pairs off this
+// store's snapshot and re-reading through its quiet read. quietReRead, not
+// refresh: refresh coalesces on an in-flight poll whose response predates the
+// refusal it is recovering from.
+const hostMutations = createHostMutations({
+  client: requireClient,
+  heldPair: heldPairFor,
+  reRead: quietReRead,
+  newMutationId: createSecureUUID,
+});
 
 // sameRoots compares two rows' roots as lists, treating an absent value and an
 // empty one as the same: the wire omits empty optional arrays, so the two
@@ -689,23 +594,10 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   update: async (params) => {
     // The host being edited is named by the request's own field: name is
     // immutable, so it is the target rather than a value here (spec §3.1).
-    // The guarded pair travels with it: the row the store holds is what the
-    // user saw, and a refusal means that row moved (guardedMutation retries
-    // once with the re-read pair).
-    const row = await guardedMutation(params.name, async (pair, mutationId) => {
-      const result = await requireClient().request(
-        "evener/host/update",
-        {
-          name: params.name,
-          entry: params.entry,
-          mutationId,
-          expectedGeneration: pair.generation,
-          expectedIncarnationId: pair.incarnationId,
-        },
-        { timeoutMs: HOST_GATE_TIMEOUT_MS },
-      );
-      return committedMutationRow(result, "evener/host/update");
-    });
+    // The guarded pair travels with it as params.expected, the pair of the row
+    // the edit dialog opened on; a stale-entry refusal rejects unretried, so
+    // an edit someone else made meanwhile is never overwritten.
+    const row = await hostMutations.update(params);
     await reReadAfterMutation();
     return row;
   },
@@ -719,19 +611,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   remove: async (name) => {
-    await guardedMutation(name, async (pair, mutationId) => {
-      const result = await requireClient().request(
-        "evener/host/remove",
-        {
-          name,
-          mutationId,
-          expectedGeneration: pair.generation,
-          expectedIncarnationId: pair.incarnationId,
-        },
-        { timeoutMs: HOST_GATE_TIMEOUT_MS },
-      );
-      return committedRemovedRow(result, "evener/host/remove");
-    });
+    await hostMutations.remove(name);
     await reReadAfterMutation();
   },
 

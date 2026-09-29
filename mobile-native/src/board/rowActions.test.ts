@@ -6,10 +6,9 @@ import { NavigationActions } from "../navigationActions";
 import type { BoardState } from "./attention";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import {
-	archiveSession,
 	archiveTarget,
 	archivingSessionId,
-	pinSession,
+	journalOutcome,
 	type RowActionContext,
 	renameSession,
 	rowMenuActions,
@@ -31,7 +30,7 @@ const row = (over: Partial<NavigationSessionSummary> = {}): NavigationSessionSum
 	...over,
 });
 const remote = { ref: "paradise-park:x", host_id: "paradise-park", session_id: "x" };
-const online: RowActionContext = { connected: true, organizationReady: true, archived: false };
+const unarchived: RowActionContext = { archived: false };
 
 describe("the long-press menu per state (spec 7.3)", () => {
 	it.each([
@@ -39,39 +38,35 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			"a working session of this hub",
 			row({ rename: true }),
 			"working",
-			online,
+			unarchived,
 			["pin", "stop", "shutDown", "archive", "rename"],
 		],
-		["a finished one", row({ state: "awaiting" }), "finished", online, ["pin", "markRead", "shutDown", "archive"]],
-		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
+		["a finished one", row({ state: "awaiting" }), "finished", unarchived, ["pin", "markRead", "shutDown", "archive"]],
+		["one seen since", row({ state: "idle" }), "idle", unarchived, ["pin", "markUnread", "shutDown", "archive"]],
 		[
 			"one asking a question",
 			row({ state: "awaiting", ask_pending: true }),
 			"question",
-			online,
+			unarchived,
 			["pin", "shutDown", "archive"],
 		],
-		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
-		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
-		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
-		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
+		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", unarchived, ["pin", "archive"]],
+		["one working on another host", row({ ...remote }), "working", unarchived, ["pin", "stop", "shutDown", "archive"]],
+		[
+			"one on an offline host",
+			row({ ...remote, offline: true, live: false }),
+			"shutDown",
+			unarchived,
+			["pin", "archive"],
+		],
+		["a fork", row({ kind: "fork" }), "working", unarchived, ["stop", "shutDown"]],
 		[
 			"one in an archived tier",
 			row({ state: "ended", live: false }),
 			"shutDown",
-			{ ...online, archived: true },
+			{ archived: true },
 			["pin", "unarchive"],
 		],
-		[
-			"one while a change is unresolved",
-			row({ rename: true }),
-			"working",
-			{ ...online, organizationReady: false },
-			["pin", "stop", "shutDown", "rename"],
-		],
-		["a finished one offline", row({ state: "awaiting" }), "finished", { ...online, connected: false }, ["markRead"]],
-		["a seen one offline", row({ state: "idle" }), "idle", { ...online, connected: false }, ["markUnread"]],
-		["a working one offline", row(), "working", { ...online, connected: false }, []],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});
@@ -83,31 +78,30 @@ describe("swipes (spec 7.3)", () => {
 			"a working session of this hub",
 			row(),
 			"working",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
 		[
 			"a finished one",
 			row({ state: "awaiting" }),
 			"finished",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["pin", "more"] },
 		],
 		[
 			"one working on another host",
 			row({ ...remote }),
 			"working",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
 		[
 			"one in an archived tier",
 			row({ state: "ended", live: false }),
 			"shutDown",
-			{ ...online, archived: true },
+			{ archived: true },
 			{ leading: "unarchive", trailing: ["pin", "more"] },
 		],
-		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});
@@ -154,7 +148,9 @@ describe("archiving (rulings 16 and 20)", () => {
 
 	it("archives through the journal and reports it confirmed", async () => {
 		const { hub, storage, actions } = organization();
-		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(true);
+		expect(await journalOutcome(actions, () => actions.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"confirmed",
+		);
 		expect(hub.writes).toEqual([
 			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
 		]);
@@ -163,7 +159,9 @@ describe("archiving (rulings 16 and 20)", () => {
 
 	it("reports a refused archive as unconfirmed, with the journal holding it for the Board to settle", async () => {
 		const { storage, actions } = organization({ accept: false });
-		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(await journalOutcome(actions, () => actions.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"unconfirmed",
+		);
 		expect(storage.load()).not.toBeNull();
 		expect(actions.getSnapshot().uncertain).toBe(true);
 	});
@@ -178,15 +176,33 @@ describe("archiving (rulings 16 and 20)", () => {
 			async () => {},
 			busy.storage,
 		);
-		expect(await archiveSession(blocked, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(await journalOutcome(blocked, () => blocked.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"notTaken",
+		);
 		const covered = organization({ current: false });
-		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(
+			await journalOutcome(covered.actions, () => covered.actions.archive({ kind: "session", id: SESSION_ID }, true)),
+		).toBe("notTaken");
 		expect([...busy.hub.writes, ...covered.hub.writes]).toEqual([]);
+	});
+
+	it("tells a change the journal took from one it never took (a held change replays only the latter)", async () => {
+		const archive = (actions: NavigationActions) => () => actions.archive({ kind: "session", id: SESSION_ID }, true);
+		const taken = organization();
+		expect(await journalOutcome(taken.actions, archive(taken.actions))).toBe("confirmed");
+		const refused = organization({ accept: false });
+		expect(await journalOutcome(refused.actions, archive(refused.actions))).toBe("unconfirmed");
+		// Off screen, the journal's run() returns without starting the change.
+		const covered = organization({ current: false });
+		expect(await journalOutcome(covered.actions, archive(covered.actions))).toBe("notTaken");
+		expect(covered.hub.writes).toEqual([]);
 	});
 
 	it("pins select mode's sessions through the same journal", async () => {
 		const { hub, actions } = organization();
-		expect(await pinSession(actions, { sessionRef: local, sectionName: "Release" })).toBe(true);
+		expect(await journalOutcome(actions, () => actions.assignPin({ sessionRef: local, sectionName: "Release" }))).toBe(
+			"confirmed",
+		);
 		expect(hub.writes).toEqual([
 			{ method: "evener/session-pin/assign", params: { sessionRef: local, sectionName: "Release" } },
 		]);

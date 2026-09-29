@@ -194,10 +194,14 @@ type mainDeps struct {
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
 	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
-	notifyContext     func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
-	listen            func(context.Context, string, string) (net.Listener, error)
-	serve             func(context.Context, hubHTTPServer) error
-	afterWeb          func(*WebServer)
+	// startLaunchPrefetch warms the picker's cached launch model list so the
+	// first open after startup is instant: main wires it to the background
+	// runner, tests to a synchronous seam.
+	startLaunchPrefetch func(context.Context, *WebServer, time.Duration, func(func()))
+	notifyContext       func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen              func(context.Context, string, string) (net.Listener, error)
+	serve               func(context.Context, hubHTTPServer) error
+	afterWeb            func(*WebServer)
 	// stdin/stdout carry the process streams the `attach` subcommand bridges to
 	// the hub's loopback AppWire edge. The normal hub command ignores them.
 	stdin  io.Reader
@@ -206,15 +210,16 @@ type mainDeps struct {
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:        loadConfigForCommandLine,
-		ensureDirs:        cmdutil.EnsureUserConfigDirs,
-		acquireLock:       hostlock.AcquireLock,
-		newToken:          newHubToken,
-		loadAuthToken:     hubedge.LoadOrCreateAuthToken,
-		loadCredentials:   credentials.LoadStore,
-		loadRegistry:      cmdutil.LoadRegistry,
-		startLivePrefetch: startLiveModelsPrefetch,
-		notifyContext:     signal.NotifyContext,
+		loadConfig:          loadConfigForCommandLine,
+		ensureDirs:          cmdutil.EnsureUserConfigDirs,
+		acquireLock:         hostlock.AcquireLock,
+		newToken:            newHubToken,
+		loadAuthToken:       hubedge.LoadOrCreateAuthToken,
+		loadCredentials:     credentials.LoadStore,
+		loadRegistry:        cmdutil.LoadRegistry,
+		startLivePrefetch:   startLiveModelsPrefetch,
+		startLaunchPrefetch: startLaunchModelsPrefetch,
+		notifyContext:       signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
@@ -791,10 +796,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	signalCtx, cancelSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelSignals()
 	ctx, cancelBackground := context.WithCancel(signalCtx)
+	// The web server's request-triggered background work (the launch-model
+	// refresh) hangs off this context, so shutdown cancels an outstanding
+	// launch check instead of leaving it to outlive the hub.
+	web.lifetime = ctx
 	var background sync.WaitGroup
 	defer func() {
 		cancelBackground()
 		background.Wait()
+		// The refresh group is not the background group: a request-triggered
+		// refresh is started by a handler, not by startBackground, so it is
+		// awaited here. cancelBackground has already canceled its context.
+		web.waitLaunchRefreshes()
 	}()
 	startBackground := func(fn func()) {
 		background.Go(fn)
@@ -879,6 +892,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// for the prefetch, reads it as an unowned list change and refetches.
 		notifyInstanceUpdated(web.appRPC, "")
 	})
+	// Launch-model warm: run the picker's `evener launch-check --models` once
+	// at startup and every livePrefetchInterval after, so opening a model
+	// picker is served from cache instead of waiting on the live listing.
+	// Through deps so hermetic runMain tests stay offline.
+	deps.startLaunchPrefetch(ctx, web, livePrefetchInterval, startBackground)
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{

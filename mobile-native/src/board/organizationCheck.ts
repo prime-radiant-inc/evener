@@ -9,6 +9,7 @@ import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationPages } from "../navigationPages";
 import { readOrganizationNavigation } from "../organizationNavigation";
 import { refreshPinNavigation } from "../pinNavigation";
+import type { BoardOrganization } from "./useBoardOrganization";
 
 /** Reads the hub's navigation for a journaled change. Resolves true when the
  * hub shows it, false when the hub shows otherwise (the Board then shows what
@@ -41,4 +42,12 @@ export function organizationFree(
 	state: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null,
 ): boolean {
 	return !!state && !state.pending && !state.uncertain && !state.storageUnavailable;
+}
+
+/** Whether an organization change can go out now: the binding still holds
+ * and the journal is free. A menu checks again at every press, since the
+ * connection or the journal may have moved while a sheet or an alert was up.
+ * Here, apart from the hook, so a module without React can ask. */
+export function organizationOpen(organization: Pick<BoardOrganization, "isCurrent" | "actions">): boolean {
+	return organization.isCurrent() && !!organization.actions && organizationFree(organization.actions.getSnapshot());
 }

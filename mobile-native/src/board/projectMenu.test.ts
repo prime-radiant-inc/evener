@@ -10,21 +10,19 @@ const project = (over: Partial<NavigationProjectSummary> = {}): NavigationProjec
 	session_count: 0,
 	...over,
 });
-const ready = { connected: true, organizationReady: true, archived: false };
+const ready = { archived: false };
 
 describe("a project row's long-press actions (ruling 15)", () => {
 	it.each([
 		["a local, unpinned project with a working directory", project(), ready, ["pin", "archive"]],
 		["a pinned project", project({ favorite: true }), ready, ["unpin", "archive"]],
-		["a project in the Archived section", project(), { ...ready, archived: true }, ["pin", "unarchive"]],
+		["a project in the Archived section", project(), { archived: true }, ["pin", "unarchive"]],
 		["a project the hub marks archived", project({ is_archived: true }), ready, ["pin", "unarchive"]],
 		["a project with no working directory", project({ working_dir: undefined }), ready, ["pin"]],
 		["a project this hub owns, named", project({ sources: ["local"] }), ready, ["pin", "archive"]],
 		["a project another host shares", project({ sources: ["local", "paradise-park"] }), ready, []],
 		["a project only another host owns", project({ sources: ["paradise-park"] }), ready, []],
 		["the sessions outside any project", project({ key: "no-project" }), ready, []],
-		["any project while offline", project(), { ...ready, connected: false }, []],
-		["any project while organization isn't ready", project(), { ...ready, organizationReady: false }, []],
 	] as const)("%s", (_name, summary, context, expected) => {
 		expect(projectMenuActions(summary, context)).toEqual(expected);
 	});

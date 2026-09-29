@@ -25,9 +25,10 @@
 // the #1339 composer row dropped it from the composer placement, and the
 // footer mount that remained was production-dead (only the composer and
 // menu placements ever mount), so the component went rather than staying
-// dead code - the goal objective stays visible and editable through the
-// composer's own CurrentWork goal row and its inline /goal built-in; the
-// status/iterations readout the chip carried has no surface now.
+// dead code - the goal objective stays editable, and it and its live
+// status stay visible, through the composer's own CurrentWork goal row
+// and its inline /goal built-in; the iteration count the chip's popover
+// carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
