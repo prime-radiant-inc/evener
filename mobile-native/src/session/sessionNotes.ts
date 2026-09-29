@@ -196,7 +196,11 @@ export class NotesController {
 	blur(): void {
 		// Leaving the field flushes the draft now, before the debounce would.
 		this.writeDraft();
-		if (!this.unsaved()) return;
+		if (!this.unsaved()) {
+			// The hub already holds this text: keep nothing on the phone.
+			this.clearDraft();
+			return;
+		}
 		this.cancelTimer();
 		this.timer = setTimeout(() => {
 			this.timer = null;
@@ -214,11 +218,10 @@ export class NotesController {
 		this.writeDraft();
 		const nothing: SaveOutcome = { saved: false, woke: false };
 		if (!this.unsaved()) {
-			// The hub caught up with the scheduled text: nothing to save.
-			if (this.state.phase === "scheduled") {
-				this.storeDraft(undefined);
-				this.publish({ ...this.state, phase: "clean" });
-			}
+			// The hub caught up: nothing to save, and nothing to keep on the phone
+			// (the write above may have just put this text there).
+			this.clearDraft();
+			if (this.state.phase === "scheduled") this.publish({ ...this.state, phase: "clean" });
 			return Promise.resolve(nothing);
 		}
 		if (!this.options.writable()) {

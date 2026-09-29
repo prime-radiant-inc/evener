@@ -416,6 +416,27 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
 	});
 
+	it("forgets the draft once the hub catches up to the edited text, on blur (RoboRev #2769)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("A and more");
+		// Another device (or the web) wrote the same text; the hub now holds it.
+		hub.setSaved("A and more");
+		notes.blur();
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("forgets the draft once the hub catches up to the edited text, on flush (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("A and more");
+		hub.setSaved("A and more");
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
 	it("keeps the draft at once on flush, which backgrounding and closing the sheet both call", async () => {
 		const hub = harness();
 		const notes = hub.make();
