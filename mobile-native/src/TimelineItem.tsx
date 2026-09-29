@@ -32,8 +32,11 @@ import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from 
 // a new key. The turn rides along, since call ids are the provider's and a
 // run never spans a turn.
 function disclosureKey(item: TimelineRow): string[] {
-	const callId = item.kind === "run" ? item.steps[0]?.detail.callId : undefined;
-	return item.kind === "run" && callId ? ["run-call", item.turnId ?? "", callId] : [item.kind, item.id];
+	if (item.kind === "run") {
+		const callId = item.steps[0]?.detail.callId;
+		if (callId) return ["run-call", item.turnId ?? "", callId];
+	}
+	return [item.kind, item.id];
 }
 
 export function TimelineItem({
@@ -67,8 +70,7 @@ export function TimelineItem({
 	quote?: (text: string) => void;
 	/** This row is the live run: the last run of the turn in progress. */
 	live?: boolean;
-	/** The live run shows its steps, at the levels that show tool calls. At
-	 * Intent the tray shows the live step, so the run keeps to its line. */
+	/** The live run shows its steps (NativeTranscriptPresentation.liveRunsOpen). */
 	liveRunsOpen?: boolean;
 	/** The session's subagents, for a subagent row's state and activity. */
 	delegates?: readonly EvenerDelegateInfo[];

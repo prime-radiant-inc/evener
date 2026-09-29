@@ -2591,7 +2591,7 @@ export function ConversationScreen({
 							}}
 							data={timelineRows}
 							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to fold or unfold.
+							// rows changing; its row must re-render to show or hide its fold control.
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
