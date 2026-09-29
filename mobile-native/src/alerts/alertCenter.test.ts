@@ -189,6 +189,37 @@ describe("what alerts at all", () => {
 		},
 	);
 
+	it("shows a started session that waited once the banner ahead of it is answered by looking at it", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q"]);
+		// Opening q answers its banner; the started session is next.
+		alerts.setScreen({ kind: "session", ref: "q" });
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("keeps every started session that waits, and shows them in turn", () => {
+		const { alerts } = center();
+		let release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s1", title: "One", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s2", title: "Two", why: null });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s1"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s2"]);
+	});
+
 	it("drops a started session that waited once you look at it", () => {
 		const { alerts } = center();
 		const release = alerts.hold("quiet");
@@ -211,11 +242,13 @@ describe("what alerts at all", () => {
 		expect(shown(alerts)).toEqual(["a"]);
 	});
 
-	it("never lets a started session join or replace a banner that is up", () => {
+	it("never lets a started session join or replace a banner that is up, and shows it after", () => {
 		const { alerts } = center();
 		alerts.offer(session("a"));
 		alerts.offer({ kind: "started", ref: "b", title: "Session b", why: null });
 		expect(shown(alerts)).toEqual(["a"]);
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(shown(alerts)).toEqual(["b"]);
 	});
 
 	it("says nothing about the session on screen, or about a notice while the Board lists it", () => {
