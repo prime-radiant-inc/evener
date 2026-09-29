@@ -848,7 +848,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// broadcasts evener/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
-	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
+	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, web) })
 
 	// Notices watcher: re-derives the hub's notices every few seconds and
 	// broadcasts evener/notices/changed when they change (S11).
