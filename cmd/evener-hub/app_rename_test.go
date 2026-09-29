@@ -504,3 +504,24 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 		t.Fatal("rename cleared explicit resume requirement")
 	}
 }
+
+// A saved-session rename names the project bucket that owns the session, which
+// is the key navigation change hints use for that project's resources.
+func TestRenameEndedSessionHintsItsOwnProject(t *testing.T) {
+	fixture := newEndedRenameFixture(t, "project-x-0123456789")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(filepath.Dir(fixture.stateDir), "*"), filepath.Join(t.TempDir(), "index.db"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}
+	ref := appwire.Ref{SourceID: "local", ThreadID: fixture.original.ID}
+	params := appwire.ThreadNameSetParams{Ref: ref.String(), Name: "new"}
+
+	mutation, err := mutateThreadName(t.Context(), cfg, appsource.NewRegistry(), ref, params, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutation.projectKey != "project-x-0123456789" {
+		t.Fatalf("hint project key = %q, want %q", mutation.projectKey, "project-x-0123456789")
+	}
+}
