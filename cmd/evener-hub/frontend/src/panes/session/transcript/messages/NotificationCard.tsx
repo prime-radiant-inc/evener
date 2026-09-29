@@ -18,12 +18,14 @@
 // by the uniform tone treatment.
 import {
   decodeNotificationEntities,
+  entityOpenTarget,
   isValidTranscriptRef,
   type NotificationTone,
   type ParsedNotification,
   scopedDisclosureId,
 } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
+import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -228,6 +230,7 @@ export function NotificationCard({
   disclosureId?: string;
 }) {
   const context = useTranscriptRenderContext();
+  const entities = useEntityViews();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // The disclosure identity prefers the watch id for watch cards: two
@@ -263,10 +266,17 @@ export function NotificationCard({
   // the job-log surface rather than a subagent transcript - so job
   // notifications of any type never show the control. The job log stays
   // reachable through the card's job-id trigger and the activity tree.
+  // The frame's own transcript_ref, when it carries one. A REAL daemon frame
+  // does not (agent/delegate_delivery.go's delegateNotificationContent stamps
+  // delegate_id and name only), so on a live report the ref below is absent and
+  // the entity map answers the delegate id with its transcript — the same
+  // resolution the phone makes by delegate id (#3075). Unresolved leaves the
+  // control off, never a dead one.
+  const delegateView =
+    notification.type === "delegate" && notification.delegateId ? entities?.get(notification.delegateId) : undefined;
+  const resolvedRef = delegateView?.kind === "delegate" ? entityOpenTarget(delegateView)?.ref : undefined;
   const transcriptRef =
-    notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
-      ? notification.transcriptRef
-      : undefined;
+    notification.type === "delegate" ? [notification.transcriptRef, resolvedRef].find(isValidTranscriptRef) : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The title-only branch (no secondary) splits the title the same way, so
   // its chevron rides the title's final word atomically. Computed eagerly: the
