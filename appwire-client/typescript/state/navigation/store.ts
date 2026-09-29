@@ -340,6 +340,15 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
   let activeClient: NavigationClient | null = null;
   let revalidator: NavigationRevalidator | null = null;
   let unsubs: Array<() => void> = [];
+  // NOT the shared readyGenerationFence's generation (#1589, measured): this is
+  // a client-WIRING epoch, bumped by init() and reset() only, so it spans every
+  // reconnect of the wired client (init is a no-op then; see NavigationStore's
+  // init contract above), and the revalidator's resetGeneration owns a
+  // reconnect's hub-generation change. The fence's generation is
+  // readiness-scoped instead (readyGenerationFence.ts), so adopting it would
+  // fence out in-flight work a same-generation reconnect deliberately keeps
+  // (store.test.ts), and its pair-mate `ownedClient !== activeClient` has no
+  // fence analogue (teardown clears it without bumping).
   let bootEpoch = 0;
   let bootStartedEpoch = -1;
   let manifestFanout: { key: string; promise: Promise<void> } | null = null;
