@@ -147,6 +147,12 @@ export function createHubUpdateController(
         set({ applyError: "That result is stale; run a fresh check first" });
         return;
       }
+      // A development build answers applicable: false and can't install a
+      // release over itself (app_update.go refuses it), so ask for nothing.
+      if (!check.applicable) {
+        set({ applyError: "This hub is a development build, so it can't update itself" });
+        return;
+      }
       // A caller gates on updateAvailable, but apply is a controller call
       // too: never issue a download + exec restart for an up-to-date check.
       if (!check.updateAvailable) {

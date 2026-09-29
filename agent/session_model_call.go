@@ -1176,6 +1176,18 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
+	// The round's fallback chain is fixed here, at the round's model-call
+	// boundary, from a copy taken under s.mu. SetModel revalidates and may
+	// rewrite s.cfg.ModelFallbacks while this round's primary call is
+	// outstanding (a cross-surface switch drops same-surface entries), so
+	// reading the live slice in the fallback chain below both raced that write
+	// and let the in-flight round run the configuration a later switch left
+	// behind — including silently losing a fallback it was dispatched with
+	// (CORE-02). Future rounds re-snapshot, so SetModel still affects only
+	// subsequent calls.
+	s.mu.Lock()
+	fallbacks := append([]string(nil), s.cfg.ModelFallbacks...)
+	s.mu.Unlock()
 	req, attempt := singleAttemptRequestMetadata(req)
 	// Every request up to the round's first recorded assistant entry belongs
 	// to its round: the attempts, the retries and the fallback groups.
@@ -1258,14 +1270,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// wait out and returns immediately with zero retries spent (kata r128).
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
-	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err, policy) {
+	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		origEffort := requestedEffort
-		for _, fbModel := range s.cfg.ModelFallbacks {
+		for _, fbModel := range fallbacks {
 			// validateModelFallbacks keeps a cross-instance entry whose surface
 			// matches the session's (spec §7.5), so this is where the session
 			// resolver first runs for such an entry — it is no longer the
