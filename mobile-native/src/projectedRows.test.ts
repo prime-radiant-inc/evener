@@ -1355,7 +1355,14 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		detail: { output: "auditing quietly" },
 		turnId: "t1",
 	},
-	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up", attention: true, turnId: "t1" },
+	{
+		kind: "failure",
+		id: "w1",
+		title: "Low disk",
+		detail: "disk almost full — clean up",
+		attention: true,
+		turnId: "t1",
+	},
 	{
 		kind: "activity",
 		id: "unk1",
