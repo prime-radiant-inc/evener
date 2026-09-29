@@ -1245,7 +1245,12 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
 	await press(tree, "Sign in");
-	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	// The error doesn't name the provider, so the Hub opens at Providers.
+	expect(navigation.navigate).toHaveBeenCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: "hub-1" },
+		initial: false,
+	});
 });
 
 it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {

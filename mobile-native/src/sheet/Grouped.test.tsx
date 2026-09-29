@@ -60,6 +60,12 @@ describe("a row", () => {
 		const path = render(<Row label="evener" sub="/home/jesse/git/evener" machineSub />);
 		expect(merged(texts(path)[1]?.props.style).fontFamily).toBe("Menlo");
 	});
+
+	it("sets a machine label, such as a model id, in Menlo", () => {
+		const model = render(<Row label="gpt-5.6" machineLabel />);
+		expect(merged(texts(model)[0]?.props.style).fontFamily).toBe("Menlo");
+		expect(merged(texts(render(<Row label="Status" />))[0]?.props.style).fontFamily).toBeUndefined();
+	});
 });
 
 describe("a group", () => {
