@@ -1092,7 +1092,7 @@ describe("session row", () => {
     expect(label.nextElementSibling).toBeNull();
   });
 
-  test("shows a chevron for a branch session (subagent cluster) that calls info.toggle", async () => {
+  test("shows a chevron for a branch session (subagent) that calls info.toggle", async () => {
     const rowInfo = info({ hasChildren: true, expanded: false });
     render(<RailRow node={sessionRailNode(apiNode())} info={rowInfo} actions={actions()} />);
     // The chevron is deliberately aria-hidden (decorative mouse shortcut -
@@ -1192,32 +1192,6 @@ describe("session row", () => {
       />,
     );
     expect(screen.queryByTestId("favorite-star")).toBeNull();
-  });
-
-  // A CLUSTER row's own host_id is the synthetic scope prefix of its id
-  // ("cluster", from hubcore's nodeKind fallback), which names no machine -
-  // the row names its members' host instead, the same resolver the grouping
-  // uses, so it cannot sit under a devbox group wearing a "cluster" chip.
-  test("a cluster row names its members' host, not the synthetic cluster id", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(
-          apiNode({
-            row_id: "navigation:cluster:ab",
-            ref: "cluster:ab",
-            session_id: "ab",
-            kind: "cluster",
-            host_id: "cluster",
-            children: [
-              apiNode({ row_id: "navigation:devbox:m1", ref: "devbox:m1", session_id: "m1", host_id: "devbox" }),
-            ],
-          }),
-        )}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-host").textContent).toBe("devbox");
   });
 
   // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
@@ -1799,11 +1773,10 @@ describe("session row", () => {
   // act on it: the server stores one archive decision per session id, and a
   // nested row has no independent existence in the tree its parent isn't
   // already deciding for. hubcore's nodeKind (internal/hubcore/tree.go) names
-  // the three kinds that are never top-level - "subagent" (nested under its
-  // parent), "fork" (a snapshotted original nested under the branch that
-  // superseded it), and the synthetic "cluster" fold row - so `kind` is the
-  // whole test, at any depth.
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // the two kinds that are never top-level - "subagent" (nested under its
+  // parent) and "fork" (a snapshotted original nested under the branch that
+  // superseded it) - so `kind` is the whole test, at any depth.
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits Archive on a ${kind} row - only top-level sessions are archivable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, tier: "current" }))} info={info()} actions={actions()} />);
       // The unified menu is on every session row (the pane items are always
@@ -1843,8 +1816,8 @@ describe("session row", () => {
 
   // Delete is scoped like Archive: only a top-level row names a real,
   // independently deletable session (see the Archive loop's own comment
-  // above for why these three kinds are never top-level).
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // above for why these two kinds are never top-level).
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits Delete on a ${kind} row - only top-level sessions are deletable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, host_id: "local" }))} info={info()} actions={actions()} />);
       await openMenu(/actions for/i);
@@ -1853,9 +1826,8 @@ describe("session row", () => {
   }
 
   // Favorite is scoped for the same reason as Archive: session rows use the
-  // separate session-pin action, while cluster rows have a synthetic
-  // "cluster:<hex>" identity rather than an independently pinnable session.
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // separate session-pin action.
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
       await openMenu(/actions for/i);
@@ -2873,7 +2845,7 @@ describe("pin star follows the same scoping as the pin action", () => {
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
   });
 
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  for (const kind of ["subagent", "fork"]) {
     test(`a ${kind} row shows no star even when the wire carries a section assignment`, () => {
       render(
         <RailRow

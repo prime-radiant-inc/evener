@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Source } from "../../types.gen";
-import { canonicalHostId, orderedHosts, projectHostIds, sessionGroupHostId } from "./hostGrouping";
+import { canonicalHostId, orderedHosts, projectHostIds } from "./hostGrouping";
 
 const source = (id: string, label: string, online = true): Source => ({
   id,
@@ -8,7 +8,7 @@ const source = (id: string, label: string, online = true): Source => ({
   kind: id === "local" ? "local" : "appwire",
   online,
 });
-const row = (host_id: string, kind = "session", children: { host_id: string }[] = []) => ({ kind, host_id, children });
+const row = (host_id: string) => ({ host_id });
 
 test("orders this hub first, then online hosts by label, offline hosts last, and reads an unknown host as online", () => {
   const sources = [
@@ -24,12 +24,6 @@ test("orders this hub first, then online hosts by label, offline hosts last, and
     { id: "zeta", label: "Zeta", online: true },
     { id: "down", label: "Aardvark", online: false },
   ]);
-});
-
-test("places a row under its own host, and a cluster under its newest member's host", () => {
-  expect(sessionGroupHostId(row("paradise-park"))).toBe("paradise-park");
-  expect(sessionGroupHostId(row("cluster", "cluster", [{ host_id: "devbox" }, { host_id: "local" }]))).toBe("devbox");
-  expect(sessionGroupHostId(row("cluster", "cluster"))).toBe("local");
 });
 
 test("a project's hosts are its sources plus its rows' hosts, and this hub when it names neither", () => {

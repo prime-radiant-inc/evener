@@ -254,7 +254,6 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     live: "required",
     children: "required",
     branch: "optional",
-    cluster_count: "optional",
     favorite: "optional",
     rename: "optional",
     ask_pending: "optional",
@@ -469,7 +468,6 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     Array.isArray(value.children) &&
     value.children.length === 0 &&
     optional(value.branch, (item) => boundedString(item, 512)) &&
-    optional(value.cluster_count, count) &&
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&

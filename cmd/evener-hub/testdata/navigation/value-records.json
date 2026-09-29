@@ -8,7 +8,6 @@
     "state": "active",
     "kind": "session",
     "branch": "main",
-    "cluster_count": 2,
     "favorite": true,
     "rename": true,
     "live": true,

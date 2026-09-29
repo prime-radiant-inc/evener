@@ -183,7 +183,6 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
-import { useKeyboardShown } from "./useKeyboardShown";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -918,7 +917,6 @@ export function ConversationScreen({
 	// follows every re-layout of the room: a percentage cap could keep a height
 	// from before a push's header inset landed (#3248).
 	const bottomBarRoom = useBarHeight();
-	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
 	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
@@ -2479,19 +2477,17 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Typing in the composer: Next and the header's chips and note step aside,
-	// and the queue folds to one line, so the transcript keeps its room; all of
-	// it returns when the keyboard lowers.
-	// A keyboard up for a dock's field or the find bar is not this: the find
-	// bar's own field raises it with the composer still mounted. (The header
-	// keeps the find bar in place itself, whatever hides the chips.)
-	const typing = keyboardShown && composerShown && find === null;
+	// Whether a keyboard up would be the composer's (useComposerTyping). The
+	// find bar's own field raises it with the composer still mounted, so find
+	// open means it isn't. (The header keeps the find bar in place, whatever
+	// hides the chips.)
+	const composerKeyboard = composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
-	// something, you are finding in it (spec 8.3), or you are typing.
-	const nextTarget =
-		approval === null && questionBatch === null && find === null && !typing ? (queue[0] ?? null) : null;
+	// something, or you are finding in it (spec 8.3); FloatingStack steps it
+	// aside while you type.
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2516,7 +2512,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				typing={typing}
+				composerKeyboard={composerKeyboard}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
@@ -2868,7 +2864,8 @@ export function ConversationScreen({
 										/>
 									) : undefined
 								}
-								hidden={headerHiding.hidden || typing}
+								hidden={headerHiding.hidden}
+								composerKeyboard={composerKeyboard}
 								onChip={openChip}
 								notes={
 									notesPreview ? (
@@ -2897,6 +2894,7 @@ export function ConversationScreen({
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
+							composerKeyboard={composerKeyboard}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,

@@ -187,9 +187,6 @@ func pinSectionAppWireError(err error) error {
 // host's session and a bare/"local:" ref the controller's own, so one host's
 // ref can never address another source's row that shares its bare ID.
 func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested string) (pinSession, error) {
-	if strings.HasPrefix(requested, "cluster:") {
-		return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
-	}
 	ref, refErr := hubapi.ParseRef(strings.TrimSpace(requested))
 	if refErr != nil || ref.HostID == "local" {
 		return s.resolveLocalTopLevelSession(requested)

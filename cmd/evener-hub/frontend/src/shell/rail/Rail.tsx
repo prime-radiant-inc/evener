@@ -1367,8 +1367,7 @@ function NavigationRail({
       return;
     }
     if (node.kind === "session") {
-      if (node.session.kind === "cluster") handleToggle(node);
-      else openSession(node.session);
+      openSession(node.session);
       return;
     }
     handleToggle(node);
