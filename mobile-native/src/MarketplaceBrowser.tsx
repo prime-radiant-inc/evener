@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, Text, TextInput, View } from "react-native";
+import { Alert, Text, TextInput, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
@@ -28,7 +28,7 @@ import {
 	useFormError,
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
-import { SheetStatus } from "./sheet/SheetStatus";
+import { Loading, SheetStatus } from "./sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
 
@@ -340,7 +340,7 @@ export function MarketplaceBrowser({
 					/>
 				</Group>
 			) : null}
-			{busy ? <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" /> : null}
+			{busy ? <Loading label="Updating marketplace or plugin" /> : null}
 		</>
 	);
 	return (
@@ -409,7 +409,7 @@ export function MarketplaceBrowser({
 									) : null}
 								</Group>
 							) : null}
-							{browsing ? <ActivityIndicator accessibilityLabel="Loading marketplace catalog" /> : null}
+							{browsing ? <Loading label="Loading marketplace catalog" /> : null}
 							{!browsing && loaded && catalogPlugins.length === 0 ? (
 								<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
 							) : null}
@@ -452,7 +452,7 @@ export function MarketplaceBrowser({
 			) : (
 				<>
 					{state.marketplacesLoading && rows.length === 0 ? (
-						<ActivityIndicator accessibilityLabel="Loading marketplaces" />
+						<Loading label="Loading marketplaces" />
 					) : null}
 					{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
 						<GroupFooter>No marketplaces on this hub.</GroupFooter>

@@ -6,12 +6,12 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, AppState, Text, TextInput, View } from "react-native";
+import { AppState, Text, TextInput, View } from "react-native";
 import { fonts, space } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
 import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
-import { SheetStatus } from "./sheet/SheetStatus";
+import { Loading, SheetStatus } from "./sheet/SheetStatus";
 import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
 
 const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
@@ -125,7 +125,7 @@ export function ProviderSignInSheet({
 		>
 			<GroupedPage>
 				{state.phase === "idle" || state.phase === "starting" ? (
-					<ActivityIndicator accessibilityLabel="Starting sign-in" style={{ padding: 32 }} />
+					<Loading label="Starting sign-in" />
 				) : null}
 				{device && !waiting ? (
 					// A poll's error or a failed copy or open lands in a footer

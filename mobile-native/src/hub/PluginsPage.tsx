@@ -16,7 +16,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import type {
 	AnyNotification,
 	ConnectionState,
@@ -40,7 +40,7 @@ import {
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
-import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, Loading, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 
 type Segment = "installed" | "marketplaces" | "browse";
@@ -503,7 +503,7 @@ function Plugins({
 					{listError ? <GroupFooter tone="danger">{listError}</GroupFooter> : null}
 					{!selected && actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 					{state.plugins === null && state.pluginsLoading ? (
-						<ActivityIndicator accessibilityLabel="Loading installed plugins" />
+						<Loading label="Loading installed plugins" />
 					) : null}
 					{/* The field stays while a filter is set, so it can always be cleared. */}
 					{state.plugins?.length || query !== "" ? (
@@ -605,7 +605,7 @@ function Plugins({
 						</Group>
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
-						{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
+						{busy ? <Loading label="Updating plugin" /> : null}
 						<Group label="Details">
 							<Row label="Version" value={entry.version || "Unknown version"} />
 							<Row label="Marketplace" sub={entry.marketplace} machineSub />

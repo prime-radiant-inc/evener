@@ -7,7 +7,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
 	activeSourceLabel,
@@ -39,7 +39,7 @@ import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retained
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
-import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, Loading, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 
@@ -652,7 +652,7 @@ function Providers({
 									)}
 									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
-									{surface.busy && <ActivityIndicator accessibilityLabel="Updating provider" />}
+									{surface.busy && <Loading label="Updating provider" />}
 									{editingCredential ? null : (
 										<>
 											<Group label="Manage">
