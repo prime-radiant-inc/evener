@@ -903,6 +903,44 @@ it("steps the chips and note aside while you type, and brings them back when the
 	expect(session.block().props.hidden).toBe(true);
 	act(() => keyboard.hide());
 	expect(session.block().props.hidden).toBe(false);
+	tree.unmount();
+});
+
+it("keeps the nav bar while you type", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	navigation.setOptions.mockClear();
+	act(() => keyboard.show());
+	const calls = navigation.setOptions.mock.calls as [NativeStackNavigationOptions][];
+	expect(calls.some(([options]) => options.headerShown === false)).toBe(false);
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("keeps the find bar in place while you type in it", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => menuAction("Find in session").onPress());
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(false);
+	expect(session.block().props.find).toBeDefined();
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("stays hidden after the keyboard lowers when a downward scroll hid the chips", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => session.list().props.onScrollBeginDrag());
+	session.scroll(40);
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(true);
+	tree.unmount();
 });
 
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {

@@ -46,7 +46,10 @@ export function SessionHeader({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
-	const offset = useSlide(hidden && find == null ? -rowHeight : 0);
+	// The find bar never slides away: it stays put while the list scrolls from
+	// match to match, whatever hides the chips.
+	const slidAway = hidden && find == null;
+	const offset = useSlide(slidAway ? -rowHeight : 0);
 	const hasRow = chips.length > 0 || notes != null || find != null;
 	if (status === null && !hasRow) return null;
 	return (
@@ -88,6 +91,9 @@ export function SessionHeader({
 				<Animated.View
 					onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
 					style={{ transform: [{ translateY: offset }] }}
+					// Slid away behind the nav bar, the row is out of VoiceOver's reach.
+					accessibilityElementsHidden={slidAway}
+					importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
 				>
 					{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
 					{notes}
