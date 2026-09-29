@@ -142,7 +142,7 @@ export function SessionMenu({
   // Organization actions are decisions about a top-level navigation row;
   // nested and remote rows retain the exact legacy restrictions.
   const sessionModel = session ?? treeNode;
-  const nestedKinds = new Set(["subagent", "fork", "cluster"]);
+  const nestedKinds = new Set(["subagent", "fork"]);
   const organizationEligible =
     sessionModel !== undefined && sessionModel.top_level !== false && !nestedKinds.has(sessionModel.kind);
   const deleteEligible = organizationEligible && sessionModel.host_id === "local";

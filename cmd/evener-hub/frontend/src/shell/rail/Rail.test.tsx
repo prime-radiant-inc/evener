@@ -1839,33 +1839,32 @@ describe("resource-backed Rail", () => {
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");
     const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });
-    const cluster = summary({
-      ref: "local:cluster",
-      session_id: "cluster",
-      title: "Keyboard cluster",
-      kind: "cluster",
+    const parent = summary({
+      ref: "local:parent",
+      session_id: "parent",
+      title: "Keyboard parent",
       children: [child],
     });
-    installState([sectionResource("live", [cluster])]);
+    installState([sectionResource("live", [parent])]);
     render(<Rail />);
 
-    const clusterRow = screen.getByRole("treeitem", { name: /keyboard cluster/i });
-    act(() => clusterRow.focus());
-    expect(document.activeElement).toBe(clusterRow);
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
+    act(() => parentRow.focus());
+    expect(document.activeElement).toBe(parentRow);
+    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    expect(parentRow.getAttribute("aria-expanded")).toBe("true");
     const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
     expect(document.activeElement).toBe(childRow);
 
     fireEvent.keyDown(childRow, { key: "Enter" });
     expect(window.location.pathname).toBe("/s/local%3Achild");
     fireEvent.keyDown(childRow, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(clusterRow);
-    fireEvent.keyDown(clusterRow, { key: "ArrowLeft" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(parentRow);
+    fireEvent.keyDown(parentRow, { key: "ArrowLeft" });
+    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
   test("a watch row is passive: keyboard activation persists no expansion override", () => {

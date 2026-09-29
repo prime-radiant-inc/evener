@@ -1654,7 +1654,7 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	if err != nil {
 		return navigationSourceSnapshot{}, err
 	}
-	authority, subagents := s.web.favoriteAuthorityForReferences(snapshot, tree, referencedSessionIDs(favorites, assignments))
+	authority, subagents := s.web.favoriteAuthorityForReferences(snapshot, referencedSessionIDs(favorites, assignments))
 	favoriteView := hubcore.ClassifyFavoriteDecisions(favorites, authority).Presentation
 	assignments, sections = dropSubagentPins(assignments, sections, subagents)
 	pinView := classifySessionPins(assignments, authority)

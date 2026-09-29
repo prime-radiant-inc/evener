@@ -146,14 +146,6 @@ func TestNavigationLocationAliasFollowsForkContinuationToTopLevelRow(t *testing.
 			t.Fatalf("alias = %+v, want the root", location)
 		}
 	})
-	t.Run("cluster member root", func(t *testing.T) {
-		cluster := aliasNode("cluster:abcd1234", "cluster", now, aliasNode(aliasRootID, "member", now))
-		cluster.Kind = "cluster"
-		service, _ := aliasService(t, aliasParents{aliasSubID: aliasRootID}, cluster)
-		if location := aliasLocation(t, service, aliasSubID); location.TopLevelRef != "cluster:abcd1234" {
-			t.Fatalf("alias = %+v, want the cluster row as top-level row", location)
-		}
-	})
 }
 
 // Unknown, orphaned and unresolvable refs answer a real gone response, not a

@@ -1245,10 +1245,9 @@ func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
-	// mockup #10/#C rec: a run of same-titled idle sessions collapses to one
-	// cluster row; live/needs-you sessions stay un-clustered so signal isn't
-	// hidden behind a fold.
+func fuzzScenarioBuildTree_KeepsRepeatedTitlesAsPlainRows(t *testing.T) {
+	// Session titles are agentic and not expected to repeat, so equal titles
+	// are never folded: N ended same-titled sessions are N plain rows.
 	now := time.Now()
 	metas := []schema.SessionMeta{}
 	for i := range 5 {
@@ -1259,89 +1258,18 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
 		})
 	}
-	// A distinct singleton in the same project must not be swept into a cluster.
 	metas = append(metas, schema.SessionMeta{
 		ID: "01HAIKU", Name: "write a haiku", UpdatedAt: now.Add(-30 * time.Minute),
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"}})
 
-	proj := projectByName(t, buildTree(metas, nil), "evener-docs")
-	var clusters, singles int
-	for _, s := range allSessions(proj) {
-		if s.Kind == "cluster" {
-			clusters++
-			if s.ClusterCount != 5 {
-				t.Errorf("cluster count = %d, want 5", s.ClusterCount)
-			}
-			if len(s.Children) != 5 {
-				t.Errorf("cluster should hold its 5 members as children, got %d", len(s.Children))
-			}
-			if !strings.Contains(s.Title, "describe this image") {
-				t.Errorf("cluster title = %q, want the shared title", s.Title)
-			}
-		} else {
-			singles++
-		}
+	sessions := allSessions(projectByName(t, buildTree(metas, nil), "evener-docs"))
+	if len(sessions) != 6 {
+		t.Fatalf("sessions = %d, want 6 plain rows", len(sessions))
 	}
-	if clusters != 1 {
-		t.Errorf("clusters = %d, want 1", clusters)
-	}
-	if singles != 1 {
-		t.Errorf("singleton sessions = %d, want 1 (the haiku)", singles)
-	}
-}
-
-func TestBuildTreeDoesNotClusterSessionWithJobs(t *testing.T) {
-	now := time.Now()
-	metas := make([]schema.SessionMeta, 0, 4)
-	for i := range 4 {
-		metas = append(metas, schema.SessionMeta{
-			ID:        "01JOB" + string(rune('A'+i)),
-			Name:      "repeatable work",
-			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-jobs"},
-		})
-	}
-	tree := buildTree(metas, []LiveEntry{{
-		PID: 1, SessionID: metas[0].ID, Status: appwire.ThreadStatusIdle,
-		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
-	}})
-	project := projectByName(t, tree, "evener-jobs")
-	sessions := allSessions(project)
-	if len(sessions) != 4 {
-		t.Fatalf("sessions = %d, want four unclustered rows", len(sessions))
-	}
-	for _, session := range sessions {
-		if session.Kind == "cluster" {
-			t.Fatalf("session with active job was hidden in cluster %q", session.Title)
-		}
-	}
-}
-
-func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
-	// A live/needs-you member must keep all repeated-title sessions un-clustered
-	// so live signal is never hidden behind a fold.
-	now := time.Now()
-	metas := []schema.SessionMeta{}
-	for i := range 4 {
-		metas = append(metas, schema.SessionMeta{
-			ID:        "01DUP" + string(rune('A'+i)),
-			Name:      "describe this image",
-			UpdatedAt: now.Add(-time.Duration(i) * time.Minute),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
-		})
-	}
-	live := []LiveEntry{
-		{PID: 1, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
-	}
-	proj := projectByName(t, buildTree(metas, live), "evener-docs")
-	sessions := allSessions(proj)
 	for _, s := range sessions {
-		if s.Kind == "cluster" {
-			t.Fatalf("repeated titles must NOT cluster when a member is live: got cluster %q", s.Title)
+		if s.Kind != "session" || len(s.Children) != 0 {
+			t.Errorf("row %q kind=%q children=%d, want a plain session", s.ID, s.Kind, len(s.Children))
 		}
-	}
-	if len(sessions) != 4 {
-		t.Errorf("expected 4 un-clustered sessions, got %d", len(sessions))
 	}
 }
 
@@ -1552,7 +1480,7 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	total := maxSidebarSessionsPerTier + 7
 	metas := make([]schema.SessionMeta, 0, total)
 	for i := range total {
-		// Spread updated times so they don't cluster-fold (distinct titles too).
+		// Spread updated times (distinct titles too).
 		metas = append(metas, schema.SessionMeta{
 			ID:             fmt.Sprintf("01CUR%03d", i),
 			OriginalPrompt: fmt.Sprintf("current task %d", i),
@@ -2097,38 +2025,6 @@ func fuzzScenarioProjectArchiveDecisionUsesCanonicalID(t *testing.T) {
 	tree = BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, precedence, now, projects)
 	if len(tree.Projects) != 2 {
 		t.Fatalf("canonical unarchive should leave both active; got %+v", tree)
-	}
-}
-
-func fuzzScenarioTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	old := now.Add(-30 * 24 * time.Hour) // ended, clusterable
-	mk := func(id, title string) schema.SessionMeta {
-		return schema.SessionMeta{ID: id, Name: title, CreatedAt: old, UpdatedAt: old, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
-	}
-	metas := []schema.SessionMeta{
-		mk("01A", "alpha"), mk("01B", "alpha"), mk("01C", "alpha"),
-		mk("01D", "beta"), mk("01E", "beta"), mk("01F", "beta"),
-	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
-	var clusters []TreeNode
-	for _, p := range tree.ArchivedProjects {
-		for _, n := range append(append([]TreeNode{}, p.Archived...), p.Recent...) {
-			if n.Kind == "cluster" {
-				clusters = append(clusters, n)
-			}
-		}
-	}
-	if len(clusters) != 2 {
-		t.Fatalf("want 2 clusters, got %d", len(clusters))
-	}
-	if clusters[0].ID == "" || clusters[1].ID == "" || clusters[0].ID == clusters[1].ID {
-		t.Fatalf("clusters need distinct non-empty IDs: %q vs %q", clusters[0].ID, clusters[1].ID)
-	}
-	for _, c := range clusters {
-		if !strings.HasPrefix(c.ID, "cluster:") {
-			t.Fatalf("cluster ID must be cluster:<hex>, got %q", c.ID)
-		}
 	}
 }
 
