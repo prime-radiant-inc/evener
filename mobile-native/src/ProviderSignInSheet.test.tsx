@@ -2,7 +2,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignIn.testkit";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { pressable, render, renderedText } from "./renderNative.testkit";
+import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
 
 // What the sheet's native edges saw, in order: the clipboard write and the
 // in-app browser opening, so a test can tell which came first.
@@ -170,7 +170,9 @@ it("repeats the code while it waits for you to finish signing in", async () => {
 	await press(tree, "Open sign-in page");
 	const text = renderedText(tree);
 	expect(text).toContain("Waiting for you to finish signing in…");
-	expect(text).toContain(`Your code is ${device.userCode}.`);
+	// The code is its own run inside the sentence, read as one line.
+	const sentences = tree.root.findAll((node) => String(node.type) === "Text").map((node) => textOf(node));
+	expect(sentences).toContain(`Your code is ${device.userCode}.`);
 	expect(text).not.toContain("The sign-in page opens inside the app");
 	expect(text).not.toMatch(NO_OLD_CONTROLS);
 });
@@ -192,6 +194,22 @@ it("closes the page and says Signed in when the hub's poll comes back authorized
 	expect(pressable(tree, "Done")).toBeDefined();
 	expect(pressable(tree, "Cancel")).toBeUndefined();
 	expect(pressable(tree, "Open sign-in page")).toBeUndefined();
+});
+
+it("can still copy the code while it waits, when the automatic copy failed", async () => {
+	edges.copies = false;
+	const { tree } = await mount(deviceFlow);
+	await press(tree, "Open sign-in page");
+	expect(renderedText(tree)).toContain("Waiting for you to finish signing in…");
+	expect(renderedText(tree)).toContain("Could not copy the code. Select it to copy manually.");
+	// The code can be selected, and copied again.
+	const code = tree.root.findAll(
+		(node) => String(node.type) === "Text" && node.props.selectable === true && node.props.children === device.userCode,
+	);
+	expect(code).toHaveLength(1);
+	edges.copies = true;
+	await press(tree, "Copy code");
+	expect(renderedText(tree)).toContain("Code copied");
 });
 
 it("drops a copy failure once the sign-in lands", async () => {

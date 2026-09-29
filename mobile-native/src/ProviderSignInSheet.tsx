@@ -99,7 +99,7 @@ export function ProviderSignInSheet({
 		setRedirect("");
 		void flow.start();
 	};
-	const body = (text: string) => (
+	const body = (text: ReactNode) => (
 		<Text
 			allowFontScaling={allowFontScaling}
 			style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 21 * scale }}
@@ -178,7 +178,17 @@ export function ProviderSignInSheet({
 						<>
 							<Section centered>
 								{statement("Waiting for you to finish signing in…")}
-								{body(`Your code is ${device.userCode}.`)}
+								{/* The code stays selectable, and copyable, in case the
+								    automatic copy failed. */}
+								{body(
+									<>
+										Your code is{" "}
+										<Text selectable style={{ fontFamily: fonts.mono }}>
+											{device.userCode}
+										</Text>
+										.
+									</>,
+								)}
 							</Section>
 							<Group>
 								<Row
@@ -186,6 +196,14 @@ export function ProviderSignInSheet({
 									tone="accent"
 									onPress={() => {
 										void openDevicePage();
+									}}
+								/>
+								<Row
+									label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+									tone="accent"
+									onPress={() => {
+										setLocalError(null);
+										void copy(device.flowId, device.userCode);
 									}}
 								/>
 							</Group>
