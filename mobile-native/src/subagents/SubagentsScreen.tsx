@@ -10,9 +10,10 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
+import { space } from "../design/tokens";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
-import { SearchField } from "../sheet/Grouped";
+import { SearchField } from "../sheet/SearchField";
 import { Toast, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
@@ -169,7 +170,9 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
 			{tally.total > SEARCH_AFTER || query !== "" ? (
-				<SearchField label="Filter subagents" query={query} onChange={setQuery} />
+				<View style={{ marginHorizontal: space.margin }}>
+					<SearchField label="Filter subagents" value={query} onChangeText={setQuery} />
+				</View>
 			) : null}
 			{notice ? (
 				<Text allowFontScaling={allowFontScaling} style={quiet}>
