@@ -17,7 +17,6 @@ vi.mock("react-native", async () => ({
 	Platform: platform,
 	useColorScheme: () => mode.scheme,
 }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-clipboard", () => clipboard);
 

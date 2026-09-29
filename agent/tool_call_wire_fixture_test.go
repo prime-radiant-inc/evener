@@ -196,6 +196,7 @@ func withoutState(res tool.ExecResult) tool.ExecResult {
 var (
 	// identifier.NewJobID: job_, the owner session's id, _, a 12-character suffix.
 	toolWireJobID       = regexp.MustCompile(`job_[0-9A-Za-z]{22}_[0-9A-Za-z]{12}`)
+	toolWireWatchID     = regexp.MustCompile(`watch_[0-9A-Za-z]{22}`)
 	toolWireWaitElapsed = regexp.MustCompile(`the foreground wait ended after [\d.]+s`)
 )
 
@@ -299,24 +300,37 @@ func jobTarget(t *testing.T, callID string) func(map[string]tool.ExecResult) map
 	}
 }
 
+// watchOperation runs a job_watch operation on the watch an earlier call's
+// result names, failing the test when that result names none.
+func watchOperation(t *testing.T, operation, callID string) func(map[string]tool.ExecResult) map[string]any {
+	return func(earlier map[string]tool.ExecResult) map[string]any {
+		watch := toolWireWatchID.FindString(earlier[callID].Output)
+		if watch == "" {
+			t.Fatalf("%s's result names no watch: %q", callID, earlier[callID].Output)
+		}
+		return map[string]any{"operation": operation, "watch_id": watch}
+	}
+}
+
 // withFixedJob records a shell result whose command became a job: the
 // wait's elapsed seconds fixed, and its state (which carries the elapsed
 // milliseconds) left off. Its job id is fixed with every other in the items
-// (toolWireJobsNumbered).
+// (toolWireIDsNumbered).
 func withFixedJob(res tool.ExecResult) tool.ExecResult {
 	res.Output = toolWireWaitElapsed.ReplaceAllString(res.Output, "the foreground wait ended after 2s")
 	return withoutState(res)
 }
 
-// toolWireJobsNumbered fixes each distinct job id in text as job_fixture_1,
-// job_fixture_2, … in the order the ids first appear, so two jobs stay two.
-func toolWireJobsNumbered(text string) string {
+// toolWireIDsNumbered fixes each distinct id the pattern matches in text as
+// <kind>_fixture_1, <kind>_fixture_2, … in the order the ids first appear,
+// so two jobs (or watches) stay two.
+func toolWireIDsNumbered(text string, pattern *regexp.Regexp, kind string) string {
 	numbers := map[string]string{}
-	return toolWireJobID.ReplaceAllStringFunc(text, func(id string) string {
+	return pattern.ReplaceAllStringFunc(text, func(id string) string {
 		if fixed, ok := numbers[id]; ok {
 			return fixed
 		}
-		fixed := fmt.Sprintf("job_fixture_%d", len(numbers)+1)
+		fixed := fmt.Sprintf("%s_fixture_%d", kind, len(numbers)+1)
 		numbers[id] = fixed
 		return fixed
 	})
@@ -454,6 +468,33 @@ func TestToolCallWireFixtures(t *testing.T) {
 			note:      "The same job stopped.",
 			argsFrom:  jobTarget(t, "call_shell_timeout"),
 			normalize: withFixedJobClock,
+		},
+		{
+			id: "call_watch_timer", tool: "job_watch",
+			note: "A one-shot timer the session set for itself, with a note.",
+			args: map[string]any{"operation": "create", "source": "self", "after_seconds": 300, "note": "Check the deploy finished."},
+		},
+		{
+			id: "call_watch_repeat", tool: "job_watch",
+			note: "A repeating timer, with a note.",
+			args: map[string]any{"operation": "create", "source": "self", "repeat_seconds": 600, "note": "Look over the open PRs."},
+		},
+		{
+			id: "call_watch_list", tool: "job_watch",
+			note:      "The session's watches, both timers (each created at the fixture's start).",
+			args:      map[string]any{"operation": "list"},
+			normalize: withFixedTimes,
+		},
+		{
+			id: "call_watch_inspect", tool: "job_watch",
+			note:      "The one-shot timer, inspected (created at the fixture's start).",
+			argsFrom:  watchOperation(t, "inspect", "call_watch_timer"),
+			normalize: withFixedTimes,
+		},
+		{
+			id: "call_watch_clear", tool: "job_watch",
+			note:     "The same timer, cleared.",
+			argsFrom: watchOperation(t, "clear", "call_watch_timer"),
 		},
 		{
 			id: "call_read_transcript", tool: "read_transcript",
@@ -651,10 +692,11 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Cwd:   toolWireCwd,
 		Notes: notes,
 		Items: toolWireRelocated(t, items, func(text string) string {
-			// A job's id is random, in a call's arguments as in its result.
-			// This runs once over every item, so a job keeps its number
-			// from call to call.
-			text = toolWireJobsNumbered(strings.ReplaceAll(text, dir, toolWireCwd))
+			// A job's id and a watch's are random, in a call's arguments as in
+			// its result. This runs once over every item, so each keeps its
+			// number from call to call.
+			text = toolWireIDsNumbered(strings.ReplaceAll(text, dir, toolWireCwd), toolWireJobID, "job")
+			text = toolWireIDsNumbered(text, toolWireWatchID, "watch")
 			return toolWireRepoRelocated(repo, text)
 		}),
 	}, "the AppWire package and mobile-native tests that read it")

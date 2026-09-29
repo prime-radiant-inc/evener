@@ -215,6 +215,60 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A timer's note is what it will say when it fires; the footer's id and
+	// seconds are already in the line.
+	it("shows a watch's note, not the footer around it", () => {
+		expect(real("call_watch_timer")).toEqual([{ kind: "output", text: "Check the deploy finished.", lines: 1 }]);
+		expect(real("call_watch_repeat")).toEqual([{ kind: "output", text: "Look over the open PRs.", lines: 1 }]);
+	});
+
+	// A watch listing reads as the web's rows: each watch's state, id and
+	// trigger in words, never the producer's after_seconds grammar.
+	it("shows a watch list's rows in words", () => {
+		expect(real("call_watch_list")).toEqual([
+			{
+				kind: "output",
+				text: "watching  watch_fixture_1  in 5m · this session\nwatching  watch_fixture_2  every 10m · this session",
+				lines: 2,
+			},
+		]);
+	});
+
+	// The line names the watch and its state; the evidence is its trigger in
+	// words, and its note.
+	it("shows an inspected watch's trigger in words, and its note", () => {
+		expect(real("call_watch_inspect")).toEqual([
+			{ kind: "output", text: "in 5m · this session\nCheck the deploy finished.", lines: 2 },
+		]);
+	});
+
+	// A clear, and a create with no note, say everything in their line.
+	it("shows nothing more for a watch clear or a create with no note", () => {
+		expect(real("call_watch_clear")).toEqual([]);
+		const noteless = {
+			watch_id: "watch_x",
+			source: "self",
+			watching: true,
+			after_seconds: 300,
+			replaced_existing: false,
+			fired: false,
+		};
+		const item = {
+			...toolWireStep("call_watch_timer"),
+			raw: noteless,
+			output: "[watching self · watch_id watch_x · after 300s]",
+		};
+		expect(stepEvidence({ label: "job_watch", detail: activityDetail(item) })).toEqual([]);
+	});
+
+	// A result this build can't read shows what the tool printed.
+	it("shows a watch result it can't read as the tool printed it", () => {
+		const item = { ...toolWireStep("call_watch_timer"), raw: undefined };
+		expect(stepEvidence({ label: "job_watch", detail: activityDetail(item) })).toEqual([
+			{ kind: "output", text: item.output ?? "", lines: 1 },
+		]);
+	});
+
 	// A listing's status and bracketed codes read as words; a command in its
 	// label keeps its own spelling.
 	it("shows a job list with its codes in words", () => {
@@ -225,6 +279,20 @@ describe("each tool's evidence, as the tools print it", () => {
 			"job_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]",
 			"",
 			"2 job(s).",
+		]);
+	});
+
+	// A delegate's stop adds provenance lines under its footer; they read as
+	// printed, a scratch path's underscores and all.
+	it("shows a delegate stop's provenance as printed, only its footer's codes in words", () => {
+		const output =
+			"[delegate job_x · cancelled · cancelled_by_request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]";
+		expect(stepEvidence({ label: "job_stop", detail: { output } })).toEqual([
+			{
+				kind: "output",
+				text: "[delegate job_x · cancelled · cancelled by request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]",
+				lines: 3,
+			},
 		]);
 	});
 

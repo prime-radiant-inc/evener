@@ -15,7 +15,6 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => {}) }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
 function markdownStyle(markdown: string) {

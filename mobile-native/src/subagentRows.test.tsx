@@ -34,7 +34,6 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
@@ -45,6 +44,11 @@ const T0 = Date.parse("2026-09-28T20:00:00Z");
 // by identity, which a fresh parse would never match.
 const CALLS = subagentCallItems();
 const DELEGATE_CALL_ID = CALLS.find((item) => item.toolName === "delegate")?.callId;
+// The recorded delegate call's receipt: the subagent it launched, which the
+// hub reports under the same id and transcript.
+const RECEIPT = JSON.parse(
+	CALLS.find((item) => item.callId === DELEGATE_CALL_ID && item.output !== undefined)?.output ?? "{}",
+) as { delegate_id: string; transcript_ref: string };
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -53,7 +57,7 @@ type Level = (typeof LEVELS)[number];
 // so only the call id can find it.
 function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 	return {
-		delegateId: "dlg_1",
+		delegateId: RECEIPT.delegate_id,
 		type: "delegate",
 		lifecycle: "stable",
 		phase: "running",
@@ -65,7 +69,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 		description: "Fix race in tree settle",
 		originToolCallId: DELEGATE_CALL_ID,
 		originItemId: "fc_provider_item_1",
-		transcriptRef: "local:child1",
+		transcriptRef: RECEIPT.transcript_ref,
 		runStartedAt: new Date(T0).toISOString(),
 		latestActivityAt: new Date(T0 + 50_000).toISOString(),
 		...over,
@@ -154,7 +158,7 @@ describe("a subagent row", () => {
 		expect(renderedText(tree)).toContain("Fix race in tree settle");
 		expect(renderedText(tree)).toMatch(/running · \d+/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
+		expect(openSubagent).toHaveBeenCalledWith("local:02wMz5TxvChildSession1", "Fix race in tree settle");
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {

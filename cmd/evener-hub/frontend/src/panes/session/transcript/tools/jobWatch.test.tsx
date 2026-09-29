@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
+import { type ToolWireCall, toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
@@ -47,6 +48,17 @@ const TIMER_RAW = {
   replaced_existing: false,
   fired: false,
 };
+
+// Each recorded job_watch call (agent/testdata/toolwire), as its row's line.
+test.each<[ToolWireCall, string]>([
+  ["call_watch_timer", "Remind me in 5m · Check the deploy finished."],
+  ["call_watch_repeat", "Reminds every 10m · Look over the open PRs."],
+  ["call_watch_list", "Listed watches (2 active)"],
+  ["call_watch_inspect", "Inspected watch_fixture_1 · watching"],
+  ["call_watch_clear", "Cleared watch_fixture_1"],
+])("says the recorded %s as %s", (call, summary) => {
+  expect(toolRendererFor("job_watch").summary(toolWireStep(call))).toBe(summary);
+});
 
 // --- §A: create timer -----------------------------------------------------
 
