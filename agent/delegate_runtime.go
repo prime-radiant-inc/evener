@@ -1185,6 +1185,44 @@ func (s *Session) forgetSettledDelegateAttentionWarnings() {
 	}
 }
 
+// maxDelegateAttentionRestoreFailures is how many consecutive restores of a
+// delegate's cold runtime may fail, for a reason that is not transient,
+// before the drive stops retrying: about five minutes at the retry's 5s cap.
+const maxDelegateAttentionRestoreFailures = 64
+
+func (s *Session) delegateAttentionGiveUpAfter() int {
+	if n := s.cfg.testOnly.delegateAttentionGiveUpAfter; n > 0 {
+		return n
+	}
+	return maxDelegateAttentionRestoreFailures
+}
+
+// giveUpDelegateAttention stops retrying delegateID's restore and hands its
+// owed attention to the root, the way attention a closed ancestor fences off
+// is escalated: the root receives each message under its original identity
+// and the source is resolved, so nothing is dropped. When the hand-over
+// fails too, the delegate is parked, out of the drive until new attention
+// arrives or the daemon restarts, and the session says so once at every
+// level and in the daemon log.
+func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
+	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
+	if !ok {
+		return
+	}
+	escalateErr := s.escalateOneUnreachableDelegateAttention(plan)
+	if escalateErr == nil {
+		s.delegateController.delegateAttentionRestored(delegateID)
+		slog.Warn("delegate attention handed to the root after repeated restore failures", "session", s.ID(), "delegate", delegateID, "error", restoreErr.Error())
+		return
+	}
+	s.delegateController.parkDelegateAttention(delegateID)
+	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_error", restoreErr.Error(), "handover_error", escalateErr.Error())
+	cause, _, _ := strings.Cut(escalateErr.Error(), "\n")
+	data := warningDataFromError("Evener stopped trying to deliver a subagent's message: it could not be restored or handed to this session ("+runetrim.Cut(cause, maxDelegateAttentionCauseBytes)+"). It will try again when the subagent has something new, or after a restart.", escalateErr)
+	data.Code = events.WarningCodeDelegateAttentionUndeliverable
+	s.emit(events.EventWarning, data)
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
@@ -1204,9 +1242,13 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
+		if !isTransientStartFailure(err) && s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+			s.giveUpDelegateAttention(delegateID, err)
+		}
 		s.scheduleStableDelegateAttentionRetry()
 		return true
 	}
+	s.delegateController.delegateAttentionRestored(delegateID)
 	s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)

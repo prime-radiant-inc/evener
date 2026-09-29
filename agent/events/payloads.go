@@ -597,6 +597,12 @@ const WarningCodeContextBudget = "context_budget"
 // code.
 const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 
+// WarningCodeDelegateAttentionUndeliverable identifies the notice that a
+// delegate's owed attention could be neither delivered nor handed to the
+// root, so Evener stopped trying until new attention arrives or the daemon
+// restarts. Clients show it at every level.
+const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
