@@ -1239,6 +1239,31 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	return (delegateRuntime{owner: s}).create(ctx, args)
 }
 
+// childStartBlocked reports whether the resident child session childID is
+// busy in a way that stops it taking a new generation. A child with no
+// resident runtime isn't blocked: the send restores it.
+func (s *Session) childStartBlocked(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	sub := s.subagentForChild(childID)
+	if sub == nil {
+		return false
+	}
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	return sub.startBlockedLocked()
+}
+
+// finishUnlaunchedGeneration fails a generation whose input was admitted but
+// whose run never launched (launch_failed). No run finalizes its runtime, so
+// it reports that runtime quiesced itself, whether or not the finish
+// succeeded, or the delegate would stay refused as still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, runtime *Session, cause error) (delegateMutationPlans, error) {
+	plans, err := c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+	return plans, errors.Join(err, c.ReportFinalizationQuiesced(lease, runtime))
+}
+
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
 	s := runtime.owner
 	failed := func(err error) stableDelegateSendOutcome {
@@ -1340,6 +1365,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
 		observer(committedChildID)
 	}
+	// A resident child still busy (a drive in flight, a finalizer the
+	// controller has heard is quiesced but that hasn't let go) can't take this
+	// generation. Refuse before the commit, so nothing is written: with the
+	// send-start claim held no new drive can begin, so this sees the child as
+	// the commit would. The post-commit check below stays as the backstop.
+	if s.childStartBlocked(committedChildID) {
+		_ = s.delegateController.AbortStart(reservation)
+		return failed(errDelegateTargetBusy)
+	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
 		waiter, err = s.delegateController.RegisterInlineWaiter(reservation)
@@ -1422,7 +1456,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// otherwise pass this guard, set driving, and start a run concurrently with
 	// the in-flight finalizer (or the disposer that owns disposeGated). Read
 	// both under the same sub.mu hold as running/driving.
-	blocked := sub.running || sub.driving || sub.finalizing || sub.disposeGated
+	blocked := sub.startBlockedLocked()
 	if !blocked {
 		sub.driving = true
 	}
@@ -1479,10 +1513,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
-		if finishErr != nil {
-			finishErr = errors.Join(finishErr, s.delegateController.ReportFinalizationQuiesced(started.lease, sub.sess))
-		}
+		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, sub.sess, err)
 		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
