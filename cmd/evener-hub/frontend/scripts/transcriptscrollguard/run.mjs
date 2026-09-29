@@ -53,6 +53,42 @@ const BOOT = {
   bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
 };
 
+// The open-with-history contract every transcript surface holds when a read
+// answers with a page plus an olderCursor: the paging row mounted, the page
+// actually overflowing its port (a collapsed pane would otherwise settle
+// trivially at a 0px bottom gap and read as a pass), no older page auto-fetched
+// on open, and the landing held at the true bottom across the settle. The live
+// Session also renders the jump pill; the read-only pane renders none, so it
+// passes `pill: false` to skip that one check.
+function assertPagedOpenContract(failures, label, m, { pill = true } = {}) {
+  if (m.errors.length > 0) failures.push(`page errors on the ${label} paged open: ${m.errors.join("; ")}`);
+  if (m.clientHeight <= 0) {
+    failures.push(
+      `${label} opened with no scroll-port height (clientHeight ${m.clientHeight}) - the pane did not render`,
+    );
+  } else if (m.scrollHeight <= m.overflowRequired) {
+    failures.push(
+      `${label} opened without overflowing its port (scrollHeight ${m.scrollHeight}, clientHeight ${m.clientHeight}, ` +
+        `needs more than ${m.overflowRequired}) - the open contract was not exercised`,
+    );
+  }
+  if (!m.pagingRow) failures.push(`the ${label} opened without the paging row mounted (no olderCursor?)`);
+  if (m.listCalls !== 0) {
+    failures.push(
+      `opening the ${label} with older history auto-loaded ${m.listCalls} older page(s); the automatic paging trigger ` +
+        "must wait until the reader approaches the top of history",
+    );
+  }
+  if (pill && m.pill) failures.push(`${label} shows the jump pill right after opening a session with older history`);
+  if (Math.abs(m.bottomGap) > BOTTOM_TOLERANCE_PX) {
+    failures.push(
+      `${label} opened ${m.bottomGap}px off the true bottom after opening a session with older history ` +
+        `(scrollTop ${m.scrollTop}, scrollHeight ${m.scrollHeight}, clientHeight ${m.clientHeight}) - the landing did ` +
+        "not hold across the settle",
+    );
+  }
+}
+
 async function main() {
   let guard;
   try {
@@ -244,22 +280,7 @@ async function main() {
       const opened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      if (opened.errors.length > 0) failures.push(`page errors on the paged open: ${opened.errors.join("; ")}`);
-      if (!opened.pagingRow) failures.push("the paged pass opened without the paging row mounted (no olderCursor?)");
-      if (opened.listCalls !== 0) {
-        failures.push(
-          `opening a session with older history auto-loaded ${opened.listCalls} older page(s); the automatic ` +
-            "paging trigger must wait until the reader approaches the top of history",
-        );
-      }
-      if (opened.pill) failures.push("pill is visible right after opening a session with older history");
-      if (Math.abs(opened.bottomGap) > BOTTOM_TOLERANCE_PX) {
-        failures.push(
-          `opened ${opened.bottomGap}px off the true bottom after opening a session with older history ` +
-            `(scrollTop ${opened.scrollTop}, scrollHeight ${opened.scrollHeight}, clientHeight ${opened.clientHeight}) ` +
-            "- the landing did not hold across the settle",
-        );
-      }
+      assertPagedOpenContract(failures, "the live session", opened);
       // Paging must still work: a real scroll to the top drives the near-top
       // trigger and fetches a page. Runs whatever the open assertions found, so
       // a failure there cannot hide this coverage. (One request per tick is
@@ -283,23 +304,7 @@ async function main() {
       const readOnlyOpened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      if (readOnlyOpened.errors.length > 0)
-        failures.push(`page errors on the read-only paged open: ${readOnlyOpened.errors.join("; ")}`);
-      if (!readOnlyOpened.pagingRow)
-        failures.push("the read-only paged pass opened without the paging row mounted (no olderCursor?)");
-      if (readOnlyOpened.listCalls !== 0) {
-        failures.push(
-          `opening the read-only transcript pane with older history auto-loaded ${readOnlyOpened.listCalls} older ` +
-            "page(s); the automatic paging trigger must wait until the reader approaches the top of history",
-        );
-      }
-      if (Math.abs(readOnlyOpened.bottomGap) > BOTTOM_TOLERANCE_PX) {
-        failures.push(
-          `the read-only transcript pane opened ${readOnlyOpened.bottomGap}px off the true bottom after opening a ` +
-            `session with older history (scrollTop ${readOnlyOpened.scrollTop}, scrollHeight ${readOnlyOpened.scrollHeight}, ` +
-            `clientHeight ${readOnlyOpened.clientHeight}) - the landing did not hold across the settle`,
-        );
-      }
+      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { pill: false });
     } finally {
       await clearViewportOverride(send);
       page.close();
