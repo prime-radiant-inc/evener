@@ -1,8 +1,19 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { StyleSheet, Text, View, type AccessibilityActionEvent, type AccessibilityActionInfo } from "react-native";
+import {
+	Modal,
+	Pressable,
+	ScrollView,
+	StyleSheet,
+	Text,
+	View,
+	type AccessibilityActionEvent,
+	type AccessibilityActionInfo,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { copyText } from "./clipboard";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
-import { useColors } from "./ui";
+import { Action, styles as uiStyles, useColors } from "./ui";
 
 // Last posted height per source, so a FlatList remount shows the right-sized
 // placeholder while the WebView re-initializes (spec: Known trade-offs).
@@ -48,6 +59,33 @@ function mermaidTheme(colors: ReturnType<typeof useColors>): Record<string, stri
 	};
 }
 
+// The fullscreen viewer's WebView: the same page and lockdown as the inline
+// one, but sized to fill the modal and posted mode:"zoom" so the page scales
+// the diagram to the taller viewport instead of measuring a fit height.
+function ZoomWebView({ source, theme }: { source: string; theme: Record<string, string> }) {
+	const webView = useRef<WebView>(null);
+	const pageReady = useRef(false);
+
+	function handleMessage(event: WebViewMessageEvent) {
+		const message = parsePageMessage(event.nativeEvent.data);
+		if (message?.type !== "ready") return;
+		pageReady.current = true;
+		webView.current?.postMessage(JSON.stringify({ type: "render", source, theme, mode: "zoom" }));
+	}
+
+	return (
+		<WebView
+			ref={webView}
+			originWhitelist={["about:blank"]}
+			source={{ html: MERMAID_PAGE_HTML }}
+			onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+			scrollEnabled={true}
+			style={styles.webView}
+			onMessage={handleMessage}
+		/>
+	);
+}
+
 export const MermaidDiagram = memo(function MermaidDiagram({
 	source,
 	accessibilityActions,
@@ -61,6 +99,8 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	const webView = useRef<WebView>(null);
 	const [height, setHeight] = useState<number | null>(heightCache.get(source) ?? null);
 	const [failed, setFailed] = useState(false);
+	const [open, setOpen] = useState(false);
+	const [showSource, setShowSource] = useState(false);
 
 	// The page renders under one fixed element id, so two render messages in
 	// flight would race. renderInFlight guards the post; renderQueued coalesces
@@ -132,28 +172,79 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 		);
 	}
 	return (
-		<View
-			accessible={true}
-			accessibilityLabel="Diagram"
-			accessibilityActions={accessibilityActions}
-			onAccessibilityAction={onAccessibilityAction}
-			style={{ height: height ?? PLACEHOLDER_HEIGHT }}
-		>
-			<WebView
-				ref={webView}
-				originWhitelist={["about:blank"]}
-				source={{ html: MERMAID_PAGE_HTML }}
-				onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
-				scrollEnabled={false}
-				style={styles.webView}
-				onMessage={handleMessage}
-			/>
-		</View>
+		<>
+			{/* The inline WebView owns its region (the spec's documented dead
+			zone), so the Pressable adds only the tap: VoiceOver keeps the inner
+			accessible View as its element. */}
+			<Pressable accessible={false} testID="mermaid-open" onPress={() => setOpen(true)}>
+				<View
+					accessible={true}
+					accessibilityLabel="Diagram"
+					accessibilityActions={accessibilityActions}
+					onAccessibilityAction={onAccessibilityAction}
+					style={{ height: height ?? PLACEHOLDER_HEIGHT }}
+				>
+					<WebView
+						ref={webView}
+						originWhitelist={["about:blank"]}
+						source={{ html: MERMAID_PAGE_HTML }}
+						onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+						scrollEnabled={false}
+						style={styles.webView}
+						onMessage={handleMessage}
+					/>
+				</View>
+			</Pressable>
+			{open ? (
+				<Modal
+					visible={true}
+					animationType="slide"
+					presentationStyle="fullScreen"
+					onRequestClose={() => setOpen(false)}
+				>
+					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
+						<View style={styles.header}>
+							<Action onPress={() => setShowSource((showing) => !showing)}>
+								{showSource ? "Show diagram" : "Show source"}
+							</Action>
+							<View style={styles.headerRight}>
+								<Action onPress={() => void copyText(source)}>Copy source</Action>
+								<Action onPress={() => setOpen(false)}>Done</Action>
+							</View>
+						</View>
+						{showSource ? (
+							<ScrollView contentContainerStyle={styles.sourceContainer}>
+								<Text style={[styles.source, { color: colors.text }]}>{source}</Text>
+							</ScrollView>
+						) : (
+							<ZoomWebView source={source} theme={mermaidTheme(colors)} />
+						)}
+					</SafeAreaView>
+				</Modal>
+			) : null}
+		</>
 	);
 });
 
 const styles = StyleSheet.create({
+	fill: { flex: 1 },
 	webView: { flex: 1, backgroundColor: "transparent" },
+	header: {
+		...uiStyles.row,
+		paddingHorizontal: 16,
+		paddingVertical: 8,
+	},
+	headerRight: {
+		flexDirection: "row",
+		alignItems: "center",
+		gap: 12,
+	},
+	sourceContainer: { padding: 16 },
+	source: {
+		fontFamily: "Menlo",
+		fontSize: 13,
+		lineHeight: 18,
+	},
 	fallback: {
 		borderWidth: 1,
 		borderRadius: 10,

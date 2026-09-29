@@ -4,6 +4,7 @@ import { MermaidDiagram } from "./MermaidDiagram";
 import { render, renderedText } from "./renderNative.testkit";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
+const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn() }));
 // The repo's native-module seam: react-native's surface becomes inert host
 // elements, and the WebView a host string, so a test reads OUR wiring (props,
 // message handling, fallback state) rather than the native view itself.
@@ -12,6 +13,8 @@ vi.mock("react-native", async () => ({
 	useColorScheme: () => mode.scheme,
 }));
 vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
+vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("expo-clipboard", () => clipboard);
 
 /** A wrapper found the way VoiceOver finds it, by its accessibility label. */
 function wrapper(tree: ReactTestRenderer, label: string) {
@@ -118,4 +121,68 @@ it("carries accessibility actions on its own accessible wrapper", () => {
 	const node = wrapper(tree, "Diagram");
 	expect(node.props.accessible).toBe(true);
 	expect(node.props.accessibilityActions).toBe(actions);
+});
+
+it("opens a fullscreen viewer on press, with source toggle and copy", () => {
+	clipboard.setStringAsync.mockClear();
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />);
+	// Closed by default: no modal, only the inline WebView.
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+
+	act(() => {
+		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
+	});
+	// The modal opens full-screen hosting a second WebView.
+	const modal = tree.root.findByType("Modal" as never);
+	expect(modal.props.presentationStyle).toBe("fullScreen");
+	expect(modal.props.animationType).toBe("slide");
+	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(2);
+
+	// "Show source" swaps the WebView for the source text.
+	act(() => {
+		tree.root.findByProps({ accessibilityLabel: "Show source" }).props.onPress();
+	});
+	expect(renderedText(tree)).toContain("graph TD; A-->B");
+	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
+
+	// "Copy source" runs the clipboard.
+	act(() => {
+		tree.root.findByProps({ accessibilityLabel: "Copy source" }).props.onPress();
+	});
+	expect(clipboard.setStringAsync).toHaveBeenCalledWith("graph TD; A-->B");
+
+	// "Done" closes the modal.
+	act(() => {
+		tree.root.findByProps({ accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});
+
+it("gives the fullscreen WebView the same lockdown and posts mode:zoom", () => {
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	act(() => {
+		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
+	});
+	const webviews = tree.root.findAllByType("WebView" as never);
+	expect(webviews).toHaveLength(2);
+	const fullscreen = webviews[1];
+	expect(fullscreen.props.originWhitelist).toEqual(["about:blank"]);
+	expect(fullscreen.props.onShouldStartLoadWithRequest({ url: "about:blank" })).toBe(true);
+	expect(fullscreen.props.onShouldStartLoadWithRequest({ url: "https://evil.example" })).toBe(false);
+	expect(fullscreen.props.scrollEnabled).toBe(true);
+
+	act(() => {
+		fullscreen.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+	});
+	expect(JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+		type: "render",
+		source: "graph TD; A-->B",
+		mode: "zoom",
+	});
 });
