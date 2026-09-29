@@ -236,8 +236,15 @@ export class MutationOutboxIndexedDB {
   // its user's click, before its durable write issues. Fresh from the
   // ref's sequence row, never cached - another tab's Stop is invisible to
   // this tab's memory.
+  //
+  // NON-RECOVERING by rule: this read is the click's first storage
+  // observation, so a first-open timeout must reject it (the send fails) rather
+  // than retry and return an epoch that a Stop committed during the stall has
+  // since bumped - which would let the row commit submitting after the Stop.
   async readStopEpoch(targetRef: string): Promise<number> {
-    return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
+    return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef), {
+      recovering: false,
+    });
   }
 
   async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
@@ -263,25 +270,32 @@ export class MutationOutboxIndexedDB {
   async getOutboxWithStopEpoch(
     clientMutationId: string,
   ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
-    return this.#read([OUTBOX_STORE, SEQUENCE_STORE], async (transaction) => {
-      // The sequences row is keyed by the ref, which only the row read
-      // carries - but the pair must issue together, so the epoch side reads
-      // the whole (small, one-row-per-ref) store and picks the row's ref out of
-      // the result. It issues first so the pair cannot leave one request's
-      // promise unconsumed: the row read is the request a caller's abort seam
-      // can strike mid-creation, and both promises always meet Promise.all.
-      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
-      const recordRequest = requestResult<MutationOutboxRecord | undefined>(
-        transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
-      );
-      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
-      // A missing row has no ref to fence; the caller's absent-row refusal
-      // never reaches the comparison.
-      const stopEpoch = record
-        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
-        : 0;
-      return { record, stopEpoch };
-    });
+    // NON-RECOVERING for the same reason as readStopEpoch: this is the Retry
+    // click's first storage observation, so a timeout must fail the release
+    // rather than retry into a post-Stop epoch.
+    return this.#read(
+      [OUTBOX_STORE, SEQUENCE_STORE],
+      async (transaction) => {
+        // The sequences row is keyed by the ref, which only the row read
+        // carries - but the pair must issue together, so the epoch side reads
+        // the whole (small, one-row-per-ref) store and picks the row's ref out of
+        // the result. It issues first so the pair cannot leave one request's
+        // promise unconsumed: the row read is the request a caller's abort seam
+        // can strike mid-creation, and both promises always meet Promise.all.
+        const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+        const recordRequest = requestResult<MutationOutboxRecord | undefined>(
+          transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
+        );
+        const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
+        // A missing row has no ref to fence; the caller's absent-row refusal
+        // never reaches the comparison.
+        const stopEpoch = record
+          ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+          : 0;
+        return { record, stopEpoch };
+      },
+      { recovering: false },
+    );
   }
 
   // Stop's durable write: the ref's cancelable rows turn "canceled" in the
@@ -871,8 +885,17 @@ export class MutationOutboxIndexedDB {
     this.#databasePromise = undefined;
   }
 
-  async #read<T>(stores: string | string[], body: (transaction: IDBTransaction) => Promise<T>): Promise<T> {
-    return this.#transaction(stores, "readonly", undefined, body);
+  // `recovering: false` is the click-time capture's escape hatch: §4's stop
+  // barrier requires the capture read to be the click's FIRST storage
+  // observation, so it must NOT ride the open retry, which could answer with a
+  // post-Stop epoch ~10s later and let the row commit submitting after the
+  // Stop. See readStopEpoch / getOutboxWithStopEpoch.
+  async #read<T>(
+    stores: string | string[],
+    body: (transaction: IDBTransaction) => Promise<T>,
+    options: { recovering?: boolean } = {},
+  ): Promise<T> {
+    return this.#transaction(stores, "readonly", undefined, body, options);
   }
 
   async #write<T>(
@@ -893,8 +916,9 @@ export class MutationOutboxIndexedDB {
     mode: "readonly" | "readwrite",
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
+    options: { recovering?: boolean } = {},
   ): Promise<T> {
-    return trackProjectionWork(this.#runTransaction(stores, mode, operation, body));
+    return trackProjectionWork(this.#runTransaction(stores, mode, operation, body, options));
   }
 
   async #runTransaction<T>(
@@ -902,8 +926,12 @@ export class MutationOutboxIndexedDB {
     mode: "readonly" | "readwrite",
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
+    options: { recovering?: boolean } = {},
   ): Promise<T> {
-    const database = await this.#openWithRecovery();
+    // Ordinary reads and writes keep the one-shot recovery retry; the
+    // click-time captures take a single attempt, so a timeout still fails the
+    // send exactly as it did before the retry existed.
+    const database = options.recovering === false ? await this.#open() : await this.#openWithRecovery();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;

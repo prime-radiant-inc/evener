@@ -6,6 +6,7 @@ import type { MutationIntent } from "./mutationOutbox";
 import {
   MutationOutboxIndexedDB,
   MutationStorageClosedError,
+  MutationStorageTimeoutError,
   MutationStorageWedgedError,
 } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
@@ -150,6 +151,69 @@ test("a single transient open timeout retries without deleting the database or l
   expect(await storage.listOutbox()).toEqual([seeded, committed]);
   expect(deleteDatabase).not.toHaveBeenCalled();
   expect(opens).toBe(2);
+  storage.close();
+});
+
+// §4's stop barrier: the click-time capture must be the click's FIRST storage
+// observation. A retry here would answer ~10s later and could read an epoch a
+// sibling tab's Stop bumped during the stall, letting the row commit submitting
+// after the Stop. The capture therefore takes a single attempt.
+test("a capture read stalled by a timeout rejects rather than reading a Stop committed after the click", async () => {
+  const indexedDB = new IDBFactory();
+  const open = indexedDB.open.bind(indexedDB);
+  const databaseName = "evener-mutation-outbox-capture-no-retry";
+  let mainOpens = 0;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    if (name === databaseName) {
+      mainOpens += 1;
+      // The capture read's one attempt wedges; a second attempt would answer.
+      if (mainOpens === 1) return neverSettlingRequest();
+    }
+    return open(name, version);
+  });
+  const sender = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const sibling = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const capture = sender.readStopEpoch("local:thread-1").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  // The sibling tab's Stop commits while the capture is stalled. A retry would
+  // answer with the bumped epoch, compare it as the click-time epoch, and let
+  // the row commit submitting after the Stop.
+  await sibling.cancelUnattempted("local:thread-1");
+  await vi.advanceTimersByTimeAsync(10_000); // the capture's single open watchdog
+  // Safe outcome: the capture fails, so the send fails; the epoch the sibling
+  // raised during the stall is never read.
+  expect(await capture).toBeInstanceOf(MutationStorageTimeoutError);
+  // The Stop really landed: a retry would have read its bumped epoch (1) and
+  // let the row commit after the Stop. The capture read a timeout instead.
+  expect(await sibling.readStopEpoch("local:thread-1")).toBe(1);
+  sender.close();
+  sibling.close();
+});
+
+test("the retry click's capture does not retry a timed-out open", async () => {
+  const indexedDB = new IDBFactory();
+  const open = indexedDB.open.bind(indexedDB);
+  let opens = 0;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    opens += 1;
+    if (opens === 1) return neverSettlingRequest();
+    return open(name, version);
+  });
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName: "evener-mutation-outbox-release-capture-no-retry",
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const capture = storage.getOutboxWithStopEpoch("mutation-1").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(await capture).toBeInstanceOf(MutationStorageTimeoutError);
+  expect(opens).toBe(1);
   storage.close();
 });
 
