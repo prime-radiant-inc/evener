@@ -31,9 +31,10 @@ export interface TaskGroup {
 
 // The tone of a work entry row, used for visual treatment and accessibility.
 // "running" while in progress, "failed" when the wire carried an error / nonzero
-// exit, "terminal" when settled cleanly, "idle" when waiting but not running,
-// "unknown" for forward-compatible unrecognized statuses.
-export type WorkTone = "running" | "failed" | "terminal" | "idle" | "unknown";
+// exit, "stopped" when a stop ended it (never a failure), "terminal" when
+// settled cleanly, "idle" when waiting but not running, "unknown" for
+// forward-compatible unrecognized statuses.
+export type WorkTone = "running" | "failed" | "stopped" | "terminal" | "idle" | "unknown";
 
 export type WorkKind = "delegate" | "job" | "watch";
 
@@ -115,11 +116,16 @@ const FAILED_STATUSES: ReadonlySet<string> = new Set([
 	"errored",
 	"command_exited_nonzero",
 	"command_killed",
-	"cancelled",
-	"canceled",
 	"exhausted",
-	"stopped",
 ]);
+// A stop ends a run without failing it: a parent's stop settles as stopped, the
+// user's as cancelled (agent/internal/delegatestore and jobstore record.go).
+const STOPPED_STATUSES: ReadonlySet<string> = new Set(["stopped", "cancelled", "canceled"]);
+
+/** True for the status or outcome a stop leaves a run or a command with. */
+export function isStoppedStatus(status: string | undefined): boolean {
+	return STOPPED_STATUSES.has(status ?? "");
+}
 
 function classifyTone(
 	status: string,
@@ -129,11 +135,13 @@ function classifyTone(
 ): WorkTone {
 	// A nonzero exit code is always failed, regardless of status string.
 	if (exitCode !== undefined && exitCode !== 0) return "failed";
-	// An explicit failed outcome on a terminal delegate is failed.
+	// An explicit outcome on a terminal delegate says how it ended.
 	if (terminal && outcome !== undefined && FAILED_STATUSES.has(outcome)) {
 		return "failed";
 	}
+	if (terminal && isStoppedStatus(outcome)) return "stopped";
 	if (FAILED_STATUSES.has(status)) return "failed";
+	if (isStoppedStatus(status)) return "stopped";
 	if (RUNNING_STATUSES.has(status)) return "running";
 	if (IDLE_STATUSES.has(status)) return "idle";
 	if (terminal || TERMINAL_STATUSES.has(status)) return "terminal";

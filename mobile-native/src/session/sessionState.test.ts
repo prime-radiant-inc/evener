@@ -77,6 +77,19 @@ describe("the context chips (spec 8.1)", () => {
 		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true)).toEqual([]);
 	});
 
+	// The Subagents list counts a stopped subagent as done (subagentModel), so
+	// the chip must too, or "2 failed" on the chip disagrees with the list.
+	it("count a stopped or cancelled subagent as done, never failed", () => {
+		const delegates = [
+			delegate("stopped", 1, "stopped"),
+			delegate("cancelled", 2, "cancelled"),
+			delegate("failed", 3, "failed"),
+		];
+		expect(subagentTally(delegates)).toEqual({ total: 3, running: 0, failed: 1, done: 2 });
+		const [chip] = contextChips({ delegates, tasks: null, goal: null, queue: null }, true);
+		expect(chip?.failed).toBe("1 failed");
+	});
+
 	it("count subagents, with failures in their own part", () => {
 		const tally = subagentTally([
 			delegate("running", 1),
