@@ -26,9 +26,11 @@ import {
 	accessFacts,
 	canDeleteSavedSession,
 	canOpenModelSheet,
+	hostIdOf,
 	latestForkPoint,
 	notesSummary,
 	pluginsLine,
+	type SessionHost,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,
@@ -42,7 +44,8 @@ export interface SessionInfoHost {
 	session: MobileConversation;
 	/** Null while the hub is away: the sheet still shows what it knows. */
 	controls: SessionControls | null;
-	hostLabel(hostId: string): string;
+	/** A host's name and whether it's connected (sessionHosts). */
+	host(hostId: string): SessionHost;
 	/** The model and its effort, as the composer's chip names them. */
 	modelLabel: string;
 	/** How long a subagent has run at `now`, as its row times it; null for a
@@ -119,7 +122,8 @@ function SessionInfoBody({
 	const state = useControlsState(host.controls);
 	const { session, ready } = host;
 	const capabilities = session.capabilities;
-	const where = whereFacts(session, host.hostLabel);
+	const where = whereFacts(session, (hostId) => host.host(hostId).label);
+	const hostOnline = host.host(hostIdOf(session.ref)).online;
 	const plugins = pluginsLine(session);
 	const access = accessFacts(session);
 	const usage = usageFacts(session);
@@ -163,7 +167,14 @@ function SessionInfoBody({
 			</View>
 
 			<Group label="Where">
-				<Row icon="server.rack" label={where.host} />
+				<Row
+					icon="server.rack"
+					label={where.host}
+					value={hostOnline === null ? undefined : <ConnectionDot online={hostOnline} />}
+					accessibilityLabel={
+						hostOnline === null ? where.host : `${where.host}, ${hostOnline ? "connected" : "offline"}`
+					}
+				/>
 				{where.project ? <Row icon="folder" label={where.project} /> : null}
 				<Row machineLabel label={wrapAfterSlashes(where.directory)} accessibilityLabel={where.directory} />
 				{where.branch ? <Row icon="arrow.triangle.branch" label={where.branch} /> : null}
@@ -375,6 +386,12 @@ function Title({
 			{text}
 		</Pressable>
 	);
+}
+
+/** A host's connection dot (spec 8.6): alive while it's connected. */
+function ConnectionDot({ online }: { online: boolean }) {
+	const { palette } = useColors();
+	return <SymbolView name="circle.fill" size={8} tintColor={online ? palette.alive : palette.inkLow} />;
 }
 
 function StateLine({ session, runMs }: { session: MobileConversation; runMs(now: number): number | null }) {

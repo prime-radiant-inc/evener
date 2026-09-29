@@ -3608,8 +3608,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(seenMarks()).toEqual([{ sessions: [{ ref: "ref-watching", seenThrough: Date.parse(at(7)) }] }]);
 	});
 
-	it("names the session's host from the manifest in the Session sheet", async () => {
-		fleet.sources = [{ id: "local", label: "Laptop" }];
+	// The hub calls its own machine "this host" in the manifest
+	// (cmd/evener-hub/web_api_tree.go); the Session sheet names it for the
+	// hub, as Hub > Hosts does, with its connection dot (spec 8.6, audit N6).
+	it("names the session's own-machine host for the hub in the Session sheet, with its dot", async () => {
+		fleet.sources = [{ id: "local", label: "this host" }];
 		await mount(thread("ref-host", "idle"));
 		const sheet = render(
 			<SessionInfoSheet
@@ -3623,8 +3626,9 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
 			/>,
 		);
-		expect(renderedText(sheet)).toContain("Laptop");
-		expect(renderedText(sheet)).not.toContain("Work hub");
+		expect(renderedText(sheet)).toContain("Work hub");
+		expect(renderedText(sheet)).not.toContain("this host");
+		expect(sheet.root.findAll((node) => node.props.accessibilityLabel === "Work hub, connected")).not.toEqual([]);
 	});
 });
 
