@@ -29,7 +29,7 @@ export {
   reconcileActivityState,
 } from "./activityData";
 export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
-export { ActivityList } from "./activityList";
+export { ACTIVITY_REFRESH_MIN_INTERVAL_MS, ActivityList } from "./activityList";
 export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
@@ -196,6 +196,14 @@ export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
+export type {
+  HubUpdateController,
+  HubUpdatePorts,
+  HubUpdateState,
+  HubUpdateStateStore,
+  UpdateChannel,
+} from "./hubUpdate";
+export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,

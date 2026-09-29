@@ -1,3 +1,4 @@
+import { hostRequest } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface PathState {
@@ -13,7 +14,8 @@ function isPathList(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
-/** Path suggestions belong to one field and one connected hub. */
+/** Path suggestions belong to one field and one connected hub. With a host,
+ * they come from that host's folders, through the hub (ruling 2). */
 export class HubPaths {
 	private state: PathState = { paths: null, loading: false, error: null };
 	private listeners = new Set<() => void>();
@@ -22,6 +24,7 @@ export class HubPaths {
 	constructor(
 		private client: ConversationClientLike,
 		private includeFiles = false,
+		private host?: string,
 	) {}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
@@ -44,7 +47,7 @@ export class HubPaths {
 		const version = ++this.version;
 		this.publish({ paths: null, loading: true, error: null });
 		try {
-			const result = await this.client.request("evener/paths/complete", {
+			const result = await hostRequest(this.client, this.host, "evener/paths/complete", {
 				prefix,
 				includeFiles: this.includeFiles,
 				limit: 100,

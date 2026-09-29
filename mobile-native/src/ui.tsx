@@ -72,7 +72,7 @@ export function Action({
 			]}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					color: tone === "primary" ? colors.onAccent : tone === "quiet" ? colors.secondary : colors.accent,
 					// Give native measurement and drawing the same current size when
@@ -111,7 +111,7 @@ export function Choice({
 			style={[styles.action, { opacity: disabled ? 0.4 : 1 }]}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					color: selected ? colors.accent : colors.text,
 					fontSize: 16 * textScale,
@@ -147,7 +147,7 @@ export function Copy({
 	return (
 		<Text
 			selectable={selectable}
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			accessibilityLabel={label}
 			numberOfLines={numberOfLines}
 			ellipsizeMode={ellipsizeMode}
@@ -177,7 +177,7 @@ export function ErrorMessage({ message }: { message: string | null }) {
 	return message ? (
 		<Text
 			accessibilityRole="alert"
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{ color: colors.error, padding: 12, fontSize: 16 * textScale }}
 		>
 			{message}
@@ -194,7 +194,7 @@ export function WarningMessage({ message }: { message: string | null }) {
 	return message ? (
 		<Text
 			accessibilityRole="alert"
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{ color: colors.warning, padding: 12, fontSize: 16 * textScale }}
 		>
 			{message}

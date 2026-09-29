@@ -2,12 +2,12 @@
 // evener/jobs/list, in failed, running and done sections, with the strip, the
 // chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { WireError } from "@evener/appwire-client";
+import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -147,6 +147,21 @@ async function settle() {
 	});
 }
 
+// The list paces whole-tree reads, so the read a notification asks for runs
+// once the minimum interval has passed.
+async function treeUpdatedAndRead(hubClient: FakeClient) {
+	vi.useFakeTimers();
+	hubClient.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+	} as never);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+	});
+	vi.useRealTimers();
+	await settle();
+}
+
 async function mount(flush = true) {
 	const params = { hubId: "hub-1", ...COORDINATOR };
 	const tree = render(
@@ -190,8 +205,11 @@ it("lists failed, then running, then a folded done, with chips that count the sa
 
 it("filters to a chip's state, and offers no chip for a state with no subagents", async () => {
 	const tree = await mount();
+	playedHaptics.length = 0;
 	act(() => pressable(tree, "Failed, 2")?.props.onPress());
 	expect(pressable(tree, "Failed, 2")?.props.accessibilityState).toMatchObject({ selected: true });
+	// Spec 16.6: a selection tick on a chip.
+	expect(playedHaptics).toEqual(["selection"]);
 	const shown = text(tree);
 	expect(shown).toContain("Fix race in tree settle");
 	expect(shown).not.toContain("Running task 1");
@@ -372,11 +390,7 @@ it("keeps the search field while it has words, even once the list shrinks", asyn
 	const tree = await mount();
 	act(() => tree.root.find((node) => String(node.type) === "TextInput").props.onChangeText("race"));
 	small = true;
-	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
-	} as never);
-	await settle();
+	await treeUpdatedAndRead(client);
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 	act(() => pressable(tree, "Clear filter")?.props.onPress());
 	expect(text(tree)).toContain("Only one");
@@ -412,11 +426,7 @@ it("says a stop you asked for is pending, then that it stopped, with the toast o
 	await settle();
 	expect(text(tree)).toContain("Stop requested from the coordinator");
 	stopped = true;
-	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
-	} as never);
-	await settle();
+	await treeUpdatedAndRead(client);
 	// A stopped subagent is done, under the fold.
 	act(() => pressable(tree, "Done · 22")?.props.onPress());
 	expect(text(tree)).toContain("Stopped at your request");

@@ -477,6 +477,12 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// teardowns, so both are denied deliberately.
 		"evener/host/teardown-retry":   false,
 		"evener/host/teardown-recover": false,
+		// Crash-fencing 08c §5's orphan-resolve is controller-local like the repair
+		// mutations beside it: it resolves THIS controller's own operation store's
+		// orphan-unverified records and clears its own fencing-quarantine marker, so
+		// a peer hub forwarding it would clear another controller's fence. Denied
+		// deliberately (the negative-list pin is TestHostRecoveryMutationsNotForwarded).
+		"evener/host/orphan-resolve": false,
 		// The credential push is controller-LOCAL: it reads this controller's
 		// own store and dispatches to a host itself, like evener/host/request.
 		// It is never a proxied call, so a peer hub cannot make this hub push
@@ -1883,6 +1889,43 @@ func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
 		}
 		if after := len(calls()); after != before+1 {
 			t.Errorf("forwarded method %q was not forwarded (remote calls %d -> %d)", name, before, after)
+		}
+	}
+}
+
+// TestHostRecoveryMutationsNotForwarded pins crash-fencing spec 08c §10's
+// negative-list requirement (registry spec 08 §3 states the exclusion): neither
+// the operator-facing `evener/host/orphan-resolve` nor the earlier
+// `evener/host/teardown-recover` may be forwarded through
+// evener/host/request — they act on THIS controller's own operation-store
+// records and hub.toml remnants, so a peer hub must not be able to resolve or
+// clear them by forwarding. The assertion is threefold: absent from the
+// allow-list, absent from the checked-in cross-language list the browser reads,
+// and actually refused by the proxy with InvalidParams before any forward.
+func TestHostRecoveryMutationsNotForwarded(t *testing.T) {
+	recovery := []string{appwire.MethodEvenerHostOrphanResolve, appwire.MethodEvenerHostTeardownRecover}
+	shared := map[string]struct{}{}
+	for _, name := range readSharedHostRequestMethods(t) {
+		shared[name] = struct{}{}
+	}
+	controller, _, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	for _, name := range recovery {
+		if _, ok := remoteHostAdminMethods[name]; ok {
+			t.Errorf("controller-local %q is on the remote forward allow-list", name)
+		}
+		if _, ok := remoteHostAdminMutationMethods[name]; ok {
+			t.Errorf("controller-local %q is classified as a forwarded mutation", name)
+		}
+		if _, ok := shared[name]; ok {
+			t.Errorf("controller-local %q is listed in %s, so the browser would forward it", name, sharedHostRequestMethodsPath)
+		}
+		before := len(calls())
+		_, err := controller.Request(context.Background(), appwire.HostRequestParams{Host: "m4", Method: name})
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+		if after := len(calls()); after != before {
+			t.Errorf("recovery method %q was forwarded (remote calls %d -> %d)", name, before, after)
 		}
 	}
 }

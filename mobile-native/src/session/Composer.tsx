@@ -88,7 +88,7 @@ export function Composer({
 				<TextInput
 					ref={inputRef}
 					accessibilityLabel="Message"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					multiline
 					scrollEnabled
 					value={value}

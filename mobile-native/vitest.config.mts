@@ -2,6 +2,10 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+	test: {
+		// Fakes for native modules every suite would otherwise mock alike.
+		setupFiles: [fileURLToPath(new URL("./src/vitestSetup.ts", import.meta.url))],
+	},
 	resolve: {
 		// Match Metro's app-owned resolution for the shared headless sources.
 		// The @evener/appwire-client entries mirror metro.config.js's own

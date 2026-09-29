@@ -94,7 +94,9 @@ with a fetch: the package issues no request of its own and names neither an
 origin nor a credentials policy. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
-both apps' hub settings render from.
+both apps' hub settings render from. The hub's own update check and apply,
+`createHubUpdateController({ client, awaitRestart })`, is the same triple
+with the restart wait as a port: each app says how it notices the new hub.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

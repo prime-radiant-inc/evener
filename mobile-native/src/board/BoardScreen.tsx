@@ -47,7 +47,7 @@ import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Action, useColors, useTextScale } from "../ui";
+import { Action, allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
 	boardState,
@@ -77,7 +77,7 @@ import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { BoardStops, stopToast } from "./boardStops";
-import { UPDATE_NEEDED_HINT } from "./connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -117,6 +117,7 @@ import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
+import { destructiveButton, haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -292,7 +293,8 @@ function Board({
 	);
 	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
 	// The document you left partway in the last two hours (spec 7.1). The
-	// window is checked as the Board renders, so it runs no clock.
+	// window is checked as the Board renders, and the Board's minute clock
+	// re-renders it while in view, so the row goes within a minute of expiring.
 	const documents = documentMemory(hubId);
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
@@ -972,7 +974,7 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
+							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							{continueReading ? (
 								<ContinueReadingRow
@@ -1028,8 +1030,6 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
@@ -1077,14 +1077,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	const remove = (section: NavigationPinSectionDescriptor) =>
 		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Delete",
-				style: "destructive",
-				onPress: () => {
-					if (!organizationOpen(organization) || !listed(section.id)) return;
-					void organization.actions?.deletePinSection({ sectionId: section.id });
-				},
-			},
+			destructiveButton("Delete", () => {
+				if (!organizationOpen(organization) || !listed(section.id)) return;
+				void organization.actions?.deletePinSection({ sectionId: section.id });
+			}),
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
 		if (!organizationOpen(organization)) return;
@@ -1215,17 +1211,13 @@ function confirmShutDown(
 ) {
 	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
 		{ text: "Cancel", style: "cancel" },
-		{
-			text: "Shut down",
-			style: "destructive",
-			onPress: () => {
-				if (!client) return;
-				shutDownSession(client, row.ref).then(
-					() => toast.show({ text: "Session shut down" }),
-					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
-				);
-			},
-		},
+		destructiveButton("Shut down", () => {
+			if (!client) return;
+			shutDownSession(client, row.ref).then(
+				() => toast.show({ text: "Session shut down" }),
+				(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
+			);
+		}),
 	]);
 }
 
@@ -1368,7 +1360,7 @@ function SearchField({
 					autoCapitalize="none"
 					autoCorrect={false}
 					clearButtonMode="while-editing"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{ flex: 1, alignSelf: "stretch", fontSize: 17 * scale, color: palette.inkHi }}
 				/>
 			</View>
@@ -1379,7 +1371,7 @@ function SearchField({
 					onPress={onCancel}
 					style={({ pressed }) => ({ minHeight: 44, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
 				>
-					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
+					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
 						Cancel
 					</Text>
 				</Pressable>
@@ -1585,7 +1577,7 @@ function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void })
 			}}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				style={{ flexShrink: 1, fontSize: 17 * scale, color: palette.inkHi }}
 			>
@@ -1624,7 +1616,10 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						testID="chip"
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
-						onPress={chip.onPress}
+						onPress={() => {
+							haptic("selection");
+							chip.onPress();
+						}}
 						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
 						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
@@ -1641,13 +1636,13 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 					>
 						{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
 						>
 							{chip.name}
 						</Text>
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
 						>
 							{String(chip.count)}
@@ -1665,7 +1660,7 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 								}}
 							>
 								<Text
-									allowFontScaling={Platform.OS !== "ios"}
+									allowFontScaling={allowFontScaling}
 									style={{
 										fontSize: 11 * scale,
 										fontWeight: "700",
@@ -1730,13 +1725,16 @@ function SummaryLine({
 			{entries.map((band, index) => (
 				<View key={band} style={{ flexDirection: "row", alignItems: "center" }}>
 					{index > 0 ? (
-						<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
 							{" · "}
 						</Text>
 					) : null}
 					<Pressable
 						accessibilityRole="button"
-						onPress={() => onJump(band)}
+						onPress={() => {
+							haptic("selection");
+							onJump(band);
+						}}
 						// Each count draws 30pt tall; the slop makes a 44pt target.
 						hitSlop={{ top: 7, bottom: 7 }}
 						style={({ pressed }) => ({
@@ -1749,7 +1747,7 @@ function SummaryLine({
 					>
 						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{
 								fontSize: 14 * scale,
 								lineHeight: 20 * scale,
@@ -1787,7 +1785,7 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 		>
 			<Text
 				testID="band-header"
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, color: palette.inkMid }}
 			>
 				{`Idle · ${count}`}
@@ -1819,7 +1817,7 @@ function FirstReadFailed() {
 	return (
 		<View style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
 			>
 				Couldn't load this hub's sessions. Trying again shortly.
@@ -1834,7 +1832,7 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 	return (
 		<View style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
 			>
 				Nothing's running. Start a session to put an agent to work.
