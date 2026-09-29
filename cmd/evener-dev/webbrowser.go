@@ -23,7 +23,7 @@ import (
 )
 
 // browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "mermaidguard", "retirementguard", "skillguard"}
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "skillguard"}
 
 const (
 	skillGuard      = "skillguard"
