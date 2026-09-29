@@ -13,7 +13,7 @@ import {
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import { useStore } from "zustand";
-import { Group, GroupedPage, GroupFooter, GroupLabel } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -28,6 +28,12 @@ export function PluginChecklist() {
 	const { selection, response, on, total, issues } = pluginChoice(launchOverrides, plugins);
 	const change = (next: PluginSelectionState) => setLaunchOverrides(withPluginSelection(launchOverrides, next));
 	const disabled = submitting || !response;
+	// Problems naming a plugin with no row here (a chosen plugin the host no
+	// longer has): said on the page, with a way to take just that one out.
+	const listed = new Set(response?.plugins.map((plugin) => plugin.name));
+	const orphans = issues.filter((issue) => !listed.has(issue.name));
+	const explicit = selection.mode === "explicit" ? selection.names : [];
+	const removable = orphans.map((issue) => issue.name).filter((name) => explicit.includes(name));
 	const search = query.trim().toLowerCase();
 	const groups = response
 		? pluginGroups({
@@ -52,6 +58,22 @@ export function PluginChecklist() {
 				<GroupFooter>Plugins are listed once a project is chosen.</GroupFooter>
 			) : !response && plugins.status === "loading" ? (
 				<GroupFooter>{`Checking plugins on ${hostLabel(source)}…`}</GroupFooter>
+			) : null}
+			{orphans.map((issue) => (
+				<GroupFooter key={`issue:${issue.name}`} tone="danger">{`${issue.name}: ${issue.reason}`}</GroupFooter>
+			))}
+			{removable.length > 0 ? (
+				<Group>
+					{removable.map((name) => (
+						<Row
+							key={name}
+							label={`Remove ${name}`}
+							tone="accent"
+							disabled={submitting}
+							onPress={() => change({ mode: "explicit", names: explicit.filter((chosen) => chosen !== name) })}
+						/>
+					))}
+				</Group>
 			) : null}
 			{(response ? unclaimedDiagnostics(response) : []).map((diagnostic) => (
 				<GroupFooter key={diagnostic} tone="attention">

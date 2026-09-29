@@ -48,7 +48,9 @@ const preview: PluginPreviewResponse = {
 	diagnostics: [{ name: "superpowers-chrome", message: "Chrome isn't installed on this host" }],
 };
 
-function mount(options: { refuse?: Error; answer?: PluginPreviewResponse; cwd?: string } = {}) {
+function mount(
+	options: { refuse?: Error; answer?: PluginPreviewResponse; cwd?: string; overrides?: Record<string, unknown> } = {},
+) {
 	const calls: { method: string; params: unknown }[] = [];
 	const client = {
 		request: async (method: string, params: unknown) => {
@@ -62,7 +64,7 @@ function mount(options: { refuse?: Error; answer?: PluginPreviewResponse; cwd?: 
 	store.setState({
 		source: "paradise-park",
 		cwd: options.cwd ?? "/Users/jesse/git/evener",
-		launchOverrides: { maxRounds: 7 },
+		launchOverrides: options.overrides ?? { maxRounds: 7 },
 	});
 	const tree = render(
 		<TestSheet value={sheetContext(store, { client: client as never })}>
@@ -173,4 +175,21 @@ it("shows the preview's diagnostics that belong to no listed plugin, in attentio
 		);
 	// A row's own warning stays on its row, once.
 	expect(page.text().split("Chrome isn't installed on this host")).toHaveLength(2);
+});
+
+it("names a chosen plugin the host no longer has, and removes just that one", async () => {
+	const page = mount({ overrides: { maxRounds: 7, enabledPlugins: ["superpowers", "gone"] } });
+	await debounce();
+	expect(page.text()).toContain("gone: not present in current preview");
+	act(() => pressable(page.tree, "Remove gone")?.props.onPress());
+	expect(page.store.getState().launchOverrides).toEqual({ maxRounds: 7, enabledPlugins: ["superpowers"] });
+	await debounce();
+	expect(page.text()).not.toContain("gone: not present in current preview");
+});
+
+it("names a hub-reported problem for a plugin with no row, with nothing to remove when it isn't chosen", async () => {
+	const page = mount({ answer: { ...preview, selectionErrors: [{ name: "vanished", reason: "failed to load" }] } });
+	await debounce();
+	expect(page.text()).toContain("vanished: failed to load");
+	expect(pressable(page.tree, "Remove vanished")).toBeUndefined();
 });
