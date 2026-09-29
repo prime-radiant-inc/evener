@@ -88,6 +88,10 @@ func TestRootTestFlagsRemovesOnlyTheRealShortFlag(t *testing.T) {
 		{name: "keeps a post -args flag", args: []string{"-args", "-short"}, want: []string{"-args", "-short"}},
 		{name: "keeps a post -- flag", args: []string{"--", "-short"}, want: []string{"--", "-short"}},
 		{name: "strips only before the terminator", args: []string{"-short", "-args", "-short"}, want: []string{"-args", "-short"}},
+		// A value-taking-looking word after the terminator is a test-binary
+		// argument, not a `go test` flag: it must not be classified or refused.
+		{name: "passes a post -args value-taking word through", args: []string{"-args", "-run"}, want: []string{"-args", "-run"}},
+		{name: "passes a post -- value-taking pair through", args: []string{"--", "-count", "5"}, want: []string{"--", "-count", "5"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
