@@ -30,10 +30,13 @@ func ValidateThreadReadParams(params ThreadReadParams) error {
 // ValidateThreadTurnsListParams validates the item-only transcript list cursor
 // and limit.
 func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
-	if strings.TrimSpace(params.Cursor) == "" {
-		return InvalidParams("cursor is required for thread/turns/list")
+	// A before boundary with no cursor pages before it in the thread's current
+	// transcript.
+	if params.Cursor == "" && params.Before == nil {
+		return InvalidParams("cursor or before is required for thread/turns/list")
 	}
-	if isLegacyNumericCursor(params.Cursor) {
+	// A cursor that is present must be one.
+	if (params.Cursor != "" && strings.TrimSpace(params.Cursor) == "") || isLegacyNumericCursor(params.Cursor) {
 		return InvalidParams("cursor must be an opaque item cursor")
 	}
 	_, err := NormalizeTranscriptItemLimit(params.ItemLimit)

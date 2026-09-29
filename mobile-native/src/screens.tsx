@@ -2836,13 +2836,6 @@ export function ConversationScreen({
 							nestedScrollEnabled
 						>
 							{composerShown ? null : waitingForAgent}
-							{conversation?.goal ? (
-								<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-									<Action tone="quiet" onPress={() => openSessionDestination("session")}>
-										{`Goal · ${conversation.goal.status}`}
-									</Action>
-								</View>
-							) : null}
 							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||

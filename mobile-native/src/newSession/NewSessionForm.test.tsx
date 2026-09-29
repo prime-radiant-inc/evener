@@ -964,6 +964,23 @@ it("says once why Start holds a draft whose last start may have worked (#3104)",
 	failed.dispose();
 });
 
+it("leaves Start open, with the hub's one reason, when the hub says no session was started (#3184)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		refuseStart: new WireError("cwd is not a directory", -32602, {
+			evenerErrorInfo: "invalidParams",
+			mutationOutcome: "notAccepted",
+		}),
+	});
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	expect(form.text()).toContain("cwd is not a directory\n\nNo session was started. Your input is kept.");
+	expect(form.text()).not.toContain("may have started");
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: false });
+	form.dispose();
+});
+
 it("holds Start, with one line that says why, when the hub refused the start as invalid (#3184)", async () => {
 	const form = await mount({
 		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },

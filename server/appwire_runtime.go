@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -1490,6 +1491,10 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
 	}
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
+	}
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, s.readError(appwire.SessionUnavailable("thread is unavailable"), threadID)
 	}
@@ -1498,7 +1503,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
 	}
 	epoch := history.Epoch()
-	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
+	turns, olderCursor, snapshot, err := history.before(history.ref, params)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}
