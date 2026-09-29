@@ -368,9 +368,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
         !isExhausted(state.last_outcome.status) &&
         classifyJobStatus(state.last_outcome.status) === "failed" && (
           <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-            <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
-              Last run failed: {lastEnding}
-            </div>
+            <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Last run failed: {lastEnding}</div>
           </div>
         )}
       {state.last_outcome?.reason && classifyJobStatus(state.last_outcome.status) === "stopped" && (

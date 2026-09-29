@@ -203,7 +203,9 @@ test("omits packets that JSON cannot serialize", () => {
 // one, else the reason code said plainly. A snake_case code never shows.
 test("says a failed run's cause as the hub recorded it", () => {
   const tree = parseActivityTree(subagentOutcomesResponse().data);
-  const failed = tree?.root.entries.find((entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_failed");
+  const failed = tree?.root.entries.find(
+    (entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_failed",
+  );
   if (failed?.kind !== "delegate") throw new Error("no failed delegate in the corpus");
   expect(failed.delegate.reason).toBe("failed");
   expect(delegateEndingText(failed.delegate)).toBe("provider returned 500");
