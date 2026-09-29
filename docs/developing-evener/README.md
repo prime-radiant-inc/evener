@@ -58,6 +58,10 @@ so formatting never reaches review as a finding.
   re-staging would sweep the edits into the commit.
 - A tree whose `node_modules` has no Biome fails the commit and prints the
   command that installs it. It never skips.
+- It does nothing during a merge commit, where the index holds everything the
+  other side brought in. It only runs on branches that contain
+  `scripts/hooks/`; on an older branch git finds no hooks directory and skips
+  every hook without a message, so merge `origin/main` first.
 - The hook then runs `.git/hooks/pre-commit` if you have one. `make hooks`
   refuses to run when another `core.hooksPath` is set or another hook is
   installed in `.git/hooks`, since either would stop running.

@@ -25,7 +25,7 @@ if [ -n "$current" ] && [ "$current" != scripts/hooks ]; then
 fi
 
 hooks_dir="$(git rev-parse --git-common-dir)/hooks"
-others=$(find "$hooks_dir" -maxdepth 1 -type f -perm -u+x ! -name '*.sample' ! -name pre-commit 2>/dev/null || true)
+others=$(find -L "$hooks_dir" -maxdepth 1 -type f -perm -u+x ! -name '*.sample' ! -name pre-commit 2>/dev/null || true)
 if [ -n "$others" ]; then
 	echo "install.sh: these installed hooks would stop running under core.hooksPath:" >&2
 	printf '%s\n' "$others" | sed 's/^/  /' >&2

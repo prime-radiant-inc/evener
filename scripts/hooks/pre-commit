@@ -28,6 +28,19 @@ esac
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
+# Names are matched as literal paths, and unquoted (a quoted non-ASCII name
+# would never match a tree prefix and be skipped without a word).
+export GIT_LITERAL_PATHSPECS=1
+git() { command git -c core.quotePath=false "$@"; }
+
+# During a merge the index differs from HEAD by everything the other side
+# brought in, not just the conflict resolution; formatting that would rewrite
+# files this commit never edited.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+	echo "pre-commit: merge in progress; not formatting (run 'npm run format' in the tree if needed)." >&2
+	exit 0
+fi
+
 # formattable lists the staged added/copied/modified/renamed files under
 # $1 (a path prefix) that Biome formats, one per line.
 formattable() {
@@ -68,13 +81,13 @@ format_tree() {
 	# tree's own Biome config still governs (it is found from the cwd).
 	(
 		cd "$root/$tree"
-		printf '%s\n' "$files" | sed "s|^|$root/|" | tr '\n' '\0' |
+		printf '%s\n' "$files" | while IFS= read -r file; do printf '%s\0' "$root/$file"; done |
 			xargs -0 "$biome" $subcommand --no-errors-on-unmatched --colors=off
 	) || {
 		echo "pre-commit: Biome failed in $tree (output above); the commit is aborted." >&2
 		return 1
 	}
-	printf '%s\n' "$files" | while IFS= read -r file; do git add -- "$file"; done
+	printf '%s\n' "$files" | while IFS= read -r file; do git add -- "$file" || exit 1; done
 }
 
 native_files=$( (formattable 'mobile-native/src/'; formattable 'mobile/src/') | sed '/^$/d')

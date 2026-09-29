@@ -133,6 +133,46 @@ func TestPreCommitHookRoutesStagedFilesToTheirOwnTreesBiome(t *testing.T) {
 	}
 }
 
+func TestPreCommitHookFormatsNonASCIIAndGlobNamedFiles(t *testing.T) {
+	repo := hookRepo(t)
+	log := filepath.Join(t.TempDir(), "biome.log")
+	installStubBiome(t, repo, "mobile-native", log)
+	stageFile(t, repo, "mobile-native/src/café.ts", "a\n")
+	stageFile(t, repo, "mobile-native/src/[id]&x.ts", "b\n")
+
+	runIn(t, repo, "git", "-c", "core.quotePath=false", "commit", "-q", "-m", "x")
+
+	for _, path := range []string{"mobile-native/src/café.ts", "mobile-native/src/[id]&x.ts"} {
+		if got := runIn(t, repo, "git", "-c", "core.quotePath=false", "show", "HEAD:"+path); !strings.HasSuffix(got, "// formatted\n") {
+			t.Errorf("committed %s = %q, want it formatted", path, got)
+		}
+	}
+}
+
+func TestPreCommitHookLeavesMergeCommitsAlone(t *testing.T) {
+	repo := hookRepo(t)
+	installStubBiome(t, repo, "mobile-native", filepath.Join(t.TempDir(), "biome.log"))
+	stageFile(t, repo, "docs/base.md", "base\n")
+	runIn(t, repo, "git", "commit", "-q", "-m", "base")
+	runIn(t, repo, "git", "checkout", "-q", "-b", "other")
+	stageFile(t, repo, "mobile-native/src/brought.ts", "brought\n")
+	stageFile(t, repo, "docs/base.md", "other\n")
+	runIn(t, repo, "git", "commit", "-q", "--no-verify", "-m", "other")
+	runIn(t, repo, "git", "checkout", "-q", "-")
+	stageFile(t, repo, "docs/base.md", "mine\n")
+	runIn(t, repo, "git", "commit", "-q", "-m", "mine")
+	if output, err := runInErr(repo, "git", "merge", "--no-ff", "other"); err == nil || !strings.Contains(output, "CONFLICT") {
+		t.Fatalf("expected a conflict; err = %v, output = %s", err, output)
+	}
+	stageFile(t, repo, "docs/base.md", "resolved\n")
+
+	runIn(t, repo, "git", "commit", "-q", "-m", "merge")
+
+	if got := committedContent(t, repo, "mobile-native/src/brought.ts"); got != "brought\n" {
+		t.Errorf("merge commit rewrote a file it brought in: %q", got)
+	}
+}
+
 func TestPreCommitHookIgnoresCommitsWithNoGovernedFiles(t *testing.T) {
 	repo := hookRepo(t)
 	stageFile(t, repo, "docs/readme.md", "hi\n")
@@ -152,21 +192,19 @@ func TestPreCommitHookRefusesAMissingInstallWithTheFixCommand(t *testing.T) {
 	if !strings.Contains(output, "(cd mobile-native && npm ci)") {
 		t.Errorf("output does not name the fix command: %s", output)
 	}
-	if out, _ := runInErr(repo, "git", "rev-parse", "--verify", "HEAD"); !strings.Contains(out, "fatal") && !strings.Contains(out, "Needed a single revision") {
-		t.Errorf("a commit was created despite the refusal: %s", out)
+	if _, err := runInErr(repo, "git", "rev-parse", "--verify", "-q", "HEAD"); err == nil {
+		t.Error("a commit was created despite the refusal")
 	}
 }
 
 func TestPreCommitHookNeverSuggestsNpmCiThroughASymlink(t *testing.T) {
 	repo := hookRepo(t)
 	shared := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "mobile-native"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(shared, filepath.Join(repo, "mobile-native", "node_modules")); err != nil {
-		if err := os.MkdirAll(filepath.Join(repo, "mobile-native"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(shared, filepath.Join(repo, "mobile-native", "node_modules")); err != nil {
-			t.Fatal(err)
-		}
+		t.Fatal(err)
 	}
 	stageFile(t, repo, "mobile-native/src/a.ts", "a\n")
 
