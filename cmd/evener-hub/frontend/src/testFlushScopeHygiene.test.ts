@@ -8,13 +8,16 @@
 // rule for callers is therefore: flush after the outer act, not inside it.
 //
 // This pins that rule where it is cheap to check: no test file calls the flush
-// directly inside an `act(async ...)`. The check parses each file with the
-// TypeScript compiler, so comments, strings, regular-expression literals and
-// JSX text cannot confuse it, and a self-check proves the detector is not
-// vacuous. A call reached through a helper (for example the seeding helpers in
+// directly inside an `act(...)`. The check parses each file with the TypeScript
+// compiler, so comments, strings, regular-expression literals and JSX text
+// cannot confuse it, and a self-check proves the detector is not vacuous.
+//
+// A call reached through a helper (for example the seeding helpers in
 // Session.test.tsx and heldSteerTestUtils.ts, or a helper wrapped in an outer
-// act) is out of this scan's reach; the suite's console guard still fails any
-// update an unsettled flush drops outside act.
+// act) is out of this scan's reach, and the console guard does not cover it: the
+// dropped work lands inside the still-open act at its exit, so no "not wrapped
+// in act" warning fires. A caller of such a helper must flush after the outer
+// act itself; the HeldSteer tests follow their seed with waitFor for that.
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,19 +25,15 @@ import {
   type CallExpression,
   createSourceFile,
   forEachChild,
-  isArrowFunction,
   isCallExpression,
-  isFunctionExpression,
   isIdentifier,
   isImportDeclaration,
   isImportSpecifier,
   isNamedImports,
-  isParenthesizedExpression,
   isPropertyAccessExpression,
   type Node,
   ScriptKind,
   ScriptTarget,
-  SyntaxKind,
 } from "typescript";
 import { expect, test } from "vitest";
 
@@ -43,6 +42,7 @@ const SRC = dirname(SELF); // cmd/evener-hub/frontend/src
 const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
 const TEST_FILE = /\.(?:test|spec)\.(?:c|m)?[jt]sx?$/;
 const FLUSH = "flushPendingTurnsProjectionForTests";
+const ACT = "act";
 
 function testFilesUnder(dir: string): string[] {
   const files: string[] = [];
@@ -64,11 +64,11 @@ function calleeName(node: Node): string | undefined {
   return undefined;
 }
 
-// Every local name `act` is imported under, including aliases (`import { act as
-// rtlAct }`), plus the bare name for a direct or global use. A call to any of
-// these names is the Testing Library act whose nesting matters.
-function actLocalNames(source: Node): Set<string> {
-  const names = new Set(["act"]);
+// Every local name `importedName` is imported under, including aliases
+// (`import { flushPendingTurnsProjectionForTests as flush }`), plus the bare
+// name for a direct or global use.
+function importedLocalNames(source: Node, importedName: string): Set<string> {
+  const names = new Set([importedName]);
   forEachChild(source, (child) => {
     if (!isImportDeclaration(child)) return;
     const bindings = child.importClause?.namedBindings;
@@ -76,38 +76,44 @@ function actLocalNames(source: Node): Set<string> {
     for (const specifier of bindings.elements) {
       if (!isImportSpecifier(specifier)) continue;
       const imported = specifier.propertyName ?? specifier.name;
-      if (isIdentifier(imported) && imported.text === "act") names.add(specifier.name.text);
+      if (isIdentifier(imported) && imported.text === importedName) names.add(specifier.name.text);
     }
   });
   return names;
 }
 
-// `act(async () => ...)`: an async function-like callback, in any spelling -
-// arrow or function expression, optionally parenthesized. A bare `act(() =>
-// ...)` runs its callback synchronously and flushes at its own exit, so only
-// the async form holds effects for an outer act.
-function isAsyncActCall(node: CallExpression, actNames: Set<string>): boolean {
-  if (!actNames.has(calleeName(node.expression) ?? "")) return false;
-  let callback = node.arguments[0];
-  while (callback !== undefined && isParenthesizedExpression(callback)) callback = callback.expression;
-  if (callback === undefined || !(isArrowFunction(callback) || isFunctionExpression(callback))) return false;
-  return callback.modifiers?.some((modifier) => modifier.kind === SyntaxKind.AsyncKeyword) === true;
+// A call to `act(...)`, in any spelling: React's act raises the act scope for
+// its callback whether the callback is synchronous or not, so a flush reached
+// inside any act(...) is nested and cannot flush the queue at its own exit.
+function isActCall(node: CallExpression, actNames: Set<string>): boolean {
+  return actNames.has(calleeName(node.expression) ?? "");
 }
 
-// True when the file holds a direct flush call inside an `act(async ...)`.
+// True when the file holds a direct flush call inside an `act(...)`. A flush
+// passed straight to act (`act(flushPendingTurnsProjectionForTests)`) is the
+// same nesting with no call expression to see, so it counts too.
 function hasNestedFlush(path: string, text: string): boolean {
   const kind = path.endsWith("x") ? ScriptKind.TSX : ScriptKind.TS;
   const source = createSourceFile(path, text, ScriptTarget.Latest, true, kind);
-  const actNames = actLocalNames(source);
+  const actNames = importedLocalNames(source, ACT);
+  const flushNames = importedLocalNames(source, FLUSH);
+  const isFlushCall = (node: CallExpression): boolean => flushNames.has(calleeName(node.expression) ?? "");
   let nested = false;
   const visit = (node: Node, insideAct: boolean): void => {
     if (nested) return;
-    if (insideAct && isCallExpression(node) && calleeName(node.expression) === FLUSH) {
+    if (insideAct && isCallExpression(node) && isFlushCall(node)) {
       nested = true;
       return;
     }
-    const childInsideAct = insideAct || (isCallExpression(node) && isAsyncActCall(node, actNames));
-    forEachChild(node, (child) => visit(child, childInsideAct));
+    if (isCallExpression(node) && isActCall(node, actNames)) {
+      if (node.arguments.some((argument) => isIdentifier(argument) && flushNames.has(argument.text))) {
+        nested = true;
+        return;
+      }
+      forEachChild(node, (child) => visit(child, true));
+      return;
+    }
+    forEachChild(node, (child) => visit(child, insideAct));
   };
   visit(source, false);
   return nested;
@@ -128,12 +134,19 @@ test("the detector uses the parser, so literals and prose cannot fool it", () =>
     "const m = /hasn't started yet/.test(s);\nawait act(async () => {\n  await flushPendingTurnsProjectionForTests();\n});";
   const jsxProse =
     "const node = <p>this file's body</p>;\nawait act(async () => {});\nawait flushPendingTurnsProjectionForTests();";
+  // Every spelling of the nesting: function expression, parenthesized callback,
+  // a synchronous act, a flush call passed straight to act, and each of the two
+  // names imported under an alias.
   const functionExpression = "await act(async function () {\n  await flushPendingTurnsProjectionForTests();\n});";
   const parenthesized = "await act((async () => {\n  await flushPendingTurnsProjectionForTests();\n}));";
-  const aliased =
+  const syncAct = "await act(() => flushPendingTurnsProjectionForTests());";
+  const flushAsCallback = "await act(flushPendingTurnsProjectionForTests);";
+  const aliasedAct =
     'import { act as rtlAct } from "@testing-library/react";\nawait rtlAct(async () => {\n  await flushPendingTurnsProjectionForTests();\n});';
-  const aliasedOutermost =
+  const aliasedActOutermost =
     'import { act as rtlAct } from "@testing-library/react";\nawait rtlAct(async () => {});\nawait flushPendingTurnsProjectionForTests();';
+  const aliasedFlush =
+    'import { flushPendingTurnsProjectionForTests as flush } from "./flush";\nawait act(async () => {\n  await flush();\n});';
   expect(hasNestedFlush(file, nested)).toBe(true);
   expect(hasNestedFlush(file, outermost)).toBe(false);
   expect(hasNestedFlush(file, commented)).toBe(false);
@@ -142,11 +155,14 @@ test("the detector uses the parser, so literals and prose cannot fool it", () =>
   expect(hasNestedFlush(file, jsxProse)).toBe(false);
   expect(hasNestedFlush(file, functionExpression)).toBe(true);
   expect(hasNestedFlush(file, parenthesized)).toBe(true);
-  expect(hasNestedFlush(file, aliased)).toBe(true);
-  expect(hasNestedFlush(file, aliasedOutermost)).toBe(false);
+  expect(hasNestedFlush(file, syncAct)).toBe(true);
+  expect(hasNestedFlush(file, flushAsCallback)).toBe(true);
+  expect(hasNestedFlush(file, aliasedAct)).toBe(true);
+  expect(hasNestedFlush(file, aliasedActOutermost)).toBe(false);
+  expect(hasNestedFlush(file, aliasedFlush)).toBe(true);
 });
 
-test("no test file calls the projection flush directly inside an act(async ...)", () => {
+test("no test file calls the projection flush directly inside an act(...)", () => {
   const offenders = testFilesUnder(SRC)
     .filter((path) => path !== SELF && hasNestedFlush(path, readFileSync(path, "utf8")))
     .map((path) => relative(SRC, path));
