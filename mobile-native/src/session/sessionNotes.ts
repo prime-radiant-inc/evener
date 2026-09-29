@@ -137,9 +137,11 @@ export class NotesController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private draftTimer: ReturnType<typeof setTimeout> | null = null;
 	private draftValue: string | undefined;
-	/** The note this controller last sent successfully: the hub's echo of it is
-	 * our own write, not a third writer, when it lands during a later save. */
-	private lastSaved: string | undefined;
+	/** The notes this controller sent successfully, newest last. A hub value
+	 * among them is this controller's own echo (even a late, out-of-order
+	 * broadcast from a chained save), not a third writer. Bounded so a long
+	 * session cannot grow it without limit. */
+	private sentNotes: string[] = [];
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
 
@@ -304,9 +306,6 @@ export class NotesController {
 		// The hub's note as this save begins. A different value at settle time,
 		// that is neither this nor what we sent, is a third writer's newer note.
 		const startedHubNote = this.options.savedNote();
-		// Our own previous save's note: its echo arriving mid-flight is not a
-		// third writer, so it must not be adopted over this newer text.
-		const previouslySaved = this.lastSaved;
 		this.publish({ ...this.state, phase: "saving" });
 		try {
 			const response: NotesHumanSetResponse = await this.options.client.request("notes/human/set", {
@@ -315,7 +314,10 @@ export class NotesController {
 				expectedInstanceId: instanceId,
 				note: text,
 			});
-			this.lastSaved = response.note;
+			// Remember every note we send: an echo of any of them arriving
+			// mid-flight (even a late one from an earlier chained save) is ours.
+			this.sentNotes.push(response.note);
+			if (this.sentNotes.length > 8) this.sentNotes.shift();
 			if (this.state.text === text) {
 				this.clearDraft();
 				const hub = this.options.savedNote();
@@ -323,7 +325,7 @@ export class NotesController {
 				// in flight: showing our text as Saved would hide their newer note
 				// and our next edit would overwrite it, so adopt theirs as clean
 				// (RoboRev #2769).
-				if (hub !== startedHubNote && hub !== response.note && hub !== previouslySaved)
+				if (hub !== startedHubNote && hub !== response.note && !this.sentNotes.includes(hub))
 					this.publish({ text: hub, phase: "clean" });
 				else this.publish({ text: response.note, phase: "saved" });
 			} else {
@@ -360,7 +362,9 @@ export class NotesController {
 		if (this.draftValue === undefined) return;
 		const text = this.draftValue;
 		this.draftValue = undefined;
-		this.storeDraft(text);
+		// A value the hub already holds needs no draft: keeping one would start
+		// the next launch "failed" on it and resend stale text (RoboRev #2769).
+		this.storeDraft(text === this.options.savedNote() ? undefined : text);
 	}
 
 	/** Drop the draft at once: the text went back to the hub's own, or a save

@@ -230,7 +230,13 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 	});
 
 	it("does not mistake its own earlier save's echo for a third writer during a chained save (RoboRev #2769)", async () => {
-		const hub = harness({ beforeRequest: (call) => (call === 2 ? hub.setSaved("First") : undefined) });
+		const calls: number[] = [];
+		const hub = harness({
+			beforeRequest: (call) => {
+				calls.push(call);
+				if (call === 2) hub.setSaved("First");
+			},
+		});
 		const notes = hub.make();
 		notes.edit("First");
 		const saving = notes.flush();
@@ -238,7 +244,35 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		// "First" is this controller's own earlier save; its echo arriving while
 		// the second save is in flight must not be adopted over "First and more".
 		expect(await saving).toEqual({ saved: true, woke: true });
+		// The chain really did issue a second request (RoboRev #2769 round 4).
+		expect(calls).toEqual([1, 2]);
 		expect(notes.getSnapshot()).toEqual({ text: "First and more", phase: "saved" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("does not adopt a late echo of an earlier save during a chained burst (RoboRev #2769)", async () => {
+		let notes!: NotesController;
+		const hub = harness({
+			beforeRequest: (call) => {
+				if (call === 1) notes.edit("B");
+				else if (call === 2) notes.edit("C");
+				// The first save's own broadcast arrives late, during the third.
+				else if (call === 3) hub.setSaved("A");
+			},
+		});
+		notes = hub.make();
+		notes.edit("A");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "saved" });
+	});
+
+	it("does not keep a draft the hub already holds when the controller is torn down (RoboRev #2769)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		hub.setSaved("B");
+		notes.dispose();
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
