@@ -222,6 +222,17 @@ func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
 // nothing, so the next request retries instead of serving an empty list.
 func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64) (appwire.ModelListResponse, error) {
 	v, err, _ := s.launchModels.loading.Do(workingDir, func() (any, error) {
+		// Re-check the cache inside the flight: a caller that read the cache
+		// before a concurrent flight published its entry reaches this group only
+		// after that flight cleared — singleflight deletes the key after the
+		// store — so serve the entry the flight just filled instead of spawning
+		// a second launch check.
+		s.launchModels.mu.Lock()
+		entry := s.launchModels.entries[workingDir]
+		s.launchModels.mu.Unlock()
+		if entry != nil && entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
+			return entry.resp, nil
+		}
 		resp, err := evenerLaunchModelList(ctx, s.cfg, workingDir)
 		if err != nil {
 			return nil, err
