@@ -242,6 +242,20 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
+	it("forgets the draft for newer text the hub already holds when an in-flight save settles (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		const saving = notes.flush();
+		notes.edit("C");
+		hub.setSaved("C");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "clean" });
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
 	it("saves at once on flush and says whether it woke the agent", async () => {
 		const idle = harness();
 		const first = idle.make();

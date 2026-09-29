@@ -329,7 +329,9 @@ export class NotesController {
 			} else {
 				// Typed on during the save: the newer text stays kept and unsaved,
 				// unless it went back to the hub's note, which leaves nothing to send.
-				this.publish({ ...this.state, phase: this.state.text === this.options.savedNote() ? "clean" : "editing" });
+				const caughtUp = this.state.text === this.options.savedNote();
+				if (caughtUp) this.clearDraft();
+				this.publish({ ...this.state, phase: caughtUp ? "clean" : "editing" });
 			}
 			// An unchanged note projects "removed" and wakes no one
 			// (agent/session_notes_rpc.go).
