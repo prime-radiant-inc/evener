@@ -26,8 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
-import { nativeDisclosureStore, setDisclosureOpen } from "./nativeDisclosure";
-import { rowDisclosureId, sessionDisclosureScope } from "./session/disclosureKeys";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -1436,8 +1436,8 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 // session drops its scope, so the store stays bounded.
 it("forgets a session's open rows when you leave it", async () => {
 	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
-	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", ordinal: 0, steps: [] };
-	act(() => setDisclosureOpen(rowDisclosureId("hub-1", "ref-disclosure-scope", run), true));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
 	const inScope = () =>
 		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
 			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),

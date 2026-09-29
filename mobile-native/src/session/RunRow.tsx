@@ -11,7 +11,7 @@ import { typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { rowDisclosureId } from "./disclosureKeys";
+import { rowDisclosureIds } from "./disclosureKeys";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
@@ -34,7 +34,7 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
 	const evidence = useStepEvidence(step);
 	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
-	const disclosureId = rowDisclosureId(hubId, sessionRef, step);
+	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
 	const open = useDisclosureOpen(disclosureId, evidenceOpenByDefault) && hasEvidence;
 	const failed = step.state === "failed";
 	const line = (

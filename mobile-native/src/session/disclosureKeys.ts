@@ -2,7 +2,10 @@
 // disclosure store. Row ids change as history records what the live stream
 // showed (a tool the overlay showed as tool:call:<callId>, or
 // tool:<historyKey>, becomes item_tool_<entry>_<part>), so keys use what
-// holds: a step's call id, and a run's place among its turn's runs.
+// holds: a call's id. A run is its steps: it is open by its members' latest
+// choice, and a choice is written to every member, so the run keeps its state
+// as calls join it (a parallel call settling late, an older page extending its
+// turn) and as live steps are added.
 import { scopedDisclosureId } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
 
@@ -11,16 +14,20 @@ export function sessionDisclosureScope(hubId: string, sessionRef: string): strin
 	return JSON.stringify([hubId, sessionRef]);
 }
 
-/** A row's (or a run's step's) disclosure id. A step keys like the activity
- * row it unfolds to, so it keeps its open state across a level change. */
-export function rowDisclosureId(hubId: string, sessionRef: string, row: TimelineRow | RunStep): string {
-	return scopedDisclosureId(sessionDisclosureScope(hubId, sessionRef), JSON.stringify(rowDisclosureKey(row)));
+/** The ids a row's open state is read from and written to: one per member
+ * call for a run, one for any other row. A step keys like the activity row
+ * it unfolds to, so it keeps its open state across a level change. */
+export function rowDisclosureIds(hubId: string, sessionRef: string, row: TimelineRow | RunStep): string[] {
+	const scope = sessionDisclosureScope(hubId, sessionRef);
+	const keys =
+		row.kind === "run" && row.steps.length > 0
+			? row.steps.map((step) => ["run-member", ...memberKey(step)])
+			: [row.kind === "activity" ? ["activity", ...memberKey(row)] : [row.kind, row.id]];
+	return keys.map((key) => scopedDisclosureId(scope, JSON.stringify(key)));
 }
 
-// Call ids are the provider's, and neither a step nor a run spans a turn, so
-// the turn rides along.
-function rowDisclosureKey(row: TimelineRow | RunStep): string[] {
-	if (row.kind === "run" && row.ordinal !== undefined) return ["run", row.turnId ?? "", String(row.ordinal)];
-	if (row.kind === "activity" && row.detail.callId) return ["activity-call", row.turnId ?? "", row.detail.callId];
-	return [row.kind, row.id];
+// Call ids are the provider's, and a call never spans a turn, so the turn
+// rides along. A step with no call id keeps its row id.
+function memberKey(step: RunStep | Extract<TimelineRow, { kind: "activity" }>): string[] {
+	return step.detail.callId ? [step.turnId ?? "", step.detail.callId] : ["", step.id];
 }

@@ -59,10 +59,6 @@ export type TimelineRow =
 			id: string;
 			steps: RunStep[];
 			turnId?: string;
-			// Its place among its turn's runs, from 0. It holds while a parallel
-			// call settling late changes the run's first step, so the run's open
-			// state keys by it (rowDisclosureKey).
-			ordinal?: number;
 			transcriptKey?: string;
 			position?: { entry: number; item: number };
 	  }

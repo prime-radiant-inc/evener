@@ -485,10 +485,34 @@ describe("a run in the transcript", () => {
 		if (!step) throw new Error("run fixture has no step");
 		const b = { ...step, id: "b", detail: { ...step.detail, callId: "call-b" } };
 		const a = { ...step, id: "a", detail: { ...step.detail, callId: "call-a" } };
-		const live: TimelineRow = { kind: "run", id: "run:b", turnId: "t1", ordinal: 0, steps: [b] };
-		const settled: TimelineRow = { kind: "run", id: "run:a", turnId: "t1", ordinal: 0, steps: [a, b] };
+		const live: TimelineRow = { kind: "run", id: "run:b", turnId: "t1", steps: [b] };
+		const settled: TimelineRow = { kind: "run", id: "run:a", turnId: "t1", steps: [a, b] };
 		const tree = render(<TimelineItem item={live} hubId="hub" sessionRef="run-parallel" live liveRunsOpen />);
 		act(() => tree.update(<TimelineItem item={settled} hubId="hub" sessionRef="run-parallel" liveRunsOpen />));
+		const fold = tree.root.findAll((node) =>
+			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
+		)[0];
+		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+	});
+
+	// An older page can bring earlier items of the first loaded turn: a run
+	// ahead of this one, or steps that join its front. Either way it is the
+	// same run, and the run ahead of it stays folded.
+	it("stays open when an older page brings an earlier run or earlier steps of its turn", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const call = (id: string) => ({ ...step, id, detail: { ...step.detail, callId: `call-${id}` } });
+		const runOf = (...ids: string[]): TimelineRow => ({
+			kind: "run",
+			id: `run:${ids[0]}`,
+			turnId: "t1",
+			steps: ids.map(call),
+		});
+		const tree = render(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
+		const earlier = render(<TimelineItem item={runOf("z")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />);
+		expect(header(earlier.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={runOf("y", "b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
 		const fold = tree.root.findAll((node) =>
 			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
 		)[0];
@@ -514,7 +538,6 @@ describe("a run in the transcript", () => {
 			kind: "run",
 			id: `run:${id}`,
 			turnId: "t1",
-			ordinal: 0,
 			steps: [{ ...step, id, detail: { ...step.detail, callId: "call-1" } }],
 		});
 		const tree = render(
