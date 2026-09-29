@@ -87,6 +87,7 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { BarFrame } from "./design/BarFrame";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
@@ -2535,7 +2536,7 @@ export function ConversationScreen({
 	);
 
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
@@ -2771,7 +2772,9 @@ export function ConversationScreen({
 							onHeight={setFloatingHeight}
 						/>
 					</View>
-					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8 }}>
+					{/* The bottom bar (spec 8.1): the tray or a dock and the composer, and
+					    the transcript keeps a fifth of the screen however much it holds. */}
+					<BarFrame testID="session-bottom-bar" style={{ flexShrink: 1, maxHeight: "80%", paddingTop: 8 }}>
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
@@ -2923,7 +2926,7 @@ export function ConversationScreen({
 								}}
 							/>
 						) : null}
-					</View>
+					</BarFrame>
 				</View>
 			</KeyboardAvoidingView>
 		</SafeAreaView>

@@ -36,6 +36,7 @@ import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -533,13 +534,17 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// A node's style flattened, as React Native flattens a style array.
+const flatStyle = (node: ReactTestInstance): Record<string, unknown> =>
+	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+
 // The views between `node` and the screen's capped bottom area (the view
 // with a maxHeight), each with its flattened style.
 function viewsUpToBottomArea(node: ReactTestInstance) {
 	const views: Record<string, unknown>[] = [];
 	for (let at = node.parent; at; at = at.parent) {
 		if (String(at.type) !== "View") continue;
-		const style = Object.assign({}, ...[at.props.style].flat(Number.POSITIVE_INFINITY));
+		const style = flatStyle(at);
 		if (style.maxHeight !== undefined) return views;
 		views.push(style);
 	}
@@ -1879,6 +1884,40 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		});
 		const cancel = hub.requests.filter((request) => request.method === "turn/cancelQueued");
 		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
+	});
+});
+
+describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
+	// The bar's own host view, not the BarFrame element that carries its props.
+	const bar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const homeIndicator = () => useSafeAreaInsets().bottom;
+
+	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
+		const { tree } = await mount(thread("ref-bar", "active"));
+		// The screen leaves the bottom safe area to the bar, which paints it.
+		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
+		expect(screen?.props.edges).not.toContain("bottom");
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		// The tray and the composer ride in it, so the bar's padding lifts them
+		// clear of the home indicator.
+		expect(
+			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
+		).toHaveLength(1);
+		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
+	});
+
+	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
+		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
+		act(() => keyboard.show());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
+		act(() => keyboard.hide());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+	});
+
+	it("holds a question dock too", async () => {
+		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
+		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
 	});
 });
 
