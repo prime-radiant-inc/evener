@@ -1,22 +1,22 @@
 {
-  "note": "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Arguments follow each tool's definition; outputs are hand-written in each tool's shape. cwd is the session directory the shell case's cd names.",
+  "note": "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
   "cwd": "/home/jesse/git/evener",
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
     "call_edit_file": "One replacement in one file.",
-    "call_glob": "A glob match.",
-    "call_grep": "A search in a path, filtered by a glob.",
-    "call_list_dir": "A directory listing.",
-    "call_mcp": "An MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
-    "call_mcp_hyphenated": "An MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
-    "call_read_file": "A whole-file read: the line range comes from the output's line count.",
+    "call_glob": "A glob match: one path per match (sorted here).",
+    "call_grep": "A search in a path, filtered by a glob: one path:line:text line per hit (sorted here).",
+    "call_list_dir": "A directory listing: one name and size per entry, then a blank line and the entry count.",
+    "call_mcp": "Hand-written (needs an MCP server): an MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
+    "call_mcp_hyphenated": "Hand-written (needs an MCP server): an MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
+    "call_read_file": "A whole-file read: the output numbers each line.",
     "call_read_file_range": "A read with an offset and a limit.",
-    "call_shell": "A command run from the session's own directory, prefixed with cd to it.",
-    "call_shell_failed": "A command that exited 1.",
-    "call_unknown": "A tool no step summary covers yet.",
-    "call_use_skill": "A skill activation.",
-    "call_web_fetch": "A fetched page: the output is the tool's JSON result, with size_bytes.",
-    "call_web_search": "A web search: one result per line.",
+    "call_shell": "A command run from the session's own directory, prefixed with cd to it: the output ends with its exit code.",
+    "call_shell_failed": "A command that exited 1: still a result, not an error, with [exit 1] at its end.",
+    "call_unknown": "Hand-written: a tool no step summary covers; only its name matters.",
+    "call_use_skill": "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
+    "call_web_fetch": "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
+    "call_web_search": "Hand-written (web_search needs the network and a model): one result per line.",
     "call_write_file": "A new file written whole."
   },
   "items": [
@@ -36,7 +36,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file_range",
-      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"limit\":40,\"offset\":120}",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"limit\":2,\"offset\":2}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -66,7 +66,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir",
-      "argumentsJson": "{\"path\":\"agent/internal\"}",
+      "argumentsJson": "{\"path\":\"agent\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -76,7 +76,7 @@
       "turnId": "turn_1",
       "toolName": "edit_file",
       "callId": "call_edit_file",
-      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"\\tsettle()\\n\\tdrain()\\n\",\"old_string\":\"\\tdrain()\\n\"}",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"func settle() {\\n\\tdrain()\\n}\\n\",\"old_string\":\"func settle() {}\\n\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -96,7 +96,7 @@
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "argumentsJson": "{\"patch\":\"*** Begin Patch\\n*** Update File: agent/tree.go\\n@@\\n-\\tdrain()\\n+\\tsettle()\\n+\\tdrain()\\n*** Add File: agent/tree_order.go\\n+package agent\\n*** End Patch\"}",
+      "argumentsJson": "{\"patch\":\"*** Begin Patch\\n*** Update File: agent/tree.go\\n@@\\n func settle() {\\n+\\tlog()\\n*** Add File: agent/tree_drain.go\\n+package agent\\n*** End Patch\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -106,7 +106,7 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell",
-      "argumentsJson": "{\"command\":\"cd /home/jesse/git/evener \\u0026\\u0026 go test ./agent/...\",\"description\":\"\"}",
+      "argumentsJson": "{\"command\":\"cd /home/jesse/git/evener \\u0026\\u0026 cat agent/tree_order.go\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -116,7 +116,7 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_failed",
-      "argumentsJson": "{\"command\":\"go vet ./agent/...\"}",
+      "argumentsJson": "{\"command\":\"test -f agent/missing.go\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -186,7 +186,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file",
-      "output": "package agent\n\nfunc settle() {}\n",
+      "output": "   1\tpackage agent\n   2\t\n   3\tfunc settle() {}\n   4\t\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -196,7 +196,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file_range",
-      "output": "func settle() {\n}\n",
+      "output": "   2\t\n   3\tfunc settle() {}\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -206,7 +206,7 @@
       "turnId": "turn_1",
       "toolName": "grep",
       "callId": "call_grep",
-      "output": "agent/tree.go:12:func settle() {}\nagent/tree_test.go:40:func settleForTest() {}\n",
+      "output": "tree.go:3:func settle() {}\ntree_test.go:3:func settleForTest() {}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -216,7 +216,7 @@
       "turnId": "turn_1",
       "toolName": "glob",
       "callId": "call_glob",
-      "output": "agent/tree_test.go\nagent/drain_test.go\nagent/settle_test.go\n",
+      "output": "/home/jesse/git/evener/agent/drain_test.go\n/home/jesse/git/evener/agent/tree_test.go",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -226,7 +226,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir",
-      "output": "tool/\nmcp/\ncontextmgr/\ndelegatestore/\n",
+      "output": "drain_test.go\t14\ntree.go\t32\ntree_test.go\t39\n\n3 entries",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -236,7 +236,7 @@
       "turnId": "turn_1",
       "toolName": "edit_file",
       "callId": "call_edit_file",
-      "output": "edited agent/tree.go: 1 replacement(s)",
+      "output": "edited agent/tree.go: 1 replacement",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -256,7 +256,7 @@
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "output": "applied patch: 2 files",
+      "output": "applied patch to:\nagent/tree.go\nagent/tree_drain.go",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -266,9 +266,22 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell",
-      "output": "ok  \tprimeradiant.com/evener/agent\t12.3s\n",
+      "output": "package agent\n[exit 0]",
       "status": "completed",
-      "completedAt": 1790625602000
+      "completedAt": 1790625602000,
+      "exitCode": 0,
+      "raw": {
+        "type": "shell",
+        "status": "completed",
+        "reason": "exit_zero",
+        "mode": "foreground",
+        "timed_out": false,
+        "exit_code": 0,
+        "output": "package agent\n",
+        "truncated": false,
+        "total_bytes": 14,
+        "output_status": "all_retained"
+      }
     },
     {
       "type": "commandExecution",
@@ -276,9 +289,21 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_failed",
-      "error": "agent/tree.go:14:2: unreachable code\nexit status 1\n",
-      "status": "failed",
-      "completedAt": 1790625602000
+      "output": "[exit 1]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "exitCode": 1,
+      "raw": {
+        "type": "shell",
+        "status": "command_exited_nonzero",
+        "reason": "exit_nonzero",
+        "mode": "foreground",
+        "timed_out": false,
+        "exit_code": 1,
+        "output": "",
+        "truncated": false,
+        "output_status": "all_retained"
+      }
     },
     {
       "type": "commandExecution",
@@ -306,7 +331,7 @@
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
-      "output": "# Systematic debugging\n\nFind the root cause first.",
+      "output": "\u003cskill-context\u003e\n{\"name\":\"systematic-debugging\",\"description\":\"Find the root cause first\",\"source\":\"/home/jesse/git/evener/skills/systematic-debugging/SKILL.md\",\"base_directory\":\"/home/jesse/git/evener/skills/systematic-debugging\",\"instructions\":\"# Systematic debugging\\n\\nFind the root cause first.\\n\"}\n\u003c/skill-context\u003e",
       "status": "completed",
       "completedAt": 1790625602000
     },
