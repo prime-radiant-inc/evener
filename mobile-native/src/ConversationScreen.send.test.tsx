@@ -32,6 +32,7 @@ import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
+import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
@@ -2521,6 +2522,28 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		// Session info times it the same way.
 		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
 		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
+	});
+
+	it("takes back the row it reported when its panel goes away", async () => {
+		// A screen that stops showing the panel shows no subagent's time.
+		await mountSubagent(subagent(true));
+		const reported: (string | null)[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onRow={(row) => void reported.push(row?.ref ?? null)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("local:fix");
+		act(() => panel.unmount());
+		expect(reported.at(-1)).toBeNull();
 	});
 
 	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {

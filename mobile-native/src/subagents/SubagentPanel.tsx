@@ -62,6 +62,7 @@ export function SubagentPanel({
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
 	useEffect(() => {
 		onRow?.(row);
+		return () => onRow?.(null);
 	}, [onRow, row]);
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
