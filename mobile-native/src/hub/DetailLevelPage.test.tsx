@@ -74,6 +74,8 @@ const context: HubSheetContextValue = {
 		},
 		awaitRestart: async () => true,
 	}),
+	hosts: null,
+	live: null,
 };
 
 function model() {

@@ -3,16 +3,19 @@
 // (ruling 10); each later PR swaps its row for a push. MORE keeps today's
 // administration screens reachable (ruling 12), and ABOUT names this app's
 // version and offers the hub's update (ruling 22).
-import { StackActions } from "@react-navigation/native";
+import type { HostRow } from "@evener/appwire-client";
+import { StackActions, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
+import { versionDriftTag } from "../hosts/hostStatus";
+import { useOptionalSnapshot } from "../hosts/useHubFleet";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -20,7 +23,7 @@ import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 type InterimScreen = "Providers" | "Plugins" | "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
-	const { hubId, hubName, ready, canUseConnection, updates } = useHubSheet();
+	const { hubId, hubName, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
 	const { appearance } = useDisplayChoices();
 	const { palette } = useColors();
@@ -43,6 +46,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			],
 		);
 	const updateProblem = update.applyError ?? update.checkError;
+	// The home reads the hosts once each time it shows; only the Hosts pages poll.
+	useFocusEffect(
+		useCallback(() => {
+			void hosts?.read();
+		}, [hosts]),
+	);
+	const fleet = fleetSummary(useOptionalSnapshot(hosts)?.rows ?? null, check?.currentVersion);
 	return (
 		<GroupedPage>
 			<Text
@@ -57,6 +67,17 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			>
 				{line}
 			</Text>
+			<GroupLabel>Fleet</GroupLabel>
+			<Group>
+				<Row
+					icon="server.rack"
+					label="Hosts"
+					value={fleet ? <RowValue text={String(fleet.count)} tag={fleet.tag} /> : undefined}
+					accessibilityLabel={fleet ? ["Hosts", fleet.count, fleet.tag?.text].filter(Boolean).join(", ") : "Hosts"}
+					chevron
+					onPress={() => navigation.navigate("Hosts", { hubId })}
+				/>
+			</Group>
 			<GroupLabel>Setup</GroupLabel>
 			<Group>
 				<Row icon="key" label="Providers" chevron onPress={() => leaveFor("Providers")} />
@@ -110,4 +131,19 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			{updateProblem ? <GroupFooter tone="danger">{updateProblem}</GroupFooter> : null}
 		</GroupedPage>
 	);
+}
+
+/** The Hosts row's value: every machine, the hub's own included, tagged amber
+ * with how many are offline, or else gray with how many run another version. */
+function fleetSummary(rows: readonly HostRow[] | null, hubVersion: string | undefined) {
+	if (!rows) return null;
+	const offline = rows.filter((row) => !row.attached).length;
+	const drifting = rows.filter((row) => versionDriftTag(row, hubVersion)).length;
+	const tag =
+		offline > 0
+			? { text: `${offline} offline`, tone: "amber" as const }
+			: drifting > 0
+				? { text: `${drifting} on another version`, tone: "gray" as const }
+				: null;
+	return { count: rows.length + 1, tag };
 }

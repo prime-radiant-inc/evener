@@ -7,11 +7,14 @@ import { useCallback, useMemo } from "react";
 import { Pressable, Text } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
+import { useHubFleet } from "../hosts/useHubFleet";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { DisplayPage } from "./DisplayPage";
+import { HostDetailPage } from "./HostDetailPage";
+import { HostsPage } from "./HostsPage";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
@@ -28,6 +31,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	useClosesOnHubChange(hubId, close, leave);
 	const ready = isReady(state);
 	const updates = useHubUpdates(renderClient, ready);
+	const { hosts, live } = useHubFleet(renderClient);
 	const value = useMemo<HubSheetContextValue>(
 		() => ({
 			hubId,
@@ -36,8 +40,10 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 			ready,
 			canUseConnection,
 			updates,
+			hosts,
+			live,
 		}),
-		[hubId, activeProfile?.name, renderClient, ready, canUseConnection, updates],
+		[hubId, activeProfile?.name, renderClient, ready, canUseConnection, updates, hosts, live],
 	);
 	if (!activeProfile) return null;
 	return (
@@ -67,6 +73,12 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 				/>
 				<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
 				<HubStack.Screen name="DetailLevel" component={DetailLevelPage} options={{ title: "Default detail level" }} />
+				<HubStack.Screen name="Hosts" component={HostsPage} options={{ title: "Hosts" }} />
+				<HubStack.Screen
+					name="HostDetail"
+					component={HostDetailPage}
+					options={({ route }) => ({ title: route.params.name })}
+				/>
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);

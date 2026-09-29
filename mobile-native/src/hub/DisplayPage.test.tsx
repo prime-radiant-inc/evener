@@ -64,6 +64,8 @@ const context: HubSheetContextValue = {
 		},
 		awaitRestart: async () => true,
 	}),
+	hosts: null,
+	live: null,
 };
 
 function mount(state = transcript(), storage = new Map<string, string>()) {
