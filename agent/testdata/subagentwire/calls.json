@@ -1,0 +1,88 @@
+{
+  "note": "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate receipt comes from the tool's own marshaller; the other outputs are hand-written text.",
+  "items": [
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_0",
+      "turnId": "turn_1",
+      "toolName": "delegate",
+      "callId": "call_delegate_1",
+      "argumentsJson": "{\"intent\":\"Fix race in tree settle\",\"name\":\"Fix race in tree settle\",\"task\":\"Find and fix the race between tree settle and the drain.\"}",
+      "description": "Fix race in tree settle",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_1",
+      "turnId": "turn_1",
+      "toolName": "delegate_send",
+      "callId": "call_send_1",
+      "argumentsJson": "{\"delegate_id\":\"dlg_1\",\"intent\":\"Tell it to check drain ordering\",\"message\":\"Also check drain ordering.\"}",
+      "description": "Tell it to check drain ordering",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_2",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_1",
+      "argumentsJson": "{\"command\":\"go test ./agent/...\",\"intent\":\"Run the agent tests\"}",
+      "description": "Run the agent tests",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_3",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_tasks_1",
+      "argumentsJson": "{\"id\":3,\"operation\":\"update\",\"status\":\"done\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_0",
+      "turnId": "turn_1",
+      "toolName": "delegate",
+      "callId": "call_delegate_1",
+      "output": "{\"delegate_id\":\"dlg_1\",\"child_session_id\":\"child1\",\"type\":\"delegate\",\"status\":\"running\",\"name\":\"Fix race in tree settle\",\"agent_type\":\"general-purpose\",\"transcript_ref\":\"local:child1\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_1",
+      "turnId": "turn_1",
+      "toolName": "delegate_send",
+      "callId": "call_send_1",
+      "output": "{\"delegate_id\":\"dlg_1\",\"type\":\"delegate\",\"status\":\"running\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_2",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_1",
+      "output": "ok  \tprimeradiant.com/evener/agent\t12.3s",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_3",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_tasks_1",
+      "output": "{\"tasks\":[{\"id\":3,\"status\":\"done\"}]}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    }
+  ]
+}

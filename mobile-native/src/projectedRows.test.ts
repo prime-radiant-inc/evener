@@ -496,7 +496,7 @@ describe("projectedRow — intent entries", () => {
 	// layer renders the line without an expansion affordance. It keeps its
 	// two clock times as metadata, which nothing shows on the row itself, so
 	// the run it folds into can say how long it took (Jesse, 2026-09-27).
-	it("carries only its summary line and its clock times, dropping the rest of the source item's detail", () => {
+	it("carries only its summary line, clock times and call id, dropping the rest of the source item's detail", () => {
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -523,6 +523,7 @@ describe("projectedRow — intent entries", () => {
 				description: "Run ls",
 				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+				callId: "call-1",
 			},
 			turnId: "t1",
 		});
@@ -1424,10 +1425,11 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail.arguments).toBeUndefined();
 				expect(c1.detail.output).toBeUndefined();
 				expect(c1.detail.durationMs).toBeUndefined();
-				// The clock times stay, as metadata for the run's duration.
+				// The clock times stay, as metadata for the run's duration, and
+				// the call id, which a subagent row finds its subagent by.
 				expect(c1.detail.startedAtMs).toBe(1000);
 				expect(c1.detail.endedAtMs).toBe(1500);
-				expect(c1.detail.callId).toBeUndefined();
+				expect(c1.detail.callId).toBe("call-1");
 			} else {
 				expect(c1.summaryOnly).toBeUndefined();
 				expect(c1.detail).toEqual({
