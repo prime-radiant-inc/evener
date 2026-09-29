@@ -2932,6 +2932,17 @@ describe("archived rows come from evener/archived/list", () => {
     expect(project?.more_archived).toBe(10);
   });
 
+  test("once the list loads, its own total counts the rows not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList(
+      Array.from({ length: 50 }, (_, i) => archivedRow(i)),
+      61,
+      "cursor-1",
+    );
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(11);
+  });
+
   test("before the list loads, the whole archived count is not yet loaded", () => {
     installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
     const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);

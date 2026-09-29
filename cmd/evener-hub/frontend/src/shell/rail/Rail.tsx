@@ -807,30 +807,40 @@ function asArchivedProject(project: RailProject): RailProject {
   archivedProjectModelCache.set(project as object, archived);
   return archived;
 }
-// withArchivedList adds a project's loaded archived rows, from its archived list,
-// to the rows navigation served for its other tiers, and leaves more_archived
-// as the archived rows not loaded yet: the summary's more_archived is the
-// project's whole archived count. Cached per built project and list entry so
-// an unchanged pair keeps one identity across renders.
+// withArchivedList adds a project's loaded archived rows, from its archived
+// list, to the rows navigation served, and leaves more_archived as the archived
+// rows not loaded yet. The summary's more_archived is the whole archived count;
+// once the list has loaded, its own total is the fresher count. Cached per
+// built project and list entry so an unchanged pair keeps one identity.
 const archivedListProjectCache = new WeakMap<object, { list: ArchivedList | undefined; result: RailProject }>();
 function withArchivedList(project: RailProject, catalog: CatalogKind, list: ArchivedList | undefined): RailProject {
   const cached = archivedListProjectCache.get(project);
   if (cached && cached.list === list) return cached.result;
   const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
+  const total = list ? list.total : (project.more_archived ?? 0);
   const result = {
     ...project,
     catalog,
     sessions: [...project.sessions, ...rows],
-    more_archived: Math.max(0, (project.more_archived ?? 0) - rows.length),
+    more_archived: Math.max(0, total - rows.length),
   };
   archivedListProjectCache.set(project, { list, result });
   return result;
 }
-function projectsFor(
-  state: ReturnType<typeof navigationStore.getState>,
-  catalog: CatalogKind,
-  archivedLists: Readonly<Record<string, ArchivedList>>,
-): RailProject[] {
+function allRailProjects(resources: RailResources): RailProject[] {
+  return [...resources.projects, ...resources.archivedProjects, ...resources.testRuns];
+}
+function withArchivedLists(resources: RailResources, lists: Readonly<Record<string, ArchivedList>>): RailResources {
+  const apply = (projects: readonly RailProject[], catalog: CatalogKind) =>
+    projects.map((project) => withArchivedList(project, catalog, lists[archivedListKey(catalog, project.key)]));
+  return {
+    ...resources,
+    projects: apply(resources.projects, "projects"),
+    archivedProjects: apply(resources.archivedProjects, "archived_projects"),
+    testRuns: apply(resources.testRuns, "test_runs"),
+  };
+}
+function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
   const catalogResources = [...state.resources.values()]
     .filter(
@@ -877,9 +887,7 @@ function projectsFor(
       );
     }
   }
-  return output.map((project) =>
-    withArchivedList(project, catalog, archivedLists[archivedListKey(catalog, project.key)]),
-  );
+  return output;
 }
 function catalogOverflowFor(
   state: ReturnType<typeof navigationStore.getState>,
@@ -909,10 +917,7 @@ function catalogOverflowFor(
     limit: pageKey.limit,
   };
 }
-function railResources(
-  state: ReturnType<typeof navigationStore.getState>,
-  archivedLists: Readonly<Record<string, ArchivedList>> = {},
-): RailResources {
+function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
   const live = loadedSection(state, "live");
   const needsYou = loadedSection(state, "needs_you");
   const pinCatalog = [...state.resources.values()]
@@ -962,9 +967,9 @@ function railResources(
     liveOverflow: { remaining: live.remaining, offset: live.offset, limit: live.limit },
     needsYouOverflow: { remaining: needsYou.remaining, offset: needsYou.offset, limit: needsYou.limit },
     pinSections,
-    projects: projectsFor(state, "projects", archivedLists),
-    archivedProjects: projectsFor(state, "archived_projects", archivedLists).map(asArchivedProject),
-    testRuns: projectsFor(state, "test_runs", archivedLists),
+    projects: projectsFor(state, "projects"),
+    archivedProjects: projectsFor(state, "archived_projects").map(asArchivedProject),
+    testRuns: projectsFor(state, "test_runs"),
     catalogOverflow: {
       projects: catalogOverflowFor(state, "projects"),
       archived_projects: catalogOverflowFor(state, "archived_projects"),
@@ -972,7 +977,10 @@ function railResources(
     },
   };
 }
-export const adaptNavigationResources = railResources;
+export const adaptNavigationResources = (
+  state: ReturnType<typeof navigationStore.getState>,
+  lists: Readonly<Record<string, ArchivedList>> = {},
+): RailResources => withArchivedLists(railResources(state), lists);
 function nonEmpty(resources: RailResources): boolean {
   return (
     resources.live.length > 0 ||
@@ -1094,10 +1102,11 @@ function NavigationRail({
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
   const archivedLists = useArchivedLists();
-  const base = useMemo(
-    () => railResources({ ...navigationStore.getState(), resources: resourcesState }, archivedLists),
-    [resourcesState, archivedLists],
+  const navigationBase = useMemo(
+    () => railResources({ ...navigationStore.getState(), resources: resourcesState }),
+    [resourcesState],
   );
+  const base = useMemo(() => withArchivedLists(navigationBase, archivedLists), [navigationBase, archivedLists]);
   const resources = useMemo(
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
     [base, pending],
@@ -1223,9 +1232,7 @@ function NavigationRail({
   }, []);
   useEffect(() => {
     currentLoadProjectRoot.current = loadProjectRoot;
-    const ownedKeys = new Set(
-      [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].map((project) => project.key),
-    );
+    const ownedKeys = new Set(allRailProjects(resources).map((project) => project.key));
     for (const key of projectRetryCallbacks.current.keys()) {
       if (!ownedKeys.has(key)) projectRetryCallbacks.current.delete(key);
     }
@@ -1237,7 +1244,7 @@ function NavigationRail({
       rootLoadsInFlight.current.clear();
       rootGeneration.current = generation;
     }
-    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
+    for (const project of allRailProjects(resources)) {
       const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
         isExpanded(id, project.default_expanded ?? false),
       );
@@ -1254,10 +1261,9 @@ function NavigationRail({
       loadProjectRoot(project.key);
     }
   }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
-  // A hydrated project with archived sessions loads its archived list, as its
-  // navigation resource used to carry its first archived rows.
+  // A hydrated project with archived sessions loads its archived list.
   useEffect(() => {
-    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
+    for (const project of allRailProjects(resources)) {
       if (!project.loaded || !project.catalog || (project.more_archived ?? 0) === 0) continue;
       if (archivedLists[archivedListKey(project.catalog, project.key)]) continue;
       void refreshArchivedList(project.catalog, project.key);
@@ -1355,9 +1361,7 @@ function NavigationRail({
       // navigation resource: page the list until the row loads, then the fold
       // chain above opens it. A list that ends without the row cannot reveal it.
       if (location.tier === "archived") {
-        const project = [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].find(
-          (candidate) => candidate.key === location.project_key,
-        );
+        const project = allRailProjects(resources).find((candidate) => candidate.key === location.project_key);
         const catalog = project?.catalog;
         const list = catalog ? archivedLists[archivedListKey(catalog, location.project_key)] : undefined;
         // A nested row (a fork original) is found through the row that carries
