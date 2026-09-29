@@ -64,7 +64,11 @@ describe("a row of images (spec 8.2)", () => {
 		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
 		act(() => thumbnails(tree.root)[0].props.onPress());
 		expect(tree.root.findByType("Modal" as never).props.presentationStyle).toBe("pageSheet");
-		expect(renderedText(tree)).toContain("first.png");
+		// The name is the header title; the count rides in the accessory so a
+		// long name can't clip the position off the end of the title.
+		const title = tree.root.findByProps({ accessibilityRole: "header" });
+		expect(title.props.children).toBe("first.png");
+		expect(renderedText(tree)).toContain("1 of 2");
 	});
 });
 

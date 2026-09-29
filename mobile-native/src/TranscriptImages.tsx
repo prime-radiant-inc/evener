@@ -98,7 +98,12 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 			</ScrollView>
 			{page !== null ? (
 				<ModalSheet
-					title={`${images[page]?.name ?? "Attached image"} · ${page + 1} of ${images.length}`}
+					title={images[page]?.name ?? "Attached image"}
+					accessory={
+						<View style={{ alignItems: "center", paddingVertical: 6 }}>
+							<Copy muted>{`${page + 1} of ${images.length}`}</Copy>
+						</View>
+					}
 					done={{ onPress: () => setPage(null) }}
 					onRequestClose={() => setPage(null)}
 				>
