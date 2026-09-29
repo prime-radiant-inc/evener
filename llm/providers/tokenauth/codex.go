@@ -43,7 +43,16 @@ type Codex struct {
 
 	mu       sync.Mutex
 	service  *authopenai.Service
-	accounts map[string]string
+	accounts map[string]codexAccount
+}
+
+// codexAccount is the ChatGPT account id Apply sends for an instance, bound
+// to the record fields it was derived from (see accountFingerprint). A login,
+// logout, or account switch rewrites those fields, so the next Apply
+// recomputes instead of sending an identity that outlived the record (#2367).
+type codexAccount struct {
+	fingerprint string
+	id          string
 }
 
 // Apply implements llm.Authenticator.
@@ -182,24 +191,44 @@ func (c *Codex) credentials(ctx context.Context, instance string) (authopenai.Ru
 	return service.ResolveRuntimeCredentials(ctx, c.stateDir(), instance)
 }
 
-// accountID reads the ChatGPT account id from the record (or its id token
-// claims) once per instance; it is display metadata, so a missing or
-// unreadable record yields "" rather than an error.
+// accountID reads the ChatGPT account id from the instance's current record
+// (or its id token claims), reusing a cached value only while the record
+// fields it derives from are unchanged. Apply resolves the bearer from the
+// current record on every request, so the cached header must not outlive a
+// record identity change: a fingerprint mismatch recomputes it, and a missing
+// or unreadable record drops the cache entry and yields "" rather than an
+// error.
 func (c *Codex) accountID(instance string) string {
+	record, err := authopenai.LoadAuth(c.stateDir(), instance)
+	if err != nil {
+		c.mu.Lock()
+		delete(c.accounts, instance)
+		c.mu.Unlock()
+		return ""
+	}
+	fingerprint := accountFingerprint(record)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if id, ok := c.accounts[instance]; ok {
-		return id
+	cached, ok := c.accounts[instance]
+	c.mu.Unlock()
+	if ok && cached.fingerprint == fingerprint {
+		return cached.id
 	}
-	id := ""
-	if rec, err := authopenai.LoadAuth(c.stateDir(), instance); err == nil {
-		id, _ = recordScope(rec)
-	}
+	id, _ := recordScope(record)
+	c.mu.Lock()
 	if c.accounts == nil {
-		c.accounts = map[string]string{}
+		c.accounts = map[string]codexAccount{}
 	}
-	c.accounts[instance] = id
+	c.accounts[instance] = codexAccount{fingerprint: fingerprint, id: id}
+	c.mu.Unlock()
 	return id
+}
+
+// accountFingerprint identifies the record fields recordScope derives the
+// account and workspace from. Two records with the same fingerprint resolve to
+// the same account id, so a cached value keyed by it cannot outlive a login,
+// logout, or account switch that changed the identity.
+func accountFingerprint(record authopenai.AuthRecord) string {
+	return record.AccountID + "\x00" + record.WorkspaceID + "\x00" + record.IDToken
 }
 
 // ScopedCodex returns a Codex bound to stateDir that shares nothing

@@ -55,6 +55,68 @@ func TestCodexApplySetsEveryRequestHeader(t *testing.T) {
 	}
 }
 
+// TestCodexApplyRefreshesTheAccountHeaderWhenTheRecordIdentityChanges pins
+// #2367: Apply resolves the bearer from the current OAuth record on every
+// request, so the ChatGPT-Account-ID it sends must come from that same record.
+// A cache keyed only by instance kept sending the pre-rotation account after a
+// login, logout, or account switch in the same process, pairing a fresh bearer
+// with a stale account header.
+func TestCodexApplyRefreshesTheAccountHeaderWhenTheRecordIdentityChanges(t *testing.T) {
+	dir := codexState(t, "openai-codex", "acct_1")
+	// The credentials seam resolves the bearer from the same record Apply reads
+	// its account header from, exactly as the real Service does.
+	c := &Codex{StateDir: dir, Credentials: func(_ context.Context, stateDir, instance string) (authopenai.RuntimeCredentials, error) {
+		rec, err := authopenai.LoadAuth(stateDir, instance)
+		if err != nil {
+			return authopenai.RuntimeCredentials{}, err
+		}
+		return authopenai.RuntimeCredentials{BearerToken: rec.AccessToken, Source: authopenai.AuthSourceOAuth}, nil
+	}}
+	apply := func() http.Header {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+		if err := c.Apply(context.Background(), req, codexRes("openai-codex")); err != nil {
+			t.Fatal(err)
+		}
+		return req.Header
+	}
+
+	if got := apply().Get("ChatGPT-Account-ID"); got != "acct_1" {
+		t.Fatalf("first ChatGPT-Account-ID = %q, want acct_1", got)
+	}
+
+	// A login or account switch rewrites the record: a new bearer and a new
+	// account identity now live under the same instance name.
+	rotated := authopenai.AuthRecord{Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth, ObtainedAt: time.Now().Add(time.Minute), TokenType: "Bearer", AccessToken: "fresh-token", RefreshToken: "rt2", Expiry: time.Now().Add(time.Hour), AccountID: "acct_2"}
+	if err := authopenai.SaveAuth(dir, "openai-codex", rotated); err != nil {
+		t.Fatal(err)
+	}
+
+	second := apply()
+	if got := second.Get("Authorization"); got != "Bearer fresh-token" {
+		t.Fatalf("second Authorization = %q, want Bearer fresh-token", got)
+	}
+	if got := second.Get("ChatGPT-Account-ID"); got != "acct_2" {
+		t.Fatalf("second ChatGPT-Account-ID = %q, want acct_2 from the same record as the bearer", got)
+	}
+}
+
+// TestCodexAccountIDDropsAfterLogout pins the logout half of #2367: deleting
+// the record must clear a cached account id rather than keep sending it.
+func TestCodexAccountIDDropsAfterLogout(t *testing.T) {
+	dir := codexState(t, "openai-codex", "acct_1")
+	c := &Codex{StateDir: dir}
+	if id := c.accountID("openai-codex"); id != "acct_1" {
+		t.Fatalf("accountID = %q, want acct_1", id)
+	}
+	if _, err := authopenai.DeleteAuth(dir, "openai-codex"); err != nil {
+		t.Fatal(err)
+	}
+	if id := c.accountID("openai-codex"); id != "" {
+		t.Fatalf("accountID after logout = %q, want empty", id)
+	}
+}
+
 func TestCodexApplyRequiresLogin(t *testing.T) {
 	c := &Codex{StateDir: t.TempDir(), Credentials: func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
 		t.Fatal("credentials must not be resolved without an oauth credential source")
