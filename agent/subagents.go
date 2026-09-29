@@ -2214,6 +2214,7 @@ type delegateTerminalRunInputs struct {
 type delegateTerminalPacketMetadata struct {
 	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
 	Reason            string                          `json:"reason,omitempty"`
+	Error             string                          `json:"error,omitempty"`
 	Name              string                          `json:"name,omitempty"`
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
@@ -2291,8 +2292,13 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 			packet.Message, _ = json.Marshal(delegateUserStopMessage)
 		}
 	}
+	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
+		firstLine, _, _ := strings.Cut(inputs.runErr.Error(), "\n")
+		finish.errorText = boundedFinishText(firstLine)
+	}
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
+	metadata.Error = finish.errorText
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}

@@ -6,11 +6,32 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 const delegateFinishReasonLimit = 512
+
+// cutFinishText bounds text a finish records to delegateFinishReasonLimit
+// bytes, cutting at a rune boundary so the journal and the wire never carry
+// half a character.
+func cutFinishText(text string) string {
+	if len(text) <= delegateFinishReasonLimit {
+		return text
+	}
+	cut := delegateFinishReasonLimit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
+}
+
+// boundedFinishText is a finish's reason or error as recorded: trimmed, then
+// bounded (cutFinishText).
+func boundedFinishText(text string) string {
+	return cutFinishText(strings.TrimSpace(text))
+}
 
 type delegateSupervisionBoundary uint8
 
@@ -278,6 +299,13 @@ func cloneDelegateFinish(finish delegateFinish) delegateFinish {
 }
 
 func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {
+	if outcome == delegatestore.OutcomeFailed && finish.errorText != "" {
+		for i := range events {
+			if events[i].RunFinished != nil {
+				events[i].RunFinished.Outcome.Error = finish.errorText
+			}
+		}
+	}
 	if outcome != delegatestore.OutcomeExhausted {
 		return events
 	}
@@ -380,10 +408,7 @@ func delegateTerminalErrorPacket(reason string) delegatestore.TerminalPacket {
 	if message == "" {
 		message = "delegate generation ended before reporting a result"
 	}
-	if len(message) > delegateFinishReasonLimit {
-		message = message[:delegateFinishReasonLimit]
-	}
-	raw, _ := json.Marshal(message)
+	raw, _ := json.Marshal(cutFinishText(message))
 	return delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
 }
 
@@ -423,13 +448,10 @@ func delegatePreparedFinish(packet delegatestore.TerminalPacket) delegateFinish 
 		}
 		return finish
 	case delegatestore.OutcomeFailed:
-		reason := strings.TrimSpace(metadata.Reason)
-		if reason != "" {
-			if len(reason) > delegateFinishReasonLimit {
-				reason = reason[:delegateFinishReasonLimit]
-			}
+		if reason := boundedFinishText(metadata.Reason); reason != "" {
 			finish.reason = reason
 		}
+		finish.errorText = boundedFinishText(metadata.Error)
 		return finish
 	case delegatestore.OutcomeExhausted:
 	default:
