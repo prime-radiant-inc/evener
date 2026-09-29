@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fonts, mix, paletteFor, palettes, typeRoles } from "./tokens";
+import { fonts, mix, paletteFor, palettes, scaledType, space, typeRoles, uiType } from "./tokens";
 
 describe("the palette is the spec's (section 16.1)", () => {
 	it("light", () => {
@@ -118,5 +118,38 @@ describe("type", () => {
 		expect(typeRoles.yourMessage).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 25 });
 		expect(typeRoles.document).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 18, lineHeight: 28 });
 		expect(typeRoles.machine).toEqual({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18 });
+	});
+	it("sets the spec's interface sizes for the grouped lists", () => {
+		expect(uiType.listRow).toEqual({ fontSize: 17, lineHeight: 22 });
+		expect(uiType.subheadline).toEqual({ fontSize: 15, lineHeight: 20 });
+		expect(uiType.footnote).toEqual({ fontSize: 13, lineHeight: 18 });
+		expect(uiType.sectionLabel).toEqual({
+			fontSize: 12,
+			lineHeight: 16,
+			fontWeight: "600",
+			letterSpacing: 0.72,
+			textTransform: "uppercase",
+		});
+	});
+	it("scales a role's size and line height by the text scale, and keeps the rest", () => {
+		expect(scaledType(uiType.sectionLabel, 1.5)).toEqual({
+			fontSize: 18,
+			lineHeight: 24,
+			fontWeight: "600",
+			letterSpacing: 0.72,
+			textTransform: "uppercase",
+		});
+		expect(scaledType(typeRoles.machine, 2)).toEqual({ fontFamily: "Menlo", fontSize: 26, lineHeight: 36 });
+	});
+});
+
+describe("spacing (section 16.3)", () => {
+	it("keeps the 16pt side margin and the gap between groups", () => {
+		expect(space.margin).toBe(16);
+		expect(space.groupGap).toBe(16);
+		expect(space.labelInset).toBe(32);
+	});
+	it("puts an icon row's text where its hairline starts", () => {
+		expect(space.rowInset + space.glyph + space.rowGap).toBe(50);
 	});
 });
