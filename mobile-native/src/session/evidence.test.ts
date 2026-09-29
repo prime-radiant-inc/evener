@@ -215,6 +215,13 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A timer's note is what it will say when it fires; the footer's id and
+	// seconds are already in the line.
+	it("shows a watch's note, not the footer around it", () => {
+		expect(real("call_watch_timer")).toEqual([{ kind: "output", text: "Check the deploy finished.", lines: 1 }]);
+		expect(real("call_watch_repeat")).toEqual([{ kind: "output", text: "Look over the open PRs.", lines: 1 }]);
+	});
+
 	// A listing's status and bracketed codes read as words; a command in its
 	// label keeps its own spelling.
 	it("shows a job list with its codes in words", () => {
@@ -225,6 +232,20 @@ describe("each tool's evidence, as the tools print it", () => {
 			"job_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]",
 			"",
 			"2 job(s).",
+		]);
+	});
+
+	// A delegate's stop adds provenance lines under its footer; they read as
+	// printed, a scratch path's underscores and all.
+	it("shows a delegate stop's provenance as printed, only its footer's codes in words", () => {
+		const output =
+			"[delegate job_x · cancelled · cancelled_by_request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]";
+		expect(stepEvidence({ label: "job_stop", detail: { output } })).toEqual([
+			{
+				kind: "output",
+				text: "[delegate job_x · cancelled · cancelled by request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]",
+				lines: 3,
+			},
 		]);
 	});
 
