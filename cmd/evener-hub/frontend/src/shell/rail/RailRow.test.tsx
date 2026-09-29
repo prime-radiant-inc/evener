@@ -39,7 +39,6 @@ import railStyles from "./RailRow.module.css";
 import type {
   CompletedJobsFoldRailNode,
   HostRailNode,
-  InactiveFoldRailNode,
   JobRailNode,
   LoadingRailNode,
   OverflowRailNode,
@@ -242,10 +241,6 @@ function loadingRailNode(): LoadingRailNode {
 
 function overflowRailNode(count: number): OverflowRailNode {
   return { id: "projectnode:p1:overflow", kind: "overflow", count, pages: [] };
-}
-
-function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
-  return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
 }
 
 function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
@@ -511,23 +506,6 @@ describe("activityGloss", () => {
     expect(activityGloss(apiNode({ state: "active" }))).toBe("working");
   });
 
-  test("reports one recursive working subagent", () => {
-    expect(
-      activityGloss(
-        apiNode({
-          state: "active",
-          children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] })],
-        }),
-      ),
-    ).toBe("1 subagent working");
-  });
-
-  test("reports multiple recursive working subagents with plural wording", () => {
-    expect(activityGloss(apiNode({ children: [apiNode({ state: "active" }), apiNode({ state: "active" })] }))).toBe(
-      "2 subagents working",
-    );
-  });
-
   test("joins state and branch, in that order", () => {
     expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("your move · main");
   });
@@ -551,27 +529,25 @@ describe("activityGloss", () => {
   });
 
   // Like restart required, the approval is what the row needs from a person,
-  // so it leads even while subagents or jobs keep running beside it.
-  test("an approval leads the gloss beside working subagents and running jobs", () => {
-    const session = apiNode({
-      state: "active",
-      approval_pending: true,
-      children: [apiNode({ kind: "subagent", state: "active" })],
-    });
+  // so it leads even while jobs keep running beside it.
+  test("an approval leads the gloss beside running jobs", () => {
+    const session = apiNode({ state: "active", approval_pending: true });
     Object.assign(session, {
       running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
     });
-    expect(activityGloss(session)).toBe("approval waiting · 1 subagent working · 1 job running");
+    expect(activityGloss(session)).toBe("approval waiting · 1 job running");
   });
 
   // A question blocks its session on a person's answer the same way, so it
-  // leads too; a plain your-move row still reads as its subagents' work.
-  test("a question leads the gloss beside working subagents", () => {
-    const child = apiNode({ kind: "subagent", state: "active" });
-    expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true, children: [child] }))).toBe(
-      "question waiting · 1 subagent working",
-    );
-    expect(activityGloss(apiNode({ state: "awaiting", children: [child] }))).toBe("1 subagent working");
+  // leads too; a plain your-move row reads as its running job's work.
+  test("a question leads the gloss beside running jobs", () => {
+    const withJob = (props: Parameters<typeof apiNode>[0]) => {
+      const session = apiNode(props);
+      Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
+      return session;
+    };
+    expect(activityGloss(withJob({ state: "awaiting", ask_pending: true }))).toBe("question waiting · 1 job running");
+    expect(activityGloss(withJob({ state: "awaiting" }))).toBe("1 job running");
   });
 
   test("omits an empty branch", () => {
@@ -599,20 +575,12 @@ describe("activityGloss", () => {
     expect(activityGloss(apiNode({ state: "errored", tier: "archived" }))).toBe("failed");
   });
 
-  test("keeps a branch suffix after the working subagent count", () => {
-    expect(
-      activityGloss(
-        apiNode({ branch: "fix/thing", children: [apiNode({ state: "active" }), apiNode({ state: "active" })] }),
-      ),
-    ).toBe("2 subagents working · fix/thing");
-  });
-
-  test("reports active jobs alongside active subagents", () => {
-    const session = apiNode({ children: [apiNode({ state: "active" })] });
+  test("keeps a branch suffix after the running job count", () => {
+    const session = apiNode({ state: "idle", branch: "fix/thing" });
     Object.assign(session, {
       running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
     });
-    expect(activityGloss(session)).toBe("1 subagent working · 1 job running");
+    expect(activityGloss(session)).toBe("1 job running · fix/thing");
   });
 });
 
@@ -816,8 +784,8 @@ describe("subagent tally on the summary line", () => {
     expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
   });
 
-  test("a live subagent row shows no chip", () => {
-    renderRow({ kind: "subagent", subagents: { running: 2, failed: 0, done: 0 } });
+  test("a nested fork original shows no chip", () => {
+    renderRow({ kind: "fork", subagents: { running: 2, failed: 0, done: 0 } });
     expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
   });
 
@@ -953,52 +921,7 @@ describe("watch count on the summary line", () => {
   });
 });
 
-describe("inactive-subagent fold row", () => {
-  test("names what it hides and how many", () => {
-    render(<RailRow node={inactiveFoldRailNode(3)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByText("Inactive subagents (3)")).toBeTruthy();
-  });
-
-  test("counts one in the singular", () => {
-    render(<RailRow node={inactiveFoldRailNode(1)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByText("Inactive subagent (1)")).toBeTruthy();
-  });
-
-  // It stands for finished work, so it has no state to signal and nothing to
-  // act on - the two things every session row spends its right edge on.
-  test("carries no actions menu", () => {
-    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
-  });
-
-  test("carries no cadence dot and no signal slot", () => {
-    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
-  });
-
-  test("toggles on click, the way its chevron does", async () => {
-    const toggle = vi.fn();
-    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true, toggle })} actions={actions()} />);
-    await userEvent.setup().click(screen.getByText("Inactive subagents (2)"));
-    expect(toggle).toHaveBeenCalled();
-  });
-
-  // The fold's text lines up with every other row at its nesting depth: it
-  // carries no alignment class of its own (the old .inactiveFold padding
-  // overrides existed to left-justify a LEADING chevron at the parent's
-  // label x - the chevron trails the label now, so there is nothing to
-  // align but the text itself, which the shared .railRow rule already does).
-  test("carries no alignment class - its text lines up with its depth's rows", () => {
-    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-inactive-fold").className).toBe(railStyles.railRow as string);
-  });
-
-  test("the stylesheet carries no inactiveFold override at all", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).not.toMatch(/\.inactiveFold/);
-  });
-
+describe("row alignment", () => {
   // The outdented-dot contract the whole list's alignment rests on: .railRow
   // reserves the leading padding the dot hangs in, and .signal's negative
   // margin exactly cancels the dot's own width (6px) plus the title line's
@@ -1328,27 +1251,6 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
   });
 
-  test("shows recursive working subagent count and preserves the branch suffix on a working row", () => {
-    const session = apiNode({
-      state: "active",
-      branch: "fix/thing",
-      children: [apiNode({ state: "active" }), apiNode({ state: "active" })],
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
-  });
-
-  test("shows recursive working subagent count on a quiet row with active descendants", () => {
-    const session = apiNode({
-      state: "idle",
-      branch: "fix/thing",
-      updated_at: minutesAgo(2),
-      children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] }), apiNode({ state: "active" })],
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
-  });
-
   test("shows an active job on a quiet session as green working activity", () => {
     const session = apiNode({ state: "idle" });
     Object.assign(session, {
@@ -1453,26 +1355,20 @@ describe("session row", () => {
     expect(activity.className.split(" ")).toContain(railStyles.activityAttention);
   });
 
-  test("an approval row keeps the needs-you dot while its subagents work", () => {
-    const session = apiNode({
-      state: "active",
-      approval_pending: true,
-      children: [apiNode({ row_id: "child", ref: "local:child", kind: "subagent", state: "active" })],
-    });
+  test("an approval row keeps the needs-you dot while its jobs run", () => {
+    const session = apiNode({ state: "active", approval_pending: true });
+    Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 subagent working");
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 job running");
   });
 
-  test("a question row keeps the needs-you dot while its subagents work", () => {
-    const session = apiNode({
-      state: "awaiting",
-      ask_pending: true,
-      children: [apiNode({ row_id: "child", ref: "local:child", kind: "subagent", state: "active" })],
-    });
+  test("a question row keeps the needs-you dot while its jobs run", () => {
+    const session = apiNode({ state: "awaiting", ask_pending: true });
+    Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 subagent working");
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 job running");
   });
 
   test("a failed row stays failed with an approval pending", () => {
@@ -1485,71 +1381,6 @@ describe("session row", () => {
     );
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Failed" })).toBeTruthy();
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("failed");
-  });
-
-  // --- a turn-ended subagent is quiet, never "your move" -------------------
-  //
-  // "awaiting" means "the turn ended; the next input comes from this session's
-  // owner". For a TOP-LEVEL session that owner is the user, so the row says
-  // "your move". A subagent's owner is its parent session - the user never
-  // steers a subagent directly - so a turn-ended subagent is simply idle, and
-  // glossing it "your move" made every finished delegate read as attention it
-  // does not need. Only a genuine ask_user (ask_pending) still reaches the
-  // user, so that one keeps its signal treatment.
-
-  test("a turn-ended subagent row shows no dot, no gloss - just title + age", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", updated_at: minutesAgo(4) }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
-    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
-    expect(screen.getByText("Fix flaky test")).toBeTruthy();
-    expect(screen.getByTestId("rail-row-time").textContent).toBe("4m");
-  });
-
-  test("a turn-ended subagent's title tooltip reports idle, never your move", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting" }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · idle");
-  });
-
-  test("a subagent blocked on ask_user still glosses as a question, not idle", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", ask_pending: true }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
-  });
-
-  // leadsOverWork and activeWorkSummary read state/ask_pending/children, never
-  // a row's own kind - #2560 pinned that a ROOT row's question outranks its
-  // subagents' work (above); a subagent row that is itself blocked on
-  // ask_user, with subagents of its own still running, must read the same
-  // way. Otherwise a delegate genuinely waiting on the user could hide behind
-  // its own children's green dot.
-  test("a subagent blocked on ask_user keeps the needs-you dot while its own children work", () => {
-    const session = apiNode({
-      kind: "subagent",
-      state: "awaiting",
-      ask_pending: true,
-      children: [apiNode({ row_id: "grandchild", ref: "local:grandchild", kind: "subagent", state: "active" })],
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 subagent working");
   });
 
   test.each(["idle", "ended", "notLoaded", ""] as const)(
@@ -3064,7 +2895,6 @@ test("an incompatible daemon has an attention signal and restart instruction", (
 
 test.each([
   ["own activity", { state: "active" }, { state: "idle" }, "working"],
-  ["subagent activity", { state: "idle" }, { state: "active" }, "1 subagent working"],
   [
     "job activity",
     { state: "idle", running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }] },
@@ -3091,18 +2921,17 @@ test("restart-required navigation disables daemon actions in the sidebar menu", 
   expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
 });
 
-test.each(["subagent", "job"] as const)("restart explanation survives %s activity", (kind) => {
+test("restart explanation survives job activity", () => {
   renderRow({
     state: "restartRequired",
     live: true,
     branch: "",
-    children: kind === "subagent" ? [apiNode({ state: "active" })] : [],
-    running_jobs: kind === "job" ? [{ job_id: "job-a", job_type: "shell", status: "running" }] : [],
+    running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }],
   });
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
   const gloss = screen.getByTestId("rail-row-activity").textContent;
   expect(gloss).toContain("restart required");
-  expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
+  expect(gloss).toContain("1 job running");
 });
 
 // --- host badge / offline affordance (Component 06b) -----------------------

@@ -32,7 +32,7 @@ type scriptRunner struct{ remote *fenceRemote }
 
 func (r scriptRunner) Run(ctx context.Context, command string) (string, string, int, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Env = append(os.Environ(), "EVENER_FENCE_STATE="+r.remote.state)
+	cmd.Env = r.remote.env()
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err := cmd.Run()
