@@ -3,8 +3,8 @@ package hub
 // This file owns the production first-contact caller crash-fencing §6 names:
 // the attach/Ensure wiring that drives `hostfence.Bootstrap` for a host at first
 // contact. The flow itself (the exemption, the attempt fence, the claim gate,
-// the delivery, the finalize, and the recovery path) is the hostfence package's
-//; this caller supplies the attempt's expected identity from the held registry
+// the delivery, the finalize, and the recovery path) is the hostfence package's;
+// this caller supplies the attempt's expected identity from the held registry
 // row, the operation-store evidence the exemption reads, the durable epoch the
 // attempt runs under, and the remote seam — and maps every refusal onto the
 // attach surface's typed classes.
