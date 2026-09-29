@@ -174,10 +174,11 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		case "jobs": {
 			// A job check: its status and what it runs, not the JSON around
 			// them. A list and a stop print lines of their own, their codes
-			// in words.
+			// in words; anything else reads as printed.
+			if (label === "job_list" || label === "job_stop") return rawOutput(jobCodesInWords(text));
 			const job = toolJSONResult(text);
 			const status = job ? str(job, "status") : undefined;
-			if (!job || !status) return rawOutput(jobCodesInWords(text));
+			if (!job || !status) return rawOutput(text);
 			const description = str(job, "description");
 			const line = jobStatusDisplay(status, str(job, "reason"));
 			return rawOutput(description ? `${line} — ${description}` : line);

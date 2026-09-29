@@ -228,6 +228,14 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// Only a listing and a stop footer carry codes. Anything else a job tool
+	// prints, a job's own output among it, reads as printed.
+	it("shows other job output as printed, codes and all", () => {
+		const output = "a  b  exit_zero  d\nbuilt [tree_order]";
+		for (const label of ["job_read_output", "job_watch"])
+			expect(stepEvidence({ label, detail: { output } })).toEqual([{ kind: "output", text: output, lines: 2 }]);
+	});
+
 	it("shows what a job check printed when it isn't the tool's JSON", () => {
 		expect(stepEvidence({ label: "job_status", detail: { output: "not json" } })).toEqual([
 			{ kind: "output", text: "not json", lines: 1 },
