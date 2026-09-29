@@ -5,11 +5,8 @@
 // a place's last answer stays while it is asked again.
 import type { AnyNotification } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import {
-	type ConversationClientLike,
-	createNewSessionService,
-	type NewSessionService,
-} from "../../../mobile/src/services/newSession";
+import type { ConversationClientLike, NewSessionService } from "../../../mobile/src/services/newSession";
+import { creationService } from "./creations";
 
 /** `read` must be a stable function (declared at module level), or the page
  * asks again on every render. */
@@ -29,7 +26,7 @@ export function useHostRead<T>(
 		void revision;
 		if (!client || !ready || !project) return;
 		let current = true;
-		read(createNewSessionService(client), host, project).then(
+		read(creationService(client), host, project).then(
 			(value) => current && setKnown({ place, value }),
 			() => current && setKnown({ place, value: null }),
 		);
