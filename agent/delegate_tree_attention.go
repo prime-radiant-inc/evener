@@ -544,6 +544,10 @@ type delegateFencedAttentionEscalation struct {
 	transcriptRef string
 	attentionIDs  []string
 	runtime       *Session
+	// requireTranscript makes a missing source transcript an error rather
+	// than an empty fold: set for a give-up hand-over, whose attention is
+	// owed and must not be forgotten as never durable.
+	requireTranscript bool
 }
 
 // permanentlyFencedDelegateAttention lists pending attention wakes whose

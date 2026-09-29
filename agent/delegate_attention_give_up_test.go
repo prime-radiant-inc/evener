@@ -263,3 +263,53 @@ func TestParkingTwiceWarnsOnce(t *testing.T) {
 		t.Fatalf("undeliverable warnings = %d, want one for the one park", undeliverable)
 	}
 }
+
+// A nil error is no failure: it neither counts nor gives up.
+func TestANilRestoreErrorIsNotCounted(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root := fenced.root
+	root.cfg.testOnly.delegateAttentionGiveUpAfter = 1
+	root.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID, nil)
+	c := root.delegateController
+	c.mu.Lock()
+	count := c.attentionRestoreFailures[fenced.grandchildDelegateID]
+	_, parked := c.attentionParked[fenced.grandchildDelegateID]
+	c.mu.Unlock()
+	if count != 0 || parked {
+		t.Fatalf("after a nil error: count=%d parked=%t, want nothing recorded", count, parked)
+	}
+}
+
+// A parked delegate stays out of the fenced escalation too: its hand-over
+// already failed once, and the lenient fenced read would treat a missing
+// transcript as empty and forget the attention. It stays owed and parked
+// until new attention unparks it (the PR's known limit).
+func TestAParkedDelegateIsNotEscalatedWhenItsAncestorCloses(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root, fixture := fenced.root, fenced.fixture
+	c := root.delegateController
+	c.parkDelegateAttention(fenced.grandchildDelegateID)
+	plans, err := c.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
+	if err != nil {
+		t.Fatalf("close parent resumability: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("publish parent closure: %v", err)
+	}
+
+	root.drivePendingStableDelegateAttention()
+
+	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if _, handed := rootFold.content[fenced.attentionID]; handed {
+		t.Fatal("a parked delegate's attention was escalated")
+	}
+	c.mu.Lock()
+	_, owed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
+	c.mu.Unlock()
+	if !owed {
+		t.Fatal("a parked delegate's attention was forgotten")
+	}
+}

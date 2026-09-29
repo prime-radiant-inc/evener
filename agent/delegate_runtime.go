@@ -1089,7 +1089,11 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 	if err != nil {
 		return err
 	}
-	fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
+	readFold := readDelegateAttentionFold
+	if plan.requireTranscript {
+		readFold = readExistingDelegateAttentionFold
+	}
+	fold, err := readFold(sourcePath, sourceSessionID)
 	if err != nil {
 		return err
 	}
@@ -1190,7 +1194,7 @@ const maxDelegateAttentionRestoreFailures = 64
 // delegateID's cold runtime and gives up on it at the limit. A transient
 // failure (isTransientStartFailure) clears on its own and is not counted.
 func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err error) {
-	if isTransientStartFailure(err) {
+	if err == nil || isTransientStartFailure(err) {
 		return
 	}
 	if s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
@@ -1235,18 +1239,13 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 }
 
 // handOverDelegateAttention transfers plan's attention to the root. The
-// escalation's fold read treats a missing transcript as empty (attention
-// never made durable) and forgets the ids, which here would drop owed
-// attention as though delivered; a delegate whose transcript is gone has
-// nothing to hand over, so that is a failure.
+// fenced escalation's fold read treats a missing transcript as empty
+// (attention never made durable) and forgets the ids, which here would drop
+// owed attention as though delivered; a delegate whose transcript is gone has
+// nothing to hand over, so the hand-over reads it strictly and a missing
+// transcript fails it, in the same read the transfer uses.
 func (s *Session) handOverDelegateAttention(plan delegateFencedAttentionEscalation) error {
-	sourcePath, _, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		return fmt.Errorf("delegate transcript: %w", err)
-	}
+	plan.requireTranscript = true
 	return s.escalateOneUnreachableDelegateAttention(plan)
 }
 
