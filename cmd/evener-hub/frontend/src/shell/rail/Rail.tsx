@@ -69,6 +69,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore, closeSessionActivityPanes } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
@@ -1052,6 +1053,7 @@ function NavigationRail({
   scrollOwner = "rail",
 }: RailProps = {}) {
   const client = useClient();
+  const isMobile = useIsMobile();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -1562,6 +1564,19 @@ function NavigationRail({
           // navigates, it does not toggle - closing notes belongs to the
           // panel's own header and the palette's Toggle command.
           topNotesStore.getState().openAndFocus(session.ref);
+        } else if (pane === "activity") {
+          // Desktop Activity everywhere is the zoom system's sidebar, scoped
+          // by the just-focused session. On mobile there is no sidebar (the
+          // rail lives in the tree drawer), so the sessionActivity pane keeps
+          // its pre-sidebar behavior. Both idempotent opens: the rail
+          // navigates, it never toggles closed. The sidebar open also retires
+          // a leftover sessionActivity pane for this session - nothing on
+          // desktop can open or mark one anymore.
+          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+          else {
+            closeSessionActivityPanes(session.ref);
+            activitySidebarStore.getState().openWith();
+          }
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
@@ -1723,7 +1738,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, isMobile],
   );
   function closeDeleteDialog() {
     setDeleteTarget(null);
@@ -1953,6 +1968,7 @@ function NavigationRail({
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
+      data-testid="rail"
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
       {width !== undefined && onWidthChange && (

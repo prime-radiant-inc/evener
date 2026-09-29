@@ -1,0 +1,49 @@
+/* The status bar: the zoom system's glance strip under the workspace.
+ * Tokens only; neutral inks throughout (the counters are information, not
+ * attention - the attention hues belong to states, not counts). */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  min-height: 30px;
+  border-top: 1px solid var(--edge);
+  background: var(--surface-canvas);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  flex: none;
+}
+
+.chips {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 2px var(--space-1);
+  font: inherit;
+  color: var(--ink-mid);
+  cursor: pointer;
+  border-radius: var(--radius-pane);
+}
+
+.chip:hover {
+  background: var(--hover-1);
+  color: var(--ink-hi);
+}
+
+.chipGlyph {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-low);
+}

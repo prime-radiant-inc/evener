@@ -762,7 +762,11 @@ test("clicking the current task twice keeps one Tasks pane open and focuses it",
     .getState()
     .panes.find((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a");
   if (!tasksPane) throw new Error("missing Tasks pane");
-  workspaceStore.setState({ focusedPaneId: null });
+  // act(): the chrome subscribes to focus-derived state (its Activity check
+  // reads currentSessionRef), so this raw store mutation re-renders it.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: null });
+  });
   expect(workspaceStore.getState().focusedPaneId).not.toBe(tasksPane.id);
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
