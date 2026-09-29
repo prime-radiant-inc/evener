@@ -305,3 +305,52 @@ func TestProjectSummaryMoreArchivedIsTheArchivedCount(t *testing.T) {
 		}
 	}
 }
+
+// Navigation carries a project's archived count, never its archived rows: the
+// project resource's archived tier is empty with nothing remaining, its
+// archived page is empty, and an archived row's change moves no project
+// fingerprint. Locations and pin sections still index archived rows.
+func TestNavigationServesNoArchivedRows(t *testing.T) {
+	old := time.Unix(1_600_000_000, 0).UTC()
+	current := []hubcore.TreeNode{{ID: "session-now", Title: "now", Kind: "session", State: "idle", UpdatedAt: old.Add(time.Hour)}}
+	archived := archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
+	build := func(archived []hubcore.TreeNode) navigationProjection {
+		return archivedProjection(t,
+			hubcore.TreeProject{Key: "project", Name: "project", Current: current, Archived: archived},
+			hubcore.TreeProject{Key: "only-archived", Name: "only archived", Archived: archivedRows("only", 2, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("only %d", i) })},
+		)
+	}
+	p := build(archived)
+
+	resource, ok := p.Project("project")
+	if !ok || len(resource.Current.Sessions) != 1 || len(resource.Archived.Sessions) != 0 || resource.Archived.Remaining != 0 {
+		t.Fatalf("project resource = current %d, archived %d remaining %d", len(resource.Current.Sessions), len(resource.Archived.Sessions), resource.Archived.Remaining)
+	}
+	onlyArchived, _ := p.Project("only-archived")
+	if err := validateNavigationPageProgress(navigationResourceProject, onlyArchived); err != nil {
+		t.Fatalf("a project whose only rows are archived fails page progress: %v", err)
+	}
+	page, err := p.ProjectPage("project", "archived", 0, 50)
+	if err != nil || len(page.Sessions) != 0 || page.Remaining != 0 {
+		t.Fatalf("archived page = %d rows, remaining %d, err %v", len(page.Sessions), page.Remaining, err)
+	}
+	location, ok := p.Location("local:archived-001")
+	if !ok || location.Tier != "archived" || location.ProjectKey != "project" || !location.TopLevel {
+		t.Fatalf("archived location = %#v, found %v", location, ok)
+	}
+
+	renamed := append([]hubcore.TreeNode(nil), archived...)
+	renamed[0].Title = "renamed archived row"
+	before, _, err := navigationLogicalFingerprintsContext(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := navigationLogicalFingerprintsContext(context.Background(), build(renamed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "project"}
+	if before[key] != after[key] {
+		t.Fatal("renaming an archived row moved the project fingerprint")
+	}
+}
