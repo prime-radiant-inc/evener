@@ -69,6 +69,19 @@ describe("subagentIsCurrent", () => {
     const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
     expect(subagentIsCurrent(child)).toBe(true);
   });
+
+  test("an errored subagent is current (a failure needs the user more than a warning does)", () => {
+    // The fold hides work that is done; an errored subagent is not done in
+    // that sense - its row paints danger, and warning (the less severe
+    // signal) is already current.
+    expect(subagentIsCurrent(session({ state: "errored" }))).toBe(true);
+  });
+
+  test("a descendant's errored state makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "errored" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
 });
 
 function session(overrides: Partial<RailSession> = {}): RailSession {

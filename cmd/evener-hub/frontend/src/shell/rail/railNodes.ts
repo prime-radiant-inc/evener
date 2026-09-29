@@ -428,6 +428,9 @@ const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
   "warning",
   "restartRequired",
   "notLoaded",
+  // Not "done" in the fold's sense: a failed subagent needs the user (its
+  // row paints danger), and warning - the less severe signal - is current.
+  "errored",
 ]);
 
 // The wire's children carry fork originals (kind "fork") beside subagents -
