@@ -6,10 +6,10 @@
 // (ruling 18).
 import { StackActions, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
-import { useOfferAlert } from "../alerts/alertsContext";
+import { useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
 import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
@@ -24,7 +24,7 @@ import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../../../mobile/src/services/newSession";
 import { effortLabel, knownAccess, projectName } from "./launchSetup";
-import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
+import { type NewSessionRoutes, type NewSessionStore, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
 import { useHostRead } from "./useHostRead";
@@ -38,6 +38,17 @@ const readBranch = (service: NewSessionService, host: string, cwd: string) => se
 
 /** The launch settings More options sets. */
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
+
+interface FormFront {
+	navigation: NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"];
+	latest: { current: { ready: boolean; client: unknown } };
+}
+
+/** The form showing each hub's creation store, newest first (#3104). A start
+ * keeps running after its sheet closes, so when it lands, the form in front
+ * then (perhaps a sheet reopened meanwhile) opens the session or shows why it
+ * failed, and with none in front an alert says so. */
+const fronts = new WeakMap<NewSessionStore, FormFront>();
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
 	const { store, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
@@ -81,21 +92,50 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 	});
 	const offerAlert = useOfferAlert();
+	const startFailureSeen = useStartFailureSeen();
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
+	useEffect(() => {
+		const front = { navigation, latest };
+		fronts.set(store, front);
+		// This form shows the store's own error, so an alert saying the same goes.
+		startFailureSeen();
+		return () => {
+			if (fronts.get(store) === front) fronts.delete(store);
+		};
+	}, [store, navigation, startFailureSeen]);
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
 	const start = useCallback(async () => {
 		if (!latest.current.ready || latest.current.blocked || imageSelection.getSnapshot().busy) return;
 		const submittedClient = latest.current.client;
 		const setup = startedSetup(store.getState());
 		const outcome = await store.getState().submit();
-		if (outcome.status !== "created") return;
+		// The form in front now: this one, or a sheet reopened while the start was on its way.
+		const front = fronts.get(store);
+		const inFront =
+			!!front &&
+			front.navigation.isFocused() &&
+			front.latest.current.ready &&
+			front.latest.current.client === submittedClient;
+		if (outcome.status !== "created") {
+			// A form in front shows the store's error itself; else an alert says it.
+			const { error, unconfirmedCreation } = store.getState();
+			if (inFront || (outcome.status === "blocked" && !error)) return;
+			offerAlert({
+				kind: "startFailed",
+				title: unconfirmedCreation ? "Couldn't confirm the new session started" : "Couldn't start the new session",
+				reason: error
+					? error.replace(/\s+/g, " ").trim()
+					: "The connection to the hub changed before it started. Your draft is kept.",
+			});
+			return;
+		}
 		try {
 			memory.recordStart(setup, Date.now());
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) {
+		if (!front || !inFront) {
 			// The session exists but this sheet can no longer open it: say so
 			// where the person is, so it isn't started twice (#3048).
 			offerAlert({
@@ -106,17 +146,18 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 			});
 			return;
 		}
-		navigation.getParent()?.dispatch(
+		front.navigation.getParent()?.dispatch(
 			StackActions.replace("Conversation", {
 				hubId: outcome.hubId,
 				ref: outcome.thread.evener.ref,
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, navigation, imageSelection, offerAlert]);
+	}, [store, memory, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
-		const { prompt, images } = store.getState();
-		if (!prompt.trim() && images.length === 0) {
+		const { prompt, images, submitting } = store.getState();
+		// A draft whose start is on its way can't be discarded: Cancel only closes.
+		if (submitting || (!prompt.trim() && images.length === 0)) {
 			close();
 			return;
 		}
@@ -129,13 +170,16 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		]);
 	}, [store, close]);
 	const blocked = block !== null;
+	const starting = form.submitting;
 	useLayoutEffect(() => {
 		navigation.setOptions({
 			title: "New session",
 			headerLeft: () => <HeaderButton label="Cancel" onPress={cancel} />,
-			headerRight: () => <HeaderButton label="Start" strong disabled={blocked} onPress={() => void start()} />,
+			headerRight: () => (
+				<HeaderButton label={starting ? "Starting…" : "Start"} strong disabled={blocked} onPress={() => void start()} />
+			),
 		});
-	}, [navigation, cancel, start, blocked]);
+	}, [navigation, cancel, start, blocked, starting]);
 
 	const editable = form.storageLoaded && !form.submitting;
 	const levels = model?.reasoningEffortLevels ?? [];

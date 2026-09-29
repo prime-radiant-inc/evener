@@ -106,8 +106,8 @@ async function mount(options: Options = {}) {
 				return { effective: options.defaults ?? {}, layers: {}, provenance: {} };
 			}
 			if (method === "thread/start") {
-				if (options.refuseStart) throw options.refuseStart;
 				if (options.holdStart) await held;
+				if (options.refuseStart) throw options.refuseStart;
 				return { thread: { id: "t", name: "Fix the flaky test", evener: { ref: "paradise-park:t" } }, turn: {} };
 			}
 			return fleet.client.request(method as never, params as never);
@@ -140,17 +140,6 @@ async function mount(options: Options = {}) {
 	const live = new LiveSessionsReader(client as never);
 	const memory = new LaunchMemory(memoryStorage(), "hub-1");
 	let context = sheetContext(store, { client: client as never, hosts, live, memory });
-	let headerOptions: NativeStackNavigationOptions = {};
-	const parent = { goBack: vi.fn(), dispatch: vi.fn() };
-	const focus = { focused: true };
-	const navigation = {
-		isFocused: () => focus.focused,
-		navigate: vi.fn(),
-		getParent: () => parent,
-		setOptions: vi.fn((next: NativeStackNavigationOptions) => {
-			headerOptions = { ...headerOptions, ...next };
-		}),
-	};
 	// The app's real alert center, so a start the form can no longer open
 	// reaches the banner.
 	const alerts = new AlertCenter({
@@ -158,11 +147,37 @@ async function mount(options: Options = {}) {
 		setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
 		clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 	});
-	const form = () => (
+	/** One mounted form: the sheet's stack gives each its own navigation. */
+	function sheetNavigation() {
+		let headerOptions: NativeStackNavigationOptions = {};
+		const parent = { goBack: vi.fn(), dispatch: vi.fn() };
+		const focus = { focused: true };
+		const navigation = {
+			isFocused: () => focus.focused,
+			navigate: vi.fn(),
+			getParent: () => parent,
+			setOptions: vi.fn((next: NativeStackNavigationOptions) => {
+				headerOptions = { ...headerOptions, ...next };
+			}),
+		};
+		/** A header button as the stack would place it (a HeaderButton element). */
+		const header = (side: "headerLeft" | "headerRight") =>
+			(
+				headerOptions[side] as (props: { canGoBack: boolean }) => ReactElement<{
+					label: string;
+					onPress(): void;
+					disabled?: boolean;
+				}>
+			)({ canGoBack: false });
+		return { parent, focus, navigation, header, headerOptions: () => headerOptions };
+	}
+	const first = sheetNavigation();
+	const { parent, focus, navigation, header } = first;
+	const form = (nav = navigation) => (
 		<AlertsContext.Provider value={{ center: alerts, reportRoutes: () => {}, noticeFor: () => undefined }}>
 			<TestSheet value={context}>
 				<NewSessionForm
-					navigation={navigation as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
+					navigation={nav as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
 					route={{ key: "Form", name: "Form", params: undefined }}
 				/>
 			</TestSheet>
@@ -170,15 +185,16 @@ async function mount(options: Options = {}) {
 	);
 	const tree = render(form());
 	await settle();
-	/** A header button as the stack would place it (a HeaderButton element). */
-	const header = (side: "headerLeft" | "headerRight") =>
-		(
-			headerOptions[side] as (props: { canGoBack: boolean }) => ReactElement<{
-				label: string;
-				onPress(): void;
-				disabled?: boolean;
-			}>
-		)({ canGoBack: false });
+	/** The person swipes this sheet away and opens New session again: a new
+	 * form on the hub's same store. */
+	const reopen = async () => {
+		focus.focused = false;
+		act(() => tree.unmount());
+		const next = sheetNavigation();
+		const reopened = render(form(next.navigation));
+		await settle();
+		return { ...next, tree: reopened, text: () => renderedText(reopened) };
+	};
 	const row = (label: string) =>
 		tree.root.findAll(
 			(node) =>
@@ -212,8 +228,9 @@ async function mount(options: Options = {}) {
 		memory,
 		parent,
 		navigation,
-		headerOptions: () => headerOptions,
+		headerOptions: first.headerOptions,
 		header,
+		reopen,
 		row,
 		prompt,
 		setReady,
@@ -661,5 +678,99 @@ it("forgets the last project's plugin problems as soon as the project changes", 
 	expect(form.text()).not.toContain("gone: not present in current preview");
 	await debounce();
 	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 0 of 1");
+	form.dispose();
+});
+
+it("reads Starting… while its start is on its way, and Cancel then closes without discarding", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	expect(form.header("headerRight").props).toMatchObject({ label: "Starting…", disabled: true });
+	await act(async () => form.header("headerLeft").props.onPress());
+	expect(alertRequests).toEqual([]);
+	expect(form.parent.goBack).toHaveBeenCalledTimes(1);
+	expect(form.store.getState()).toMatchObject({ submitting: true, prompt: "go" });
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go" });
+	await act(async () => form.releaseStart());
+	form.dispose();
+});
+
+it("lets a sheet reopened mid-start open the session its start makes (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	const reopened = await form.reopen();
+	expect(reopened.header("headerRight").props).toMatchObject({ label: "Starting…", disabled: true });
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+	expect(form.parent.dispatch).not.toHaveBeenCalled();
+	expect(reopened.parent.dispatch).toHaveBeenCalledWith({
+		type: "REPLACE",
+		payload: {
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: "paradise-park:t", title: "Fix the flaky test" },
+		},
+	});
+	expect(form.alerts.getSnapshot().banner).toBeNull();
+	act(() => reopened.tree.unmount());
+});
+
+it("says so when a start fails after its sheet closed, and the alert opens New session with the draft (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{
+			kind: "startFailed",
+			title: "Couldn't confirm the new session started",
+			reason: expect.stringContaining("the hub is shutting down"),
+		},
+	]);
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go" });
+	expect(form.alerts.tap()).toEqual({ kind: "newSession" });
+});
+
+it("says a start the hub never got couldn't start, once, and New session answers it (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["superpowers"] } },
+		plugins: new Error("plugin cache locked"),
+	});
+	await debounce();
+	// The sheet closes before the hub answers the plugin check.
+	await act(async () => {
+		void form.header("headerRight").props.onPress();
+		form.focus.focused = false;
+		form.dispose();
+	});
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{
+			kind: "startFailed",
+			title: "Couldn't start the new session",
+			reason: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
+		},
+	]);
+	// Opening New session shows the same reason in the form, so the alert goes.
+	const reopened = await form.reopen();
+	expect(form.alerts.getSnapshot().banner).toBeNull();
+	expect(reopened.text()).toContain("Couldn't check the selected plugins, so no session was started.");
+	act(() => reopened.tree.unmount());
+});
+
+it("raises no alert for a failure the form in front already shows", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.text()).toContain("the hub is shutting down");
+	expect(form.alerts.getSnapshot().banner).toBeNull();
 	form.dispose();
 });

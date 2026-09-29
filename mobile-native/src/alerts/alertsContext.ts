@@ -47,6 +47,13 @@ export function useOfferAlert(): (alert: Alert) => void {
 	return useCallback((alert: Alert) => center?.offer(alert), [center]);
 }
 
+/** Tells alerts New session is open, so an alert that a start failed, which
+ * the form now shows itself, goes: nothing outside an AlertsProvider. */
+export function useStartFailureSeen(): () => void {
+	const center = useContext(AlertsContext)?.center;
+	return useCallback(() => center?.startFailureSeen(), [center]);
+}
+
 const noSubscription = () => () => {};
 
 /** How many alerts wait behind a hold: none outside an AlertsProvider. */
