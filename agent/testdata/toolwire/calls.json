@@ -21,6 +21,14 @@
     "call_use_skill": "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
     "call_web_fetch": "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
     "call_web_search": "Hand-written (web_search needs the network and a model): one result per line.",
+    "call_worktree_create": "A worktree created from the repository's main branch; the session moves into it.",
+    "call_worktree_exit": "The session leaves the worktree for the main checkout.",
+    "call_worktree_exit_again": "The session leaves the worktree again, so it can be removed. The call and its result match the first exit's, so the registry appends its repetition nudge after the JSON.",
+    "call_worktree_list": "The repository's managed worktrees.",
+    "call_worktree_prune": "A prune with nothing left to prune.",
+    "call_worktree_remove": "The worktree removed.",
+    "call_worktree_switch": "The session moves back into the worktree.",
+    "call_worktree_switch_again": "A switch to the worktree the session is already in, which changes nothing.",
     "call_write_file": "A new file written whole."
   },
   "items": [
@@ -168,6 +176,86 @@
       "type": "commandExecution",
       "id": "item_tool_1_14",
       "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_create",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"create\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_15",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_list",
+      "argumentsJson": "{\"operation\":\"list\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_16",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit",
+      "argumentsJson": "{\"operation\":\"exit\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_17",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"switch\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_18",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch_again",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"switch\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_19",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit_again",
+      "argumentsJson": "{\"operation\":\"exit\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_20",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_remove",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"remove\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_21",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_prune",
+      "argumentsJson": "{\"operation\":\"prune\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_22",
+      "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
       "argumentsJson": "{\"question\":\"What changed in the settle pass?\",\"url\":\"https://example.com/release-notes\"}",
@@ -176,7 +264,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_15",
+      "id": "item_tool_1_23",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -186,7 +274,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_16",
+      "id": "item_tool_1_24",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -196,7 +284,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_17",
+      "id": "item_tool_1_25",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -206,7 +294,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_18",
+      "id": "item_tool_1_26",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -216,7 +304,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_19",
+      "id": "item_tool_1_27",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -393,6 +481,86 @@
       "type": "commandExecution",
       "id": "item_tool_result_2_14",
       "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_create",
+      "output": "{\n  \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n  \"branch\": \"settle-fix\",\n  \"main_repo_root\": \"/home/jesse/git/evener\",\n  \"message\": \"Created and entered worktree \\\"settle-fix\\\" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix, base 5e5f1c3a9b7d). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"created\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_15",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_list",
+      "output": "{\n  \"entries\": [\n    {\n      \"age_seconds\": 1,\n      \"ahead_commits\": 0,\n      \"ahead_unknown\": false,\n      \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n      \"branch\": \"settle-fix\",\n      \"created_at\": \"2026-09-28T20:00:00Z\",\n      \"creator_session\": \"02wMz5TxvQfJ8vYb2Wc7Lh\",\n      \"current\": true,\n      \"delegate_id\": \"\",\n      \"dirty\": false,\n      \"dirty_unknown\": false,\n      \"has_metadata\": true,\n      \"lock_reason\": \"evener:02wMz5TxvQfJ8vYb2Wc7Lh\",\n      \"locked\": true,\n      \"merge_target\": \"main\",\n      \"merge_target_unknown\": false,\n      \"merged\": false,\n      \"merged_arm\": \"\",\n      \"name\": \"settle-fix\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n      \"prunable\": false,\n      \"prunable_reason\": \"\"\n    }\n  ],\n  \"message\": \"1 managed worktree(s): settle-fix (0 ahead, clean, unmerged).\",\n  \"status\": \"listed\",\n  \"unmanaged\": []\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_16",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_17",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"message\": \"Entered worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix). Subsequent tools operate inside it; use manage_worktree exit to return.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"switched\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_18",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch_again",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"message\": \"Already in worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix); no-op.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"unchanged\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_19",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit_again",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_20",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_remove",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"branch_deleted\": false,\n  \"message\": \"Removed worktree \\\"settle-fix\\\" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"removed\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_21",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_prune",
+      "output": "{\n  \"message\": \"Removed 0, skipped 1. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_22",
+      "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
       "output": "{\"answer\":\"The release notes list three fixes to the tree settle pass.\",\"content_type\":\"text/html\",\"raw_file\":\"/tmp/evener/web/release-notes.html\",\"size_bytes\":48213,\"url\":\"https://example.com/release-notes\"}",
@@ -401,7 +569,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_15",
+      "id": "item_tool_result_2_23",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -411,7 +579,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_16",
+      "id": "item_tool_result_2_24",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -421,7 +589,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_17",
+      "id": "item_tool_result_2_25",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -431,7 +599,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_18",
+      "id": "item_tool_result_2_26",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -441,7 +609,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_19",
+      "id": "item_tool_result_2_27",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",

@@ -66,6 +66,9 @@ type toolWireCall struct {
 	// normalize makes a real result the same on every machine and run; nil
 	// records it as the tool returned it.
 	normalize func(tool.ExecResult) tool.ExecResult
+	// inRepo runs the call in a session rooted at a real git repository,
+	// which manage_worktree needs, in place of the temp workspace's.
+	inRepo bool
 }
 
 // toolWireWorkspace writes the files the calls read, search and edit, and
@@ -157,6 +160,40 @@ var (
 	toolWireWaitElapsed = regexp.MustCompile(`the foreground wait ended after [\d.]+s`)
 )
 
+// The git repository the worktree calls run in is recorded as the project at
+// toolWireCwd, with its state under toolWireStateDir and its one commit as
+// toolWireHead.
+const (
+	toolWireStateDir    = "/home/jesse/.local/state/evener/projects/evener"
+	toolWireHead        = "5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f"
+	toolWireRepoSession = "02wMz5TxvQfJ8vYb2Wc7Lh"
+)
+
+var (
+	// A managed worktree's directory under the state dir is named for the
+	// repository's temp path.
+	toolWireWorktreeProject = regexp.MustCompile(`/worktrees/[^/"\s]+/`)
+	toolWireAge             = regexp.MustCompile(`"age_seconds": [\d.]+`)
+	toolWireCreatedAt       = regexp.MustCompile(`"created_at": "[^"]+"`)
+)
+
+// withFixedRepo records a manage_worktree result with the repository's
+// paths, commit, session and clock fixed.
+func withFixedRepo(repo *wtRepo) func(tool.ExecResult) tool.ExecResult {
+	return func(res tool.ExecResult) tool.ExecResult {
+		out := toolWireWorktreeProject.ReplaceAllString(res.Output, "/worktrees/evener/")
+		out = strings.ReplaceAll(out, repo.stateDir, toolWireStateDir)
+		out = strings.ReplaceAll(out, repo.mainRoot, toolWireCwd)
+		out = strings.ReplaceAll(out, repo.head, toolWireHead)
+		out = strings.ReplaceAll(out, repo.head[:12], toolWireHead[:12])
+		out = strings.ReplaceAll(out, repo.s.ID(), toolWireRepoSession)
+		out = toolWireAge.ReplaceAllString(out, `"age_seconds": 1`)
+		res.Output = toolWireCreatedAt.ReplaceAllString(out,
+			`"created_at": "`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
+		return res
+	}
+}
+
 // withFixedJob records a shell result whose command became a job: its job id
 // fixed, the wait's elapsed seconds fixed, and its state (which carries the
 // elapsed milliseconds) left off.
@@ -169,6 +206,7 @@ func withFixedJob(res tool.ExecResult) tool.ExecResult {
 func TestToolCallWireFixtures(t *testing.T) {
 	t.Parallel()
 	dir, s := toolWireWorkspace(t)
+	repo := newWorktreeRepo(t)
 
 	webFetch, err := json.Marshal(map[string]any{
 		"answer":       "The release notes list three fixes to the tree settle pass.",
@@ -259,6 +297,46 @@ func TestToolCallWireFixtures(t *testing.T) {
 			normalize: withFixedJob,
 		},
 		{
+			id: "call_worktree_create", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "A worktree created from the repository's main branch; the session moves into it.",
+			args: map[string]any{"operation": "create", "name": "settle-fix"},
+		},
+		{
+			id: "call_worktree_list", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "The repository's managed worktrees.",
+			args: map[string]any{"operation": "list"},
+		},
+		{
+			id: "call_worktree_exit", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "The session leaves the worktree for the main checkout.",
+			args: map[string]any{"operation": "exit"},
+		},
+		{
+			id: "call_worktree_switch", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "The session moves back into the worktree.",
+			args: map[string]any{"operation": "switch", "name": "settle-fix"},
+		},
+		{
+			id: "call_worktree_switch_again", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "A switch to the worktree the session is already in, which changes nothing.",
+			args: map[string]any{"operation": "switch", "name": "settle-fix"},
+		},
+		{
+			id: "call_worktree_exit_again", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "The session leaves the worktree again, so it can be removed. The call and its result match the first exit's, so the registry appends its repetition nudge after the JSON.",
+			args: map[string]any{"operation": "exit"},
+		},
+		{
+			id: "call_worktree_remove", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "The worktree removed.",
+			args: map[string]any{"operation": "remove", "name": "settle-fix"},
+		},
+		{
+			id: "call_worktree_prune", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "A prune with nothing left to prune.",
+			args: map[string]any{"operation": "prune"},
+		},
+		{
 			id: "call_web_fetch", tool: "web_fetch",
 			note:   "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
 			args:   map[string]any{"url": "https://example.com/release-notes", "question": "What changed in the settle pass?"},
@@ -307,7 +385,13 @@ func TestToolCallWireFixtures(t *testing.T) {
 		output, isErr := call.output, false
 		var state json.RawMessage
 		if output == "" {
-			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args})
+			session, env := s, s.env
+			if call.inRepo {
+				// A worktree call moves the session's environment, so each reads
+				// the one the call before it left.
+				session, env = repo.s, repo.s.currentEnv()
+			}
+			res := session.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args})
 			// The result as a session records it, less its duration, which
 			// differs every run.
 			if call.normalize != nil {
