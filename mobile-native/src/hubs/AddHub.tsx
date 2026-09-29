@@ -85,13 +85,7 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 	return <Address onPairing={startReview} />;
 }
 
-function Scan({
-	onPairing,
-	onPasteInstead,
-}: {
-	onPairing(target: PairingTarget): void;
-	onPasteInstead(): void;
-}) {
+function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget): void; onPasteInstead(): void }) {
 	const [permission, requestPermission] = useCameraPermissions();
 	const [notPairing, setNotPairing] = useState(false);
 	const asked = useRef(false);
@@ -178,8 +172,7 @@ function Paste({ onPairing }: { onPairing(target: PairingTarget): void }) {
 			</Group>
 			{notPairing ? (
 				<GroupFooter tone="danger">
-					That isn't an Evener pairing link. Copy it again from Settings, then Mobile app, in Evener on your
-					computer.
+					That isn't an Evener pairing link. Copy it again from Settings, then Mobile app, in Evener on your computer.
 				</GroupFooter>
 			) : null}
 		</GroupedPage>
