@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HostRow } from "@evener/appwire-client";
+import { hostRow } from "../hosts/hostsTestUtils";
 import { hostReach, type StartInput, startBlock } from "./startGate";
 
 const ready: StartInput = {
@@ -11,14 +12,7 @@ const ready: StartInput = {
 	reach: "local",
 	pluginIssues: [],
 };
-const row = (over: Partial<HostRow>): HostRow => ({
-	name: "paradise-park",
-	origin: "hub.toml",
-	attached: true,
-	midAttach: false,
-	removed: false,
-	...over,
-});
+const row = (over: Partial<HostRow>): HostRow => hostRow("paradise-park", over);
 
 describe("where a host stands", () => {
 	it("is local for the hub's own machine, and pending before the hub lists its hosts", () => {
