@@ -50,7 +50,7 @@ without a terminal.
 ## 1. Glossary
 
 Every later section uses these terms with exactly these meanings. The
-sixteen shared terms below are identical in all three documents.
+sixteen shared terms below are identical in both documents.
 
 **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 
