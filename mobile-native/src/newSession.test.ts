@@ -893,7 +893,7 @@ function restored(draft: Partial<CreationDraft>, models: unknown[]) {
 			},
 		} as ConversationClientLike),
 	);
-	return { store, requests };
+	return { store, requests, saved };
 }
 
 it("makes a saved per-launch model the form's choice when the host lists it", async () => {
@@ -1116,4 +1116,20 @@ describe("an uncertain start across a reopen (#3104)", () => {
 		own.getState().setPrompt("go");
 		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
 	});
+});
+
+it("keeps an uncertain draft uncertain when the host's models fill in what an older build saved (#3104)", async () => {
+	const { store, saved } = restored({ launchOverrides: { model: "p/a", reasoningEffort: "high" }, unconfirmed: true }, [
+		model,
+	]);
+	expect(store.getState().startMayRepeat()).toBe(true);
+	await store.getState().loadModels(true);
+	// The model the draft named is now the form's own: not an edit.
+	expect(store.getState()).toMatchObject({ model, reasoning: "high" });
+	expect(store.getState().startMayRepeat()).toBe(true);
+	expect(saved.get("hub-a")).toMatchObject({ unconfirmed: true });
+	// A real edit still makes it a new draft.
+	store.getState().setPrompt("go, and fix the docs");
+	expect(store.getState().startMayRepeat()).toBe(false);
+	expect(saved.get("hub-a")).toMatchObject({ unconfirmed: false });
 });

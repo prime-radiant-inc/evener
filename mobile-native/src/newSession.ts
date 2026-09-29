@@ -328,6 +328,11 @@ export function createNewSessionStore(
 						result.data.find((item) => item.provider === selection?.provider && item.model === selection.model) ??
 						null;
 					const settingsModel = creationModel(result.data, model, get().launchOverrides);
+					// The host's list filling in or clearing the model and effort isn't
+					// the person editing the draft: a draft whose start may exist stays
+					// that draft (#3104).
+					const unedited = unconfirmedContent !== null && draftContent() === unconfirmedContent;
+					if (unedited) saving = true;
 					set({
 						models: result.data,
 						recentModels: result.recent ?? [],
@@ -335,6 +340,11 @@ export function createNewSessionStore(
 						reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning) ? reasoning : "",
 						modelError: null,
 					});
+					if (unedited) {
+						unconfirmedContent = draftContent();
+						saving = false;
+						saveDraft();
+					}
 				}
 			} catch {
 				if (generation === catalog)
