@@ -653,6 +653,13 @@ export type {
   TranscriptProjection,
 } from "./transcriptProjector";
 export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export {
+  findSessionsSummary,
+  readTranscriptEnvelope,
+  readTranscriptSummary,
+  type TranscriptEnvelope,
+  type TranscriptStep,
+} from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
