@@ -26,9 +26,63 @@ import {
   projectNodesWithHostBranches,
   revealExpansionIds,
   sessionNodes,
+  subagentIsCurrent,
   topLevelAncestorRef,
   watchCountLabel,
 } from "./railNodes";
+
+describe("subagentIsCurrent", () => {
+  test("a descendant in any current state makes the subagent current, not only an active one", () => {
+    // The direct level accepts the whole current set (awaiting counts); the
+    // subtree must read the same set, or the Agents tab folds an idle
+    // subagent whose own child is waiting on the user.
+    const grandchild = session({ ref: "local:grandchild", state: "awaiting" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("a descendant's running job makes the subagent current", () => {
+    const grandchild = session({
+      ref: "local:grandchild",
+      state: "idle",
+      running_jobs: [{ job_id: "j1", job_type: "shell", status: "running" }],
+    });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an idle subagent with a quiet subtree is not current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(false);
+  });
+
+  test("approval_pending makes an idle subagent current (it displays as awaiting)", () => {
+    // displayState folds approval_pending into "awaiting" - the rail's badge
+    // counts such a node as needs-you, so the activity surfaces must not
+    // fold it as inactive about the same node.
+    expect(subagentIsCurrent(session({ state: "idle", approval_pending: true }))).toBe(true);
+  });
+
+  test("a descendant's approval_pending makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle", approval_pending: true });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an errored subagent is current (a failure needs the user more than a warning does)", () => {
+    // The fold hides work that is done; an errored subagent is not done in
+    // that sense - its row paints danger, and warning (the less severe
+    // signal) is already current.
+    expect(subagentIsCurrent(session({ state: "errored" }))).toBe(true);
+  });
+
+  test("a descendant's errored state makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "errored" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+});
 
 function session(overrides: Partial<RailSession> = {}): RailSession {
   return {

@@ -13,8 +13,14 @@ import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// The activity status bar repeats the focused session's title as its crumb,
+// so session-title queries in this file scope to the rail (their target has
+// always been the rail row) rather than collide with the bar.
+const rail = () => within(screen.getByTestId("rail"));
+
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
@@ -1084,10 +1090,11 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   // synchronously (addPanel's own title option) but the pane's own content
   // is a lazy-loaded component behind Suspense, so this waits for the pane
   // body's own loading text FIRST (it exists only once Suspense resolves),
-  // THEN checks the ref appears twice (tab + pane body title, no thread
-  // name known so both fall back to the raw ref - see Session.tsx).
+  // THEN checks the ref appears three times (tab + pane body title + the
+  // status bar's scope crumb, no thread name known so all three fall back to
+  // the raw ref - see Session.tsx).
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
-  expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
+  expect(screen.getAllByText("local:ref_abc123")).toHaveLength(3);
 });
 
 test("a deep-link lookup starts exactly once when navigation mode becomes v2", async () => {
@@ -2163,6 +2170,22 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   // Desktop rail renders (default auto mode, jsdom's wide no-matchMedia
   // viewport) - the contrast that proves the /thread case actually suppressed it.
   expect(await screen.findByTestId("rail-search")).toBeTruthy();
+});
+
+test("the status bar sits in the workspace column right of the rail, never beneath it", async () => {
+  // The spec: "a 30px strip under the workspace". The bar reports on the
+  // session in the workspace; drawn shell-wide it would sit beneath the
+  // navigation rail too, which has nothing to do with that session.
+  window.history.pushState({}, "", "/s/local:ref_normal");
+  installLocationForRoute("local:ref_normal");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  const bar = await screen.findByTestId("statusbar");
+  const column = bar.closest("[data-testid='workspace-column']");
+  expect(column).not.toBeNull();
+  // The column owns the workspace host; the rail stands beside it, outside.
+  expect(column?.querySelector("[data-testid='workspace-host']")).not.toBeNull();
+  expect(column?.contains(await screen.findByTestId("rail-search"))).toBe(false);
 });
 
 // --- settings routing (this task) -------------------------------------
@@ -3319,9 +3342,9 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
 test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrapping", async () => {
   const user = userEvent.setup();
   render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
@@ -3341,9 +3364,9 @@ test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrappi
 test("Alt+Shift+Arrow live-session navigation is suppressed from an editable target", async () => {
   const user = userEvent.setup();
   render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 
   const input = document.createElement("input");
@@ -3361,9 +3384,9 @@ test("mobile: Alt+Shift+Arrow live-session navigation registers nothing and is i
   installMobileViewport();
   const user = userEvent.setup();
   render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
@@ -3396,9 +3419,9 @@ test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next
 
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
@@ -3452,9 +3475,9 @@ test("live-next demand-load retries after the page request fails", async () => {
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3504,9 +3527,9 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
   }));
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live B");
+  await rail().findByText("Live B");
 
-  await user.click(screen.getByText("Live B"));
+  await user.click(rail().getByText("Live B"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
   });
@@ -3556,7 +3579,7 @@ test("live-next with an unloaded live section re-requests page zero when the man
   render(<AppShell client={client} />);
   // The initial hydration read failed: no live rows, nothing focused.
   await screen.findByText("No session open");
-  expect(screen.queryByText("Live A")).toBeNull();
+  expect(rail().queryByText("Live A")).toBeNull();
 
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
   await waitFor(() => expect(liveReads).toBeGreaterThanOrEqual(2));
@@ -3653,9 +3676,9 @@ test("rapid live-next presses at the boundary still navigate when the demand lan
 
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3706,10 +3729,10 @@ test("live-previous wrapping with more pages on the server demand-loads to the t
 
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
   // Focus the FIRST loaded live session; previous from here wraps.
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3732,9 +3755,9 @@ test("an in-flight live demand-load goes inert while the palette is open", async
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3837,9 +3860,9 @@ test("an in-flight live demand-load goes inert when the client generation change
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3882,9 +3905,9 @@ test("live-next focuses the session pane even when the URL already matches", asy
   }));
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -3901,7 +3924,7 @@ test("live-next focuses the session pane even when the URL already matches", asy
   // previous. But focus first: the route's own reconciliation would fight
   // the panel focus, so drive the navigation by CLICKING the row (focus
   // follows), then re-focus the panel.
-  await user.click(screen.getByText("Live B"));
+  await user.click(rail().getByText("Live B"));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
   act(() => {
     const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
@@ -3947,9 +3970,9 @@ test("a live demand can be re-issued after an invalidation restales the pages", 
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -4022,9 +4045,9 @@ test("a demand that completes inert does not leave the live chord stuck", async 
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -4076,9 +4099,9 @@ test("a demand that completes while the composer has focus goes inert", async ()
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -4130,9 +4153,9 @@ test("an in-flight live demand-load goes inert after leaving the session and ret
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
@@ -4204,9 +4227,9 @@ test("a second press adopts an in-flight demand whose guards went stale", async 
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await rail().findByText("Live A");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });

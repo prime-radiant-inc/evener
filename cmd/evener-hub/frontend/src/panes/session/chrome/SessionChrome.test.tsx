@@ -8,8 +8,15 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
+import { lazy } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import {
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../../shell/clientContext";
+import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
+import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
@@ -160,6 +167,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetActivitySidebarStoreForTests();
+  resetFocusedActivityScopeForTests();
   // @ts-expect-error jsdom has no matchMedia by default; individual mobile
   // tests install the narrow viewport explicitly.
   delete window.matchMedia;
@@ -771,7 +780,6 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
 test.each([
   ["Details", "sessionDetails"],
   ["Tasks", "sessionTasks"],
-  ["Activity", "sessionActivity"],
 ] as const)("desktop %s menu item opens and closes its pane for the SessionChrome ref", async (label, type) => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -793,6 +801,42 @@ test.each([
   expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
 });
 
+// Desktop Activity opens the activity sidebar (the zoom system's triage
+// surface), not a workspace pane; its checked adornment is the sidebar's own
+// open state. Mobile still opens the Sheet (the mobile test below keeps that).
+test("desktop Activity menu item toggles the activity sidebar", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_inline"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_inline");
+
+  render(<SessionChrome ref="ref_inline" />);
+  // The chrome's Activity ✓ reads the sidebar scoped to THIS session, which
+  // production guarantees by the pane being focused while its menu is used;
+  // the bare test render focuses it explicitly through a fixture pane.
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_inline" });
+    });
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionActivity")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity ✓" }));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    restoreSession();
+  }
+});
+
 test("the menu marks every pre-opened session pane as checked", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -801,13 +845,93 @@ test("the menu marks every pre-opened session pane as checked", async () => {
   await threadsStore.getState().ensureThread("ref_checked");
   workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked" });
   workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked" });
-  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked" });
+  // Activity's check is the sidebar's open state, scoped to this session.
+  activitySidebarStore.getState().openWith();
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref: "ref_checked" });
 
-  render(<SessionChrome ref="ref_checked" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    render(<SessionChrome ref="ref_checked" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("desktop Activity toggles closed only when the sidebar is scoped to this session", async () => {
+  // The scope follows focus: focusing session B re-scopes the open sidebar to
+  // B, so B's chrome menu reads "Activity ✓" and the item toggles closed.
+  // "Open on session A while B's menu is in use" is unreachable in
+  // production (dockview unmounts an inactive pane's chrome) - the reachable
+  // contract is that Activity never closes a sidebar scoped elsewhere.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_b"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_b");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    // Sidebar open on session A.
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith();
+    expect(activitySidebarStore.getState().open).toBe(true);
+
+    // Focusing session B re-scopes the open sidebar to it (the scope follows
+    // focus): B's chrome shows the checked item, and selecting it closes.
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_b" });
+    });
+    render(<SessionChrome ref="ref_b" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity ✓" }));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    restoreSession();
+  }
+});
+
+test("desktop Activity closes a leftover sessionActivity pane for this session when it opens the sidebar", async () => {
+  // The rail's twin: an upgrade or a restored layout can carry the
+  // pre-sidebar pane into the desktop shell, where no affordance opens it and
+  // no ✓ marks it. Opening the sidebar on the session supersedes the pane.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_orphan"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_orphan");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  const restoreActivityPane = registerPaneForTests({
+    id: "sessionActivity",
+    title: () => "activity",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref: "ref_orphan" });
+    workspaceStore.getState().openPane("sessionActivity", { ref: "ref_orphan" });
+    render(<SessionChrome ref="ref_orphan" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+  } finally {
+    restoreSession();
+    restoreActivityPane();
+  }
 });
 
 test("mobile chrome opens Sheets without changing workspace panes", async () => {

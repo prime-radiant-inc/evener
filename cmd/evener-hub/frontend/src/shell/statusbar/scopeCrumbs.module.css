@@ -1,0 +1,50 @@
+/* The scope breadcrumb, shared by the status bar and the activity sidebar:
+ * one component, one stylesheet, so the two surfaces can't drift on the same
+ * concept. */
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.crumbWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crumbSep {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.crumbCurrent {
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbBtn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbBtn:hover {
+  color: var(--ink-hi);
+  text-decoration: underline;
+}
