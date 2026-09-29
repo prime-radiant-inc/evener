@@ -1,5 +1,6 @@
 import type { ReactTestInstance } from "react-test-renderer";
 import { act } from "react-test-renderer";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
 import type { RunStep } from "../timeline";
@@ -38,6 +39,24 @@ function texts(root: ReactTestInstance) {
 function byText(root: ReactTestInstance, value: string) {
 	return texts(root).find((node) => textOf(node) === value);
 }
+
+// A Menlo line draws a tab with no width, so list_dir's "tree.go\t32" read
+// "tree.go32" (#3317). Tabs expand to the next multiple of 8, as a terminal
+// sets them.
+describe("tabs in output", () => {
+	it("expands each tab to the next tab stop, from the recorded list_dir output", () => {
+		const item = toolWireStep("call_list_dir");
+		const listed = step("list_dir", { arguments: item.argumentsJSON, output: item.output });
+		const tree = render(<StepEvidence step={listed} evidence={stepEvidence(listed)} hubId="hub-1" />);
+		const lines = texts(tree.root)
+			.map((node) => node.props.accessibilityLabel)
+			.filter((label): label is string => typeof label === "string");
+		expect(lines).toEqual(
+			expect.arrayContaining(["drain_test.go   14", "tree.go 32", "tree_test.go    39", "3 entries"]),
+		);
+		expect(texts(tree.root).map(textOf).join("\n")).not.toContain("\t");
+	});
+});
 
 describe("a command's output", () => {
 	const output = Array.from({ length: 41 }, (_, n) => `line ${n + 1}`).join("\n");

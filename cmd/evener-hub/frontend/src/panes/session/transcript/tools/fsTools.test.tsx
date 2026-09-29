@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./fsTools";
 import type { ItemModel } from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -219,6 +220,16 @@ test("list_dir: path defaults to the cwd marker, and a pattern arg is parenthesi
   const d = toolRendererFor("list_dir");
   const args = JSON.stringify({ pattern: "*.css" });
   expect(d.summary(item({ toolName: "list_dir", argumentsJSON: args, output: "" }))).toBe("Listed . (*.css)");
+});
+
+// The body's pre keeps a tab as a tab: its white-space is pre-wrap and it
+// sets no tab-size, so the browser draws it to CSS's initial stop of 8
+// (#3317, where the phone had drawn it with no width).
+test("list_dir: the body keeps the recorded output's tabs for the browser to set", () => {
+  const Body = toolRendererFor("list_dir").body;
+  if (!Body) throw new Error("list_dir has no body");
+  const { container } = render(<Body item={toolWireStep("call_list_dir")} live={false} />);
+  expect(container.querySelector("pre")?.textContent).toContain("tree.go\t32");
 });
 
 test("list_directory aliases to the same descriptor as list_dir", () => {
