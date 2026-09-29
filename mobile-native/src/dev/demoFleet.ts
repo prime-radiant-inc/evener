@@ -1486,8 +1486,9 @@ function fleetAnswers(
 				autoUpgrade: false,
 				broken: false,
 				installPath: `~/.claude/plugins/${plugin.mp}/${plugin.id}`,
-				installedAt: startupMs - 30 * D * 1000,
-				lastUpdated: startupMs - 1 * D * 1000,
+				// Unix seconds, as the hub sends them (app_plugins.go UnixSeconds).
+				installedAt: Math.floor(startupMs / 1000) - 30 * D,
+				lastUpdated: Math.floor(startupMs / 1000) - 1 * D,
 			})),
 		};
 	}

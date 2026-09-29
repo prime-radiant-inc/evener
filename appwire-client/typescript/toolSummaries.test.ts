@@ -25,6 +25,13 @@ test.each<[ToolWireCall, string]>([
   ["call_web_fetch", "Fetched https://example.com/release-notes · 48213 bytes"],
   ["call_web_search", 'Searched the web for "go race detector settle drain" · 2 results'],
   ["call_use_skill", "Activated skill: systematic-debugging"],
+  // A task_list update names its latest touch, read against the task list
+  // the call returned: the daemon's own start of the next task is the latest
+  // when a completion set one off.
+  ["call_task_list_add", "☐ Run the race detector again"],
+  ["call_task_list_start", "→ Reproduce the settle race"],
+  ["call_task_list_done", "→ Order the drain before settle"],
+  ["call_task_list_view", "Checked the task list"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
@@ -36,6 +43,27 @@ test.each<[ToolWireCall, string]>([
   ["call_unknown", "Used compact context"],
 ])("says %s, which no summary covers, as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call))).toBe(summary);
+});
+
+// An update that changed no task's status (a note, a reopen) has no touch
+// to name.
+test("says a task_list update that changed no status as updating the list", () => {
+  const noted = {
+    toolName: "task_list",
+    argumentsJSON: JSON.stringify({ update: [{ id: 1, notes: "Still flaky." }] }),
+  };
+  expect(toolStepSummary(noted)).toBe("Updated the task list");
+});
+
+// The historical action form: "append" with tasks, "update" with updates.
+test("says a historical task_list action changed the list only when it carried a change", () => {
+  const called = (args: Record<string, unknown>) =>
+    toolStepSummary({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
+  expect(called({ action: "append", tasks: [] })).toBe("Checked the task list");
+  expect(called({ action: "update", updates: [] })).toBe("Checked the task list");
+  expect(called({ action: "view" })).toBe("Checked the task list");
+  expect(called({ action: "rename" })).toBe("Checked the task list");
+  expect(called({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] })).toBe("Updated the task list");
 });
 
 test("keeps a shell command's cd when the session is somewhere else", () => {
@@ -53,6 +81,7 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   expect(toolFamily("web_search")).toBe("webSearch");
   for (const name of ["shell", "exec_command", "run_shell_command"]) expect(toolFamily(name)).toBe("shell");
   expect(toolFamily("use_skill")).toBe("skill");
+  expect(toolFamily("task_list")).toBe("tasks");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -114,6 +143,8 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["web_fetch", { url: "https://example.com" }, "Fetching https://example.com"],
   ["web_search", { query: "evener" }, 'Searching the web for "evener"'],
   ["use_skill", { skill_name: "brainstorming" }, "Activating skill: brainstorming"],
+  ["task_list", { update: [{ id: 1, status: "done" }] }, "Updating the task list"],
+  ["task_list", {}, "Checking the task list"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {

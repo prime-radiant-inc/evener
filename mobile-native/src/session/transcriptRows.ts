@@ -18,6 +18,7 @@ import {
 	shellCommand,
 	skillName,
 	type ThreadModel,
+	taskListChanges,
 	type ToolFamily,
 	type TurnModel,
 	toolFamily,
@@ -331,6 +332,8 @@ interface Group {
 	 * activated. */
 	names: Set<string>;
 	unnamed: number;
+	/** Whether a task_list step in the part changed the list, not only read it. */
+	changedTasks: boolean;
 }
 
 // "go test ./agent/..." runs "go test"; "ls -la" runs "ls".
@@ -382,6 +385,8 @@ function partText(group: Group): string {
 			return oneName ? `ran ${oneName}` : `ran ${n} ${plural("command", "commands")}`;
 		case "skill":
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
+		case "tasks":
+			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
 		case "mcp":
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
@@ -412,7 +417,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step.label);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0 };
+			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false };
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -420,6 +425,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			group.failed += 1;
 			failed += 1;
 		}
+		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
 		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
 			const name = namedBy(part.family, step);
 			if (name) group.names.add(name);
