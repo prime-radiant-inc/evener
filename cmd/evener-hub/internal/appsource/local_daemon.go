@@ -1058,8 +1058,12 @@ func (e DaemonInitializeError) Unwrap() error { return e.Err }
 
 func localDaemonInitializeError(err error) error {
 	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
+	// localDaemonCallError already classifies a WireError: an intact
+	// InternalError is the daemon's application verdict and a synthesized
+	// transport failure is SessionUnavailable. Only a non-wire result — a raw
+	// dial or connect error — still needs the dial fallback, so a delivered
+	// InternalError can never be reclassified by its message text here.
+	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
 		return DaemonInitializeError{Err: mapped}
 	}
 	return DaemonInitializeError{Err: localDaemonDialError(mapped)}
@@ -1067,8 +1071,7 @@ func localDaemonInitializeError(err error) error {
 
 func localDaemonSubscribeReadError(err error) error {
 	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
+	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
 		return mapped
 	}
 	return localDaemonDialError(mapped)

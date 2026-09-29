@@ -419,9 +419,11 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	return err
 }
 
-// remoteHubTransportText recognizes transport-shaped error text. "eof" is
-// matched as a standalone token only so an application message that merely
-// contains those letters is not reclassified as host unavailability.
+// remoteHubTransportText recognizes transport-shaped error text for the raw
+// errors transportUnavailable still sees (it is no longer consulted for a
+// WireError, whose provenance the client now carries). "eof" is matched as a
+// standalone token only so a string that merely contains those letters is not
+// reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
 	case containsWord(lower, "eof"),
@@ -431,9 +433,9 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
-		// connection" below. It matters on the WireError path, where the
-		// failure arrives as the peer's message and errors.Is has nothing to
-		// match against.
+		// connection" below. transportUnavailable checks errors.Is(err,
+		// os.ErrClosed) first, so this text fallback covers only the shapes a
+		// transport library wraps without exposing the sentinel.
 		strings.Contains(lower, "file already closed"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):

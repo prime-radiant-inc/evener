@@ -555,13 +555,6 @@ type WireError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
-
-	// transportFailure marks the InternalError the client synthesizes when its
-	// read loop is gone, as distinct from an InternalError frame decoded from
-	// the peer. It is unexported and untagged, so it never crosses the wire and
-	// a decoded peer frame can never carry it; request rewraps a marked
-	// WireError as TransportFailureError so adapters see the provenance.
-	transportFailure bool
 }
 
 func (e WireError) Error() string {

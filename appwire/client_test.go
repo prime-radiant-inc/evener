@@ -470,18 +470,22 @@ func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *test
 func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(42)
-	ch := make(chan Message, 1)
+	ch := make(chan pendingResult, 1)
 	client.pending[id.String()] = pendingRequest{id: id, ch: ch}
 
 	client.failPending(context.Canceled)
 
 	select {
-	case msg := <-ch:
+	case res := <-ch:
+		msg := res.msg
 		if msg.Error == nil {
 			t.Fatalf("message=%+v, want error response", msg)
 		}
 		if msg.Error.ID.String() != id.String() {
 			t.Fatalf("error id=%s, want %s", msg.Error.ID.String(), id.String())
+		}
+		if !res.local {
+			t.Fatal("failPending delivery not marked as client-synthesized")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending request was not failed")
@@ -491,14 +495,14 @@ func TestClientFailPendingPreservesRequestID(t *testing.T) {
 func TestClientFailPendingMarksTransportFailure(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(7)
-	ch := make(chan Message, 1)
+	ch := make(chan pendingResult, 1)
 	client.pending[id.String()] = pendingRequest{id: id, ch: ch}
 
 	client.failPending(errors.New("websocket: unexpected eof"))
 
-	msg := <-ch
-	if msg.Error == nil || !msg.Error.Error.transportFailure {
-		t.Fatalf("failPending message = %+v, want a WireError marked transportFailure", msg)
+	res := <-ch
+	if !res.local || res.msg.Error == nil {
+		t.Fatalf("failPending delivery = %+v, want a client-synthesized error", res)
 	}
 }
 
