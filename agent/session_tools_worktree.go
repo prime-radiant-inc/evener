@@ -3201,17 +3201,18 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			continue // a live registered worktree exists; sweep 1 already reports it "sidecar-less"
 		}
 		age, ageErr := worktree.SidecarAge(metaDir, ce.Name)
-		if os.IsNotExist(ageErr) {
-			continue // deleted between the listing read and the age probe: indeterminate, not corruption
-		}
-		if ageErr == nil && age < grace {
+		switch worktree.ClassifyCorruptReservation(ce.Error, age, ageErr, grace) {
+		case worktree.CorruptReservationInGrace:
 			skipped = append(skipped, WorktreePruneEntry{Name: ce.Name, Reason: "in-grace"})
-			continue
+		case worktree.CorruptReservationStaleCorrupt:
+			skipped = append(skipped, WorktreePruneEntry{
+				Name:   ce.Name,
+				Reason: "corrupt sidecar: " + ce.Error.Error(),
+			})
+		default:
+			// None: not an undecodable record. Indeterminate: deleted between the
+			// listing read and the age probe. Neither has anything to report.
 		}
-		skipped = append(skipped, WorktreePruneEntry{
-			Name:   ce.Name,
-			Reason: "corrupt sidecar: " + ce.Error.Error(),
-		})
 	}
 
 	for _, sc := range sidecars {

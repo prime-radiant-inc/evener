@@ -311,6 +311,47 @@ func ListSidecarsWithErrors(metaDir string) ([]Sidecar, []SidecarLoadError, erro
 	return out, failures, nil
 }
 
+// CorruptReservationState classifies an undecodable sidecar record once its
+// age has been probed, so every caller judges a reserved-but-unusable name the
+// same way.
+type CorruptReservationState int
+
+const (
+	// CorruptReservationNone means the read was not a decode failure — a valid
+	// record, a missing file, or a non-decode read error.
+	CorruptReservationNone CorruptReservationState = iota
+	// CorruptReservationInGrace is an undecodable record younger than grace,
+	// which may be a live create the winner has opened but not yet written.
+	CorruptReservationInGrace
+	// CorruptReservationIndeterminate is an undecodable record that vanished
+	// between the read and the age probe (a concurrent delete).
+	CorruptReservationIndeterminate
+	// CorruptReservationStaleCorrupt is an undecodable record past grace: the
+	// residue of a create that died between its O_EXCL open and its write.
+	CorruptReservationStaleCorrupt
+)
+
+// ClassifyCorruptReservation is the single source of truth for whether a
+// sidecar read and its age probe describe a repairable stale torn reservation,
+// a possibly-live create still inside the grace window, or neither. readErr is
+// the ReadSidecar result; age and ageErr are the subsequent SidecarAge probe.
+// Only a decode failure can be any kind of corrupt reservation, so a
+// non-decode error (a missing file after a concurrent delete, a permission or
+// I/O failure) is None; a decode failure that has since vanished is
+// Indeterminate.
+func ClassifyCorruptReservation(readErr error, age time.Duration, ageErr error, grace time.Duration) CorruptReservationState {
+	if !errors.Is(readErr, ErrCorruptSidecar) {
+		return CorruptReservationNone
+	}
+	if os.IsNotExist(ageErr) {
+		return CorruptReservationIndeterminate
+	}
+	if ageErr == nil && age < grace {
+		return CorruptReservationInGrace
+	}
+	return CorruptReservationStaleCorrupt
+}
+
 // CorruptStaleReservation returns name's sidecar decode error when the file at
 // name is an undecodable record older than grace — the residue of a create
 // that died between its O_EXCL open and its write — and nil otherwise. Two
@@ -326,23 +367,10 @@ func CorruptStaleReservation(metaDir, name string, grace time.Duration) error {
 		return nil
 	}
 	age, ageErr := SidecarAge(metaDir, name)
-	return corruptReservationError(readErr, age, ageErr, grace)
-}
-
-// corruptReservationError decides whether a corrupt sidecar read is a
-// repairable stale reservation. readErr is the ErrCorruptSidecar read result;
-// age and ageErr are the subsequent SidecarAge probe. A file that vanished
-// between the read and the probe (os.IsNotExist) is indeterminate rather than
-// torn, and a file younger than grace may be a live create caught mid-write, so
-// neither is reported; any other probe failure is surfaced as corruption.
-func corruptReservationError(readErr error, age time.Duration, ageErr error, grace time.Duration) error {
-	if os.IsNotExist(ageErr) {
-		return nil
+	if ClassifyCorruptReservation(readErr, age, ageErr, grace) == CorruptReservationStaleCorrupt {
+		return readErr
 	}
-	if ageErr == nil && age < grace {
-		return nil
-	}
-	return readErr
+	return nil
 }
 
 // SidecarAge returns how long ago name's sidecar file was last written,

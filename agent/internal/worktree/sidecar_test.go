@@ -731,30 +731,32 @@ func TestCorruptStaleReservation(t *testing.T) {
 	}
 }
 
-// TestCorruptReservationErrorDecision pins the classification the create path
-// relies on: a torn record is reported only when it is stale and its age could
-// be read. A probe that misses the file (a concurrent delete) is indeterminate,
-// and a fresh record may be a live create caught mid-write; neither is
-// corruption. A probe failing for any other reason is still surfaced.
-func TestCorruptReservationErrorDecision(t *testing.T) {
+// TestClassifyCorruptReservation pins the shared classification the create and
+// prune paths both rely on: a torn record is stale only when it is undecodable,
+// past the grace, and its age could be read. A probe that misses the file (a
+// concurrent delete) is indeterminate, a fresh record may be a live create, and
+// a non-decode read error is not corruption at all.
+func TestClassifyCorruptReservation(t *testing.T) {
 	corrupt := fmt.Errorf("%w: boom", ErrCorruptSidecar)
 	grace := ReconcileGrace
 	cases := []struct {
-		name   string
-		age    time.Duration
-		ageErr error
-		want   bool
+		name    string
+		readErr error
+		age     time.Duration
+		ageErr  error
+		want    CorruptReservationState
 	}{
-		{"stale and readable", grace + time.Minute, nil, true},
-		{"fresh may be a live create", time.Second, nil, false},
-		{"vanished between read and probe", 0, os.ErrNotExist, false},
-		{"probe failed otherwise", 0, os.ErrPermission, true},
+		{"valid read", nil, grace + time.Minute, nil, CorruptReservationNone},
+		{"non-decode read error", os.ErrPermission, 0, nil, CorruptReservationNone},
+		{"stale and readable", corrupt, grace + time.Minute, nil, CorruptReservationStaleCorrupt},
+		{"fresh may be a live create", corrupt, time.Second, nil, CorruptReservationInGrace},
+		{"vanished between read and probe", corrupt, 0, os.ErrNotExist, CorruptReservationIndeterminate},
+		{"probe failed otherwise", corrupt, 0, os.ErrPermission, CorruptReservationStaleCorrupt},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := corruptReservationError(corrupt, tc.age, tc.ageErr, grace)
-			if (got != nil) != tc.want {
-				t.Fatalf("corruptReservationError(age=%v, ageErr=%v) = %v, want reported=%v", tc.age, tc.ageErr, got, tc.want)
+			if got := ClassifyCorruptReservation(tc.readErr, tc.age, tc.ageErr, grace); got != tc.want {
+				t.Fatalf("ClassifyCorruptReservation(readErr=%v, age=%v, ageErr=%v) = %d, want %d", tc.readErr, tc.age, tc.ageErr, got, tc.want)
 			}
 		})
 	}
