@@ -68,6 +68,7 @@ type runCLIFlags struct {
 	sandboxNet                  *string
 	apiLog                      *string
 	runTimeout                  *time.Duration
+	askResponder                *string
 }
 
 func main() {
@@ -297,6 +298,7 @@ func mainWithDeps(deps mainDeps) {
 		sandboxNet:                  *flags.sandboxNet,
 		apiLog:                      *flags.apiLog,
 		runTimeout:                  *flags.runTimeout,
+		askResponder:                *flags.askResponder,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
@@ -356,6 +358,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
+	flags.askResponder = fs.String("ask-responder", "", "command that answers ask_user questions; makes the session interactive, runs via `sh -c` with the pending questions as JSON on stdin, and submits its stdout as the reply (up to 3 rounds per input)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)

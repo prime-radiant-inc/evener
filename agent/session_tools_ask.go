@@ -324,6 +324,72 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 	return parsed, nil
 }
 
+// AskUserOption is one option of a pending ask_user question, with its full
+// detail text. askQuestion above (the session's own pending-set state, and
+// PendingQuestion's wire projection) deliberately carries only option
+// labels — this type exists for an external ask-responder
+// (`evener run --ask-responder`) that needs to see exactly what the model
+// asked, detail included.
+type AskUserOption struct {
+	Label  string `json:"label"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// AskUserQuestion is one question from a pending ask_user call, with full
+// option detail.
+type AskUserQuestion struct {
+	Header   string          `json:"header,omitempty"`
+	Question string          `json:"question"`
+	Options  []AskUserOption `json:"options,omitempty"`
+}
+
+// ParseAskUserCallArguments parses one ask_user tool call's raw arguments —
+// exactly as events.ToolCallStartData.ArgumentsJSON captures them, before
+// any repair or normalization — into its full questions, including each
+// option's detail text. It accepts both the batch ("questions") and
+// shorthand ("question"+"options") forms via normalizeAskArgs, the same
+// normalization the live tool call goes through, and applies
+// parseAskQuestions' same semantic checks (unique labels, at most one
+// recommended option). It exists for an external ask-responder: neither
+// PendingQuestion (bounded to the wire's shape, one question, labels only)
+// nor the session's own askPending (labels only, spec §5.1) carries enough
+// for a responder to answer well.
+func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
+	var args map[string]any
+	if err := json.Unmarshal(argsJSON, &args); err != nil {
+		return nil, fmt.Errorf("ask_user arguments: %w", err)
+	}
+	normalized, err := normalizeAskArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := parseAskQuestions(normalized); err != nil {
+		return nil, err
+	}
+	raw, _ := normalized["questions"].([]any)
+	out := make([]AskUserQuestion, 0, len(raw))
+	for _, r := range raw {
+		qm, _ := r.(map[string]any)
+		opts, _ := qm["options"].([]any)
+		options := make([]AskUserOption, 0, len(opts))
+		for _, o := range opts {
+			om, _ := o.(map[string]any)
+			detail, _ := om["detail"].(string)
+			options = append(options, AskUserOption{
+				Label:  fmt.Sprint(om["label"]),
+				Detail: detail,
+			})
+		}
+		header, _ := qm["header"].(string)
+		out = append(out, AskUserQuestion{
+			Header:   header,
+			Question: fmt.Sprint(qm["question"]),
+			Options:  options,
+		})
+	}
+	return out, nil
+}
+
 // registerAskTool registers ask_user. registerCoreTools calls this only when
 // the session is interactive and root (spec §7 point 1); the exec-time guard
 // below is defense in depth for config drift (spec §7 point 4).

@@ -61,6 +61,7 @@ type runConfig struct {
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
 	apiLog                      string        // --api-log on|off (default off)
+	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -328,6 +329,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
+	// --ask-responder is the only thing that makes a one-shot `evener run`
+	// interactive: with no responder there is nobody to answer, so ask_user
+	// stays unregistered and behavior is exactly as before this flag existed.
+	if cfg.askResponder != "" {
+		baseSessionCfg.NonInteractive = false
+	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
 	}
@@ -421,14 +428,28 @@ func run(ctx context.Context, cfg runConfig) error {
 		fmt.Fprintln(cfg.stderr, line) //nolint:errcheck
 	}
 
+	// --ask-responder needs the raw arguments of each ask_user call the
+	// session posts, which only the event stream carries in full (options
+	// and details included) — PendingQuestion() truncates to one question
+	// and drops detail. Tee it in only when a responder is configured, so
+	// the ordinary path allocates no extra goroutine or channel.
+	eventCh := sess.Events()
+	var askCapture *askCallCapture
+	if cfg.askResponder != "" {
+		askCapture = newAskCallCapture()
+		eventCh = teeAskUserCalls(eventCh, askCapture)
+	}
 	var done <-chan struct{}
 	if cfg.verbose {
-		done = drainEventsVerbose(sess.Events(), cfg.stderr)
+		done = drainEventsVerbose(eventCh, cfg.stderr)
 	} else {
-		done = drainEventsHuman(sess.Events(), cfg.stderr)
+		done = drainEventsHuman(eventCh, cfg.stderr)
 	}
 
 	result, err := runProcessInput(sess, ctx, prompt)
+	if err == nil && cfg.askResponder != "" {
+		result, err = runAskResponderLoop(ctx, sess, cfg, askCapture, result)
+	}
 	if err == nil {
 		// Drain every session-owned managed job before Close() SIGKILLs it: keep
 		// re-driving the coordinator on job completions until the job tree is
