@@ -99,13 +99,13 @@ func TestInstallerRefusalsKeepTheLibraryRemedy(t *testing.T) {
 	}
 }
 
-// TestInstallerMovedTagRefusalNamesThePushPath pins acceptance criterion 7's
-// message clause: the terminal refusal a moved channel tag produces names the
+// TestInstallerMovedChannelRefusalNamesThePushPath pins acceptance criterion 7's
+// message clause: the terminal refusal a moved channel produces names the
 // path that does carry a provable identity, through the same Options.DeployHelp
 // seam. The refusal's type and terminality are pinned by
 // TestRound8InstallerVersionMismatchIsTerminal; this adds the remedy clause,
 // which is the half an operator acts on.
-func TestInstallerMovedTagRefusalNamesThePushPath(t *testing.T) {
+func TestInstallerMovedChannelRefusalNamesThePushPath(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = origSHA, origDirty, origChannel })
 	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = "newsha", "", "snapshot"
@@ -119,7 +119,7 @@ func TestInstallerMovedTagRefusalNamesThePushPath(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
-			// controller's commit: a moved channel tag.
+			// controller's commit: a moved channel.
 			return []byte(`{"protocol":"evener-appwire-v6","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -132,7 +132,7 @@ func TestInstallerMovedTagRefusalNamesThePushPath(t *testing.T) {
 		t.Fatalf("err = %v, want ErrVersionMismatch", err)
 	}
 	if !strings.Contains(err.Error(), help) {
-		t.Fatalf("moved-tag refusal does not name the remedy %q: %v", help, err)
+		t.Fatalf("moved-channel refusal does not name the remedy %q: %v", help, err)
 	}
 }
 

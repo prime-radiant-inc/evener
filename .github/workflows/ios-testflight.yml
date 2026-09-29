@@ -1,11 +1,11 @@
 name: iOS TestFlight
 
 on:
-  # TestFlight builds ship only from a tag on main. The mutable `snapshot` tag
-  # that binaries.yml force-moves on every green main build is not a release and
-  # does not match `v[0-9]*`. The pattern admits any tag starting with `v` and a
-  # digit (`v1.2.3`, but also `v1.2.3-rc1` and `v1hotfix`); the strongest guard
-  # is the archive job's check that the tag's commit is on main.
+  # TestFlight builds ship only from a tag on main. The mutable `snapshot`
+  # channel that binaries.yml refreshes on every green main build is not a
+  # release and does not match `v[0-9]*`. The pattern admits any tag starting
+  # with `v` and a digit (`v1.2.3`, but also `v1.2.3-rc1` and `v1hotfix`); the
+  # strongest guard is the archive job's check that the tag's commit is on main.
   push:
     tags: ["v[0-9]*"]
   workflow_dispatch:

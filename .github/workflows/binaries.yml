@@ -206,8 +206,8 @@ jobs:
             "${NOTARY_API_KEY:-}" \
             "${NOTARY_ARCHIVE:-}"
 
-  # The snapshot channel is a mutable prerelease tracking main: the tag is
-  # force-moved and the artifacts replaced on every green main build.
+  # The snapshot channel is a mutable prerelease tracking main: the
+  # artifacts are replaced on every green main build.
   snapshot:
     name: Refresh snapshot channel
     if: github.ref == 'refs/heads/main'
@@ -229,7 +229,8 @@ jobs:
       # The concurrency group above only excludes overlapping runs; it does not
       # order them, so an older run (a stale queued run, or a rerun of an old
       # failure) can still take the group after a newer commit already
-      # published and move the tag backward. Skip here if main has moved on.
+      # published and overwrite its artifacts with stale ones. Skip here if
+      # main has moved on.
       - name: Check this commit is still main's head
         id: freshness
         run: |
@@ -239,23 +240,18 @@ jobs:
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Move snapshot tag
-        if: steps.freshness.outputs.stale != 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f snapshot "$GITHUB_SHA"
-          git push origin "refs/tags/snapshot" --force
-
       - name: Publish snapshot release
         if: steps.freshness.outputs.stale != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # version.txt is the channel's source of truth for `evener
+          # upgrade`: the commit these archives were built from.
+          echo "$GITHUB_SHA" > dist/version.txt
           gh release view "snapshot" >/dev/null 2>&1 || \
             gh release create "snapshot" --title "Evener snapshot" --notes "Latest successful build from main." --prerelease
           for attempt in 1 2 3; do
-            gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber && exit 0
+            gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt dist/version.txt --clobber && exit 0
             [ "$attempt" -lt 3 ] && sleep 10
           done
           exit 1
