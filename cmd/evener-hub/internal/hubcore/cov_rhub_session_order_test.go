@@ -55,20 +55,20 @@ func fuzzScenarioAppwireThreadLess(t *testing.T) {
 
 func fuzzScenarioAppwireThreadOrderKeyTitleFallback(t *testing.T) {
 	// Name wins when present.
-	if got := appwireThreadOrderKey(appwire.Thread{Name: "N", Preview: "P", SessionID: "S"}); got.title != "N" {
-		t.Fatalf("title=%q, want Name", got.title)
+	if got := appwireThreadOrderKey(appwire.Thread{Name: "N", Preview: "P", SessionID: "S"}); got.Title != "N" {
+		t.Fatalf("title=%q, want Name", got.Title)
 	}
 	// Preview is the fallback when Name is empty.
-	if got := appwireThreadOrderKey(appwire.Thread{Preview: "P", SessionID: "S"}); got.title != "P" {
-		t.Fatalf("title=%q, want Preview", got.title)
+	if got := appwireThreadOrderKey(appwire.Thread{Preview: "P", SessionID: "S"}); got.Title != "P" {
+		t.Fatalf("title=%q, want Preview", got.Title)
 	}
 	// SessionID is the last resort.
-	if got := appwireThreadOrderKey(appwire.Thread{SessionID: "S"}); got.title != "S" {
-		t.Fatalf("title=%q, want SessionID", got.title)
+	if got := appwireThreadOrderKey(appwire.Thread{SessionID: "S"}); got.Title != "S" {
+		t.Fatalf("title=%q, want SessionID", got.Title)
 	}
 	// ID wins for the id field, falling back to SessionID.
-	if got := appwireThreadOrderKey(appwire.Thread{SessionID: "S"}); got.id != "S" {
-		t.Fatalf("id=%q, want SessionID fallback", got.id)
+	if got := appwireThreadOrderKey(appwire.Thread{SessionID: "S"}); got.ID != "S" {
+		t.Fatalf("id=%q, want SessionID fallback", got.ID)
 	}
 }
 
@@ -112,11 +112,11 @@ func fuzzScenarioLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
 func fuzzScenarioLiveEntryOrderKeyFallbackID(t *testing.T) {
 	// Fallback id preference: SessionID, then ThreadID, then Address.
 	le := LiveEntry{Address: "addr", ThreadID: "th"}
-	if got := liveEntryFallbackOrderKey(le); got.id != "th" {
-		t.Fatalf("id=%q, want ThreadID when SessionID empty", got.id)
+	if got := liveEntryFallbackOrderKey(le); got.ID != "th" {
+		t.Fatalf("id=%q, want ThreadID when SessionID empty", got.ID)
 	}
 	le = LiveEntry{Address: "addr"}
-	if got := liveEntryFallbackOrderKey(le); got.id != "addr" {
-		t.Fatalf("id=%q, want Address as last resort", got.id)
+	if got := liveEntryFallbackOrderKey(le); got.ID != "addr" {
+		t.Fatalf("id=%q, want Address as last resort", got.ID)
 	}
 }

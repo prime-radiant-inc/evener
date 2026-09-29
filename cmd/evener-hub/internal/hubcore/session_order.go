@@ -9,28 +9,33 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-type sessionOrderKey struct {
-	updated time.Time
-	created time.Time
-	title   string
-	id      string
+// SessionOrderKey is a session's position in the rail's order: newest first by
+// update (or creation) time, then creation time, then title and ID. Title
+// and ID compare trimmed and case-folded, and the raw text breaks a folded
+// tie, so the order is total.
+type SessionOrderKey struct {
+	Updated time.Time
+	Created time.Time
+	Title   string
+	ID      string
 }
 
-func sessionOrderLess(a, b sessionOrderKey) bool {
-	au := OrderUpdatedAt(a.updated, a.created)
-	bu := OrderUpdatedAt(b.updated, b.created)
+// SessionOrderLess reports whether a sorts before b in the rail's order.
+func SessionOrderLess(a, b SessionOrderKey) bool {
+	au := OrderUpdatedAt(a.Updated, a.Created)
+	bu := OrderUpdatedAt(b.Updated, b.Created)
 	if !au.Equal(bu) {
 		return au.After(bu)
 	}
-	ac := OrderCreatedAt(a.created, a.updated)
-	bc := OrderCreatedAt(b.created, b.updated)
+	ac := OrderCreatedAt(a.Created, a.Updated)
+	bc := OrderCreatedAt(b.Created, b.Updated)
 	if !ac.Equal(bc) {
 		return ac.After(bc)
 	}
-	if cmp := compareOrderText(a.title, b.title); cmp != 0 {
+	if cmp := compareOrderText(a.Title, b.Title); cmp != 0 {
 		return cmp < 0
 	}
-	return compareOrderText(a.id, b.id) < 0
+	return compareOrderText(a.ID, b.ID) < 0
 }
 
 func OrderUpdatedAt(updated, created time.Time) time.Time {
@@ -67,12 +72,12 @@ func compareOrderText(a, b string) int {
 	return 0
 }
 
-func sessionMetaOrderKey(m schema.SessionMeta) sessionOrderKey {
-	return sessionOrderKey{
-		updated: m.UpdatedAt,
-		created: m.CreatedAt,
-		title:   sessionMetaOrderTitle(m),
-		id:      m.ID,
+func sessionMetaOrderKey(m schema.SessionMeta) SessionOrderKey {
+	return SessionOrderKey{
+		Updated: m.UpdatedAt,
+		Created: m.CreatedAt,
+		Title:   sessionMetaOrderTitle(m),
+		ID:      m.ID,
 	}
 }
 
@@ -81,14 +86,14 @@ func sessionMetaOrderTitle(m schema.SessionMeta) string {
 }
 
 func sessionMetaLess(a, b schema.SessionMeta) bool {
-	return sessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
+	return SessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
 }
 
 func AppwireThreadLess(a, b appwire.Thread) bool {
-	return sessionOrderLess(appwireThreadOrderKey(a), appwireThreadOrderKey(b))
+	return SessionOrderLess(appwireThreadOrderKey(a), appwireThreadOrderKey(b))
 }
 
-func appwireThreadOrderKey(thread appwire.Thread) sessionOrderKey {
+func appwireThreadOrderKey(thread appwire.Thread) SessionOrderKey {
 	title := thread.Name
 	if title == "" {
 		title = thread.Preview
@@ -96,11 +101,11 @@ func appwireThreadOrderKey(thread appwire.Thread) sessionOrderKey {
 	if title == "" {
 		title = thread.SessionID
 	}
-	return sessionOrderKey{
-		updated: UnixTime(thread.UpdatedAt),
-		created: UnixTime(thread.CreatedAt),
-		title:   title,
-		id:      envvars.FirstNonEmpty(thread.ID, thread.SessionID),
+	return SessionOrderKey{
+		Updated: UnixTime(thread.UpdatedAt),
+		Created: UnixTime(thread.CreatedAt),
+		Title:   title,
+		ID:      envvars.FirstNonEmpty(thread.ID, thread.SessionID),
 	}
 }
 
@@ -135,7 +140,7 @@ func UnixMilliseconds(t time.Time) int64 {
 	return t.UnixMilli()
 }
 
-func liveEntryOrderKey(le LiveEntry, past *PastIndex) sessionOrderKey {
+func liveEntryOrderKey(le LiveEntry, past *PastIndex) SessionOrderKey {
 	if past != nil && le.SessionID != "" {
 		if entry, ok := past.Find(le.SessionID); ok {
 			return sessionMetaOrderKey(entry.Meta)
@@ -144,20 +149,31 @@ func liveEntryOrderKey(le LiveEntry, past *PastIndex) sessionOrderKey {
 	return liveEntryFallbackOrderKey(le)
 }
 
-func liveEntryFallbackOrderKey(le LiveEntry) sessionOrderKey {
+func liveEntryFallbackOrderKey(le LiveEntry) SessionOrderKey {
 	id := envvars.FirstNonEmpty(le.SessionID, le.ThreadID, le.Address)
-	return sessionOrderKey{
-		updated: le.StartedAt,
-		created: le.StartedAt,
-		title:   id,
-		id:      id,
+	return SessionOrderKey{
+		Updated: le.StartedAt,
+		Created: le.StartedAt,
+		Title:   id,
+		ID:      id,
 	}
 }
 
 func liveEntryLess(a, b LiveEntry) bool {
-	return sessionOrderLess(liveEntryFallbackOrderKey(a), liveEntryFallbackOrderKey(b))
+	return SessionOrderLess(liveEntryFallbackOrderKey(a), liveEntryFallbackOrderKey(b))
 }
 
 func LiveEntryWithPastLess(a, b LiveEntry, past *PastIndex) bool {
-	return sessionOrderLess(liveEntryOrderKey(a, past), liveEntryOrderKey(b, past))
+	return SessionOrderLess(liveEntryOrderKey(a, past), liveEntryOrderKey(b, past))
+}
+
+// TreeNodeOrderKey is a tree row's position in the rail's order: the key the
+// tree sorts its metas by (sessionMetaOrderKey), read from the row.
+func TreeNodeOrderKey(n TreeNode) SessionOrderKey {
+	return SessionOrderKey{Updated: n.UpdatedAt, Created: n.CreatedAt, Title: n.Title, ID: n.ID}
+}
+
+// TreeNodeLess reports whether tree row a sorts before b in the rail's order.
+func TreeNodeLess(a, b TreeNode) bool {
+	return SessionOrderLess(TreeNodeOrderKey(a), TreeNodeOrderKey(b))
 }

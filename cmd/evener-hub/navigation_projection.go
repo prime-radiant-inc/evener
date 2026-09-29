@@ -522,7 +522,7 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 // carry that overflow too. The union must then be re-ordered: each group is
 // internally most-recent-first, but appending one group after the other is not
 // globally ordered, so the merge sorts by the field and tie-break the tree and
-// capTier rely on (navigationTreeNodeLess). Sorting the concatenated union
+// capTier rely on (hubcore.TreeNodeLess). Sorting the concatenated union
 // once - rather than re-sorting the accumulated rows after each group folds
 // in - keeps the tier linear in its rows, and matches what folding pair by
 // pair produces, because the sort is stable and the groups concatenate in the
@@ -554,7 +554,7 @@ func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreePr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
 	return rows, nil
 }
 
@@ -567,53 +567,6 @@ func navigationTierOverflow(n, capacity int) int {
 		return 0
 	}
 	return n - capacity
-}
-
-// navigationTreeNodeLess orders two tree rows the way hubcore orders its own
-// session rows (sessionOrderLess over sessionMetaOrderKey): most recently
-// updated first, then most recently created, then the trimmed, case-insensitive
-// title, then the id. A TreeNode's UpdatedAt / CreatedAt / Title are already the
-// normalized values the tree's order key is built from, so a merged tier sorted
-// with this comparator interleaves correctly with the rows capTier keeps and
-// the rows ProjectPage serves.
-func navigationTreeNodeLess(a, b hubcore.TreeNode) bool {
-	au := hubcore.OrderUpdatedAt(a.UpdatedAt, a.CreatedAt)
-	bu := hubcore.OrderUpdatedAt(b.UpdatedAt, b.CreatedAt)
-	if !au.Equal(bu) {
-		return au.After(bu)
-	}
-	ac := hubcore.OrderCreatedAt(a.CreatedAt, a.UpdatedAt)
-	bc := hubcore.OrderCreatedAt(b.CreatedAt, b.UpdatedAt)
-	if !ac.Equal(bc) {
-		return ac.After(bc)
-	}
-	if cmp := navigationCompareOrderText(a.Title, b.Title); cmp != 0 {
-		return cmp < 0
-	}
-	return navigationCompareOrderText(a.ID, b.ID) < 0
-}
-
-// navigationCompareOrderText matches hubcore's compareOrderText: trimmed,
-// case-insensitive text compares first, and the raw text breaks a
-// case-insensitive tie.
-func navigationCompareOrderText(a, b string) int {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-	af := strings.ToLower(a)
-	bf := strings.ToLower(b)
-	if af < bf {
-		return -1
-	}
-	if af > bf {
-		return 1
-	}
-	if a < b {
-		return -1
-	}
-	if a > b {
-		return 1
-	}
-	return 0
 }
 
 // navigationMergeProjectSources is the distinct, sorted union of two projects'

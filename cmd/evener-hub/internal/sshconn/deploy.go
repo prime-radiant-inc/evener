@@ -792,11 +792,11 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 // mapping is therefore:
 //
 //   - release: the stamped ReleaseTag (a Git SHA is never a substitute);
-//   - snapshot: the mutable `snapshot` tag. It is not pinned by construction: the
-//     post-install version check accepts it only while the tag still points at
-//     this controller's commit. Once the tag moves past it, the check refuses
-//     terminally (ErrVersionMismatch) rather than re-fetching the same artifact
-//     forever;
+//   - snapshot: the mutable `snapshot` prerelease. It is not pinned by
+//     construction: the post-install version check accepts it only while the
+//     channel still serves this controller's commit. Once the channel moves
+//     past it, the check refuses terminally (ErrVersionMismatch) rather than
+//     re-fetching the same artifact forever;
 //   - dev/dirty: refused with ErrDeploy — there is no publishable identity to
 //     pin, so the refusal appends the remedy clause.
 //
@@ -933,13 +933,13 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	// The installer ran, so the fetched artifact is a definitive answer rather
 	// than a transient deploy failure: an installed version other than the
 	// controller's means the pinned ref has moved past this controller's commit
-	// (for a snapshot build, the mutable `snapshot` tag). Refuse terminally as a
+	// (for a snapshot build, the mutable `snapshot` channel). Refuse terminally as a
 	// version mismatch — ErrDeploy would be retried forever by the supervisor,
 	// re-downloading and re-rejecting the same unmatchable artifact. The remedy
 	// clause names the path that does carry a provable identity, so the operator
-	// is told how to stop depending on the moved tag.
+	// is told how to stop depending on the moved channel.
 	if want := m.opts.controllerVersion(); lc.Version != want {
-		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel tag cannot be resolved by retrying); %s", ErrVersionMismatch, host.Name, lc.Version, want, ref, m.installerRemedy())
+		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel cannot be resolved by retrying); %s", ErrVersionMismatch, host.Name, lc.Version, want, ref, m.installerRemedy())
 	}
 	return runTarget, nil
 }
