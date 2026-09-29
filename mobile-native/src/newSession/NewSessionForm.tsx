@@ -93,11 +93,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	useEffect(() => showForm(store, { navigation, latest }), [store, navigation]);
 	// Whenever this form is in front, it shows the store's own error, so an
 	// alert saying the same goes.
-	useFocusEffect(
-		useCallback(() => {
-			startFailureSeen();
-		}, [startFailureSeen]),
-	);
+	useFocusEffect(startFailureSeen);
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
 	const start = useCallback(async () => {
 		if (!latest.current.ready || latest.current.blocked || imageSelection.getSnapshot().busy) return;

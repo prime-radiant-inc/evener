@@ -43,17 +43,11 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 	// The form in New session keeps the store's full reason; the banner says
 	// only what happened, on which hub, in one short line.
 	if (only.kind === "startFailed")
-		return only.uncertain
-			? {
-					title: "Couldn't confirm the new session started",
-					why: null,
-					hint: `On ${only.hubName}. It may have started. ${START_FAILED_HINT}`,
-				}
-			: {
-					title: "Couldn't start the new session",
-					why: null,
-					hint: `On ${only.hubName}. Your draft is kept. ${START_FAILED_HINT}`,
-				};
+		return {
+			title: only.uncertain ? "Couldn't confirm the new session started" : "Couldn't start the new session",
+			why: null,
+			hint: `On ${only.hubName}. ${only.uncertain ? "It may have started." : "Your draft is kept."} ${START_FAILED_HINT}`,
+		};
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
 
