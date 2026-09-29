@@ -359,8 +359,13 @@ export function ConversationScreen({
 	const navGlass = useSystemGlass();
 	const underNavBar = navGlass ? headerHeight : 0;
 	useEffect(() => {
-		navigation.setOptions({ headerTransparent: navGlass });
-	}, [navigation, navGlass]);
+		// react-native-screens draws a transparent bar clear only when its
+		// background color is itself clear.
+		navigation.setOptions({
+			headerTransparent: navGlass,
+			headerStyle: { backgroundColor: navGlass ? "transparent" : colors.background },
+		});
+	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's

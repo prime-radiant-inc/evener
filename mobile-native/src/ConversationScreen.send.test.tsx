@@ -1462,10 +1462,17 @@ it("forgets a session's open rows when you leave it", async () => {
 // it, and the chips and the list's top start below it. Elsewhere, and while
 // Reduce Transparency is on, the bar is opaque and the screen starts below it.
 describe("the nav bar's glass (spec 16.3)", () => {
-	const lastTransparency = () =>
-		(vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+	// Whether the bar is transparent, and clear: react-native-screens draws a
+	// transparent bar's background only when its color is itself clear.
+	const lastTransparency = () => {
+		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
 			.map(([options]) => options)
-			.findLast((options) => "headerTransparent" in options)?.headerTransparent;
+			.findLast((options) => "headerTransparent" in options);
+		if (options?.headerTransparent === undefined) return undefined;
+		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
+		expect(background === "transparent").toBe(options.headerTransparent);
+		return options.headerTransparent;
+	};
 	const layout = (tree: ReactTestRenderer) => ({
 		chipsTop: Object.assign(
 			{},
