@@ -2,30 +2,32 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 // pausedWarnings serves s, collecting the attention-paused warnings it emits.
+// The returned func closes s and waits for its event drain to finish, so the
+// warnings it returns are every one the session emitted.
 func pausedWarnings(t *testing.T, s *Session) func() []events.WarningData {
 	t.Helper()
-	var mu sync.Mutex
 	var warnings []events.WarningData
+	drained := make(chan struct{})
 	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		if warning, ok := ev.Data.(events.WarningData); ok && warning.Code == events.WarningCodeAttentionPaused {
-			mu.Lock()
 			warnings = append(warnings, warning)
-			mu.Unlock()
 		}
-	}, func() {})
+	}, func() { close(drained) })
 	return func() []events.WarningData {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]events.WarningData(nil), warnings...)
+		s.Close()
+		<-drained
+		return warnings
 	}
 }
 
@@ -117,5 +119,97 @@ func TestAttentionPausedMessageSaysHowToResume(t *testing.T) {
 		if got := rootAttentionPausedMessage(tc.err); !strings.HasSuffix(got, tc.want) {
 			t.Errorf("paused message for %v = %q, want it to end %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+// The pause warning names the provider instance (Evener's own configuration)
+// and nothing a provider said: its hint is the failure's kind and status. A
+// provider's error body can carry anything, so none of it reaches the
+// transcript.
+func TestAttentionPausedWarningCarriesNoProviderText(t *testing.T) {
+	const canary = "PROVIDER-BODY-CANARY sk-live-secret"
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, canary, map[string]any{"error": map[string]any{"message": canary}}, nil))
+	warnings := pausedWarnings(t, s)
+
+	armOneRootAttention(t, s, "dlg_canary", "delegate:dlg_canary/delivery/1")
+	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+
+	got := warnings()
+	if len(got) != 1 {
+		t.Fatalf("paused warnings = %+v, want one", got)
+	}
+	encoded, err := json.Marshal(got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "CANARY") || strings.Contains(string(encoded), "sk-live") {
+		t.Fatalf("paused warning carries provider text: %s", encoded)
+	}
+	if got[0].Hint != "HTTP 401 (authentication)" {
+		t.Fatalf("paused warning hint = %q, want the kind and status only", got[0].Hint)
+	}
+}
+
+// A spent quota says when it resets, in UTC, since the daemon may run in
+// another zone than the person reading.
+func TestAttentionPausedMessageNamesTheQuotaResetInUTC(t *testing.T) {
+	t.Parallel()
+	body := map[string]any{"error": map[string]any{"type": "usage_limit_reached", "message": "The usage limit has been reached", "resets_at": json.Number("1785258150")}}
+	err := llm.ErrorFromHTTPStatus("work", 429, "responses.create(stream) failed", body, nil)
+	if llm.Kind(err) != llm.KindQuotaExceeded {
+		t.Fatalf("fixture kind = %v, want quota exceeded", llm.Kind(err))
+	}
+	want := "work's usage limit is reached until " + time.Unix(1785258150, 0).UTC().Format("Jan 2 15:04 UTC") + "."
+	if got := rootAttentionPausedMessage(err); !strings.Contains(got, want) {
+		t.Fatalf("quota message = %q, want it to contain %q", got, want)
+	}
+}
+
+// A model switch re-arms attention only when a permanent failure deferred
+// it. Attention waiting out a transient failure keeps its backoff: a switch
+// must not skip it.
+func TestModelSwitchLeavesATransientBackoffAlone(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "unavailable", nil, nil))
+	serveSession(t, s)
+
+	armOneRootAttention(t, s, "dlg_503", "delegate:dlg_503/delivery/1")
+	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if wake, retryActive, _ := attentionRailState(s); wake || !retryActive {
+		t.Fatalf("after a 503: wake=%t retry=%t, want the paced retry armed", wake, retryActive)
+	}
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if wake, retryActive, _ := attentionRailState(s); wake || !retryActive {
+		t.Fatalf("after a model switch: wake=%t retry=%t, want the backoff left alone", wake, retryActive)
+	}
+}
+
+// A Stop's park wins over a model switch: the deferred attention waits for
+// the user's re-engagement, not for a switch.
+func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
+	// Unserved, as TestStopParksRootDelegateAttentionUntilReEngagement keeps
+	// it, so nothing claims the parked queue behind the test's back.
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_stop", "delegate:dlg_stop/delivery/1")
+	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-model-switch",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !s.rootAttentionRailParked() {
+		t.Fatal("this test is not in the state it means to be: the Stop did not park the rail")
+	}
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if wake, _, pending := attentionRailState(s); wake || pending != 1 {
+		t.Fatalf("after a model switch on a Stop-parked rail: wake=%t pending=%d, want it still parked (false, 1)", wake, pending)
 	}
 }

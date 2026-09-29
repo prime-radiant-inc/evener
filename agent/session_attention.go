@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/foldcache"
-	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -881,38 +880,56 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 // permanent provider failure has paused background updates, which provider
 // and how to resume. Without it the updates just stop arriving. It is
 // visible at every level (its code is not informational) and goes to the
-// daemon log too.
+// daemon log too. Nothing a provider said reaches the warning: a provider's
+// error body can carry anything, so the hint is the failure's kind and
+// status only, and the whole error goes to the log.
 func (s *Session) announceRootAttentionPaused(turnErr error) {
-	message := rootAttentionPausedMessage(turnErr)
-	cause := turnErr.Error()
-	slog.Warn("background updates paused", "session", s.ID(), "error", cause)
-	cause, _, _ = strings.Cut(cause, "\n")
+	slog.Warn("background updates paused", "session", s.ID(), "error", turnErr.Error())
 	s.emit(events.EventWarning, events.WarningData{
-		Message: message,
+		Message: rootAttentionPausedMessage(turnErr),
 		Source:  string(diagnostic.SourceEvener),
 		Title:   "Background updates paused",
-		Hint:    runetrim.Cut(cause, 512),
+		Hint:    providerFailureSummary(turnErr),
 		Code:    events.WarningCodeAttentionPaused,
 	})
 }
 
-// rootAttentionPausedMessage names the provider that refused and what would
-// resume delivery, by the failure's kind as llm classifies it.
+// providerFailureSummary is a failure's kind and HTTP status, with no
+// provider text: "HTTP 401 (authentication)", or "sign-in required".
+func providerFailureSummary(err error) string {
+	if errors.Is(err, llm.ErrSignInRequired) {
+		return "sign-in required"
+	}
+	kind := llm.Kind(err).String()
+	var llmErr llm.Error
+	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
+		return fmt.Sprintf("HTTP %d (%s)", llmErr.StatusCode(), kind)
+	}
+	return kind
+}
+
+// rootAttentionPausedMessage names the provider instance that refused (the
+// name in Evener's own configuration) and what would resume delivery, by
+// the failure's kind as llm classifies it.
 func rootAttentionPausedMessage(turnErr error) string {
 	instance := "the provider"
 	var providerErr interface{ Provider() string }
-	if errors.As(turnErr, &providerErr) && strings.TrimSpace(providerErr.Provider()) != "" {
-		instance = strings.TrimSpace(providerErr.Provider())
+	if errors.As(turnErr, &providerErr) {
+		if name := strings.TrimSpace(providerErr.Provider()); name != "" {
+			instance = name
+		}
 	}
 	const paused = "Background updates from subagents and jobs are paused: "
+	kind := llm.Kind(turnErr)
 	switch {
-	case errors.Is(turnErr, llm.ErrSignInRequired) || llm.Kind(turnErr) == llm.KindAuthentication:
+	case errors.Is(turnErr, llm.ErrSignInRequired) || kind == llm.KindAuthentication:
 		return paused + instance + " rejected the credential. Sign in to " + instance + ", then send a message to continue."
-	case llm.Kind(turnErr) == llm.KindAccessDenied:
+	case kind == llm.KindAccessDenied:
 		return paused + instance + " refused access. Check your access to " + instance + ", then send a message to continue."
-	case llm.Kind(turnErr) == llm.KindQuotaExceeded:
+	case kind == llm.KindQuotaExceeded:
+		// UTC: the daemon may run in another zone than the person reading.
 		if resetAt, ok := llm.UsageLimitResetAt(turnErr); ok {
-			return paused + instance + "'s usage limit is reached until " + resetAt.Local().Format("Jan 2 15:04") + ". Send a message after that, or switch models, to continue."
+			return paused + instance + "'s usage limit is reached until " + resetAt.UTC().Format("Jan 2 15:04 UTC") + ". Send a message after that, or switch models, to continue."
 		}
 		return paused + instance + "'s usage limit is reached. Switch models, or send a message once it resets, to continue."
 	default:
@@ -923,14 +940,22 @@ func rootAttentionPausedMessage(turnErr error) string {
 // resumeRootAttentionAfterModelSwitch re-arms attention a permanent failure
 // deferred: a new model is a change that can make it deliverable. A Stop's
 // park still wins; its re-engagement re-arms instead.
+//
+// Only a permanent failure's deferral is resumed: attention waiting out a
+// transient failure keeps its paced backoff. The parked read comes before
+// attentionMu, the rail's lock order; a Stop that lands after it still wins,
+// since its park stands a straggler wake down before any model turn.
 func (s *Session) resumeRootAttentionAfterModelSwitch() {
 	if s.rootAttentionRailParked() {
 		return
 	}
 	s.attentionMu.Lock()
+	paused := s.rootAttentionPaused
 	s.rootAttentionPaused = false
 	s.attentionMu.Unlock()
-	s.unparkRootDelegateAttention()
+	if paused {
+		s.unparkRootDelegateAttention()
+	}
 }
 
 // stageRootDelegateAttentionCoverage records one built request's candidate
