@@ -2,11 +2,22 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
+import type { SteeringFragment } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
+import { notificationLine } from "./notificationLine";
 import { stepTarget } from "./transcriptRows";
 
 function stepText(step: RunStep): string {
 	return `${step.label}\n${step.detail.description ?? ""}\n${stepTarget(step.label, step.detail.arguments) ?? ""}`;
+}
+
+// A notification reads as its card, not its markup. The session's subagents
+// aren't at hand here, so a frame with no name attribute searches as
+// "Subagent", where its card shows the title the session's subagents give it.
+function fragmentText(fragment: SteeringFragment): string {
+	if (fragment.kind === "text") return fragment.text;
+	const line = notificationLine(fragment.notification, undefined);
+	return [line.headline, line.detail, line.output].filter(Boolean).join("\n");
 }
 
 /** The words a row shows, or would show when opened. A time marker has none. */
@@ -14,8 +25,9 @@ export function rowText(row: TimelineRow): string {
 	switch (row.kind) {
 		case "user":
 		case "note":
-		case "notice":
 			return row.text;
+		case "notice":
+			return row.notifications ? row.notifications.map(fragmentText).join("\n") : row.text;
 		case "assistant":
 			return row.markdown;
 		case "failure":

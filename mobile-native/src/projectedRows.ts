@@ -46,6 +46,7 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
+	parseSteeringNotifications,
 	pendingTextJoined,
 	projectThread,
 } from "@evener/appwire-client";
@@ -53,6 +54,7 @@ import type {
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
+	SteeringFragment,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	Turn,
@@ -184,6 +186,10 @@ export type MobileTimelineItem =
 				family: NoticeFamily;
 				tone: NoticeTone;
 				text: string;
+				// A steer that delivers <delegate-notification> or
+				// <job-notification> blocks, parsed: the transcript reads it as
+				// the notifications it carries (spec 8.2, 9), never as the markup.
+				notifications?: SteeringFragment[];
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -649,7 +655,13 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		family: tone === "warning" ? "warning" : "informational",
 		tone,
 		text: it.text,
+		...notificationsOf(it.text),
 	};
+}
+
+function notificationsOf(text: string): { notifications?: SteeringFragment[] } {
+	const fragments = parseSteeringNotifications(text);
+	return fragments.some((fragment) => fragment.kind === "notification") ? { notifications: fragments } : {};
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {

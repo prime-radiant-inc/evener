@@ -1,3 +1,5 @@
+import { parseSteeringNotifications } from "@evener/appwire-client";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "../timeline";
 import { findMatches, matchLabel, rowText, stepMatch } from "./findInSession";
@@ -48,5 +50,24 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 	it("says where you are", () => {
 		expect(matchLabel([1, 2, 4], 2)).toBe("2 of 3");
 		expect(matchLabel([], null)).toBe("No matches");
+	});
+});
+
+describe("finding words in a delegate or job notification", () => {
+	const text = notificationWireItem("delegate-reported").text ?? "";
+	const row: TimelineRow = {
+		kind: "notice",
+		id: "n",
+		origin: "steering",
+		family: "informational",
+		tone: "info",
+		text,
+		notifications: parseSteeringNotifications(text),
+	};
+
+	it("matches the words the card shows, never its markup", () => {
+		expect(findMatches([row], "settle finished")).toEqual([0]);
+		expect(findMatches([row], "waits for the drain")).toEqual([0]);
+		expect(findMatches([row], "delegate_id")).toEqual([]);
 	});
 });
