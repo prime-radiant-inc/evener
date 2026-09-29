@@ -5647,6 +5647,88 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
+  // UI-01: a durable deletion fence is terminal for the ref's hydration
+  // lifecycle. A pane retains its claim, but the hub has proven the ref gone,
+  // so the retry loop must not keep reading an unrecoverable target and the
+  // acquisition promise must settle instead of hanging forever.
+  test("a durably deleted ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    // The acquisition settles rather than awaiting a retry that can never
+    // publish into this owner generation.
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    // Nothing is left to advance: the fence armed no retry.
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
+  // UI-01's cached-model half: a fence that lands after the ref hydrated must
+  // still expose the deletion. The store deliberately keeps the (now stale)
+  // model, so the deleted surface has to be read from deletedRefs rather than
+  // from "no model".
+  test("a deletion fence recorded after hydration exposes the deletion while the cached model remains", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+    await threadsStore.getState().ensureThread("ref_gone");
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_gone")).rejects.toThrow(/deleted/);
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    // The stale model is retained, so the deletion is observable independently
+    // of it, and no retry is armed against the unrecoverable target.
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+  });
+
+  // Control: the terminal deleted path must not swallow ordinary transient
+  // failures - a transport rejection still schedules exactly one retry that
+  // recovers the ref.
+  test("a transient read failure still schedules one retry and recovers", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) throw new Error("transport hiccup");
+      return readResponse("ref_a", { name: "Recovered" });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(false);
+
+    runScheduledHydrationRetry();
+    await expect(acquisition).resolves.toBeUndefined();
+    await waitFor(() => {
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    });
+    expect(reads).toBe(2);
+  });
+
   // One representative Conflict-mapping test standing in for every
   // thread-level action above - each wraps its client.request in the exact
   // same mapConflict try/catch as send/steer/queue/interrupt (proven
