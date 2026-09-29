@@ -1,6 +1,8 @@
-// Board actions taken offline wait here and go when the connection returns
-// (spec 7.5; phase 6 ruling 18, Jesse: "board actions while offline: hold
-// em"). A durable list per hub, in the order held.
+// Board actions that can't go now wait here and go when they can (spec 7.5;
+// phase 6 ruling 18, Jesse: "board actions while offline: hold em"): taken
+// offline, taken while the organization journal is busy, or taken while one
+// on the same subject already waits. A durable list per hub, in the order
+// held.
 //
 // It is a hold of its own, not the mutation outbox: the outbox carries the
 // four turn kinds with receipts and client mutation ids, while archive, pin
@@ -76,7 +78,7 @@ const PROJECT_VERBS: Record<ProjectMenuAction, string> = {
 };
 
 /** A held action's name, as its row and menu say it: "Archive waits for
- * the connection", "Cancel Archive". */
+ * the connection" or "Archive is waiting to send", and "Cancel Archive". */
 export function heldVerb(action: HeldAction): string {
 	if (action.kind === "archive") return action.archived ? "Archive" : "Unarchive";
 	if (action.kind === "pin") return "Pin";

@@ -3758,6 +3758,29 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
 	});
 
+	it("holds a row's Undo while the journal is busy with another change, and sends it once the journal is free", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree } = await mountSwipeFleet(fake);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		expect(texts(tree)).toContain("Archived");
+		const answerNext = hangFirst(fake, "evener/archive/set");
+		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
+		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(2));
+		pressLabel(tree, "Undo");
+		await settle();
+		expect(heldIn(id)).toHaveLength(1);
+		answerNext();
+		await vi.waitFor(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
 	it("queues a Shut down behind the held one that is on its way, rather than sending it beside it", async () => {
 		const fake = hub(swipeFleet());
 		const { id, tree, nav } = await mountSwipeFleet(fake);
@@ -4724,15 +4747,40 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	expect(texts(tree)).toContain("Unarchived 2 sessions");
 });
 
-it("says how many it archived when the hub refuses one, and archives nothing after it", async () => {
+it("says nothing archived when the hub can't confirm one, and holds the rest for when the journal is free", async () => {
 	const fake = hub(selectFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
 	await settle();
-	expect(fake.mutations).toHaveLength(1);
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree).filter((text) => text.startsWith("Archived"))).toEqual([]);
+	// The one after it was held, not dropped: it goes once the journal has
+	// settled the first.
+	await vi.waitFor(() =>
+		expect(fake.mutations.map((mutation) => mutation.params)).toEqual([
+			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+			{ kind: "session", id: SESSION_ID, archived: true },
+		]),
+	);
+});
+
+it("pins the chosen sessions with the Board's connection as it is when you pick, not as it was when the sheet opened", async () => {
+	const fake = hub(selectFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser");
+	harness.actionSheet.mockClear();
+	pressLabel(tree, "Pin");
+	const [, choose] = harness.actionSheet.mock.calls[0] as [unknown, (index: number) => void];
+	// The connection blips and returns while the sheet is up.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	act(() => choose(0));
+	await settle();
+	expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/session-pin/assign"]);
 });
 
 it("pins the chosen sessions to a category picked from the sheet", async () => {

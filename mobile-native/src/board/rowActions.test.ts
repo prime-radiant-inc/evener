@@ -6,11 +6,9 @@ import { NavigationActions } from "../navigationActions";
 import type { BoardState } from "./attention";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import {
-	archiveSession,
 	archiveTarget,
 	archivingSessionId,
 	journalOutcome,
-	pinSession,
 	type RowActionContext,
 	renameSession,
 	rowMenuActions,
@@ -150,7 +148,9 @@ describe("archiving (rulings 16 and 20)", () => {
 
 	it("archives through the journal and reports it confirmed", async () => {
 		const { hub, storage, actions } = organization();
-		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(true);
+		expect(await journalOutcome(actions, () => actions.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"confirmed",
+		);
 		expect(hub.writes).toEqual([
 			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
 		]);
@@ -159,7 +159,9 @@ describe("archiving (rulings 16 and 20)", () => {
 
 	it("reports a refused archive as unconfirmed, with the journal holding it for the Board to settle", async () => {
 		const { storage, actions } = organization({ accept: false });
-		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(await journalOutcome(actions, () => actions.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"unconfirmed",
+		);
 		expect(storage.load()).not.toBeNull();
 		expect(actions.getSnapshot().uncertain).toBe(true);
 	});
@@ -174,9 +176,13 @@ describe("archiving (rulings 16 and 20)", () => {
 			async () => {},
 			busy.storage,
 		);
-		expect(await archiveSession(blocked, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(await journalOutcome(blocked, () => blocked.archive({ kind: "session", id: SESSION_ID }, true))).toBe(
+			"notTaken",
+		);
 		const covered = organization({ current: false });
-		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(
+			await journalOutcome(covered.actions, () => covered.actions.archive({ kind: "session", id: SESSION_ID }, true)),
+		).toBe("notTaken");
 		expect([...busy.hub.writes, ...covered.hub.writes]).toEqual([]);
 	});
 
@@ -194,7 +200,9 @@ describe("archiving (rulings 16 and 20)", () => {
 
 	it("pins select mode's sessions through the same journal", async () => {
 		const { hub, actions } = organization();
-		expect(await pinSession(actions, { sessionRef: local, sectionName: "Release" })).toBe(true);
+		expect(await journalOutcome(actions, () => actions.assignPin({ sessionRef: local, sectionName: "Release" }))).toBe(
+			"confirmed",
+		);
 		expect(hub.writes).toEqual([
 			{ method: "evener/session-pin/assign", params: { sessionRef: local, sectionName: "Release" } },
 		]);

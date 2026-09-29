@@ -107,10 +107,9 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
-	archiveSession,
 	archiveTarget,
 	archivingSessionId,
-	pinSession,
+	journalOutcome,
 	projectChange,
 	type RowAction,
 	type RowActionContext,
@@ -123,7 +122,7 @@ import {
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
-import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
+import { archiveRequest, archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
@@ -295,8 +294,6 @@ function Board({
 	// Board is focused and it's free.
 	const [hold] = useState(() => boardHold(hubId));
 	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
-	const heldNow = useRef(held);
-	heldNow.current = held;
 	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
 	// A press answered later (an alert, a sheet) asks what's true then.
 	const liveNow = useRef(actionsConnected);
@@ -537,7 +534,7 @@ function Board({
 	};
 	/** Whether a change of this kind waits in the hold for this session. */
 	const waitsFor = (ref: string, kind: HeldAction["kind"]) =>
-		heldFor(heldNow.current, ref).some((record) => record.action.kind === kind);
+		heldFor(hold.getSnapshot(), ref).some((record) => record.action.kind === kind);
 	/** Whether a Board change goes into the hold rather than out now (phase 6
 	 * ruling 18): offline; for an organization change (an archive, a pin, a
 	 * project setting), while the journal can't take one; and while a change
@@ -553,8 +550,19 @@ function Board({
 		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
-		else if (action === "archive" || action === "unarchive")
-			void archiveRow(organization, row, action === "archive", toast);
+		else if (action === "archive" || action === "unarchive") archiveOrHold(row, action === "archive");
+	};
+	/** Archive or Unarchive a row, and its Undo: through the journal, or held
+	 * when it can't go now (holdsChange), including when the journal turns
+	 * out not to take it. */
+	const archiveOrHold = (row: NavigationSessionSummary, archived: boolean) => {
+		const holdIt = () => holdRowAction(row, archived ? "archive" : "unarchive");
+		const actions = organizationNow.current.actions;
+		if (holdsChange(waitsFor(row.ref, "archive"), true) || !actions) holdIt();
+		else
+			void archiveRow(actions, row, archived, toast, () => archiveOrHold(row, !archived)).then((outcome) => {
+				if (outcome === "notTaken") holdIt();
+			});
 	};
 	/** A swipe's or the menu's action held until it can go: Pin asks for the
 	 * category over the Board's loaded catalog, and a Stop names the turn you
@@ -775,7 +783,7 @@ function Board({
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
 			// What is on its way can't be taken back, so it offers no Cancel.
 			held: (item) =>
-				heldFor(heldNow.current, item.row.ref)
+				heldFor(hold.getSnapshot(), item.row.ref)
 					.filter((record) => !hold.isSending(record.id))
 					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
 			cancel: (id) => hold.cancel(id),
@@ -869,7 +877,7 @@ function Board({
 	 * while the menu was up. */
 	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
 		const target = { key: project.key, workingDir: project.working_dir };
-		const pending = heldProjectState(heldNow.current, project.key);
+		const pending = heldProjectState(hold.getSnapshot(), project.key);
 		const waits =
 			action === "pin" || action === "unpin" ? pending.favorite !== undefined : pending.archived !== undefined;
 		const actions = organizationNow.current.actions;
@@ -1023,48 +1031,55 @@ function Board({
 		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
 	);
 	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
-	/** Select mode's rows, split into those whose change is held
-	 * (holdsChange) and those it sends now. */
-	const splitHeld = (rows: readonly NavigationSessionSummary[], kind: HeldAction["kind"]) => {
-		const held = rows.filter((row) => holdsChange(waitsFor(row.ref, kind), true));
-		return { held, sending: rows.filter((row) => !held.includes(row)) };
-	};
-	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
-		const { held, sending } = splitHeld(rows, "archive");
-		for (const row of held) holdRowAction(row, "archive");
-		if (!sending.length) {
-			leaveSelect();
-			return;
+	/** Select mode's change to many rows, one at a time through the journal,
+	 * reading the Board as it is now. A row whose change can't go now
+	 * (holdsChange) is held, and so is every row after one the journal
+	 * didn't take or couldn't confirm. Resolves the rows the hub confirmed,
+	 * and how many it tried. */
+	const changeEach = async (
+		rows: readonly NavigationSessionSummary[],
+		kind: "archive" | "pin",
+		holdOne: (row: NavigationSessionSummary) => void,
+		request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	) => {
+		const actions = organizationNow.current.actions;
+		const sending: NavigationSessionSummary[] = [];
+		for (const row of rows) {
+			if (!actions || holdsChange(waitsFor(row.ref, kind), true)) holdOne(row);
+			else sending.push(row);
 		}
-		const archived = await confirmEach(organization, sending, (actions, row) => archiveOne(actions, row, true));
+		const confirmed = actions ? await confirmEach(actions, sending, request, (rest) => rest.forEach(holdOne)) : [];
+		return { confirmed, tried: sending.length };
+	};
+	const holdArchive = (archived: boolean) => (row: NavigationSessionSummary) =>
+		holdRowAction(row, archived ? "archive" : "unarchive");
+	const archiveEach = (rows: readonly NavigationSessionSummary[], archived: boolean) =>
+		changeEach(rows, "archive", holdArchive(archived), (actions, row) => archiveRequest(actions, row, archived));
+	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
+		const { confirmed, tried } = await archiveEach(rows, true);
 		leaveSelect();
-		if (archived.length)
+		if (confirmed.length)
 			toast.show({
-				text: sessionCount("Archived", archived.length, sending.length),
+				text: sessionCount("Archived", confirmed.length, tried),
 				action: {
 					label: "Undo",
 					run: () =>
-						void confirmEach(organization, archived, (actions, row) => archiveOne(actions, row, false)).then(
-							(unarchived) => {
-								if (unarchived.length)
-									toast.show({ text: sessionCount("Unarchived", unarchived.length, archived.length) });
-							},
-						),
+						void archiveEach(confirmed, false).then((undone) => {
+							if (undone.confirmed.length)
+								toast.show({ text: sessionCount("Unarchived", undone.confirmed.length, undone.tried) });
+						}),
 				},
 			});
 	};
 	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
-		const { held, sending } = splitHeld(rows, "pin");
-		for (const row of held) holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } });
-		if (!sending.length) {
-			leaveSelect();
-			return;
-		}
-		const pinned = await confirmEach(organization, sending, (actions, row) =>
-			pinSession(actions, { sessionRef: row.ref, ...section }),
+		const { confirmed, tried } = await changeEach(
+			rows,
+			"pin",
+			(row) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
+			(actions, row) => actions.assignPin({ sessionRef: row.ref, ...section }),
 		);
 		leaveSelect();
-		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, sending.length)} to ${name}` });
+		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
 	const markChosenRead = () => {
 		seen.markRead(actionsClient, selection.markRead);
@@ -1290,30 +1305,28 @@ function sessionCount(verb: string, done: number, of: number): string {
 }
 
 /** Makes one journaled change per session, in order, through the Board's
- * organization journal, stopping at the first the hub doesn't confirm (the
- * journal is then settled once). Resolves the sessions it confirmed. Does
- * nothing while a change can't go out. */
+ * organization journal, stopping at the first the hub doesn't confirm: an
+ * unconfirmed one is the journal's to settle, and `holdRest` gets the rows
+ * after it, or that row and the rows after it when the journal didn't take
+ * it. Resolves the sessions it confirmed. */
 async function confirmEach(
-	organization: BoardOrganization,
+	actions: NavigationActions,
 	rows: readonly NavigationSessionSummary[],
-	change: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<boolean>,
+	request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	holdRest: (rows: readonly NavigationSessionSummary[]) => void,
 ): Promise<NavigationSessionSummary[]> {
-	const actions = organization.actions;
-	if (!actions || !organizationOpen(organization)) return [];
 	const confirmed: NavigationSessionSummary[] = [];
-	for (const row of rows) {
-		if (!(await change(actions, row))) {
-			void actions.reconcile();
-			break;
+	for (const [index, row] of rows.entries()) {
+		const outcome = await journalOutcome(actions, () => request(actions, row));
+		if (outcome === "confirmed") {
+			confirmed.push(row);
+			continue;
 		}
-		confirmed.push(row);
+		if (outcome === "unconfirmed") void actions.reconcile();
+		holdRest(rows.slice(outcome === "unconfirmed" ? index + 1 : index));
+		break;
 	}
 	return confirmed;
-}
-
-function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, archived: boolean): Promise<boolean> {
-	const target = archiveTarget(row);
-	return target ? archiveSession(actions, target, archived) : Promise.resolve(false);
 }
 
 /** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
