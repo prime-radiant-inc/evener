@@ -199,9 +199,10 @@ function Providers({
 	// Changes whenever you leave or switch the provider detail, so a late result
 	// from an earlier visit is ignored.
 	const detailVisitId = useRef(0);
-	// The id of the newest model check, so only that check can clear "Checking
-	// for new models…". Unlike detailVisitId it survives a link that reopens the
-	// same provider, and closing the detail forgets the check.
+	// The id of the newest model check, so only that check may report its
+	// failure. The Checking state itself is the store's published
+	// refreshingInstances, so unlike detailVisitId it survives a link that
+	// reopens the same provider and a detail close.
 	const latestModelCheckId = useRef(0);
 	// A screen the user has left must not act on a write or a check that
 	// outlives it: the bumps make every captured visit and check stale, so a
@@ -311,8 +312,9 @@ function Providers({
 		);
 	}
 	// Asking the provider for its current models is a read: it runs beside a
-	// write, and its answer lands in the listing like any other.
-	const [checkingModels, setCheckingModels] = useState<string | null>(null);
+	// write, and its answer lands in the listing like any other. Which instance
+	// has a check out is the store's own published state; this screen reads it
+	// rather than tracking the same calls again.
 	// The provider whose newest check failed. Its copy shows only while that
 	// provider's detail is open, compared at render, so a link that opens
 	// another provider never carries it there.
@@ -322,13 +324,10 @@ function Providers({
 		const current = () => check === latestModelCheckId.current;
 		setActionError(null);
 		setModelsCheckFailed(null);
-		setCheckingModels(name);
 		try {
 			await surface.checkModels(name);
 		} catch {
 			if (current()) setModelsCheckFailed(name);
-		} finally {
-			if (current()) setCheckingModels(null);
 		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
@@ -344,7 +343,6 @@ function Providers({
 		setKey("");
 		setActionError(null);
 		latestModelCheckId.current += 1;
-		setCheckingModels(null);
 		setModelsCheckFailed(null);
 	}
 	async function act(
@@ -593,7 +591,7 @@ function Providers({
 										onToggleModel={(model, disabled) => {
 											void act(() => surface.setModelDisabled(instance.name, model, disabled));
 										}}
-										checking={checkingModels === instance.name}
+										checking={core.refreshingInstances.has(instance.name)}
 										checkFailed={modelsCheckFailed === instance.name}
 										checkHeld={!ready}
 										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
