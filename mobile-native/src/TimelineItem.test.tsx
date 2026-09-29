@@ -456,9 +456,105 @@ describe("a run in the transcript", () => {
 	});
 
 	it("never folds while it is live", () => {
-		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live />);
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live liveRunsOpen />);
 		expect(header(tree.root)).toBeUndefined();
 		expect(renderedText(tree)).toContain("agent/session.go");
+	});
+
+	// Nothing collapses on its own (Jesse's ruling on S7): a run held open
+	// while live stays open once the next run starts or the turn ends.
+	it("stays open after it stops being live, until you fold it", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" liveRunsOpen />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(renderedText(tree)).toContain("agent/session.go");
+		act(() => header(tree.root).props.onPress());
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+	});
+
+	it("stays open when you switch to a level that doesn't open live runs", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// Two parallel calls: the one that settles last joins the front of the run
+	// in the same update that ends the turn. The run is the same run.
+	it("stays open when a parallel call settles ahead of it as the turn ends", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const b = { ...step, id: "b", detail: { ...step.detail, callId: "call-b" } };
+		const a = { ...step, id: "a", detail: { ...step.detail, callId: "call-a" } };
+		const live: TimelineRow = { kind: "run", id: "run:b", turnId: "t1", steps: [b] };
+		const settled: TimelineRow = { kind: "run", id: "run:a", turnId: "t1", steps: [a, b] };
+		const tree = render(<TimelineItem item={live} hubId="hub" sessionRef="run-parallel" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={settled} hubId="hub" sessionRef="run-parallel" liveRunsOpen />));
+		const fold = tree.root.findAll((node) =>
+			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
+		)[0];
+		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+	});
+
+	// An older page can bring earlier items of the first loaded turn: a run
+	// ahead of this one, or steps that join its front. Either way it is the
+	// same run, and the run ahead of it stays folded.
+	it("stays open when an older page brings an earlier run or earlier steps of its turn", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const call = (id: string) => ({ ...step, id, detail: { ...step.detail, callId: `call-${id}` } });
+		const runOf = (...ids: string[]): TimelineRow => ({
+			kind: "run",
+			id: `run:${ids[0]}`,
+			turnId: "t1",
+			steps: ids.map(call),
+		});
+		const tree = render(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
+		const earlier = render(<TimelineItem item={runOf("z")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />);
+		expect(header(earlier.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={runOf("y", "b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
+		const fold = tree.root.findAll((node) =>
+			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
+		)[0];
+		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+	});
+
+	// At Activity and Full every run opens by default, so a run held open
+	// there must still be pinned, or a switch to Intent would fold it.
+	it("stays open after a switch down from a level that opens every run", () => {
+		const tree = render(
+			<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" live liveRunsOpen expandByDefault />,
+		);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// A tool shown from the overlay carries the overlay's id until history
+	// records its call; the call id is the same on both.
+	it("stays open when its first step's id changes as history records the call", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const withStep = (id: string): TimelineRow => ({
+			kind: "run",
+			id: `run:${id}`,
+			turnId: "t1",
+			steps: [{ ...step, id, detail: { ...step.detail, callId: "call-1" } }],
+		});
+		const tree = render(
+			<TimelineItem item={withStep("tool:call:call-1")} hubId="hub" sessionRef="run-renamed" live liveRunsOpen />,
+		);
+		act(() =>
+			tree.update(<TimelineItem item={withStep("item_tool_1_0")} hubId="hub" sessionRef="run-renamed" liveRunsOpen />),
+		);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// At Intent the tray shows the live step, so the run's line is enough.
+	it("doesn't open while live where the tray shows the live step", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" live />);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
 	});
 });
 
