@@ -172,6 +172,7 @@ export class MutationOutboxIndexedDB {
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
   readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
+  #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
@@ -210,6 +211,13 @@ export class MutationOutboxIndexedDB {
   // or delete, the discard's own best-effort boundary.
   setSupersededDiscardListener(listener: ((targetRef: string) => void) | undefined): void {
     this.#supersededDiscardListener = listener;
+  }
+
+  // Every successful settle, with the settled record's own targetRef: the
+  // record that proved delivery is the one authority on which ref's state
+  // changed, so callers do not have to derive it from the row id.
+  setSettledListener(listener: ((targetRef: string) => void) | undefined): void {
+    this.#settledListener = listener;
   }
 
   async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
@@ -502,6 +510,8 @@ export class MutationOutboxIndexedDB {
       },
     );
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    const settledRef = settledSource?.targetRef;
+    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
   }
 
@@ -530,6 +540,8 @@ export class MutationOutboxIndexedDB {
       },
     );
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    const settledRef = settledSource?.targetRef;
+    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
   }
 

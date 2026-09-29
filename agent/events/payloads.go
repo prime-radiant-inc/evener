@@ -597,6 +597,12 @@ const WarningCodeContextBudget = "context_budget"
 // code.
 const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 
+// WarningCodeAttentionPaused identifies the notice that a permanent provider
+// failure (a dead credential, a spent quota) has paused delivering background
+// updates to a session until something changes. Unlike the informational
+// codes, clients show it at every level: it is news the user must act on.
+const WarningCodeAttentionPaused = "attention_paused"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
