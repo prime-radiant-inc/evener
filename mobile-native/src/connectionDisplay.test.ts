@@ -731,7 +731,7 @@ it("useConnectionDisplay walls a same-state replacement the record refuses", () 
 // Round 75's Medium: the retention arm re-armed everReady on the trust term
 // alone, so retention armed under the FIRST client survived the walled
 // replacement render — the drop that followed showed a banner over
-// ProvidersScreen's mounted surface while the store gated the refused
+// ProvidersPage's mounted surface while the store gated the refused
 // client to null, the exact re-key retention class of round 52 left open on
 // the same-state path. A ready render the identity record walls now strips
 // retention too: the drop reports the same refused client and must wall

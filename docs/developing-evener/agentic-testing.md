@@ -626,8 +626,8 @@ separate "needs you" section — the Rail deliberately does not build one
 `[data-testid="turn-failure"]`, `[data-testid="system-notice-line"]`,
 `[data-testid="notification-card"]`, `[data-testid="image-gallery-thumb"]`
 and `[data-testid="image-gallery-lightbox-img"]`,
-`[data-testid="load-older-row"]` / `[data-testid="load-older-sentinel"]` /
-`[data-testid="load-older-retry"]` (`flow/LoadOlderRow.tsx:82-91`),
+`[data-testid="load-older-row"]` / `[data-testid="load-older-retry"]`
+(`flow/LoadOlderRow.tsx`),
 `[data-testid="new-content-pill"]`, `[data-testid="seen-divider"]`.
 
 **Session chrome** (`panes/session/chrome/`):

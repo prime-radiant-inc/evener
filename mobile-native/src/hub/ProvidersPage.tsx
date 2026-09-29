@@ -1,18 +1,16 @@
+// The Hub's Providers page (spec 12's Providers; rulings 6, 9 and 12): each
+// provider instance with its sign-in state in words, and a detail sheet over
+// the list with its status, models, sign-in and key actions, and the
+// management the phone keeps (add, edit, make default, clear, remove). The
+// detail opens as a sheet over the list, not a pushed page, because the
+// mutation gates, fences and sign-in flow below live with the list (ruling 9).
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	Platform,
-	Pressable,
-	ScrollView,
-	SectionList,
-	Text,
-	TextInput,
-	View,
-} from "react-native";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from "react-native";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ConnectionState, InstanceEntry } from "@evener/appwire-client";
+import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
 	activeSourceLabel,
 	CONNECTION_REPLACED_ERROR,
@@ -21,7 +19,6 @@ import {
 	ENDPOINT_CHANGED_TEST_MESSAGE,
 	FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
 	fingerprintUnavailable,
-	groupByProvider,
 	isEndpointConflict,
 	sessionActionError,
 	styleInfoText,
@@ -31,24 +28,21 @@ import {
 	isStaleListingRefusal,
 	staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
-import { HoldingModal } from "./alerts/HoldingModal";
-import { appliedInstanceWrite } from "./appliedInstanceWrite";
-import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, whenReady } from "./connectionDisplay";
-import { useCredentialStore } from "./credentialStore";
-import { ProviderEditor } from "./ProviderEditor";
-import { useProviderSurface } from "./providerSurface";
-import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { ProviderSignIn } from "./providerSignIn";
-import {
-	ConnectionWall,
-	HUB_NO_LONGER_SELECTED,
-	ModalConnectionStatus,
-	useRetainedScreenConnection,
-} from "./retainedScreen";
-import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, WarningMessage, styles, useColors } from "./ui";
-import { destructiveButton } from "./haptics";
+import { appliedInstanceWrite } from "../appliedInstanceWrite";
+import { isReady, whenReady } from "../connectionDisplay";
+import { useCredentialStore } from "../credentialStore";
+import { destructiveButton } from "../haptics";
+import { ProviderEditor } from "../ProviderEditor";
+import { signInKind, statusOf } from "../providers/providerStatus";
+import { useProviderSurface } from "../providerSurface";
+import { ProviderSignInSheet } from "../ProviderSignInSheet";
+import { ProviderSignIn } from "../providerSignIn";
+import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
+import type { HubRoutes } from "./hubSheetContext";
+import { useAuthStatuses } from "./useAuthStatuses";
 
 // The warnings shown for the two refusals the generic "could not be confirmed"
 // line would misreport: a provider-instance write the hub APPLIED before a
@@ -74,19 +68,17 @@ const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
 const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
 	"The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
 
-// A mounted screen re-keyed to another hub is a fresh screen: the
-// reconnect-retention state below - the banner's everReady, the sign-in
+// A mounted page re-keyed to another hub is a fresh page: the
+// reconnect-retention state below - the status line's everReady, the sign-in
 // flow, the credential store with its last listing - belongs to the hub it
 // was built for, and a re-key remounts the body whole (the keyed wrapper's
 // own rationale: useRetainedScreenConnection's doc).
-export function ProvidersScreen(props: NativeStackScreenProps<Routes, "Providers">) {
-	return <ProvidersScreenBody key={props.route.params.hubId} {...props} />;
+export function ProvidersPage(props: NativeStackScreenProps<HubRoutes, "Providers">) {
+	return <ProvidersPageBody key={props.route.params.hubId} {...props} />;
 }
 
-function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Providers">) {
-	const { activeProfile, client, state, error, display, canUseConnection } = useRetainedScreenConnection(
-		route.params.hubId,
-	);
+function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes, "Providers">) {
+	const { activeProfile, client, state, display, canUseConnection } = useRetainedScreenConnection(route.params.hubId);
 	const ready = isReady(state);
 	const [signIn, setSignIn] = useState<{
 		hubId: string;
@@ -96,9 +88,12 @@ function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Provider
 	const [revision, setRevision] = useState(0);
 	// useCredentialStore already survives a flap on its own (connectionChanged
 	// rebinds it - credentialStore.ts), so unlike Plugins/HubSettings this
-	// screen reads no retained client: <Providers> below takes only `store`,
-	// never `client` directly, and the wall below waits on the display alone.
+	// page reads no retained client: <Providers> below takes only `store`,
+	// never `client` directly, and Connecting below waits on the display alone.
 	const store = useCredentialStore();
+	// The sign-in statuses read under the same authorization the sign-in flow
+	// gets below, so a re-key window never reads the previous hub's.
+	const auth = useAuthStatuses(canUseConnection() ? client : null);
 	// The write gate the credential core holds over a replaced connection's
 	// rows, subscribed so the resume below can wait for it: a manual retry
 	// turns the new connection ready before its own listing read lands, and a
@@ -128,19 +123,34 @@ function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Provider
 		// phase until the user retries.
 		if (connection && !writesRefused && signIn.flow.getSnapshot().phase === "idle") void signIn.flow.start();
 	}, [signIn, activeProfile?.id, client, state, writesRefused, canUseConnection]);
-	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
+	if (activeProfile?.id !== route.params.hubId)
+		return (
+			<GroupedPage>
+				<GroupFooter>{HUB_NO_LONGER_SELECTED}</GroupFooter>
+			</GroupedPage>
+		);
+	// Before anything has shown, or after a close no retry can clear, the page
+	// says it is connecting (or why it can't), in place of a wall (ruling 21).
 	if (display === "wall")
-		return <ConnectionWall hubName={activeProfile.name} purpose="manage providers" error={error} />;
+		return (
+			<GroupedPage>
+				<SheetStatus />
+				<Connecting hubName={activeProfile.name} />
+			</GroupedPage>
+		);
+	const { focus, signIn: signInFocus } = route.params;
 	return (
 		<>
-			{display === "banner" ? <ConnectionStatus /> : null}
 			<Providers
 				key={`${activeProfile.id}:${revision}`}
 				store={store}
-				connectionState={state}
+				auth={auth}
 				hubName={activeProfile.name}
 				ready={ready}
 				canUseConnection={canUseConnection}
+				focus={focus}
+				signInFocus={signInFocus ?? false}
+				onFocused={() => navigation.setParams({ focus: undefined, signIn: undefined })}
 				onSignIn={(name) => {
 					const flow = new ProviderSignIn(store, name);
 					// The raw client cannot be handed to the flow while the
@@ -159,7 +169,6 @@ function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Provider
 				<ProviderSignInSheet
 					flow={signIn.flow}
 					name={signIn.name}
-					hubName={activeProfile.name}
 					connected={ready}
 					onClose={() => {
 						signIn.flow.dispose();
@@ -174,20 +183,31 @@ function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Provider
 
 function Providers({
 	store,
-	connectionState,
+	auth,
 	hubName,
 	ready,
 	canUseConnection,
+	focus,
+	signInFocus,
+	onFocused,
 	onSignIn,
 }: {
 	store: CredentialInstancesStore;
-	connectionState: ConnectionState;
+	auth: ReadonlyMap<string, AuthStatusResponse> | null;
 	hubName: string;
 	ready: boolean;
 	canUseConnection: () => boolean;
+	/** The instance a notice or link names: its detail opens once the list
+	 * has it, or with signInFocus its sign-in starts as the detail's Sign in
+	 * does (ruling 25). */
+	focus: string | undefined;
+	signInFocus: boolean;
+	/** The page has acted on `focus`, so the route can drop it. */
+	onFocused(): void;
 	onSignIn(name: string): void;
 }) {
-	const colors = useColors();
+	const { palette } = useColors();
+	const scale = useTextScale();
 	// The store triple is what binds React to the credential core: every field
 	// read below is the core's own state, with no projection in between.
 	const core = useSyncExternalStore(store.subscribe, store.getState, store.getInitialState);
@@ -222,6 +242,20 @@ function Providers({
 	const [actionWarning, setActionWarning] = useState<string | null>(null);
 	const instance = core.instances.find((item) => item.name === selected);
 	const loadError = core.error === null ? null : sessionActionError("Could not load providers", core.error);
+	// A failed listing reads again when the page comes back to the front, as
+	// the store's notifications and a reconnect already do; nothing asks you
+	// to (no pull-to-refresh, ruling 21).
+	// Refs keep the effect's identity fixed, so it runs on focus alone and
+	// not again the moment a read fails.
+	const failed = useRef(false);
+	failed.current = core.error !== null;
+	const refreshSurface = useRef(surface.refresh);
+	refreshSurface.current = surface.refresh;
+	useFocusEffect(
+		useCallback(() => {
+			if (failed.current) refreshSurface.current();
+		}, []),
+	);
 	useEffect(() => {
 		if (editingCredential && !instance?.authModes?.includes(editingCredential)) {
 			setEditingCredential(null);
@@ -373,110 +407,103 @@ function Providers({
 		});
 	}
 
-	const sections = groupByProvider(core.instances).map((group) => ({
-		title: group.providerId,
-		data: group.instances,
-	}));
+	// A notice's Sign in, or a link to one provider, acts once the list has
+	// it and could act on it (not held stale or mid-write, as the detail's
+	// own Sign in is disabled then): a sign-in starts as the detail's Sign in
+	// does, and anything else opens the detail. A provider the list doesn't
+	// have opens nothing. Each link acts once; clearing it readies the next.
+	const focusHandled = useRef(false);
+	useEffect(() => {
+		if (!focus) {
+			focusHandled.current = false;
+			return;
+		}
+		if (focusHandled.current || !core.listingEstablished || stale || surface.busy) return;
+		focusHandled.current = true;
+		const target = core.instances.find((item) => item.name === focus);
+		if (target && signInFocus && target.authModes?.includes("oauth")) onSignIn(target.name);
+		else if (target) {
+			editorVersion.current += 1;
+			setSelected(target.name);
+		}
+		onFocused();
+	}, [focus, signInFocus, core.listingEstablished, core.instances, stale, surface.busy, onSignIn, onFocused]);
+
+	const writeHeld = surface.busy || core.writesRefused || stale || !ready;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={styles.fill}>
-			<SectionList
-				sections={sections}
-				keyExtractor={(item) => item.name}
-				contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
-				refreshing={core.loading}
-				onRefresh={() => {
-					if (canUseConnection()) surface.refresh();
-				}}
-				ListHeaderComponent={
-					<View style={{ gap: 8, paddingBottom: 12 }}>
-						<Copy muted>{hubName}</Copy>
-						<Action
-							disabled={!core.listingEstablished || surface.busy || core.writesRefused || stale || !ready}
-							onPress={whenReady(canUseConnection, () => {
-								close();
-								setConfiguration("create");
-							})}
-						>
-							Add provider instance
-						</Action>
-						<ErrorMessage message={loadError} />
-						<WarningMessage message={actionWarning} />
+		<>
+			<GroupedPage>
+				<SheetStatus />
+				{core.listingEstablished ? null : <Connecting hubName={hubName} />}
+				{loadError ? <GroupFooter tone="danger">{loadError}</GroupFooter> : null}
+				{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
+				{core.listingEstablished ? (
+					<>
+						{core.instances.length > 0 ? (
+							<Group>
+								{core.instances.map((item) => {
+									// Nothing, while an account sign-in's state isn't read yet.
+									const status = statusOf(item, auth);
+									const sub = `${item.providerId}${item.isDefault ? " · default" : ""}`;
+									return (
+										<Row
+											key={item.name}
+											label={item.name}
+											sub={sub}
+											value={
+												status?.tone === "attention" ? (
+													<RowValue tag={{ text: status.word, tone: "amber" }} />
+												) : (
+													status?.word
+												)
+											}
+											accessibilityLabel={[item.name, sub, status?.word].filter(Boolean).join(", ")}
+											chevron
+											onPress={() => {
+												editorVersion.current += 1;
+												setActionError(null);
+												setSelected(item.name);
+											}}
+										/>
+									);
+								})}
+							</Group>
+						) : (
+							<GroupFooter>No providers yet.</GroupFooter>
+						)}
 						{core.diagnostics.map((message) => (
-							<Copy key={message}>{message}</Copy>
+							<GroupFooter key={message}>{message}</GroupFooter>
 						))}
-						{core.loading && !core.listingEstablished && <ActivityIndicator accessibilityLabel="Loading providers" />}
-					</View>
-				}
-				ListEmptyComponent={!core.loading ? <Copy>No provider instances available.</Copy> : null}
-				renderSectionHeader={({ section }) => (
-					<Text
-						style={{
-							color: colors.secondary,
-							backgroundColor: colors.background,
-							paddingVertical: 8,
-							fontSize: 14,
-						}}
-					>
-						{section.title}
-					</Text>
-				)}
-				renderItem={({ item }) => (
-					<Pressable
-						accessibilityRole="button"
-						accessibilityLabel={`${item.name}${item.isDefault ? ", default" : ""}. ${activeSourceLabel(item)}`}
-						onPress={() => {
-							editorVersion.current += 1;
-							setActionError(null);
-							setSelected(item.name);
-						}}
-						style={({ pressed }) => ({
-							minHeight: 56,
-							paddingVertical: 10,
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-							opacity: pressed ? 0.6 : 1,
-						})}
-					>
-						<Text style={{ fontSize: 17, fontWeight: "600", color: colors.text }}>
-							{item.name}
-							{item.isDefault ? " · Default" : ""}
-						</Text>
-						<Text style={{ fontSize: 14, color: colors.secondary }}>{activeSourceLabel(item)}</Text>
-					</Pressable>
-				)}
-			/>
+						<GroupLabel>Manage</GroupLabel>
+						<Group>
+							<Row
+								label="Add provider"
+								tone="accent"
+								disabled={writeHeld}
+								onPress={whenReady(canUseConnection, () => {
+									close();
+									setConfiguration("create");
+								})}
+							/>
+						</Group>
+					</>
+				) : null}
+			</GroupedPage>
 			<HoldingModal
 				visible={!!instance || configuration === "create"}
 				animationType="slide"
 				presentationStyle="pageSheet"
 				onRequestClose={close}
 			>
-				<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-					<View
-						style={{
-							flexDirection: "row",
-							alignItems: "center",
-							paddingHorizontal: 16,
-						}}
-					>
-						<View style={styles.fill}>
-							<Copy muted>{hubName}</Copy>
-						</View>
-						<Action onPress={close}>Done</Action>
-					</View>
-					{/* The status lives in the modal because the native modal covers
-					 * the screen's banner (ModalConnectionStatus's own doc) - and the
-					 * draft stays in reach of neither a dismissal nor a missed
-					 * recovery. */}
-					<ModalConnectionStatus connectionState={connectionState} />
-					<View style={styles.fill}>
-						<ScrollView
-							automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-							keyboardDismissMode="interactive"
-							keyboardShouldPersistTaps="handled"
-							contentContainerStyle={{ padding: 20, gap: 12 }}
-						>
-							{configuration ? (
+				<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
+					<DetailHeader title={configuration === "create" ? "Add provider" : (instance?.name ?? "")} onDone={close} />
+					{/* The native modal covers the page's status line, so the sheet
+					 * carries its own - and the draft stays in reach of neither a
+					 * dismissal nor a missed recovery. */}
+					<SheetStatus />
+					<GroupedPage>
+						{configuration ? (
+							<View style={{ padding: 16, gap: 12 }}>
 								<ProviderEditor
 									key={configuration === "create" ? "create" : instance?.name}
 									instance={configuration === "edit" ? instance : undefined}
@@ -505,44 +532,23 @@ function Providers({
 										else setConfiguration(null);
 									}}
 								/>
-							) : (
-								instance && (
-									<>
-										<Text accessibilityRole="header" style={[styles.title, { color: colors.text }]}>
-											{instance.name}
-										</Text>
-										<Copy muted>
-											{instance.providerId} · {styleInfoText(instance)}
-										</Copy>
-										{instance.isDefault && <Copy>Default provider instance</Copy>}
-										{fromEnvironment(instance) && <Copy muted>From environment</Copy>}
-										<Copy>{activeSourceLabel(instance)}</Copy>
-										{credentialLayers(instance)
-											.filter((layer) => !layer.effective)
-											.map((layer) => (
-												<Copy key={layer.source} muted>
-													{layer.label} · Shadowed
-												</Copy>
-											))}
-										{instance.warnings?.map((message) => (
-											<Copy key={message}>{message}</Copy>
-										))}
-										<ErrorMessage message={actionError} />
-										<WarningMessage message={actionWarning} />
-										{surface.busy && <ActivityIndicator accessibilityLabel="Updating provider" />}
-										{editingCredential ? (
-											<>
-												<Copy>{editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}</Copy>
-												{editingCredential === "credentialJson" && (
-													<Copy muted>
-														Paste a service-account key or application_default_credentials.json. The hub validates and
-														stores it.
-													</Copy>
-												)}
+							</View>
+						) : (
+							instance && (
+								<>
+									<ProviderFacts instance={instance} auth={auth} />
+									{editingCredential ? (
+										<>
+											<Group>
 												<TextInput
 													accessibilityLabel={
 														editingCredential === "credentialJson" ? "Google credential JSON" : "API key"
 													}
+													placeholder={
+														editingCredential === "credentialJson" ? "Paste the credential JSON" : "Paste the API key"
+													}
+													placeholderTextColor={palette.inkLow}
+													allowFontScaling={allowFontScaling}
 													multiline={editingCredential === "credentialJson"}
 													secureTextEntry={editingCredential === "apiKey"}
 													autoCapitalize="none"
@@ -550,109 +556,142 @@ function Providers({
 													value={key}
 													onChangeText={setKey}
 													editable={!surface.busy}
-													style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+													style={{
+														color: palette.inkHi,
+														fontSize: 17 * scale,
+														minHeight: editingCredential === "credentialJson" ? 120 : 44,
+														paddingHorizontal: 16,
+														paddingVertical: 11,
+													}}
 												/>
-												<View style={styles.row}>
-													<Action
-														disabled={surface.busy || stale || !key.trim() || !ready}
-														onPress={() => {
-															// A destination the hub cannot fingerprint has no
-															// endpoint to assert, so the save is refused here
-															// rather than stored without an assertion; and the
-															// clear happens on act()'s own success path
-															// (below), never here - clearing before knowing
-															// whether the request could even be sent would
-															// lose input act() is about to refuse to send.
-															if (fingerprintUnavailable(instance)) {
-																setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
-																return;
-															}
-															const value = key.trim();
-															void act(
-																() =>
-																	editingCredential === "credentialJson"
-																		? surface.setCredentialJson(instance.name, value, credentialTarget?.fingerprint)
-																		: surface.setApiKey(instance.name, value, credentialTarget?.fingerprint),
-																{ secret: true, endpointAsserted: true },
-															);
-														}}
-													>
-														{editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"}
-													</Action>
-													<Action
-														disabled={surface.busy}
-														onPress={() => {
-															setEditingCredential(null);
-															setKey("");
-														}}
-													>
-														Cancel
-													</Action>
-												</View>
-											</>
-										) : (
-											<>
-												<Action
-													disabled={
-														surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready
+												<Row
+													label="Save"
+													accessibilityLabel={
+														editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"
 													}
-													onPress={whenReady(canUseConnection, () => {
-														probeCredentials(instance.name);
-													})}
-												>
-													{surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
-														? "Testing credentials…"
-														: "Test credentials"}
-												</Action>
-												{surface.credentialTest?.provider === instance.name && surface.credentialTest.result && (
-													<Copy>{surface.credentialTest.result.message}</Copy>
-												)}
-												<Action
-													disabled={surface.busy || core.writesRefused || stale || !ready}
-													onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
-												>
-													Edit instance
-												</Action>
+													tone="accent"
+													disabled={surface.busy || stale || !key.trim() || !ready}
+													onPress={() => {
+														// A destination the hub cannot fingerprint has no
+														// endpoint to assert, so the save is refused here
+														// rather than stored without an assertion; and the
+														// clear happens on act()'s own success path
+														// (below), never here - clearing before knowing
+														// whether the request could even be sent would
+														// lose input act() is about to refuse to send.
+														if (fingerprintUnavailable(instance)) {
+															setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
+															return;
+														}
+														const value = key.trim();
+														void act(
+															() =>
+																editingCredential === "credentialJson"
+																	? surface.setCredentialJson(instance.name, value, credentialTarget?.fingerprint)
+																	: surface.setApiKey(instance.name, value, credentialTarget?.fingerprint),
+															{ secret: true, endpointAsserted: true },
+														);
+													}}
+												/>
+												<Row
+													label="Cancel"
+													tone="accent"
+													disabled={surface.busy}
+													onPress={() => {
+														setEditingCredential(null);
+														setKey("");
+													}}
+												/>
+											</Group>
+											<GroupFooter>
+												{editingCredential === "credentialJson"
+													? "Paste a service-account key or application_default_credentials.json. The hub validates and stores it."
+													: "The key is stored on the hub, not on this phone."}
+											</GroupFooter>
+										</>
+									) : (
+										<>
+											<Group>
 												{instance.authModes?.includes("oauth") && (
-													<Action
+													<Row
+														label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
+														tone="accent"
 														disabled={surface.busy || stale}
 														onPress={() => {
 															const name = instance.name;
 															close();
 															onSignIn(name);
 														}}
-													>
-														{instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
-													</Action>
+													/>
 												)}
 												{instance.authModes?.includes("apiKey") && (
-													<Action
+													<Row
+														label={instance.hasStoredFile ? "Replace key" : "Set key"}
+														tone="accent"
 														disabled={surface.busy || stale || !ready}
 														onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
-													>
-														{instance.hasStoredFile ? "Replace key" : "Set key"}
-													</Action>
+													/>
 												)}
 												{instance.authModes?.includes("credentialJson") && (
-													<Action
+													<Row
+														label={instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
+														tone="accent"
 														disabled={surface.busy || stale || !ready}
 														onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
-													>
-														{instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
-													</Action>
+													/>
 												)}
+												<Row
+													label={
+														surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
+															? "Testing…"
+															: "Test connection"
+													}
+													accessibilityLabel="Test connection"
+													tone="accent"
+													disabled={
+														surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready
+													}
+													onPress={whenReady(canUseConnection, () => {
+														probeCredentials(instance.name);
+													})}
+												/>
+											</Group>
+											{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
+												surface.credentialTest.result.status === "success" ? (
+													<GroupFooter>Works</GroupFooter>
+												) : (
+													<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
+												)
+											) : null}
+										</>
+									)}
+									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
+									{surface.busy && <ActivityIndicator accessibilityLabel="Updating provider" />}
+									{editingCredential ? null : (
+										<>
+											<GroupLabel>Manage</GroupLabel>
+											<Group>
+												<Row
+													label="Edit"
+													tone="accent"
+													disabled={surface.busy || core.writesRefused || stale || !ready}
+													onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
+												/>
 												{!instance.isDefault && (
-													<Action
+													<Row
+														label="Make default"
+														tone="accent"
 														disabled={surface.busy || core.writesRefused || stale || !ready}
 														onPress={() => {
 															void act(() => surface.setDefault(instance.name));
 														}}
-													>
-														Make default
-													</Action>
+													/>
 												)}
 												{instance.hasStoredFile && instance.activeSource !== "store" && (
-													<Action
+													<Row
+														label={instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
+														tone="danger"
 														disabled={surface.busy || stale || !ready}
 														onPress={() => {
 															// A destination the hub cannot fingerprint has
@@ -668,12 +707,12 @@ function Providers({
 																{ endpointAsserted: true },
 															);
 														}}
-													>
-														{instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
-													</Action>
+													/>
 												)}
 												{["store", "oauth"].includes(instance.activeSource) && (
-													<Action
+													<Row
+														label="Clear credentials"
+														tone="danger"
 														disabled={surface.busy || stale || !ready}
 														onPress={() => {
 															if (fingerprintUnavailable(instance)) {
@@ -686,12 +725,12 @@ function Providers({
 																{ endpointAsserted: true },
 															);
 														}}
-													>
-														Clear credentials
-													</Action>
+													/>
 												)}
 												{!fromEnvironment(instance) && (
-													<Action
+													<Row
+														label="Remove"
+														tone="danger"
 														disabled={surface.busy || core.writesRefused || stale || !ready}
 														onPress={() => {
 															if (fingerprintUnavailable(instance)) {
@@ -704,19 +743,100 @@ function Providers({
 																{ endpointAsserted: true },
 															);
 														}}
-													>
-														Remove instance
-													</Action>
+													/>
 												)}
-											</>
-										)}
-									</>
-								)
-							)}
-						</ScrollView>
-					</View>
+											</Group>
+										</>
+									)}
+								</>
+							)
+						)}
+					</GroupedPage>
 				</SafeAreaView>
 			</HoldingModal>
-		</SafeAreaView>
+		</>
+	);
+}
+
+/** The detail sheet's header: its title, with Done to close it. */
+function DetailHeader({ title, onDone }: { title: string; onDone(): void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", minHeight: 44, paddingHorizontal: 16 }}>
+			<View style={{ flex: 1 }} />
+			<Text
+				accessibilityRole="header"
+				allowFontScaling={allowFontScaling}
+				numberOfLines={1}
+				style={{ flex: 2, textAlign: "center", color: palette.inkHi, fontSize: 17 * scale, fontWeight: "600" }}
+			>
+				{title}
+			</Text>
+			<View style={{ flex: 1, alignItems: "flex-end" }}>
+				<Pressable accessibilityRole="button" accessibilityLabel="Done" hitSlop={8} onPress={onDone}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ color: palette.accentInk, fontSize: 17 * scale, fontWeight: "600" }}
+					>
+						Done
+					</Text>
+				</Pressable>
+			</View>
+		</View>
+	);
+}
+
+/** What a provider is: its sign-in state (amber only when expired), its
+ * type, how it signs in and where it points, where its credential comes
+ * from, and the models it offers. */
+function ProviderFacts({
+	instance,
+	auth,
+}: {
+	instance: InstanceEntry;
+	auth: ReadonlyMap<string, AuthStatusResponse> | null;
+}) {
+	const status = statusOf(instance, auth);
+	const models = (instance.models ?? []).filter((model) => !model.disabled);
+	return (
+		<>
+			<Group>
+				{status ? (
+					<Row
+						label="Status"
+						value={<RowValue text={status.word} tone={status.tone === "attention" ? "attention" : "normal"} />}
+						accessibilityLabel={`Status, ${status.word}`}
+					/>
+				) : null}
+				<Row label="Type" value={instance.providerId} />
+				<Row label="Sign-in" value={signInKind(instance)} />
+				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
+			</Group>
+			{instance.activeSource === "none" ? null : <GroupFooter>{activeSourceLabel(instance)}</GroupFooter>}
+			{credentialLayers(instance)
+				.filter((layer) => !layer.effective)
+				.map((layer) => (
+					<GroupFooter key={layer.source}>{`${layer.label} · Shadowed`}</GroupFooter>
+				))}
+			{instance.isDefault ? <GroupFooter>The default provider.</GroupFooter> : null}
+			{fromEnvironment(instance) ? <GroupFooter>From the environment.</GroupFooter> : null}
+			{instance.warnings?.map((message) => (
+				<GroupFooter key={message} tone="attention">
+					{message}
+				</GroupFooter>
+			))}
+			<GroupLabel>Models</GroupLabel>
+			{models.length > 0 ? (
+				<Group>
+					{models.map((model) => (
+						<Row key={model.id} label={model.id} machineLabel />
+					))}
+				</Group>
+			) : (
+				<GroupFooter>No models listed</GroupFooter>
+			)}
+			<View style={{ height: 16 }} />
+		</>
 	);
 }

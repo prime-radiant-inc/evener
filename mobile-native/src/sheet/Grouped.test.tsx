@@ -60,6 +60,12 @@ describe("a row", () => {
 		const path = render(<Row label="evener" sub="/home/jesse/git/evener" machineSub />);
 		expect(merged(texts(path)[1]?.props.style).fontFamily).toBe("Menlo");
 	});
+
+	it("sets a machine label, such as a model id, in Menlo", () => {
+		const model = render(<Row label="gpt-5.6" machineLabel />);
+		expect(merged(texts(model)[0]?.props.style).fontFamily).toBe("Menlo");
+		expect(merged(texts(render(<Row label="Status" />))[0]?.props.style).fontFamily).toBeUndefined();
+	});
 });
 
 describe("a group", () => {
@@ -95,6 +101,35 @@ describe("a switch row", () => {
 		// iOS draws the off track from ios_backgroundColor, not trackColor.false.
 		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
 		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
+	});
+
+	it("opens a detail from its text while its switch flips on its own, and says a problem in danger ink", () => {
+		const onPress = vi.fn();
+		const onChange = vi.fn();
+		const tree = render(
+			<SwitchRow
+				label="cracked"
+				sub="Broken"
+				subTone="danger"
+				accessibilityLabel="cracked, core, Broken"
+				switchLabel="cracked on by default"
+				value
+				disabled
+				onChange={onChange}
+				onPress={onPress}
+			/>,
+		);
+		const button = tree.root.findByProps({ accessibilityRole: "button" });
+		expect(button.props.accessibilityLabel).toBe("cracked, core, Broken");
+		button.props.onPress();
+		expect(onPress).toHaveBeenCalledTimes(1);
+		const toggle = tree.root.findByType("Switch" as never);
+		expect(toggle.props.accessibilityLabel).toBe("cracked on by default");
+		expect(toggle.props.disabled).toBe(true);
+		// The detail still opens while the switch waits, so the row doesn't dim.
+		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(1);
+		const broken = texts(tree).find((node) => node.props.children === "Broken");
+		expect(merged(broken?.props.style).color).toBe(light.dangerInk);
 	});
 });
 

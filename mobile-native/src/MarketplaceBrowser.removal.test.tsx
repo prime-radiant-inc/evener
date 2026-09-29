@@ -3,7 +3,7 @@
 // generic failed write), when it refetches the list, and what a clone-litter
 // rejection leaves on screen. The browser reports an applied outcome through
 // the guard slot PluginsScreen wires around it in production, so the mount
-// carries that wiring too. Mirrors ProvidersScreen.recovery.test.tsx's
+// carries that wiring too. Mirrors hub/ProvidersPage.recovery.test.tsx's
 // mocking: every native edge the screen reaches is mocked here, and the
 // stores are driven through the SDK's FakeClient. The install- and
 // removal-path tests beside them pin the write-gate posture every browser

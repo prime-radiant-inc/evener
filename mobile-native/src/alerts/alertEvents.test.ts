@@ -129,6 +129,7 @@ const brokenPlugin: Notice = {
 	text: "go is broken",
 	action: "Plugins",
 	pluginId: "go",
+	marketplace: "evener",
 };
 
 describe("notice alerts (ruling 5)", () => {

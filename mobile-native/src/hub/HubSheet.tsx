@@ -23,6 +23,8 @@ import { HostsPage } from "./HostsPage";
 import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
 import { HubsPage } from "./HubsPage";
+import { PluginsPage } from "./PluginsPage";
+import { ProvidersPage } from "./ProvidersPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 
@@ -85,6 +87,8 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 				/>
 				{/* The page sets its own title and its Cancel and Save. */}
 				<HubStack.Screen name="HostEdit" component={HostEditPage} />
+				<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
+				<HubStack.Screen name="Plugins" component={PluginsPage} options={{ title: "Plugins" }} />
 				<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
 				<HubStack.Screen
 					name="AddHub"

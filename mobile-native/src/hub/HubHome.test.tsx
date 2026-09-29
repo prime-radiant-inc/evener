@@ -1,10 +1,12 @@
-import type { UpdateCheckResponse } from "@evener/appwire-client";
+import type { AuthStatusResponse, InstanceEntry, UpdateCheckResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
+import { Tag } from "../sheet/Grouped";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
@@ -14,16 +16,14 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({
-	useConnection: () => ({
-		state: "ready",
-		fatal: false,
-		profiles: [
-			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
-			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
-		],
-	}),
+// The connection the Providers row's credential store binds to; the hub's
+// client when a test lists providers. Two saved hubs value the Hubs row
+// (mount sets both).
+const connection = vi.hoisted(() => ({
+	value: { state: "ready", fatal: false, client: null, activeProfile: null } as Record<string, unknown>,
 }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
+vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -67,19 +67,51 @@ function hub(check: UpdateCheckResponse | Error) {
 	return { client, calls, script };
 }
 
+/** A ready hub listing provider instances named `names`, with the sign-in
+ * statuses `auth`. */
+function providersHub(names: string[], auth: Pick<AuthStatusResponse, "provider" | "needsLogin">[]) {
+	const fake = new FakeClient("ready");
+	const instances = names.map(
+		(name): InstanceEntry => ({
+			name,
+			providerId: name,
+			protocol: "https",
+			auth: "oauth",
+			implicit: false,
+			isDefault: false,
+			activeSource: "oauth",
+			hasStoredOAuth: true,
+			credentialRequired: true,
+		}),
+	);
+	fake.on("evener/instance/list", () => ({ instances, availableProviders: [] }));
+	fake.on("evener/auth/list", () => ({ providers: auth as AuthStatusResponse[] }));
+	return fake;
+}
+
 let updates: PhoneHubUpdates;
 let context: HubSheetContextValue;
 
-async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet } = {}) {
+async function mount(
+	options: {
+		check?: UpdateCheckResponse | Error;
+		ready?: boolean;
+		/** Whether a control that needs the hub may act (a re-key window says no). */
+		usable?: boolean;
+		fleet?: ScriptedFleet;
+		client?: HubSheetContextValue["client"];
+		providers?: FakeClient;
+	} = {},
+) {
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
-	const live = { usable: options.ready ?? true };
+	const live = { usable: options.usable ?? options.ready ?? true };
 	updates = createPhoneHubUpdates(fake.client, readiness);
 	context = {
 		hubId: "hub-1",
 		hubName: "Work hub",
-		client: null,
+		client: options.client ?? ((options.providers ?? null) as HubSheetContextValue["client"]),
 		ready: options.ready ?? true,
 		canUseConnection: () => live.usable,
 		updates: updates.controller,
@@ -87,6 +119,16 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		live: null,
 	};
 	if (options.check) await updates.controller.runCheck();
+	connection.value = {
+		state: "ready",
+		fatal: false,
+		client: options.providers ?? null,
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		profiles: [
+			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
+			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
+		],
+	};
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
 	const sheet = { getParent: () => root, navigate: vi.fn() };
 	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
@@ -142,6 +184,41 @@ it("opens Hosts inside the sheet, counting the hub's own machine and tagging the
 	expect(fleet.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
 });
 
+it("opens Providers inside the sheet, counting them and tagging the ones to sign in (spec 12)", async () => {
+	const providers = providersHub(
+		["codex-jesse-fsck.com", "lunaroute", "meta"],
+		[
+			{ provider: "codex-jesse-fsck.com", needsLogin: true },
+			{ provider: "meta", needsLogin: false },
+		],
+	);
+	const { find, press, sheet } = await mount({ check: UP_TO_DATE, providers });
+	expect(find("Providers, 3, 1 to sign in")).not.toBeNull();
+	press("Providers, 3, 1 to sign in");
+	expect(sheet.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	const tags = find("Providers, 3, 1 to sign in")?.findAllByType(Tag);
+	expect(tags?.map((tag) => tag.props)).toEqual([{ text: "1 to sign in", tone: "amber" }]);
+});
+
+it("reads no providers while the connection can't be used, even when it says ready", async () => {
+	// A re-key window: the client may still be the previous hub's.
+	const providers = providersHub(["codex-jesse-fsck.com"], [{ provider: "codex-jesse-fsck.com", needsLogin: true }]);
+	await mount({ providers, usable: false });
+	expect(providers.calls.map((call) => call.method)).not.toContain("evener/auth/list");
+});
+
+it("counts providers with no tag when none needs signing in", async () => {
+	const providers = providersHub(["lunaroute", "meta"], []);
+	const { find } = await mount({ providers });
+	expect(find("Providers, 2")).not.toBeNull();
+});
+
+it("reads a count of none to VoiceOver as it shows it", async () => {
+	const providers = providersHub([], []);
+	const { find } = await mount({ providers });
+	expect(find("Providers, 0")).not.toBeNull();
+});
+
 it("tags hosts on another version when none is offline", async () => {
 	const fleet = scriptedFleet([
 		hostRow("paradise-park", { hubVersion: "0.9.409" }),
@@ -165,8 +242,6 @@ it("says the hub is connected and lists its pages", async () => {
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
-		["Providers", "Providers"],
-		["Plugins", "Plugins"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -180,6 +255,48 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	}
 	expect(root.navigate).not.toHaveBeenCalled();
 	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+/** A hub with `count` plugins installed, which can say its plugins changed. */
+function pluginHub(count: number) {
+	const hub = { count, notify: (_notification: { method: string }) => {} };
+	const client = {
+		request: async (method: string) => {
+			if (method !== "evener/plugin/list") throw new Error(`unexpected ${method}`);
+			return { plugins: Array.from({ length: hub.count }, (_, index) => ({ plugin: `p${index}` })) };
+		},
+		onNotification: (listener: (notification: { method: string }) => void) => {
+			hub.notify = listener;
+			return () => {};
+		},
+	} as unknown as HubSheetContextValue["client"];
+	return { hub, client };
+}
+
+it("pushes Plugins inside the sheet, valued with the number installed", async () => {
+	const { hub, client } = pluginHub(3);
+	const { root, sheet, find, press } = await mount({ client });
+	// No update tag: the hub doesn't say which plugins have one (ruling 7).
+	expect(find("Plugins, 3")).not.toBeNull();
+	press("Plugins, 3");
+	expect(sheet.navigate).toHaveBeenCalledWith("Plugins", { hubId: "hub-1" });
+	expect(root.dispatch).not.toHaveBeenCalled();
+
+	// The count follows the hub's own word that its plugins changed.
+	hub.count = 4;
+	await act(async () => {
+		hub.notify({ method: "evener/plugin/updated" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(find("Plugins, 4")).not.toBeNull();
+});
+
+it("reads no plugins while the connection can't be used, even when it says ready", async () => {
+	// A re-key window: the client may still be the previous hub's.
+	const { client } = pluginHub(3);
+	const { find } = await mount({ client, usable: false });
+	expect(find("Plugins, 3")).toBeNull();
+	expect(find("Plugins")).not.toBeNull();
 });
 
 it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {
@@ -209,7 +326,8 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
-	press("Providers");
+	// A row still leaving for today's screen works while the connection is down.
+	press("Hub settings");
 	expect(root.dispatch).toHaveBeenCalledTimes(1);
 });
 

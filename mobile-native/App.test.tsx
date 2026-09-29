@@ -4,7 +4,9 @@
 // provider and screen, and it fills the screen. The providers are inert
 // here: ConnectionProvider reports its saved hubs still loading, so the
 // tree under the root is the loading view.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactNode } from "react";
+import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import App from "./App";
 import { render } from "./src/renderNative.testkit";
@@ -41,10 +43,13 @@ vi.mock("expo-secure-store", () => ({}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }));
 vi.mock("expo-web-browser", () => ({}));
+const connection = vi.hoisted(() => ({ value: { loading: true } as Record<string, unknown> }));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,
-	useConnection: () => ({ loading: true }),
+	useConnection: () => connection.value,
 }));
+const outbox = vi.hoisted(() => ({ bind: vi.fn() }));
+vi.mock("./src/outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
 vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
 }));
@@ -61,4 +66,15 @@ it("roots the whole app in a full-screen GestureHandlerRootView", () => {
 			},
 		],
 	});
+});
+
+it("hands the outbox flush the active hub's client while it is ready, and nothing otherwise (ruling 17)", () => {
+	const client = new FakeClient("ready");
+	connection.value = { loading: true, activeProfile: { id: "hub-1" }, client, state: "ready" };
+	const tree = render(<App />);
+	expect(outbox.bind).toHaveBeenLastCalledWith("hub-1", client);
+	connection.value = { loading: true, activeProfile: { id: "hub-1" }, client, state: "reconnecting" };
+	act(() => tree.update(<App />));
+	expect(outbox.bind).toHaveBeenLastCalledWith("hub-1", null);
+	connection.value = { loading: true };
 });

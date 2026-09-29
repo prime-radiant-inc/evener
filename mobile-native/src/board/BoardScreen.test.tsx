@@ -2413,7 +2413,11 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	);
 	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
 	pressLabel(tree, "Sign in, openai sign-in expired");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: id, focus: "openai", signIn: true },
+		initial: false,
+	});
 	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
 		screen: "Hosts",
@@ -2421,7 +2425,11 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		initial: false,
 	});
 	pressLabel(tree, "Plugins, superpowers is broken");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Plugins",
+		params: { hubId: id, focus: { plugin: "superpowers", marketplace: "evener" } },
+		initial: false,
+	});
 	// Update needed comes first.
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
