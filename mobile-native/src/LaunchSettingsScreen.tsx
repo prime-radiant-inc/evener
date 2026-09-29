@@ -3,13 +3,17 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { inactivePromptDependent, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "@evener/appwire-client";
-import type { LaunchConfigLayer, LaunchConfigLayerName, LaunchOption } from "@evener/appwire-client";
+import {
+	inactivePromptDependent,
+	LAUNCH_CHANGED_ELSEWHERE,
+	LaunchSettings,
+	optionSupportsLayer,
+} from "@evener/appwire-client";
+import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
-import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -20,13 +24,9 @@ type Props = NativeStackScreenProps<HubRoutes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state } = useConnection();
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
-	const cwd = route.params.projectCwd ?? "/";
-	const layer = route.params.projectCwd === undefined ? "global" : "project";
 	return (
 		<LaunchDefaults
-			key={JSON.stringify([activeProfile.id, layer, cwd])}
-			cwd={cwd}
-			layer={layer}
+			key={activeProfile.id}
 			client={state === "ready" ? client : null}
 			hubName={activeProfile.name}
 			navigation={navigation}
@@ -41,20 +41,17 @@ function scalarValue(config: LaunchConfigLayer | null, field: string): string {
 	return value === undefined ? "" : String(value);
 }
 function LaunchDefaults({
-	cwd,
-	layer,
 	client,
 	hubName,
 	navigation,
 }: {
-	cwd: string;
-	layer: LaunchConfigLayerName;
 	client: ConversationClientLike | null;
 	hubName: string;
 	navigation: Props["navigation"];
 }) {
 	const colors = useColors();
-	const model = useMemo(() => new LaunchSettings(null, cwd, layer), [cwd, layer]);
+	// The Hub's one way in is "Launch defaults": the hub's global layer, always.
+	const model = useMemo(() => new LaunchSettings(null, "/", "global"), []);
 	const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
 	const [selected, setSelected] = useState<LaunchOption | null>(null);
 	const [query, setQuery] = useState("");
@@ -85,7 +82,7 @@ function LaunchDefaults({
 	});
 	const options = (state.options ?? []).filter(
 		(option) =>
-			option.defaultableLayers?.includes(layer) &&
+			optionSupportsLayer(option, "global") &&
 			(scalarKinds.has(option.kind) ||
 				option.kind === "envMap" ||
 				option.kind === "modelList" ||
@@ -99,11 +96,7 @@ function LaunchDefaults({
 			<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 10 }}>
 				<Copy>{hubName}</Copy>
 				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
-				<Copy muted>
-					{layer === "project"
-						? `Defaults for new Evener sessions in ${cwd}. These override hub and trusted repository settings; per-launch values can override them.`
-						: "Defaults for new Evener sessions. Project and per-launch settings can override these values."}
-				</Copy>
+				<Copy muted>Defaults for new Evener sessions. Project and per-launch settings can override these values.</Copy>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
 					<Action
 						disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
@@ -141,15 +134,6 @@ function LaunchDefaults({
 						{d.field ? `${d.field}: ${d.message}` : d.message}
 					</Copy>
 				))}
-				{layer === "project" && (
-					<RepositoryLaunchReview
-						hubName={hubName}
-						repo={state.resolved?.repo}
-						disabled={!client || state.loading || state.saving || state.dirty}
-						error={state.error}
-						trust={model.trustRepository}
-					/>
-				)}
 				<TextInput
 					accessibilityLabel="Search launch settings"
 					value={query}
