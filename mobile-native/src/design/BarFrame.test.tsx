@@ -98,9 +98,9 @@ describe("BarFrame", () => {
 		// "auto" follows the window's appearance, which the app's own light or
 		// dark choice sets (Appearance.setColorScheme).
 		expect(bar.props.glassEffectStyle).toBe("regular");
-		expect(bar.props.colorScheme ?? "auto").toBe("auto");
+		expect(bar.props.colorScheme).toBe("auto");
 		// The glass is the fill; the hairline and the home indicator's room stay.
-		expect(style(bar).backgroundColor).toBeUndefined();
+		expect(style(bar).backgroundColor).toBe("transparent");
 		expect(style(bar)).toMatchObject({ borderTopWidth: 0.5, paddingBottom: inset() });
 	});
 
@@ -116,11 +116,13 @@ describe("BarFrame", () => {
 		systemGlass.setReduceTransparency(true);
 		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
 		await act(async () => {});
-		expect(String(host(tree).type)).toBe("View");
+		const effect = () => host(tree).props.glassEffectStyle;
+		expect(effect()).toBe("none");
+		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
 		act(() => systemGlass.setReduceTransparency(false));
-		expect(String(host(tree).type)).toBe("GlassView");
+		expect(effect()).toBe("regular");
 		act(() => systemGlass.setReduceTransparency(true));
-		expect(String(host(tree).type)).toBe("View");
+		expect(effect()).toBe("none");
 		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
 	});
 
@@ -142,5 +144,50 @@ describe("BarFrame", () => {
 		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
 		await act(async () => {});
 		expect(String(host(tree).type)).toBe("View");
+	});
+
+	it("stays opaque until Reduce Transparency is known to be off, at a fresh launch", async () => {
+		// A fresh launch: no setting known yet from an earlier mount.
+		vi.resetModules();
+		const { BarFrame: FreshBarFrame } = await import("./BarFrame");
+		systemGlass.available = true;
+		systemGlass.readPending = true;
+		const tree = render(<FreshBarFrame testID="bar">{null}</FreshBarFrame>);
+		await act(async () => {});
+		expect(host(tree).props.glassEffectStyle).toBe("none");
+		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
+		await act(async () => systemGlass.answerRead());
+		expect(host(tree).props.glassEffectStyle).toBe("regular");
+	});
+
+	it("keeps the glass whatever fill a screen's style asks for", async () => {
+		systemGlass.available = true;
+		const tree = render(
+			<BarFrame testID="bar" style={{ backgroundColor: "red" }}>
+				{null}
+			</BarFrame>,
+		);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("GlassView");
+		expect(style(host(tree)).backgroundColor).toBe("transparent");
+	});
+
+	it("keeps its children mounted as the glass comes and goes, so the composer keeps its focus and draft", async () => {
+		systemGlass.available = true;
+		const tree = render(
+			<BarFrame testID="bar">
+				<Text testID="composer">draft</Text>
+			</BarFrame>,
+		);
+		await act(async () => {});
+		const composer = tree.root.findByProps({ testID: "composer" });
+		act(() => systemGlass.setReduceTransparency(true));
+		expect(String(host(tree).type)).toBe("GlassView");
+		expect(host(tree).props.glassEffectStyle).toBe("none");
+		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
+		expect(tree.root.findByProps({ testID: "composer" })).toBe(composer);
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(host(tree).props.glassEffectStyle).toBe("regular");
+		expect(tree.root.findByProps({ testID: "composer" })).toBe(composer);
 	});
 });
