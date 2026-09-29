@@ -2972,6 +2972,51 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
+// A merely-resumable local session needs no special UI: sending a prompt resumes
+// it (the hub folds the resume into turn/start), so its standalone Resume notice
+// and button are dropped. The two other causes of the obligation keep the
+// notice - a restartRequired daemon above, and a session with uncertain messages
+// (which the Resume action reconciles).
+test("a merely-resumable local session shows no standalone Resume notice", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:resume-only-notice";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        // The hub's resume fence pairs resumeRequired with send:false
+        // (applyThreadResumeRequirement); this is that wire shape.
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  const tree = () => (
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>
+  );
+  const { rerender } = render(tree());
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // The resume-only predicate now fails closed until the ref's durable outbox
+  // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
+  // render, so load the outbox and re-render - the pane's own liveness tick
+  // does the same within a tick - before asserting the notice is dropped.
+  await refreshPendingTurnsProjection(ref);
+  // Readiness now follows the fence's own ownership check: the runtime's
+  // startup discovery scan starts an all-targets read that out-ranks this
+  // specific one, so settle the outstanding projection work and let the latest
+  // read be the one that marks the ref loaded.
+  await flushPendingTurnsProjectionForTests();
+  rerender(tree());
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test("refreshes a restarted session without closing its pane", async () => {
   const fake = connectFakeClient();
   let replaced = false;

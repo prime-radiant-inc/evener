@@ -4,7 +4,6 @@ import {
 	ActivityIndicator,
 	Alert,
 	FlatList,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -23,6 +22,7 @@ import type {
 } from "@evener/appwire-client";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "./MarketplaceBrowser";
@@ -537,7 +537,7 @@ function Plugins({
 				/>
 			)}
 			{entry && selected && (
-				<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
+				<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
 					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 						<View style={[styles.row, { paddingHorizontal: 16 }]}>
 							<View style={styles.fill}>
@@ -614,7 +614,7 @@ function Plugins({
 							</Action>
 						</ScrollView>
 					</SafeAreaView>
-				</Modal>
+				</HoldingModal>
 			)}
 		</SafeAreaView>
 	);

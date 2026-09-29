@@ -95,6 +95,12 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					onPress={() => navigation.navigate("Display", { hubId })}
 				/>
 				<Row
+					icon="bubble.left"
+					label="In-app alerts"
+					chevron
+					onPress={() => navigation.navigate("Alerts", { hubId })}
+				/>
+				<Row
 					icon="point.3.connected.trianglepath.dotted"
 					label="Hubs"
 					value={profiles.length}

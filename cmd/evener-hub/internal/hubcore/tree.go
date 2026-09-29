@@ -679,10 +679,9 @@ func nodeKind(m schema.SessionMeta) string {
 // it again to find which top-level row a fork-superseded parent attaches
 // under.
 //
-// BuildTree's project/tier assembly and DeriveAttention's tier-eligible
-// check (attention.go's tierEligible) both call this one function, so a
-// session can never be top-level to one and nested (hence excluded) to the
-// other.
+// RootIndex (and through it BuildTree's project/tier assembly, tierEligible
+// and TopLevelSessionIDs) calls this one function, so a session can never be
+// top-level to one and nested (hence excluded) to another.
 func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, forkChildren map[string]string) {
 	forkChildren = make(map[string]string)
 	for _, m := range metas {
@@ -752,16 +751,12 @@ func isLiveID(id string, liveMap map[string]LiveEntry, runningSubagentIDs map[st
 // metadata snapshot so callers do not mistake a capped rail projection for
 // the complete set of valid top-level sessions.
 func TopLevelSessionIDs(metas []schema.SessionMeta) map[string]struct{} {
-	nested, _ := nestedSessionIDs(metas)
+	roots := NewRootIndex(metas)
 	ids := make(map[string]struct{}, len(metas))
 	for _, m := range metas {
-		if m.ID == "" || m.IsSubagent {
-			continue
+		if roots.TopLevel(m.ID) {
+			ids[m.ID] = struct{}{}
 		}
-		if _, ok := nested[m.ID]; ok {
-			continue
-		}
-		ids[m.ID] = struct{}{}
 	}
 	return ids
 }
@@ -1248,16 +1243,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		return resolvedProjects[path]
 	}
-	// nestedMetaIDs/forkChildren: the shared lineage nesting (subagents, plus
-	// fork-superseded parents) attention.go's tierEligible also draws from —
-	// see nestedSessionIDs — so a session can't be top-level here and
+	// roots: the shared lineage nesting (subagents, plus fork-superseded
+	// parents) attention.go's tierEligible also draws from — see
+	// nestedSessionIDs — so a session can't be top-level here and
 	// tier-eligible there, or vice versa. forkChildren maps origin_id ->
 	// latest_child_id: which session forked from each origin, used below to
 	// attach a "snapshotted original" (the parent meta with ForkLabel set)
 	// under the new active branch (the child whose ParentSessionID matches).
 	// Per spec: the new active branch is top-level; the original is the dim
 	// sibling.
-	nestedMetaIDs, forkChildren := nestedSessionIDs(metas) // IDs attached below a top-level row
+	roots := NewRootIndex(metas)
+	forkChildren := roots.forkChildren
 	childrenByParent := make(map[string][]schema.SessionMeta)
 
 	// A subagent's persisted working directory may be an isolated worktree or
@@ -1744,7 +1740,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// fork-superseded parent nested under its active continuation) and not
 		// manually archived sessions surface in triage — a nested session's
 		// live continuation is the actionable unit.
-		if !tierEligible(le.SessionID, meta, nestedMetaIDs, decisions) {
+		if !tierEligible(le.SessionID, roots, runningSubagentIDs, decisions) {
 			continue
 		}
 		approval := firstApprovalFor(le.SessionID)

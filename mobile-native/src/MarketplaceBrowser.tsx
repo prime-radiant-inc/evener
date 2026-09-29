@@ -4,7 +4,6 @@ import {
 	Alert,
 	FlatList,
 	KeyboardAvoidingView,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -16,6 +15,7 @@ import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
@@ -588,7 +588,7 @@ export function AddMarketplace({
 		else onClose();
 	}
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<View style={styles.fill}>
@@ -664,6 +664,6 @@ export function AddMarketplace({
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
