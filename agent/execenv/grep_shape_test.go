@@ -140,14 +140,17 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 }
 
 // writeGrepContextTree lays out the fixtures the context-group parity tests
-// search: one file with two adjacent matches (their -C windows overlap) and one
-// with two matches a single skipped line apart (their windows do not touch).
+// search: adjacent matches whose -C windows overlap, matches a single skipped
+// line apart, and matches on a file's last line, where the split's phantom
+// trailing element must not leak into context.
 func writeGrepContextTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
 		"touch.txt": "a\nfoo 1\nfoo 2\nb\n",
 		"gap.txt":   "1\n2\nfoo 3\n4\n5\n6\nfoo 7\n8\n",
+		"eof.txt":   "pre\nfoo\n",
+		"only.txt":  "foo\n",
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
@@ -173,6 +176,10 @@ func TestGrepNativeMergesAdjacentContextGroupsLikeRipgrep(t *testing.T) {
 		{"touch.txt", "1-a\n2:foo 1\n3:foo 2\n4-b"},
 		// Windows [2,4] and [6,8] leave line 5 unprinted: two groups, "--".
 		{"gap.txt", "2-2\n3:foo 3\n4-4\n--\n6-6\n7:foo 7\n8-8"},
+		// A match on the last real line must not print the split's phantom
+		// trailing element as a context row (rg prints no such line).
+		{"eof.txt", "1-pre\n2:foo"},
+		{"only.txt", "1:foo"},
 	}
 	for _, tc := range cases {
 		got, err := env.grepNative(context.Background(), "foo", filepath.Join(root, tc.file), "", false, 100, "content", 1)
@@ -200,7 +207,7 @@ func TestGrepContextGroupsMatchWithOrWithoutRipgrep(t *testing.T) {
 	defer fallback.Cleanup()
 	fallback.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
 
-	for _, name := range []string{"touch.txt", "gap.txt"} {
+	for _, name := range []string{"touch.txt", "gap.txt", "eof.txt", "only.txt"} {
 		target := filepath.Join(root, name)
 		gotRg, err := withRg.Grep(context.Background(), "foo", target, "", false, 100, "content", 1)
 		if err != nil {

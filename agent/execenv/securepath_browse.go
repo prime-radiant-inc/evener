@@ -100,6 +100,12 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	// per-file. This path needs every match in the file at once so overlapping
 	// windows can merge (ripgrep's -C shape), so it takes the whole file.
 	if a.contextLines > 0 && (a.outputMode == "" || a.outputMode == "content") {
+		// strings.Split leaves a trailing "" for newline-terminated data, which
+		// is not a line. Context near EOF would otherwise print it as a
+		// fabricated row that ripgrep never reports (#3284 review).
+		if len(lines) > 1 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
 		return a.feedContextWindows(relPath, lines, singleFile)
 	}
 	for i, line := range lines {
