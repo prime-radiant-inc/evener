@@ -140,7 +140,7 @@ func readAskLog(path string) []askExchange {
 		return nil
 	}
 	var out []askExchange
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -188,14 +188,12 @@ func callRespondModel(ctx context.Context, modelRef, systemPrompt, userPrompt st
 	system := systemPrompt
 	user := userPrompt
 	res, err := llm.GenerateObject(ctx, llm.GenerateObjectOptions{
-		GenerateOptions: llm.GenerateOptions{
-			Client:   client,
-			Provider: providerName,
-			Model:    modelName,
-			System:   &system,
-			Prompt:   &user,
-		},
-		Schema: respondAnswerSchema(),
+		Client:   client,
+		Provider: providerName,
+		Model:    modelName,
+		System:   &system,
+		Prompt:   &user,
+		Schema:   respondAnswerSchema(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("model call: %w", err)
