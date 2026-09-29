@@ -697,12 +697,13 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 			style={{
 				color: palette[ink],
 				backgroundColor: palette[fill],
+				// The prototype's .tag (styles.css): 11pt semibold on a 16pt line.
 				fontSize: 11 * scale,
-				lineHeight: 13 * scale,
+				lineHeight: 16 * scale,
 				fontWeight: "600",
-				paddingHorizontal: 5,
-				paddingVertical: 2,
-				borderRadius: 4,
+				paddingHorizontal: 6,
+				paddingVertical: 1,
+				borderRadius: 6,
 				overflow: "hidden",
 			}}
 		>
@@ -733,7 +734,8 @@ export function RowValue({
 					style={{
 						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
-						fontSize: uiType.listRow.fontSize * scale,
+						// The prototype's .gv: a value sits a step under the 17pt label.
+						...scaledType(uiType.subheadline, scale),
 						fontVariant: ["tabular-nums"],
 					}}
 				>

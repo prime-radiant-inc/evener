@@ -3440,3 +3440,36 @@ it.each([
 	expect(detail.findAllByProps({ label: "Version" }).length).toBeGreaterThan(0);
 	expect(detail.findAllByProps({ label: "Upgrade" }).length).toBeGreaterThan(0);
 });
+
+it("points an empty plugin list at Browse when the hub has marketplaces, and at adding one when it has none (audit L6)", async () => {
+	const installed = async (hub: FakeClient) => {
+		const { tree } = await mountPage(hub);
+		// Before the hub's marketplaces are read, it points at nothing.
+		expect(renderedText(tree)).toContain("No plugins installed on this hub.");
+		expect(renderedText(tree)).not.toMatch(/Browse a marketplace|Add a marketplace/);
+		await choose(tree, "Marketplaces");
+		await choose(tree, "Installed");
+		return renderedText(tree);
+	};
+	expect(await installed(pageHub([]))).toContain(
+		"No plugins installed on this hub. Browse a marketplace to install one.",
+	);
+	const hub = pageHub([]);
+	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+	const none = await installed(hub);
+	expect(none).toContain("No plugins installed on this hub. Add a marketplace to find plugins.");
+	expect(none).not.toContain("Browse a marketplace");
+});
+
+it("points an empty marketplace list at the action its own segment has (audit L6)", async () => {
+	const hub = pageHub([]);
+	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+	const { tree } = await mountPage(hub);
+	await choose(tree, "Marketplaces");
+	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one to browse its plugins.");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" }).length).toBeGreaterThan(0);
+	// Browse has no Add row: it points at the segment that does.
+	await choose(tree, "Browse");
+	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one on Marketplaces to browse its plugins.");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" })).toHaveLength(0);
+});

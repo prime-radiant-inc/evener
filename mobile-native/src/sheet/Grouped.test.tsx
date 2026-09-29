@@ -369,6 +369,17 @@ describe("labels, footers and tags", () => {
 			backgroundColor: light.inset,
 		});
 	});
+
+	it("draws a tag at the prototype's geometry: 11pt semibold on a 16pt line, 6 by 1 padding, 6pt corners (audit L2)", () => {
+		expect(texts(render(<Tag text="1 offline" tone="amber" />))[0]?.props.style).toMatchObject({
+			fontSize: 11,
+			lineHeight: 16,
+			fontWeight: "600",
+			paddingHorizontal: 6,
+			paddingVertical: 1,
+			borderRadius: 6,
+		});
+	});
 });
 
 describe("a row whose label and value can't share a line", () => {
@@ -438,6 +449,11 @@ describe("a row's value with a tag", () => {
 		expect(value?.props.children).toBe("2");
 		expect(tag?.props.style).toMatchObject({ color: light.attentionInk, backgroundColor: light.attentionBg });
 		expect(tag?.props.children).toBe("1 offline");
+	});
+
+	it("sets the value at 15pt, the prototype's .gv, so a value and a tag leave the label room (audit L3)", () => {
+		const tree = render(<Row label="Version" value="0.9.412" />);
+		expect(merged(texts(tree)[1]?.props.style)).toMatchObject({ fontSize: 15, lineHeight: 20 });
 	});
 
 	it("sets a value that needs a human in the attention ink", () => {

@@ -340,6 +340,16 @@ it("names this app's version in About", async () => {
 	expect(about).toBeTruthy();
 });
 
+it("sets its status line as the prototype does: 14pt, 20pt in from the edge (audit L1)", async () => {
+	const { tree } = await mount({ check: UP_TO_DATE });
+	const line = tree.root.find(
+		(node) => String(node.type) === "Text" && node.props.children === "Connected · evener 0.9.412 · up to date",
+	);
+	expect(line.props.style).toMatchObject({ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 6 });
+	// At the prototype's 14: spec 16.2 names no role for this line.
+	expect(line.props.style).toMatchObject({ fontSize: 14 });
+});
+
 it("says the hub is up to date, and offers no update", async () => {
 	const { tree, find } = await mount({ check: UP_TO_DATE });
 	expect(renderedText(tree)).toContain("Connected · evener 0.9.412 · up to date");

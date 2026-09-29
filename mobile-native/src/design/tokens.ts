@@ -218,7 +218,7 @@ export const typeRoles = {
  * label is 17/22 regular, the prototype's `.gl`. */
 export const uiType = {
 	listRow: { fontSize: 17, lineHeight: 22 },
-	/** The why line, and the Hub's header line: Subheadline. */
+	/** The why line: Subheadline. */
 	subheadline: { fontSize: 15, lineHeight: 20 },
 	/** Meta and captions: a row's second line, a group's footer. */
 	footnote: { fontSize: 13, lineHeight: 18 },
