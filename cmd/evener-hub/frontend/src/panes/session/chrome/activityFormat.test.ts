@@ -9,7 +9,7 @@ import {
 } from "./activityFormat";
 
 test("formatUsagePair renders arrows with compact counts", () => {
-  expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41k ↓6k");
+  expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41.2K ↓6.1K");
   expect(formatUsagePair({ inputTokens: 900, outputTokens: 12 })).toBe("↑900 ↓12");
   expect(formatUsagePair(undefined)).toBeNull();
 });

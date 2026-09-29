@@ -124,8 +124,8 @@ test("a live session's context row shows percent used, used / window, and how mu
   await openPanel(testModel());
   const row = screen.getByTestId("session-details-context");
   expect(row.textContent).toContain("42% used");
-  expect(row.textContent).toContain("42k / 100k");
-  expect(row.textContent).toContain("58k left");
+  expect(row.textContent).toContain("42K / 100K");
+  expect(row.textContent).toContain("58K left");
 });
 
 test("the context row carries a meter at the session's pressure", async () => {
@@ -207,8 +207,8 @@ test("an active turn's elapsed time alone is enough to show work time on a sessi
 test("tokens read as up/down arrows over the session's cumulative usage", async () => {
   await openPanel(testModel());
   const row = screen.getByTestId("session-details-tokens");
-  expect(row.textContent).toContain("↑100k");
-  expect(row.textContent).toContain("↓20k");
+  expect(row.textContent).toContain("↑100K");
+  expect(row.textContent).toContain("↓20K");
 });
 
 test("no tokens row at all when neither the thread nor any loaded turn has token data", async () => {
@@ -226,7 +226,7 @@ test("a session with no thread-level total falls back to summing the loaded turn
     testModel({ usage: null, turns: [usageTurn("t1", 6961, 73), usageTurn("t2", 1276, 47)], olderCursor: undefined }),
   );
   const row = screen.getByTestId("session-details-tokens");
-  expect(row.textContent).toContain("↑8k");
+  expect(row.textContent).toContain("↑8.2K");
   expect(row.textContent).toContain("↓120");
 });
 

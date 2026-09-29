@@ -287,7 +287,7 @@ describe("projectedRow — item entries", () => {
 			family: "informational",
 			tone: "info",
 			text: "steer",
-			label: "Hook context",
+			label: "System steered: Hook context",
 			turnId: "t1",
 		});
 	});

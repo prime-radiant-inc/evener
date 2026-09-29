@@ -12,13 +12,14 @@ import {
 	delegateModel,
 	delegateTiming,
 	firstLine,
+	formatTokenCount,
 	isActivityFailure,
 	isFailedDelegateOutcome,
 	isTurnContainer,
 	jobIsFailed,
 	plainQuoteLine,
 } from "@evener/appwire-client";
-import { compactCount, compactDuration } from "../session/format";
+import { compactDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";
@@ -305,7 +306,7 @@ export function subagentLastLine(
 	const branch = row.delegate.worktree?.branch.trim();
 	if (branch) line.branch = branch;
 	const usage = row.delegate.usage;
-	if (usage) line.tokens = `${compactCount(usage.totalTokens ?? usage.inputTokens + usage.outputTokens)} tokens`;
+	if (usage) line.tokens = `${formatTokenCount(usage.totalTokens ?? usage.inputTokens + usage.outputTokens)} tokens`;
 	return Object.keys(line).length > 0 ? line : null;
 }
 

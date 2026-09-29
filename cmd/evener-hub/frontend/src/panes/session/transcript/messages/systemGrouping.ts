@@ -5,7 +5,7 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import type { ItemModel } from "@evener/appwire-client";
+import { type ItemModel, isErrorEvent } from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -23,15 +23,11 @@ export interface SystemRun {
 const MIN_GROUP_SIZE = 3;
 
 // A persisted turn failure arrives as a systemMessage item carrying the wire's
-// typed "error" eventKind (appwire.ThreadItemEventKindError). It is the one
-// system item that is not lifecycle churn, and the one readers actively hunt
-// for, so it is classified off that typed field rather than by reading English
-// out of the message - the same rule the scaffold and hook-exit kinds follow.
-const TURN_FAILURE_EVENT_KIND = "error";
-
-export function isTurnFailureItem(item: ItemModel): boolean {
-  return item.type === "systemMessage" && item.eventKind === TURN_FAILURE_EVENT_KIND;
-}
+// typed "error" eventKind (appwire.ThreadItemEventKindError; the package's
+// isErrorEvent). It is the one system item that is not lifecycle churn, and
+// the one readers actively hunt for, so it is classified off that typed field
+// rather than by reading English out of the message - the same rule the
+// scaffold and hook-exit kinds follow.
 
 function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
@@ -43,7 +39,7 @@ function isSystemMessage(item: ItemModel): boolean {
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it.
 function joinsRun(item: ItemModel): boolean {
-  return isSystemMessage(item) && !isTurnFailureItem(item);
+  return isSystemMessage(item) && !isErrorEvent(item);
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in
@@ -58,7 +54,7 @@ export function systemRunFor(turnItems: ItemModel[], itemId: string): SystemRun 
   // A run of one, always first, so the failure always renders itself. Returning
   // undefined here would be the opposite of the point: SystemNoticeItem reads
   // that as "not mine" and renders nothing at all.
-  if (isTurnFailureItem(item)) return { items: [item], isFirst: true };
+  if (isErrorEvent(item)) return { items: [item], isFirst: true };
 
   let start = index;
   while (start > 0) {

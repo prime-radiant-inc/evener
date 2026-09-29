@@ -88,7 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
-import { underBar, useBarHeight } from "./design/underBar";
+import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
@@ -124,6 +124,8 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
+import { nativeDisclosureStore } from "./nativeDisclosure";
+import { sessionDisclosureScope } from "./session/disclosureKeys";
 import { atEnd, pagesOlder, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
@@ -181,6 +183,7 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { useKeyboardShown } from "./useKeyboardShown";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -435,6 +438,13 @@ export function ConversationScreen({
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	const follow = useLiveEndFollow();
+	// Rows keep their open state in one app-wide store, scoped by session, so a
+	// row the list remounts keeps it. Leaving the session drops its scope, which
+	// keeps the store bounded.
+	useEffect(() => {
+		const scope = sessionDisclosureScope(route.params.hubId, route.params.ref);
+		return () => nativeDisclosureStore.clearScope(scope);
+	}, [route.params.hubId, route.params.ref]);
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
@@ -885,11 +895,14 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
+	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
+	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
 	// The bar growing or shrinking (a dock, the tray, the keyboard) keeps a
 	// follower at the end in the same frame; a reader anywhere else stays put,
-	// since on iOS the bar is an inset the content size doesn't depend on.
+	// since on iOS the bar is an inset the content size of a transcript taller
+	// than its viewport doesn't depend on (a short one rests above the bar).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new bar height re-pins.
 	useLayoutEffect(() => {
 		if (follow.state.current.following)
@@ -1476,8 +1489,8 @@ export function ConversationScreen({
 			// On iOS the bar's inset extends how far the list can scroll.
 			const scrollOffset = reachableReaderOffset(
 				desired,
-				readerContentHeight.current + (listUnderBar.contentInset?.bottom ?? 0),
-				readerViewportHeight.current,
+				readerContentHeight.current,
+				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
 			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
 			appliedReaderRestore.current = {
@@ -2419,11 +2432,19 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
+	// Typing in the composer: Next and the header's chips and note step aside,
+	// and the queue folds to one line, so the transcript keeps its room; all of
+	// it returns when the keyboard lowers.
+	// A keyboard up for a dock's field or the find bar is not this: the find
+	// bar's own field raises it with the composer still mounted. (The header
+	// keeps the find bar in place itself, whatever hides the chips.)
+	const typing = keyboardShown && composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
-	// something or you are finding in it (spec 8.3).
-	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
+	// something, you are finding in it (spec 8.3), or you are typing.
+	const nextTarget =
+		approval === null && questionBatch === null && find === null && !typing ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2448,6 +2469,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
+				typing={typing}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
@@ -2522,6 +2544,7 @@ export function ConversationScreen({
 						forkDisabled={!connected || !focused || snapshot.status !== "open"}
 						quote={quote}
 						live={item.id === liveRun}
+						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
 						openSubagent={openSubagent}
 						answerFor={answerFor}
@@ -2580,6 +2603,10 @@ export function ConversationScreen({
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
+							// Where the transcript rests depends on its viewport and the
+							// bar, so it shows once both have laid out and never draws a
+							// frame at a place it then leaves.
+							style={{ opacity: listLaidOut ? 1 : 0 }}
 							onLayout={(event) => {
 								readerViewportHeight.current = event.nativeEvent.layout.height;
 								setLayoutRevision((revision) => revision + 1);
@@ -2590,7 +2617,7 @@ export function ConversationScreen({
 							}}
 							data={timelineRows}
 							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to fold or unfold.
+							// rows changing; its row must re-render to show or hide its fold control.
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
@@ -2602,6 +2629,12 @@ export function ConversationScreen({
 							// so Next never sits on the last line and nothing coming or
 							// going there moves the list.
 							contentContainerStyle={{
+								// A short transcript rests just above the composer (spec 8.5):
+								// it fills the viewport above the bar's inset, so at rest it is
+								// at its end with nothing under the bar. The viewport is a ref;
+								// its onLayout bumps layoutRevision, which renders this again.
+								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
+								justifyContent: "flex-end",
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
@@ -2785,7 +2818,7 @@ export function ConversationScreen({
 										/>
 									) : undefined
 								}
-								hidden={headerHiding.hidden}
+								hidden={headerHiding.hidden || typing}
 								onChip={openChip}
 								notes={
 									notesPreview ? (

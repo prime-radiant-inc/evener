@@ -26,6 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -1430,6 +1432,41 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
+});
+
+// A short transcript rests just above the composer (spec 8.5), not at the top
+// with the page's empty middle between it and the bar.
+it("rests a short transcript's end just above the composer", async () => {
+	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
+	const opacity = () => transcriptList(tree).props.style?.opacity;
+	// It shows once the viewport and the bar have both laid out.
+	expect(opacity()).toBe(0);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	expect(opacity()).toBe(0);
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(opacity()).toBe(1);
+	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
+		minHeight: 450,
+		justifyContent: "flex-end",
+	});
+});
+
 it("loads older history as you drag near the top", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
 	const drag = (y: number) => {
@@ -2042,6 +2079,56 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(promote).toHaveLength(1);
 		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	// While you type in the composer the queue folds to one line: with one
+	// message, its action; with several, their count, which opens them.
+	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		await press(tree, "Steer now, check the logs");
+		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	it("folds several queued messages to their count while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "2 queued")).toBeDefined();
+		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("folds a held message to its count and Send now while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "1 held")).toBeDefined();
+		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
+		act(() => keyboard.hide());
+	});
+
+	// The keyboard is up for the find bar's field, not the composer.
+	it("keeps the queue open while you type in the find bar", async () => {
+		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// With the dock in the composer's place, a keyboard up isn't the
+	// composer's, so the queue stays as it is.
+	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
+		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
+		expect(field(tree)).toBeUndefined();
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
 	});
 
 	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
@@ -3003,6 +3090,15 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
 		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
+		const { tree } = await mount(thread("ref-next-typing", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		act(() => keyboard.show());
+		expect(capsule(tree)).toBeUndefined();
+		act(() => keyboard.hide());
+		expect(capsule(tree)).toBeDefined();
 	});
 
 	it("shows no Next while the find bar is open", async () => {

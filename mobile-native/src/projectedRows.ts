@@ -38,6 +38,8 @@ import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
 	configFingerprint,
+	ERROR_EVENT_KIND,
+	echoesTurnError,
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
@@ -49,9 +51,10 @@ import {
 	parseAskUserQuestions,
 	pendingTextJoined,
 	projectThread,
-	steeringKindLabel,
+	steeringLabel,
 	steeringNotificationFragments,
 	stripSystemReminder,
+	systemEventWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -64,7 +67,6 @@ import type {
 	TurnModel,
 } from "@evener/appwire-client";
 import { hubTime } from "./board/attention";
-import { CONTEXT_SUMMARY_LABEL, contextCompactedText, pluginLoadedText } from "./session/systemEventCopy";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -636,10 +638,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-/** The systemMessage event kind of an error: a turn's failure, or a session
- * error the live overlay shows. */
-export const ERROR_EVENT_KIND = "error";
-
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
@@ -671,13 +669,11 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-// A steer whose kind this build has no label for (a newer daemon, or none).
-const STEERED = "System steered";
-
 // A daemon steer is instructions to the agent, never the conversation: it
 // folds to what it did, and opens to what it said (spec 8.2 "System event"),
-// with the label the web shows for its kind (steeringKindLabel). One the
-// daemon sends as notification markup reads as its cards instead. A
+// with the label the web shows for it (steeringLabel: "System steered:
+// <what it did>"). One the daemon sends as notification markup reads as its
+// cards instead. A
 // loop-detected or provider-failure steer is quiet too: the failure it answers
 // shows as the turn's own error. The current task and the task list are left
 // out, as the web leaves them: the tasks surfaces own them.
@@ -693,7 +689,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		tone: "info" as const,
 	};
 	if (notifications) return { ...common, text: it.text, notifications };
-	return { ...common, text: stripSystemReminder(it.text), label: steeringKindLabel(it.steeringKind) ?? STEERED };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind) };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
@@ -707,27 +703,11 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		origin: "system",
 		family,
 		tone,
+		// What it says: the package's systemEventWords, which the web reads too.
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
-}
-
-// What a system event says (spec 8.2 "System event"). A plugin load carries
-// its summary in the description and no text; a compaction pass's text is the
-// engine's "Layer/Turns/Estimated tokens" report; a compaction's summary is a
-// whole markdown document. Each reads from its structured detail instead.
-function systemEventWords(it: ItemModel): { text: string; label?: string; rendersMarkdown?: boolean } {
-	switch (it.eventKind) {
-		case "plugin_loaded":
-			return { text: pluginLoadedText(it.raw) };
-		case "context_compaction":
-			return { text: contextCompactedText(it.raw) };
-		case "compaction":
-			return { text: it.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
-		default:
-			return { text: it.text };
-	}
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web
@@ -912,7 +892,7 @@ function rowsForProjectedTurn(
 		// failure as an error systemMessage (apptranscript's TurnFailure item),
 		// which would say it a second time. Only that echo goes: another error
 		// in the same turn is news of its own.
-		if (turnError && echoesTurnError(entry.item, turnError)) continue;
+		if (echoesTurnError(entry.item, turnError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
@@ -1076,13 +1056,6 @@ export function projectConversation(
 }
 
 // --- failure rows ----------------------------------------------------------------
-
-// The error systemMessage that says what turn.error says: apptranscript's
-// TurnFailure item carries the failure's message as its text (both fall back
-// to "The turn failed." when the failure has none).
-function echoesTurnError(it: ItemModel, error: NonNullable<Turn["error"]>): boolean {
-	return it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim();
-}
 
 function failureItem(
 	error: NonNullable<Turn["error"]>,

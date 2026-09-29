@@ -4,7 +4,7 @@
 //
 // The status row beside it is a glanceable strip: a context METER, a clock,
 // arrows. This panel is where the same facts get room to be precise ("42%
-// used · 42k / 100k · 58k left" rather than a 64px gauge), plus the facts the
+// used · 42K / 100K · 58K left" rather than a 64px gauge), plus the facts the
 // strip has no room for at all, so a reader deciding whether to compact, or
 // reporting what a session cost, has the numbers instead of a shape.
 //

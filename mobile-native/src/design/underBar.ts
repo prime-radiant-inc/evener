@@ -21,6 +21,14 @@ export function underBar(barHeight: number): {
 	return { scrollIndicatorInsets: { bottom: barHeight }, endPadding: barHeight };
 }
 
+/** How much of a list's viewport a bar leaves clear, as a content height: a
+ * list's content fills it to rest at its end with nothing under the bar, and
+ * scrolls by however much taller than it the content is. On Android the
+ * content pads its own end by the bar, so that is the whole viewport. */
+export function listContentMinHeight(viewportHeight: number, list: ReturnType<typeof underBar>): number {
+	return Math.max(0, viewportHeight - (list.contentInset?.bottom ?? 0));
+}
+
 /** A bar's height from its onLayout, null until it has laid out. */
 export function useBarHeight(): { height: number | null; onLayout: (event: LayoutChangeEvent) => void } {
 	const [height, setHeight] = useState<number | null>(null);

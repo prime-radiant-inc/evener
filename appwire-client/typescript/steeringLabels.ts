@@ -53,10 +53,23 @@ const SUPPRESSED: ReadonlySet<string> = new Set<SuppressedSteeringKind>(["curren
  * know (a daemon newer than the client), none at all, or one that never shows
  * as a labelled steer. The wire's kind is a plain string, so the lookup
  * tolerates a miss rather than inventing a label from a raw slug. */
-export function steeringKindLabel(kind: string | undefined): string | undefined {
+function steeringKindLabel(kind: string | undefined): string | undefined {
   return kind !== undefined && Object.hasOwn(STEERING_KIND_LABELS, kind)
     ? STEERING_KIND_LABELS[kind as LabelledSteeringKind]
     : undefined;
+}
+
+// Every daemon steer says it is the system's before it says what it did
+// (docs/web-ui/design-system.md: the steering glyph carries no accessible
+// name, because the row's own words say "System steered").
+const STEERED = "System steered";
+
+/** The label a daemon steer folds to in both clients: "System steered:
+ * <what it did>", or a bare "System steered" for a kind with no label, since
+ * a colon promises a value. */
+export function steeringLabel(kind: string | undefined): string {
+  const label = steeringKindLabel(kind);
+  return label === undefined ? STEERED : `${STEERED}: ${label}`;
 }
 
 /** True for the kinds a transcript leaves out: the current task and the task

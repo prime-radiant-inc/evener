@@ -38,6 +38,7 @@
     "watchRows.ts",
     "watchText.ts",
     "steeringLabels.ts",
+    "systemEventCopy.ts",
     "steeringNotifications.ts",
     "activityList.ts",
     "activityMerge.ts",

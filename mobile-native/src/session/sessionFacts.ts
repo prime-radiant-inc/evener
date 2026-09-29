@@ -1,10 +1,16 @@
 // What the Session sheet shows (spec 8.6): only facts the thread carries
 // (ruling 21). That is where it runs, its access, its plugins and its usage.
 // The same file names the model for the composer's chip (spec 8.5).
-import { basename, type ModelDescriptor, sessionEffortLevels, type ThreadModel } from "@evener/appwire-client";
+import {
+	basename,
+	formatTokenCount,
+	type ModelDescriptor,
+	sessionEffortLevels,
+	type ThreadModel,
+} from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
 import { localSessionId } from "../sessionDeletionResult";
-import { compactCount, compactDuration } from "./format";
+import { compactDuration } from "./format";
 
 /** A ref names its host first ("<host>:<session>"); "local" is the hub's own. */
 export function hostIdOf(ref: string): string {
@@ -73,18 +79,18 @@ export function usageFacts(
 ): UsageFacts {
 	const facts: UsageFacts = {};
 	const usage = session.usage;
-	if (usage?.totalTokens) facts.tokens = `${compactCount(usage.totalTokens)} tokens`;
+	if (usage?.totalTokens) facts.tokens = `${formatTokenCount(usage.totalTokens)} tokens`;
 	const split = [
-		usage?.inputTokens ? `${compactCount(usage.inputTokens)} in` : "",
-		usage?.outputTokens ? `${compactCount(usage.outputTokens)} out` : "",
-		usage?.cacheReadTokens ? `${compactCount(usage.cacheReadTokens)} cached` : "",
+		usage?.inputTokens ? `${formatTokenCount(usage.inputTokens)} in` : "",
+		usage?.outputTokens ? `${formatTokenCount(usage.outputTokens)} out` : "",
+		usage?.cacheReadTokens ? `${formatTokenCount(usage.cacheReadTokens)} cached` : "",
 	].filter(Boolean);
 	if (split.length > 0) facts.split = split.join(" · ");
 	if (session.cost) facts.cost = session.cost;
 	if (session.workMillis > 0) facts.workTime = compactDuration(session.workMillis);
 	if (session.contextWindow > 0)
 		facts.context = {
-			text: `${compactCount(session.contextUsed)} of ${compactCount(session.contextWindow)}`,
+			text: `${formatTokenCount(session.contextUsed)} of ${formatTokenCount(session.contextWindow)}`,
 			fraction: Math.min(1, Math.max(0, session.contextUsed / session.contextWindow)),
 		};
 	const failed = session.failedToolCalls ?? 0;

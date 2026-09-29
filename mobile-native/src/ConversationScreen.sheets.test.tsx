@@ -16,7 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { alertRequests, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -711,6 +711,45 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	tree.unmount();
 });
 
+it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+	const running = {
+		...thread,
+		status: { type: "active" },
+		evener: { ...thread.evener, activeTurnId: "t1" },
+		turns: [
+			{
+				id: "t1",
+				status: "inProgress",
+				items: [
+					{ id: "u", turnId: "t1", type: "userMessage", text: "look", status: "completed" },
+					{
+						id: "c",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "shell",
+						argumentsJson: '{"command":"ls"}',
+						output: "a.txt",
+						status: "completed",
+					},
+				],
+			},
+		],
+	} as unknown as Thread;
+	const { tree } = mount(running);
+	await flush();
+	// A run's fold control names it collapsed or expanded; a run held open
+	// while live has none.
+	const folds = () =>
+		tree.root.findAll((node) => /^1 step\b.*, (collapsed|expanded)$/.test(String(node.props.accessibilityLabel ?? "")));
+	act(() => detailLevels("hub-1").set(ref, "intent"));
+	await flush();
+	expect(folds()[0]?.props.accessibilityLabel).toMatch(/, collapsed$/);
+	act(() => detailLevels("hub-1").set(ref, "tools"));
+	await flush();
+	expect(folds()).toEqual([]);
+	tree.unmount();
+});
+
 /** A session with a subagent, tasks, a blocked goal and two queued
  * messages: every context chip. */
 const busy = {
@@ -889,6 +928,57 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 	} finally {
 		vi.useRealTimers();
 	}
+	tree.unmount();
+});
+
+// While you type in the composer, the chips and the note row step aside so
+// the transcript keeps its room; the nav bar stays (spec 8.1).
+it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	expect(session.block().props.hidden).toBe(false);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(false);
+	tree.unmount();
+});
+
+it("keeps the nav bar while you type", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	navigation.setOptions.mockClear();
+	act(() => keyboard.show());
+	const calls = navigation.setOptions.mock.calls as [NativeStackNavigationOptions][];
+	expect(calls.some(([options]) => options.headerShown === false)).toBe(false);
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("keeps the find bar in place while you type in it", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => menuAction("Find in session").onPress());
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(false);
+	expect(session.block().props.find).toBeDefined();
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("stays hidden after the keyboard lowers when a downward scroll hid the chips", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => session.list().props.onScrollBeginDrag());
+	session.scroll(40);
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(true);
 	tree.unmount();
 });
 

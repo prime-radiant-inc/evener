@@ -268,7 +268,7 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
   side live.
 - **Consecutive system notices group.** `SystemNoticeItem` folds a run of
   adjacent system items into a `<details data-testid="system-notice-group">`
-  (`transcript/messages/SystemNoticeItem.tsx:290-294`). Each goal
+  (`transcript/messages/SystemNoticeItem.tsx:309-314`). Each goal
   continuation opens its own turn, so they normally stay separate lines —
   but even when grouped, every member still renders its own
   `[data-testid="system-notice-line"]` inside the (possibly collapsed)

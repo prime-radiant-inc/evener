@@ -202,7 +202,11 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   }
   if (
     !isPlainObject(features) ||
-    !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
+    // Additive wire changes need no version bump: a hub may advertise feature
+    // flags this build has never heard of, so only the keys the client knows
+    // are required (an unknown key is preserved, not rejected). This mirrors
+    // the lenient receipt decode on mobile (#1759).
+    !FEATURE_KEYS.every((key) => Object.hasOwn(features, key)) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
     FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
   ) {

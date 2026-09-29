@@ -178,6 +178,48 @@ describe("a step's evidence", () => {
 		expect(shown(tree.root)).toEqual([]);
 	});
 
+	// A tool the overlay showed carries tool:call:<callId> until history records
+	// its call as item_tool_<entry>_<part>; the call id is the same on both.
+	it("stays open when history records the step's call", () => {
+		const recorded = (id: string): Run => ({
+			...withOutput,
+			steps: [
+				step(
+					"s",
+					"shell",
+					{ command: "go test" },
+					{ detail: { arguments: '{"command":"go test"}', output: "ok", callId: "call-7" } },
+				),
+				...withOutput.steps.slice(1),
+			].map((candidate, index) => (index === 0 ? { ...candidate, id } : candidate)),
+		});
+		const tree = render(
+			<RunRow
+				run={recorded("tool:call:call-7")}
+				live={false}
+				expanded
+				onToggle={() => {}}
+				hubId="hub-1"
+				sessionRef="ref-recorded"
+			/>,
+		);
+		act(() => line(tree.root, "shell, go test, done").props.onPress());
+		expect(shown(tree.root)).toHaveLength(1);
+		act(() =>
+			tree.update(
+				<RunRow
+					run={recorded("item_tool_3_1")}
+					live={false}
+					expanded
+					onToggle={() => {}}
+					hubId="hub-1"
+					sessionRef="ref-recorded"
+				/>,
+			),
+		);
+		expect(shown(tree.root)).toHaveLength(1);
+	});
+
 	it("leaves a step with nothing to show unpressable, with no chevron", () => {
 		const tree = render(
 			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-none" />,

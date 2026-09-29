@@ -1,5 +1,4 @@
-import type { ModelDescriptor, ModelListResponse } from "@evener/appwire-client";
-import { compactCount } from "./session/format";
+import { formatTokenCount, type ModelDescriptor, type ModelListResponse } from "@evener/appwire-client";
 
 // A picker entry is one selectable model: its name, the line beneath it
 // (context size and price), and the registry notes that belong under it. The
@@ -24,7 +23,7 @@ export function modelPickerEntry(model: ModelDescriptor): ModelPickerEntry {
 		model.outputCostPerMillion !== undefined ? `${dollars(model.outputCostPerMillion)} out` : "",
 	].filter(Boolean);
 	const detail = [
-		model.contextWindow ? `${compactCount(model.contextWindow)} context` : "",
+		model.contextWindow ? `${formatTokenCount(model.contextWindow)} context` : "",
 		price.length > 0 ? `${price.join(" · ")} per M` : "",
 	].filter(Boolean);
 	return {

@@ -269,8 +269,10 @@ function failureItem(overrides: Partial<ItemModel> = {}): ItemModel {
   });
 }
 
+// The daemon writes a failure's message both onto turn.error and as the
+// failure item's text (apptranscript's TurnFailure item), so the pair agrees.
 function failedTurn(items: ItemModel[]): TurnModel {
-  return { id: "turn_1", status: "failed", items, error: { message: "openai error (status=401)" } };
+  return { id: "turn_1", status: "failed", items, error: { message: "openai error (status=401): incorrect API key" } };
 }
 
 test("a turn failure renders the failure mark, not a quiet lifecycle line", () => {
