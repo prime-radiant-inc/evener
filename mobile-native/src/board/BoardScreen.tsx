@@ -201,6 +201,8 @@ function Board({
 	// Select mode (spec 7.1): on from Select until Done or one of its
 	// actions completes (ruling 26), with the refs chosen so far.
 	const [selecting, setSelecting] = useState(false);
+	// How tall the toolbar (or the select bar) stands over the Board's end.
+	const [toolbarHeight, setToolbarHeight] = useState(0);
 	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
 	const leaveSelect = () => {
 		setSelecting(false);
@@ -1119,7 +1121,10 @@ function Board({
 					// iOS keeps that offset only while the content is taller than the
 					// viewport, so even a short Board (skeleton, empty, a few rows)
 					// is tall enough to keep the field hidden.
-					contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+					contentContainerStyle={{ paddingBottom: 24 + toolbarHeight, minHeight: windowHeight + searchFieldHeight }}
+					// The Board runs under its toolbar's glass; its scroll indicator
+					// stops at the toolbar.
+					scrollIndicatorInsets={{ bottom: toolbarHeight }}
 					onScroll={onScroll}
 					onLayout={(event) => {
 						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
@@ -1187,34 +1192,45 @@ function Board({
 					)}
 				</Animated.ScrollView>
 				{/* The toast floats 10pt above the toolbar. */}
-				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
+				<View
+					testID="board-toast"
+					pointerEvents="box-none"
+					style={{ position: "absolute", left: 0, right: 0, bottom: toolbarHeight + 10 }}
+				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
-			{selecting ? (
-				<SelectBar
-					counts={{
-						archive: selection.archive.length,
-						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
-						pin: Platform.OS === "ios" ? selection.pin.length : 0,
-						markRead: selection.markRead.length,
-					}}
-					onDone={leaveSelect}
-					onArchive={() => void archiveChosen(selection.archive)}
-					onPin={() =>
-						chooseCategory(board.getSnapshot().pins.rows, toast, (section, name) =>
-							pinChosen(selection.pin, section, name),
-						)
-					}
-					onMarkRead={markChosenRead}
-				/>
-			) : (
-				<BoardToolbar
-					newSessionDisabled={!connected}
-					onNewSession={newSession}
-					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
-				/>
-			)}
+			{/* The toolbar lies over the Board's end, so the Board runs under it. */}
+			<View
+				testID="board-toolbar"
+				style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+				onLayout={(event) => setToolbarHeight(event.nativeEvent.layout.height)}
+			>
+				{selecting ? (
+					<SelectBar
+						counts={{
+							archive: selection.archive.length,
+							// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
+							pin: Platform.OS === "ios" ? selection.pin.length : 0,
+							markRead: selection.markRead.length,
+						}}
+						onDone={leaveSelect}
+						onArchive={() => void archiveChosen(selection.archive)}
+						onPin={() =>
+							chooseCategory(board.getSnapshot().pins.rows, toast, (section, name) =>
+								pinChosen(selection.pin, section, name),
+							)
+						}
+						onMarkRead={markChosenRead}
+					/>
+				) : (
+					<BoardToolbar
+						newSessionDisabled={!connected}
+						onNewSession={newSession}
+						onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
+					/>
+				)}
+			</View>
 		</View>
 	);
 }
