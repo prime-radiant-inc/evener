@@ -1311,6 +1311,8 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		Rename:            true,
 		SkillInput:        true,
 		Queue:             true,
+		// The hub pages the saved transcript from a before position itself.
+		PageBefore: true,
 		// Steer and Interrupt stay false: they act on a turn that is already
 		// running, which a cold exited session does not have. Queue does not need
 		// one — the hub resumes for it and the queued message runs as the next

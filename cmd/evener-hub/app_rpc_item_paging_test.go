@@ -841,6 +841,55 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 	}
 }
 
+// When the live source has nothing, a cursorless before pages the saved
+// transcript, under the saved index's own identity: the page names the same
+// snapshot the saved read did, so a client that read the saved transcript
+// merges it, and one that read the live daemon (another incarnation) discards
+// it and re-reads, as it would a stale cursor.
+func TestHubRPCItemTurnsListCursorlessBeforeFallsBackToTheSavedTranscript(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	params.ItemLimit = 0
+	ref, err := appwire.ParseRef(params.Ref)
+	if err != nil {
+		t.Fatalf("parse saved ref: %v", err)
+	}
+	live := &localEmptyItemRPCSource{threadID: ref.ThreadID}
+	sources := appsource.NewRegistry()
+	sources.Add(live)
+	server := newHubAppServer(cfg, sources)
+	value, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead, Params: mustPagingJSON(t, params),
+	})
+	if err != nil {
+		t.Fatalf("saved read: %v", err)
+	}
+	read := value.(appwire.ThreadReadResponse)
+	items := flattenTestItems(read.Thread.Turns)
+	if len(items) == 0 || items[0].Position == nil || read.Snapshot == nil {
+		t.Fatalf("saved read = %+v, want positioned items and a snapshot", read)
+	}
+	listValue, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(2), Method: appwire.MethodThreadTurnsList,
+		Params: mustPagingJSON(t, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: items[0].Position}),
+	})
+	if err != nil {
+		t.Fatalf("cursorless saved page: %v", err)
+	}
+	page := listValue.(appwire.ThreadTurnsListResponse)
+	older := flattenTestItems(page.Data)
+	if len(older) == 0 {
+		t.Fatal("cursorless saved page returned nothing")
+	}
+	for _, item := range older {
+		if item.Position == nil || item.Position.Entry >= items[0].Position.Entry {
+			t.Fatalf("cursorless saved page item %q at %+v, want before %+v", item.ID, item.Position, items[0].Position)
+		}
+	}
+	if page.Snapshot == nil || page.Snapshot.Incarnation != read.Snapshot.Incarnation {
+		t.Fatalf("cursorless saved page snapshot = %+v, want the saved read's %+v", page.Snapshot, read.Snapshot)
+	}
+}
+
 func TestHubRPCItemTurnsListLiveEmptyWithoutSavedReturnsLivePage(t *testing.T) {
 	live := &localEmptyItemRPCSource{threadID: "no-saved-item-page"}
 	sources := appsource.NewRegistry()
@@ -1381,6 +1430,19 @@ func assertHubStaleCursor(t *testing.T, what string, err error) {
 
 // The whole session fits one page, so the phone's first read held it all and
 // it has no cursor: the hub serves a cursorless before from its snapshot.
+// A client pages a trimmed window back only from a hub that says it can: the
+// hub's own threads advertise pageBefore on their read.
+func TestHubRPCLocalThreadReadAdvertisesPageBefore(t *testing.T) {
+	client, ref := realDaemonBehindHub(t, "turns-list-page-before", 3)
+	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 10})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !read.Thread.Evener.Capabilities.PageBefore {
+		t.Fatalf("local thread capabilities = %+v, want pageBefore", read.Thread.Evener.Capabilities)
+	}
+}
+
 func TestHubRPCTurnsListBeforeWithinAWholeSessionSnapshot(t *testing.T) {
 	client, ref := realDaemonBehindHub(t, "turns-list-before-whole", 6)
 	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 10})

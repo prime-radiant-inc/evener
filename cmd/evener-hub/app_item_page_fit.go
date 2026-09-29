@@ -268,3 +268,13 @@ func packedResultSizeValue[T any](response T) (int, error) {
 	}
 	return len(encoded), nil
 }
+
+// hubPagesBefore is the hub's own answer to ThreadCapabilities.PageBefore:
+// whether thread/turns/list pages a thread from a before position with or
+// without a cursor. This hub mints cursorless pages for its local and saved
+// threads; a thread on another host refuses them until the controller can
+// join such a page to its remote paging window (#3176).
+func hubPagesBefore(ref string) bool {
+	parsed, err := appwire.ParseRef(ref)
+	return err == nil && parsed.SourceID == "local"
+}

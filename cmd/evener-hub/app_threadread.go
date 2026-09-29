@@ -274,7 +274,7 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 }
 
 // pastEntryPageItems reads the page before the request's cursor, or before
-// its Before boundary with no cursor (appitempaging.MintCursor), or the latest
+// its Before boundary with no cursor (appitempaging.Boundary), or the latest
 // window when it names neither. A cursor from another incarnation is stale:
 // the client re-reads the latest window.
 func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params appwire.ThreadTurnsListParams, limit int) (pastItemPage, error) {
@@ -287,12 +287,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params app
 		if err != nil {
 			return err
 		}
-		identity := pastCursorIdentity(entry, incarnation)
-		cursor, err := appitempaging.MintCursor(params, identity)
-		if err != nil {
-			return err
-		}
-		before, err := appitempaging.DecodeCursor(cursor, identity)
+		before, err := appitempaging.Boundary(params, pastCursorIdentity(entry, incarnation))
 		if err != nil {
 			return err
 		}
@@ -823,6 +818,9 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
 		// that genuinely lacks the support still refuses each selection.
 		SkillInput: true,
+		// The hub pages a saved transcript from a before position itself
+		// (pastEntryPageItems), so the answer is its own (hubPagesBefore).
+		PageBefore: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
@@ -830,11 +828,11 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 
 // readablePastCapabilities advertises what a session whose daemon is not
 // answering can still do: nothing mutating, but its saved shared notes stay
-// readable. The web derives editability from the store's write gate and the
-// daemon fences writes by admission, so advertising the read capability cannot
-// enable an edit.
+// readable, and its saved transcript pages from a before position. The web
+// derives editability from the store's write gate and the daemon fences writes
+// by admission, so advertising the read capabilities cannot enable an edit.
 func readablePastCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{SharedNotes: true}
+	return appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}
 }
 
 func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
