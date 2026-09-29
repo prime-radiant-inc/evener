@@ -81,7 +81,7 @@ export function normalizeHost(raw: string | null): string {
  * that carries it (see below) - a deadline is never dropped on the floor.
  */
 export function hostRequest<M extends MethodName>(
-  client: AppwireClientLike,
+  client: Pick<AppwireClientLike, "request">,
   host: string | null | undefined,
   method: M,
   params: MethodTypes[M]["params"],

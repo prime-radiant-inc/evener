@@ -7,7 +7,6 @@ import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-
 export function SystemEvent({
 	label,
 	text,

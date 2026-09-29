@@ -6,13 +6,12 @@ import {
 	type AccessibilityActionEvent,
 	type AccessibilityActionInfo,
 	Animated,
-	Platform,
 	Pressable,
 	Text,
 	View,
 } from "react-native";
 import type { Palette } from "../design/tokens";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
@@ -102,7 +101,7 @@ export function BandHeader({ text }: { text: string }) {
 		<Text
 			testID="band-header"
 			accessibilityRole="header"
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{
 				paddingTop: 22,
 				paddingBottom: 6,
@@ -196,7 +195,7 @@ export function BoardRow({
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						numberOfLines={needsYou ? 2 : 1}
 						ellipsizeMode="tail"
 						style={{
@@ -214,7 +213,7 @@ export function BoardRow({
 							{hasDraft ? (
 								<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
 									<Text
-										allowFontScaling={Platform.OS !== "ios"}
+										allowFontScaling={allowFontScaling}
 										style={{
 											fontSize: 11 * scale,
 											lineHeight: 13 * scale,
@@ -228,7 +227,7 @@ export function BoardRow({
 							) : null}
 							{age ? (
 								<Text
-									allowFontScaling={Platform.OS !== "ios"}
+									allowFontScaling={allowFontScaling}
 									style={{ fontSize: 13 * scale, color: palette.inkLow, fontVariant: ["tabular-nums"] }}
 								>
 									{age}
@@ -263,19 +262,35 @@ function Wash() {
 	return (
 		<Animated.View
 			pointerEvents="none"
-			style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: palette.attentionBg, opacity }}
+			style={{
+				position: "absolute",
+				top: 0,
+				right: 0,
+				bottom: 0,
+				left: 0,
+				backgroundColor: palette.attentionBg,
+				opacity,
+			}}
 		/>
 	);
 }
 
 /** A row's why line (spec 7.2): the state's word in its hue, when it has
  * one, then the reason. */
-export function WhyText({ why, numberOfLines, marginTop }: { why: WhyLine; numberOfLines?: number; marginTop?: number }) {
+export function WhyText({
+	why,
+	numberOfLines,
+	marginTop,
+}: {
+	why: WhyLine;
+	numberOfLines?: number;
+	marginTop?: number;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			numberOfLines={numberOfLines}
 			ellipsizeMode="tail"
 			style={{
@@ -324,7 +339,7 @@ export function Fact({
 		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
 			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				ellipsizeMode="tail"
 				style={{ flexShrink, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}

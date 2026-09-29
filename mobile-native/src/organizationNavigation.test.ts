@@ -10,10 +10,7 @@ const receipt = {
 	generation_id: "g",
 	targets: [{ kind: "project" as const, projectKey: "p", revision: 40 }],
 };
-function checkpoint(
-	kind: "archive" | "favorite",
-	acknowledged = true,
-): NavigationActionCheckpoint {
+function checkpoint(kind: "archive" | "favorite", acknowledged = true): NavigationActionCheckpoint {
 	return {
 		id: "intent",
 		operation:
@@ -85,16 +82,9 @@ function fixture() {
 						: { projects: [], remaining: 0 };
 				if (changeGeneration) generation = "new";
 			}
-			const response = wireV2(
-				params as never,
-				body,
-				'"fresh"',
-				revision,
-				generation,
-			);
+			const response = wireV2(params as never, body, '"fresh"', revision, generation);
 			if (params.resource === "location") {
-				const metadata = (response.data as { metadata: Record<string, unknown> })
-					.metadata;
+				const metadata = (response.data as { metadata: Record<string, unknown> }).metadata;
 				metadata.tier = archived ? "archived" : "recent";
 				metadata.project_key = "p";
 			}
@@ -127,41 +117,22 @@ function fixture() {
 }
 it("finds the exact moved project beyond the first page and compares independent receipt revisions", async () => {
 	const f = fixture();
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("archive"),
-			() => true,
-			true,
-		),
-	).toMatchObject({ title: "Workspace", state: "archived", settled: true });
-	expect(
-		f.calls
-			.filter((c) => c.params.catalog === "archived_projects")
-			.map((c) => c.params.offset),
-	).toEqual([0, 50]);
-	expect(f.calls.every((c) => c.method === "evener/navigation/read")).toBe(
-		true,
-	);
+	expect(await readOrganizationNavigation(f.client, checkpoint("archive"), () => true, true)).toMatchObject({
+		title: "Workspace",
+		state: "archived",
+		settled: true,
+	});
+	expect(f.calls.filter((c) => c.params.catalog === "archived_projects").map((c) => c.params.offset)).toEqual([0, 50]);
+	expect(f.calls.every((c) => c.method === "evener/navigation/read")).toBe(true);
 	f.stale();
-	await expect(
-		readOrganizationNavigation(
-			f.client,
-			checkpoint("archive"),
-			() => true,
-			true,
-		),
-	).rejects.toThrow();
+	await expect(readOrganizationNavigation(f.client, checkpoint("archive"), () => true, true)).rejects.toThrow();
 });
 it("requires review for unknown archive decisions even when effective placement matches", async () => {
 	const f = fixture();
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("archive", false),
-			() => true,
-		),
-	).toMatchObject({ state: "archived", settled: false });
+	expect(await readOrganizationNavigation(f.client, checkpoint("archive", false), () => true)).toMatchObject({
+		state: "archived",
+		settled: false,
+	});
 	const session: NavigationActionCheckpoint = {
 		id: "session",
 		operation: {
@@ -170,72 +141,46 @@ it("requires review for unknown archive decisions even when effective placement 
 		},
 		receipt: null,
 	};
-	expect(
-		await readOrganizationNavigation(f.client, session, () => true),
-	).toMatchObject({ state: "archived", settled: false });
+	expect(await readOrganizationNavigation(f.client, session, () => true)).toMatchObject({
+		state: "archived",
+		settled: false,
+	});
 	expect(f.calls.some((c) => c.params.ref === `local:${id}`)).toBe(true);
 });
 it("settles a favorite only when the exact project's current value matches", async () => {
 	const f = fixture();
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("favorite", false),
-			() => true,
-		),
-	).toMatchObject({ state: "pinned", settled: true });
+	expect(await readOrganizationNavigation(f.client, checkpoint("favorite", false), () => true)).toMatchObject({
+		state: "pinned",
+		settled: true,
+	});
 	f.conflicting();
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("favorite"),
-			() => true,
-		),
-	).toMatchObject({ state: "unpinned", settled: false });
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("archive"),
-			() => true,
-		),
-	).toMatchObject({ state: "projects", settled: false });
+	expect(await readOrganizationNavigation(f.client, checkpoint("favorite"), () => true)).toMatchObject({
+		state: "unpinned",
+		settled: false,
+	});
+	expect(await readOrganizationNavigation(f.client, checkpoint("archive"), () => true)).toMatchObject({
+		state: "projects",
+		settled: false,
+	});
 });
 it("retains recovery on missing targets or failed target reads", async () => {
 	for (const mode of ["missing", "fail"] as const) {
 		const f = fixture();
 		f[mode]();
-		await expect(
-			readOrganizationNavigation(f.client, checkpoint("favorite"), () => true),
-		).rejects.toThrow();
+		await expect(readOrganizationNavigation(f.client, checkpoint("favorite"), () => true)).rejects.toThrow();
 	}
 });
 it("requires an explicit fresh read after restart and rejects a restart during the check", async () => {
 	const f = fixture();
 	f.restart();
-	await expect(
-		readOrganizationNavigation(
-			f.client,
-			checkpoint("archive"),
-			() => true,
-			true,
-		),
-	).rejects.toThrow();
-	expect(
-		await readOrganizationNavigation(
-			f.client,
-			checkpoint("archive"),
-			() => true,
-		),
-	).toMatchObject({ generationId: "new", settled: true });
+	await expect(readOrganizationNavigation(f.client, checkpoint("archive"), () => true, true)).rejects.toThrow();
+	expect(await readOrganizationNavigation(f.client, checkpoint("archive"), () => true)).toMatchObject({
+		generationId: "new",
+		settled: true,
+	});
 	const changing = fixture();
 	changing.changeGeneration();
-	await expect(
-		readOrganizationNavigation(
-			changing.client,
-			checkpoint("archive"),
-			() => true,
-		),
-	).rejects.toThrow();
+	await expect(readOrganizationNavigation(changing.client, checkpoint("archive"), () => true)).rejects.toThrow();
 });
 it("rejects unrelated recovery, an archive id that names no session, and obsolete scope", async () => {
 	const f = fixture();
@@ -247,19 +192,11 @@ it("rejects unrelated recovery, an archive id that names no session, and obsolet
 		},
 	] as const)
 		await expect(
-			readOrganizationNavigation(
-				f.client,
-				{ ...checkpoint("archive"), operation },
-				() => true,
-			),
+			readOrganizationNavigation(f.client, { ...checkpoint("archive"), operation }, () => true),
 		).rejects.toThrow();
 	expect(f.calls).toHaveLength(0);
 	let current = true;
-	const pending = readOrganizationNavigation(
-		f.client,
-		checkpoint("archive"),
-		() => current,
-	);
+	const pending = readOrganizationNavigation(f.client, checkpoint("archive"), () => current);
 	current = false;
 	await expect(pending).rejects.toThrow();
 });
@@ -274,15 +211,12 @@ it("checks another host's session archive by reading that row's location by its 
 		},
 		receipt: null,
 	});
-	expect(
-		await readOrganizationNavigation(f.client, archive(remote), () => true),
-	).toMatchObject({ state: "archived", settled: false });
-	expect(
-		f.calls.some(
-			(c) => c.params.resource === "location" && c.params.ref === remote,
-		),
-	).toBe(true);
-	await expect(
-		readOrganizationNavigation(f.client, archive("elsewhere:y"), () => true),
-	).rejects.toThrow("This session's current organization could not be confirmed.");
+	expect(await readOrganizationNavigation(f.client, archive(remote), () => true)).toMatchObject({
+		state: "archived",
+		settled: false,
+	});
+	expect(f.calls.some((c) => c.params.resource === "location" && c.params.ref === remote)).toBe(true);
+	await expect(readOrganizationNavigation(f.client, archive("elsewhere:y"), () => true)).rejects.toThrow(
+		"This session's current organization could not be confirmed.",
+	);
 });

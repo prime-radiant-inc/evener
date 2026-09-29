@@ -124,6 +124,12 @@ type LocalDaemonEntry struct {
 	// so a controller hub shows a remote session's task line. nil means the
 	// daemon cannot read its task state; a read-only alias has none.
 	Tasks *appwire.TaskAggregate
+	// CurrentModel mirrors hubcore.LiveEntry.CurrentModel: the model the root
+	// runs now (S17). threadFromEntry puts it in appwire.Thread.ModelProvider
+	// ahead of the embedded Entry's Model, the one the root started on, so a
+	// controller hub names a remote session's model after a switch. A
+	// read-only alias has none.
+	CurrentModel string
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -506,6 +512,20 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
+}
+
+// StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
+// root mutation it targets the root's own entry, never a subagent's alias.
+func (s *LocalDaemonSource) StopDelegate(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.DelegateStopResponse{}, err
+	}
+	var out appwire.DelegateStopResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodEvenerDelegateStop, params, &out)
+	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
@@ -1164,7 +1184,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		ID:            threadID,
 		SessionID:     entry.SessionID,
 		Preview:       entry.SessionID,
-		ModelProvider: firstLocalNonEmpty(entry.Model, entry.Provider),
+		ModelProvider: firstLocalNonEmpty(item.CurrentModel, entry.Model, entry.Provider),
 		CreatedAt:     startedAt,
 		UpdatedAt:     startedAt,
 		CWD:           entry.WorkingDir,
@@ -1293,6 +1313,10 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// genuinely lacks the support still refuses each selection
 		// honestly.
 		SkillInput: true,
+		// Open sessions get the subagent stop, the way Interrupt gates on
+		// !closed. A descendant alias never does: the stop targets the root
+		// that owns the tree.
+		StopSubagent: !item.ReadOnlyAlias && !closed,
 	}
 }
 

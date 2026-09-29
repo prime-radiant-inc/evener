@@ -39,9 +39,7 @@ function fixture() {
 			}
 			return wireV2(
 				params as never,
-				params.resource === "manifest"
-					? manifest()
-					: { pin_sections: [], remaining: 0 },
+				params.resource === "manifest" ? manifest() : { pin_sections: [], remaining: 0 },
 				'"fresh"',
 				params.resource === "manifest" ? 2 : revision,
 				generation,
@@ -70,9 +68,11 @@ function fixture() {
 }
 it("reads stopped metadata without subscribing or starting a runtime", async () => {
 	const f = fixture();
-	expect(
-		await readSessionDeletion(f.client, ref, undefined, () => true),
-	).toMatchObject({ eligible: true, missing: false, settled: true });
+	expect(await readSessionDeletion(f.client, ref, undefined, () => true)).toMatchObject({
+		eligible: true,
+		missing: false,
+		settled: true,
+	});
 	expect(f.calls.filter((call) => call.method === "thread/read")).toEqual([
 		{
 			method: "thread/read",
@@ -80,24 +80,17 @@ it("reads stopped metadata without subscribing or starting a runtime", async () 
 		},
 	]);
 	f.live();
-	expect(
-		await readSessionDeletion(f.client, ref, undefined, () => true),
-	).toMatchObject({ eligible: false });
+	expect(await readSessionDeletion(f.client, ref, undefined, () => true)).toMatchObject({ eligible: false });
 });
 it("keeps an unknown-present delete unresolved and settles only after authoritative absence", async () => {
 	const f = fixture();
-	expect(
-		await readSessionDeletion(f.client, ref, pending, () => true),
-	).toMatchObject({ missing: false, settled: false });
+	expect(await readSessionDeletion(f.client, ref, pending, () => true)).toMatchObject({
+		missing: false,
+		settled: false,
+	});
 	f.missing();
-	expect(
-		await readSessionDeletion(f.client, ref, pending, () => true),
-	).toMatchObject({ missing: true, settled: true });
-	expect(
-		f.calls.every((call) =>
-			["thread/read", "evener/navigation/read"].includes(call.method),
-		),
-	).toBe(true);
+	expect(await readSessionDeletion(f.client, ref, pending, () => true)).toMatchObject({ missing: true, settled: true });
+	expect(f.calls.every((call) => ["thread/read", "evener/navigation/read"].includes(call.method))).toBe(true);
 });
 it("retains skipped reasons and does not equate an acknowledgement with absence", async () => {
 	const f = fixture();
@@ -106,22 +99,13 @@ it("retains skipped reasons and does not equate an acknowledgement with absence"
 		receipt: { generation_id: "g", targets: [] },
 		deletion: { kind: "skipped", reason: "resumed live" },
 	};
-	expect(
-		await readSessionDeletion(f.client, ref, skipped, () => true),
-	).toMatchObject({
+	expect(await readSessionDeletion(f.client, ref, skipped, () => true)).toMatchObject({
 		missing: false,
 		settled: true,
 		skippedReason: "resumed live",
 	});
 	for (const kind of ["deleted", "missing"] as const)
-		await expect(
-			readSessionDeletion(
-				f.client,
-				ref,
-				{ ...skipped, deletion: { kind } },
-				() => true,
-			),
-		).rejects.toThrow();
+		await expect(readSessionDeletion(f.client, ref, { ...skipped, deletion: { kind } }, () => true)).rejects.toThrow();
 });
 it("compares receipt revisions only with their own resource", async () => {
 	const f = fixture();
@@ -134,20 +118,15 @@ it("compares receipt revisions only with their own resource", async () => {
 		},
 		deletion: { kind: "deleted" },
 	};
-	expect(
-		await readSessionDeletion(f.client, ref, checkpoint, () => true, true),
-	).toMatchObject({ missing: true });
+	expect(await readSessionDeletion(f.client, ref, checkpoint, () => true, true)).toMatchObject({ missing: true });
 	f.stale();
-	await expect(
-		readSessionDeletion(f.client, ref, checkpoint, () => true, true),
-	).rejects.toThrow();
+	await expect(readSessionDeletion(f.client, ref, checkpoint, () => true, true)).rejects.toThrow();
 	f.restart();
-	await expect(
-		readSessionDeletion(f.client, ref, checkpoint, () => true, true),
-	).rejects.toThrow();
-	expect(
-		await readSessionDeletion(f.client, ref, checkpoint, () => true),
-	).toMatchObject({ generationId: "next", missing: true });
+	await expect(readSessionDeletion(f.client, ref, checkpoint, () => true, true)).rejects.toThrow();
+	expect(await readSessionDeletion(f.client, ref, checkpoint, () => true)).toMatchObject({
+		generationId: "next",
+		missing: true,
+	});
 });
 it("never treats transport unavailability or another target's error as deletion", async () => {
 	const f = fixture();
@@ -159,9 +138,7 @@ it("never treats transport unavailability or another target's error as deletion"
 		}),
 	]) {
 		f.fail(error);
-		await expect(
-			readSessionDeletion(f.client, ref, pending, () => true),
-		).rejects.toThrow();
+		await expect(readSessionDeletion(f.client, ref, pending, () => true)).rejects.toThrow();
 	}
 });
 it("rejects wrong target recovery and scope replacement without confirming", async () => {

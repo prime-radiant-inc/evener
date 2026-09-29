@@ -9,6 +9,7 @@
 // Production code never imports this module: it is a .testkit, and vitest's
 // default include collects only *.test.* files as suites.
 import {
+	type ComponentType,
 	createElement,
 	type ForwardedRef,
 	forwardRef,
@@ -16,6 +17,7 @@ import {
 	type ReactNode,
 	type Ref,
 	useImperativeHandle,
+	useRef,
 } from "react";
 import {
 	act,
@@ -24,11 +26,7 @@ import {
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
-import type {
-	AnyNotification,
-	ConnectionState,
-	InstanceListResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 // React 19's act() only drives effects when it is told it is inside a test
@@ -54,6 +52,7 @@ export function nativeModuleMock() {
 		renderSectionHeader?: (info: { section: { title: string } }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		ListFooterComponent?: ReactNode;
 	}) =>
 		createElement(
 			"SectionList",
@@ -61,37 +60,62 @@ export function nativeModuleMock() {
 			props.ListHeaderComponent ?? null,
 			...props.sections.flatMap((section) => [
 				props.renderSectionHeader?.({ section }) ?? null,
-				...section.data.map((item) =>
-					createElement(
-						"Item",
-						{ key: item.name },
-						props.renderItem?.({ item }) ?? null,
-					),
-				),
+				...section.data.map((item) => createElement("Item", { key: item.name }, props.renderItem?.({ item }) ?? null)),
 			]),
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
+			props.ListFooterComponent ?? null,
 		);
 	const FlatList = (props: {
 		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
-		renderItem?: (info: { item: unknown }) => ReactNode;
+		renderItem?: (info: { item: unknown; index: number }) => ReactNode;
+		CellRendererComponent?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		onScrollToIndexFailed?: (info: {
+			index: number;
+			highestMeasuredFrameIndex: number;
+			averageItemLength: number;
+		}) => void;
 	}) => {
-		useImperativeHandle(props.ref, () => flatListHandle, []);
+		const latest = useRef(props);
+		latest.current = props;
+		useImperativeHandle(
+			props.ref,
+			() => ({
+				...flatListHandle,
+				// A row the real list hasn't measured makes scrollToIndex report
+				// failure synchronously; flatListScrollFailures scripts how many.
+				scrollToIndex: (args: { index: number }) => {
+					flatListHandle.scrollToIndex(args);
+					if (flatListScrollFailures.remaining <= 0) return;
+					flatListScrollFailures.remaining -= 1;
+					latest.current.onScrollToIndexFailed?.({
+						index: args.index,
+						highestMeasuredFrameIndex: -1,
+						averageItemLength: 100,
+					});
+				},
+			}),
+			[],
+		);
 		return createElement(
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item, index) =>
-				createElement(
+			...(props.data ?? []).map((item, index) => {
+				const row = props.renderItem?.({ item, index }) ?? null;
+				// A list's own cell wraps each row, as the real list does, so a
+				// test can lay a cell out (its onLayout) and measure the row.
+				const Cell = props.CellRendererComponent;
+				return createElement(
 					"Item",
 					{ key: props.keyExtractor?.(item, index) ?? index },
-					props.renderItem?.({ item }) ?? null,
-				),
-			),
+					Cell ? createElement(Cell, { item, index }, row) : row,
+				);
+			}),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
@@ -176,6 +200,99 @@ export function gestureHandlerModuleMock() {
 	};
 }
 
+/** A Gesture.Pan() builder as a record: each setting a test reads lands in
+ * `config`, and each callback in `handlers`, so a test drives the gesture's
+ * end by hand. */
+export interface PanGestureMock {
+	config: Record<string, unknown>;
+	handlers: {
+		onBegin?(): void;
+		onUpdate?(event: { translationX: number }): void;
+		onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void;
+	};
+}
+
+/** react-native-gesture-handler's GestureDetector and Gesture.Pan for
+ * vitest: the detector is a host element carrying its gesture, and the pan
+ * a PanGestureMock whose builder methods return it. */
+export function gestureDetectorModuleMock() {
+	const pan = (): PanGestureMock => {
+		const gesture = { config: {}, handlers: {} } as PanGestureMock;
+		const setting = (name: string) => (value: unknown) => {
+			gesture.config[name] = value;
+			return builder;
+		};
+		const builder = Object.assign(gesture, {
+			activeOffsetX: setting("activeOffsetX"),
+			failOffsetY: setting("failOffsetY"),
+			runOnJS: setting("runOnJS"),
+			hitSlop: setting("hitSlop"),
+			enabled: setting("enabled"),
+			onBegin: (handler: PanGestureMock["handlers"]["onBegin"]) => {
+				gesture.handlers.onBegin = handler;
+				return builder;
+			},
+			onUpdate: (handler: PanGestureMock["handlers"]["onUpdate"]) => {
+				gesture.handlers.onUpdate = handler;
+				return builder;
+			},
+			onEnd: (handler: PanGestureMock["handlers"]["onEnd"]) => {
+				gesture.handlers.onEnd = handler;
+				return builder;
+			},
+		});
+		return builder;
+	};
+	return {
+		__esModule: true,
+		GestureDetector: (props: { gesture: unknown; children?: ReactNode }) =>
+			createElement("GestureDetector", props, props.children),
+		Gesture: { Pan: pan },
+	};
+}
+
+/** A finger's drag on a SwipeRow, as the row's release tracker sees it: it
+ * touches down, drags through each of `via` in turn, and lets go
+ * translationX points from where it began (positive to the right) at
+ * velocityX. The tracker is the pan the row hands its swipeable to recognize
+ * alongside. */
+export function releaseSwipeRow(
+	swipeable: ReactTestInstance,
+	translationX: number,
+	{ velocityX = 0, via = [] }: { velocityX?: number; via?: readonly number[] } = {},
+) {
+	const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+	if (!tracker) throw new Error("the swipeable has no release tracker");
+	act(() => {
+		tracker.handlers.onBegin?.();
+		for (const point of [...via, translationX]) tracker.handlers.onUpdate?.({ translationX: point });
+		tracker.handlers.onEnd?.({ translationX, velocityX }, true);
+	});
+}
+
+/** The swipeable opening a row the way it does after a release: it says it
+ * will open as the finger lets go, and that it has opened once the row
+ * settles. */
+export function openSwipeRow(swipeable: ReactTestInstance, direction: "left" | "right") {
+	act(() => swipeable.props.onSwipeableWillOpen(direction));
+	act(() => swipeable.props.onSwipeableOpen(direction));
+}
+
+/** A full swipe on a SwipeRow: the finger touches down at pageX (by default
+ * well clear of the screen's left edge band), drags the row 250 points
+ * (past half a 390-point window) toward `direction`, and lets go, and the
+ * swipeable opens it. */
+export function swipeRowFully(
+	swipeable: ReactTestInstance | undefined,
+	direction: "left" | "right",
+	{ pageX = 200 }: { pageX?: number } = {},
+) {
+	if (!swipeable) throw new Error("no swipeable row");
+	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+	releaseSwipeRow(swipeable, direction === "right" ? 250 : -250);
+	openSwipeRow(swipeable, direction);
+}
+
 /** react-native-reanimated for vitest: Animated.ScrollView is a host
  * "ScrollView" carrying every prop (the Board's scroller, found and driven
  * as a plain one is), Animated.View a host element, and LinearTransition a
@@ -196,6 +313,11 @@ export function reanimatedModuleMock() {
  * through getScrollResponder) instead of moving anything. A test clears it
  * before the mount it cares about. */
 export const flatListCalls: { method: string; args?: unknown }[] = [];
+
+/** How many of the next scrollToIndex calls fail, as they do for a row the
+ * list hasn't measured: each calls the list's onScrollToIndexFailed. A test
+ * sets it before the scroll it cares about and resets it after. */
+export const flatListScrollFailures = { remaining: 0 };
 
 const flatListHandle = {
 	scrollToIndex: (args: unknown) => void flatListCalls.push({ method: "scrollToIndex", args }),
@@ -267,24 +389,37 @@ export function scriptedClient(
 
 /** The connection value the retained-screen suites report through their
  * mocked ConnectionProvider: the Work hub's profile, its client, the state
- * the test drives, and the fatal flag and manual retry the retained-screen
- * wiring reads. One literal where five suites' fixtures matched field for
+ * the test drives, and the fatal flag the retained-screen wiring reads. One literal where five suites' fixtures matched field for
  * field (#1942), so the shape the screens read cannot drift between suites -
  * the test-side twin of the useRetainedScreenConnection wiring the screens
  * themselves share (#2164). A test whose scenario needs a different hub,
  * retry or verdict spreads its override over the result, so the outlier
- * stays visible at its use. */
-export function screenConnection(
-	client: unknown,
-	state: ConnectionState,
-): Record<string, unknown> {
+ * stays visible at its use.
+ *
+ * The status clock (ConnectionClock) reads as the provider's would at the
+ * moment the connection reaches `state`: a connection that isn't live went
+ * down, and was last live, just now. */
+export function screenConnection(client: unknown, state: ConnectionState): Record<string, unknown> {
+	const downAt = state === "ready" ? null : Date.now();
 	return {
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client,
 		state,
 		fatal: false,
-		retry: () => {},
+		downSince: downAt,
+		lastLiveAt: downAt,
 	};
+}
+
+/** `connection` after it has been down long enough for the status to say so
+ * (spec 14: "Reconnecting…" from 2 seconds), keeping its client and hub. */
+export function dropped(
+	connection: Record<string, unknown>,
+	state: ConnectionState = "reconnecting",
+	downFor = 2_000,
+): Record<string, unknown> {
+	const downAt = Date.now() - downFor;
+	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
 /** Mounts `element` and flushes its effects, returning the test renderer. */
@@ -345,13 +480,6 @@ export function textOf(node: ReactTestInstance): string {
 
 /** The first mounted Pressable whose accessibility label is `label`, found
  * the way VoiceOver finds a button; undefined when there is none. */
-export function pressable(
-	tree: ReactTestRenderer,
-	label: string,
-): ReactTestInstance | undefined {
-	return tree.root.findAll(
-		(node) =>
-			String(node.type) === "Pressable" &&
-			node.props.accessibilityLabel === label,
-	)[0];
+export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
+	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 }

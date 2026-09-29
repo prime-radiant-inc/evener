@@ -81,8 +81,7 @@ export const CONTINUE_READING_MS = 2 * 60 * 60 * 1000;
 /** Leaving past this much of a document counts as finishing it (ruling 20). */
 export const FINISHED_PROGRESS = 0.97;
 
-const isCount = (value: unknown): value is number =>
-	typeof value === "number" && Number.isInteger(value) && value >= 0;
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
 const isTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isText = (value: unknown): value is string => typeof value === "string";
 
@@ -97,13 +96,24 @@ function parsePosition(value: unknown): ReadingPosition | undefined {
 function parseLastRead(value: unknown): LastRead | undefined {
 	if (!isPlainObject(value) || !Array.isArray(value.blocks) || !value.blocks.every(isText) || !isTime(value.readAt))
 		return undefined;
-	return { blocks: value.blocks, readAt: value.readAt, ...(isText(value.updatedAt) ? { updatedAt: value.updatedAt } : {}) };
+	return {
+		blocks: value.blocks,
+		readAt: value.readAt,
+		...(isText(value.updatedAt) ? { updatedAt: value.updatedAt } : {}),
+	};
 }
 
 function parseComment(value: unknown): DocumentComment | undefined {
 	if (!isPlainObject(value)) return undefined;
 	const { id, blockIndex, blockHash, quote, text, createdAt } = value;
-	if (!isText(id) || !isCount(blockIndex) || !isText(blockHash) || !isText(quote) || !isText(text) || !isTime(createdAt))
+	if (
+		!isText(id) ||
+		!isCount(blockIndex) ||
+		!isText(blockHash) ||
+		!isText(quote) ||
+		!isText(text) ||
+		!isTime(createdAt)
+	)
 		return undefined;
 	return { id, blockIndex, blockHash, quote, text, createdAt };
 }
@@ -133,7 +143,16 @@ function parseTrail(value: unknown): ContinueReading | null {
 	const { sessionRef, path, title, reviewRef, reviewTitle, progress, leftAt, updatedAt } = value;
 	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(reviewRef) || !isText(reviewTitle)) return null;
 	if (!isTime(progress) || !isTime(leftAt)) return null;
-	return { sessionRef, path, title, reviewRef, reviewTitle, progress, leftAt, ...(isText(updatedAt) ? { updatedAt } : {}) };
+	return {
+		sessionRef,
+		path,
+		title,
+		reviewRef,
+		reviewTitle,
+		progress,
+		leftAt,
+		...(isText(updatedAt) ? { updatedAt } : {}),
+	};
 }
 
 export class DocumentMemory {
@@ -205,7 +224,10 @@ export class DocumentMemory {
 		return this.trail && this.clock() - this.trail.leftAt < CONTINUE_READING_MS ? this.trail : null;
 	}
 
-	addComment(key: DocumentKey, comment: Pick<DocumentComment, "blockIndex" | "blockHash" | "quote" | "text">): DocumentComment {
+	addComment(
+		key: DocumentKey,
+		comment: Pick<DocumentComment, "blockIndex" | "blockHash" | "quote" | "text">,
+	): DocumentComment {
 		const now = this.clock();
 		// The sequence starts over each launch, so skip any id a comment kept
 		// from an earlier launch already has.
@@ -221,7 +243,10 @@ export class DocumentMemory {
 	}
 
 	removeComment(key: DocumentKey, id: string): void {
-		this.update(key, (record) => ({ ...record, comments: (record.comments ?? []).filter((comment) => comment.id !== id) }));
+		this.update(key, (record) => ({
+			...record,
+			comments: (record.comments ?? []).filter((comment) => comment.id !== id),
+		}));
 	}
 
 	/** The review went out: its comments are no longer drafts. */

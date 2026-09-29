@@ -15,7 +15,6 @@ import { LogViewer } from "./LogViewer";
 
 type Palette = ReturnType<typeof useColors>["palette"];
 
-
 function machineText(scale: number) {
 	return {
 		fontFamily: typeRoles.machine.fontFamily,
@@ -67,7 +66,10 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 			</Inset>
 			{lines > EVIDENCE_PREVIEW_LINES ? (
 				<Pressable accessibilityRole="button" accessibilityLabel={showAll} onPress={() => setViewing(true)}>
-					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}
+					>
 						{showAll}
 					</Text>
 				</Pressable>
@@ -98,7 +100,11 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 			</View>
 			<Inset>
 				{lines.map(({ key, line }) => (
-					<Text key={key} allowFontScaling={allowFontScaling} style={{ ...machineText(scale), ...diffLineStyle(line, palette) }}>
+					<Text
+						key={key}
+						allowFontScaling={allowFontScaling}
+						style={{ ...machineText(scale), ...diffLineStyle(line, palette) }}
+					>
 						{line}
 					</Text>
 				))}
@@ -117,7 +123,10 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 			return <Diff text={evidence.text} added={evidence.added} removed={evidence.removed} />;
 		case "wrote":
 			return (
-				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+				>
 					{"Wrote "}
 					<Text style={{ ...machineText(scale), color: palette.inkMid }}>{evidence.path}</Text>
 				</Text>
@@ -125,11 +134,17 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 		case "error":
 			return (
 				<View style={{ gap: 2 }}>
-					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.dangerInk }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.dangerInk }}
+					>
 						{evidence.text}
 					</Text>
 					{evidence.exitCode === undefined ? null : (
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+						>
 							{`Exit ${evidence.exitCode}`}
 						</Text>
 					)}
@@ -140,7 +155,15 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 
 /** Draws a step's evidence. Its row works the evidence out (useStepEvidence),
  * since the row also needs it to decide whether the step opens at all. */
-export function StepEvidence({ step, evidence, hubId }: { step: RunStep; evidence: readonly Evidence[]; hubId: string }) {
+export function StepEvidence({
+	step,
+	evidence,
+	hubId,
+}: {
+	step: RunStep;
+	evidence: readonly Evidence[];
+	hubId: string;
+}) {
 	const title = step.detail.description || step.label;
 	return (
 		<View style={{ gap: 8 }}>

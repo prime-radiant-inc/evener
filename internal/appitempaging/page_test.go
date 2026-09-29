@@ -287,3 +287,17 @@ func makeCandidates(n int, turnID string) []TranscriptItemCandidate {
 	}
 	return out
 }
+
+func TestComparePositionOrdersBySub(t *testing.T) {
+	older := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 1}
+	newer := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 2}
+	if got := comparePosition(older, newer); got != -1 {
+		t.Errorf("comparePosition(older, newer) = %d, want -1", got)
+	}
+	if got := comparePosition(newer, older); got != 1 {
+		t.Errorf("comparePosition(newer, older) = %d, want 1", got)
+	}
+	if got := comparePosition(older, older); got != 0 {
+		t.Errorf("comparePosition(equal) = %d, want 0", got)
+	}
+}

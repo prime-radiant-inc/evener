@@ -252,21 +252,26 @@ func decodeStrictJSON(line []byte, target any) error {
 	// vanishing silently, which is the failure mode kata kq8c spent real effort
 	// tracking down after it went unnoticed for months. The cost of that choice
 	// is a one-way door: a transcript written by a build with a field this
-	// build's schema.Turn does not declare fails to decode at all, and because
-	// every reader (thread/read, resume, fork, doctor) decodes a whole
-	// transcript's records in one pass and aborts on the first error, one such
-	// record makes the ENTIRE transcript unreadable, not just the turn that
-	// carries the new field. See kata wf7e for the investigation: the failure
-	// is real and reachable (a long-running evener-hub is not restarted when the
-	// evener CLI it talks to is upgraded, and every past transcript on disk can
-	// have been written by a different historical build), but it is also
-	// self-healing (the file on disk is untouched; a version-matched reader
-	// recovers full fidelity) and, unlike kq8c, cannot be silently wrong: a
-	// build only ever fails to decode a field IT does not know about, never
-	// drops a field it does know how to decode. wf7e closed wontfix on that
-	// basis; TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField in
-	// cmd/evener-hub pins the resulting behavior so a future change to it is a
-	// decision, not an accident.
+	// build's schema.Turn does not declare fails to decode here. What that then
+	// costs depends on the reader. Thread reads and live history go through the
+	// transcript index, which quarantines the one entry as an "Unreadable
+	// transcript entry" item and keeps the rest of the session readable, so a
+	// single such record no longer makes the whole transcript unreadable to
+	// them. The agent's whole-file readers still abort on the first undecodable
+	// entry, so resume and read_transcript (agent/transcript_read.go) and fork
+	// (agent/fork.go) fail the whole read. See kata wf7e for the investigation:
+	// the failure is real and reachable (a long-running evener-hub is not
+	// restarted when the evener CLI it talks to is upgraded, and every past
+	// transcript on disk can have been written by a different historical
+	// build), but it is also self-healing (the file on disk is untouched; a
+	// version-matched reader recovers full fidelity) and, unlike kq8c, cannot
+	// be silently wrong: a build only ever fails to decode a field IT does not
+	// know about, never drops a field it does know how to decode. wf7e closed
+	// wontfix on that basis. TestPastThreadReadQuarantinesOneUnknownTurnField
+	// in cmd/evener-hub pins the indexed read's quarantine, and
+	// TestTranscriptReadersAndRawOutputRejectUnknownFields in agent pins the
+	// whole-file readers' refusal, so a future change to either is a decision,
+	// not an accident.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err

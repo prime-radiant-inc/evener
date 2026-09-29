@@ -1,39 +1,17 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
-import {
-	type ReactNode,
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	RefreshControl,
-	ScrollView,
-	View,
-} from "react-native";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, Alert, RefreshControl, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import {
-	type ConnectionState,
-	createHubOverviewStore,
-	friendlyErrorMessage,
-} from "@evener/appwire-client";
+import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
-import {
-	ConnectionWall,
-	HUB_NO_LONGER_SELECTED,
-	useRetainedScreenConnection,
-} from "./retainedScreen";
+import { ConnectionWall, HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -49,26 +27,12 @@ export function HubSettingsScreen(props: Props) {
 }
 
 function HubSettingsScreenBody({ route, navigation }: Props) {
-	const {
-		activeProfile,
-		state,
-		retry,
-		error,
-		display,
-		canUseConnection,
-		renderClient,
-	} = useRetainedScreenConnection(route.params.hubId);
-	if (activeProfile?.id !== route.params.hubId)
-		return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
+	const { activeProfile, state, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
+		route.params.hubId,
+	);
+	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	if (display === "wall" || !renderClient)
-		return (
-			<ConnectionWall
-				hubName={activeProfile.name}
-				purpose="view hub settings"
-				error={error}
-				onReconnect={retry}
-			/>
-		);
+		return <ConnectionWall hubName={activeProfile.name} purpose="view hub settings" error={error} />;
 	return (
 		<>
 			{display === "banner" ? <ConnectionStatus /> : null}
@@ -88,33 +52,19 @@ function HubSettingsScreenBody({ route, navigation }: Props) {
 						hubId: activeProfile.id,
 					})
 				}
-				openProviders={() =>
-					navigation.navigate("Providers", { hubId: activeProfile.id })
-				}
-				openLaunchSettings={() =>
-					navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
-				}
-				openPlugins={() =>
-					navigation.navigate("Plugins", { hubId: activeProfile.id })
-				}
+				openProviders={() => navigation.navigate("Providers", { hubId: activeProfile.id })}
+				openLaunchSettings={() => navigation.navigate("LaunchSettings", { hubId: activeProfile.id })}
+				openPlugins={() => navigation.navigate("Plugins", { hubId: activeProfile.id })}
 			/>
 		</>
 	);
 }
 
-function Detail({
-	label,
-	value,
-}: {
-	label: string;
-	value: string | number | undefined;
-}) {
+function Detail({ label, value }: { label: string; value: string | number | undefined }) {
 	return (
 		<View style={{ gap: 2, paddingVertical: 5 }}>
 			<Copy muted>{label}</Copy>
-			<Copy>
-				{value === undefined || value === "" ? "Unavailable" : String(value)}
-			</Copy>
+			<Copy>{value === undefined || value === "" ? "Unavailable" : String(value)}</Copy>
 		</View>
 	);
 }
@@ -133,8 +83,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 // The hub overview store keeps the failed request's own text in `error`;
 // this screen shows the same copy for every failure, as the web's sections
 // translate theirs at render.
-const HUB_OVERVIEW_REFRESH_FAILED =
-	"Could not refresh hub information. Try again when connected.";
+const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information. Try again when connected.";
 
 function HubSettings({
 	client,
@@ -165,19 +114,10 @@ function HubSettings({
 	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
-		() =>
-			createHubUpgradeController(
-				hubId,
-				client,
-				nativeHubUpgradeStorage,
-				Crypto.randomUUID,
-			),
+		() => createHubUpgradeController(hubId, client, nativeHubUpgradeStorage, Crypto.randomUUID),
 		[hubId, client],
 	);
-	const upgradeState = useSyncExternalStore(
-		upgrade.subscribe,
-		upgrade.getSnapshot,
-	);
+	const upgradeState = useSyncExternalStore(upgrade.subscribe, upgrade.getSnapshot);
 	useEffect(() => () => upgrade.dispose(), [upgrade]);
 	useEffect(() => () => model.dispose(), [model]);
 	// The two recovery paths below coordinate through one client-generation
@@ -263,10 +203,7 @@ function HubSettings({
 	const data = state.data;
 	const hub = data?.hub;
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView
 				contentContainerStyle={{ padding: 20, gap: 12 }}
 				refreshControl={
@@ -322,12 +259,8 @@ function HubSettings({
 						})}
 					/>
 				</Section>
-				{state.loading && !data && (
-					<ActivityIndicator accessibilityLabel="Loading hub information" />
-				)}
-				<ErrorMessage
-					message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
-				/>
+				{state.loading && !data && <ActivityIndicator accessibilityLabel="Loading hub information" />}
+				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />
 				{state.error && (
 					<Action
 						disabled={state.loading || !ready}
@@ -340,9 +273,7 @@ function HubSettings({
 				)}
 				{data && (
 					<>
-						<Copy muted>
-							{hub?.version ? `Evener ${hub.version}` : "Version unavailable"}
-						</Copy>
+						<Copy muted>{hub?.version ? `Evener ${hub.version}` : "Version unavailable"}</Copy>
 						<Copy muted>{hub?.listenAddr || "Listen address unavailable"}</Copy>
 						<Section title="Runtime and storage">
 							<Detail label="Version" value={hub?.version} />
@@ -355,19 +286,10 @@ function HubSettings({
 							<Copy muted>These locations are on the hub.</Copy>
 							{hub?.pastIndex && (
 								<>
-									<Detail
-										label="Past session index"
-										value={hub.pastIndex.path}
-									/>
+									<Detail label="Past session index" value={hub.pastIndex.path} />
 									<Detail label="Index size" value={hub.pastIndex.size} />
-									<Detail
-										label="Indexed sessions"
-										value={hub.pastIndex.count}
-									/>
-									<Detail
-										label="Past results per page"
-										value={hub.pastIndex.perPage}
-									/>
+									<Detail label="Indexed sessions" value={hub.pastIndex.count} />
+									<Detail label="Past results per page" value={hub.pastIndex.perPage} />
 								</>
 							)}
 						</Section>
@@ -391,30 +313,19 @@ function HubSettings({
 							) : (
 								<>
 									<ErrorMessage
-										message={
-											data.mcpDiscovered.error
-												? friendlyErrorMessage(data.mcpDiscovered.error)
-												: null
-										}
+										message={data.mcpDiscovered.error ? friendlyErrorMessage(data.mcpDiscovered.error) : null}
 									/>
 									{data.mcpDiscovered.servers?.map((server) => (
 										<View key={server.name} style={{ gap: 3 }}>
 											<Copy>{server.name}</Copy>
 											<Detail label="Transport" value={server.transport} />
 											<Detail label="Status" value={server.status} />
-											<ErrorMessage
-												message={
-													server.error
-														? friendlyErrorMessage(server.error)
-														: null
-												}
-											/>
+											<ErrorMessage message={server.error ? friendlyErrorMessage(server.error) : null} />
 										</View>
 									))}
-									{!data.mcpDiscovered.error &&
-										data.mcpDiscovered.servers?.length === 0 && (
-											<Copy muted>No MCP servers discovered.</Copy>
-										)}
+									{!data.mcpDiscovered.error && data.mcpDiscovered.servers?.length === 0 && (
+										<Copy muted>No MCP servers discovered.</Copy>
+									)}
 								</>
 							)}
 						</Section>

@@ -15,7 +15,8 @@
 // the caller keeps whatever fallback it already shows. Any other rejection
 // just retries at the next tick.
 import type { AppwireClientLike, SessionActivity } from "@evener/appwire-client";
-import { decodeActivityRead, WireError } from "@evener/appwire-client";
+import { isMethodNotFound } from "../wireErrors";
+import { decodeActivityRead } from "@evener/appwire-client";
 
 export const ACTIVITY_POLL_MS = 10_000;
 // A read that's aged past two poll intervals is treated as no read at all
@@ -25,8 +26,6 @@ export const ACTIVITY_POLL_MS = 10_000;
 // single missed tick room to self-heal on the very next one before the row
 // falls back.
 export const STALE_AFTER_MS = 2 * ACTIVITY_POLL_MS;
-
-const CODE_METHOD_NOT_FOUND = -32601;
 
 /** Whether a read taken `msSinceRead` milliseconds ago (null: never landed)
  * is still trustworthy. */
@@ -99,13 +98,10 @@ export class ActivityPoll {
 		const requestId = ++this.latestRequestId;
 		let response: unknown;
 		try {
-			response = await this.client.request(
-				"evener/activity/read",
-				this.refs?.length ? { refs: [...this.refs] } : {},
-			);
+			response = await this.client.request("evener/activity/read", this.refs?.length ? { refs: [...this.refs] } : {});
 		} catch (error) {
 			if (requestId !== this.latestRequestId) return; // superseded by a newer poll, or stopped
-			if (error instanceof WireError && error.code === CODE_METHOD_NOT_FOUND) {
+			if (isMethodNotFound(error)) {
 				this.unsupported = true;
 				this.stop();
 				this.notify();

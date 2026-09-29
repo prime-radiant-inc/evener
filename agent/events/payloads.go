@@ -36,6 +36,12 @@ type SessionStartData struct {
 	State                   string               `json:"state,omitempty"`
 	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
 	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+	// Sandbox and SandboxNet are the sandbox request the session started
+	// under, as its configuration persists it: the mode name (empty is off)
+	// and the network decision (nil is the default, on). A subagent's thread
+	// reports them as its access (S15).
+	Sandbox    string `json:"sandbox,omitempty"`
+	SandboxNet *bool  `json:"sandbox_net,omitempty"`
 	// TaskPublicationEpoch identifies the process-local TaskStore incarnation;
 	// TaskPublicationRevision orders its snapshots. Both are in-process routing
 	// metadata and never enter event JSON.

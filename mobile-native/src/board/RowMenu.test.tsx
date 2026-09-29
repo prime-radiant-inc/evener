@@ -64,7 +64,10 @@ describe("the preview card (spec 7.3)", () => {
 		expect(text).toContain("open the session to see what went wrong");
 		expect(text).toContain("evener");
 		expect(text).toContain("Studio Mac");
-		expect(flatten(textNode(tree, "Failed").props.style)).toMatchObject({ fontWeight: "600", color: palette.dangerInk });
+		expect(flatten(textNode(tree, "Failed").props.style)).toMatchObject({
+			fontWeight: "600",
+			color: palette.dangerInk,
+		});
 		expect(symbols(tree.root)).toEqual(expect.arrayContaining(["xmark.octagon.fill", "folder", "server.rack"]));
 		const card = pressableLabelled(tree, "Open Fix retry loop");
 		act(() => card.props.onPress());
@@ -72,7 +75,9 @@ describe("the preview card (spec 7.3)", () => {
 	});
 
 	it("says a quiet state's word alone, in inkMid", () => {
-		const tree = render(<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />);
+		const tree = render(
+			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
+		);
 		expect(flatten(textNode(tree, "Idle").props.style)).toMatchObject({ color: palette.inkMid });
 		expect(renderedText(tree)).not.toContain(" · ");
 	});

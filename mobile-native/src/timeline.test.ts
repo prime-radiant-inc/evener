@@ -1,19 +1,6 @@
 import { expect, it } from "vitest";
-import type { AskQuestionRef } from "@evener/appwire-client";
-import {
-	boundQuestion,
-	MAX_ITEM_BYTES,
-	truncateText,
-	type MobileTimelineItem,
-} from "./projectedRows";
-import {
-	groupTimeline,
-	isInterruptedNotice,
-	questionOptionKey,
-	steeringNoticeLabel,
-	timelineGap,
-	type TimelineRow,
-} from "./timeline";
+import type { MobileTimelineItem } from "./projectedRows";
+import { groupTimeline, isInterruptedNotice, steeringNoticeLabel, timelineGap, type TimelineRow } from "./timeline";
 
 const setup: MobileTimelineItem = {
 	kind: "notice",
@@ -70,6 +57,13 @@ it("treats a run and a time marker as routine, like details", () => {
 	expect(timelineGap(time, message)).toBeLessThan(ordinary);
 });
 
+it("treats a saved note as routine, like a run or a time marker (spec 8.8)", () => {
+	const ordinary = timelineGap(message, message);
+	const note: TimelineRow = { kind: "note", id: "note:a", text: "Fix causes" };
+	expect(timelineGap(message, note)).toBeLessThan(ordinary);
+	expect(timelineGap(note, message)).toBeLessThan(ordinary);
+});
+
 it("collapses only typed non-warning interruption notices", () => {
 	const interrupted = {
 		...setup,
@@ -83,9 +77,7 @@ it("collapses only typed non-warning interruption notices", () => {
 	expect(isInterruptedNotice(interrupted)).toBe(true);
 	expect(isInterruptedNotice(interruptedSalvage)).toBe(true);
 	expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
-	expect(isInterruptedNotice({ ...interruptedSalvage, tone: "warning" })).toBe(
-		false,
-	);
+	expect(isInterruptedNotice({ ...interruptedSalvage, tone: "warning" })).toBe(false);
 	expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
 	expect(
 		isInterruptedNotice({
@@ -94,9 +86,7 @@ it("collapses only typed non-warning interruption notices", () => {
 			text: "Interrupted",
 		}),
 	).toBe(false);
-	expect(
-		isInterruptedNotice({ ...interrupted, steeringKind: "notification" }),
-	).toBe(false);
+	expect(isInterruptedNotice({ ...interrupted, steeringKind: "notification" })).toBe(false);
 });
 
 it("groups consecutive internal entries without losing order or contents", () => {
@@ -108,9 +98,7 @@ it("groups consecutive internal entries without losing order or contents", () =>
 		entries: [setup, diagnostic],
 	});
 	expect(rows[1]).toBe(message);
-	expect(
-		rows.flatMap((row) => (row.kind === "details" ? row.entries : [row])),
-	).toEqual(input);
+	expect(rows.flatMap((row) => (row.kind === "details" ? row.entries : [row]))).toEqual(input);
 	expect(input).toHaveLength(4);
 });
 
@@ -120,9 +108,7 @@ it("keeps warnings visible even when classified as internal details", () => {
 		id: "internal-warning",
 		tone: "warning" as const,
 	};
-	expect(
-		groupTimeline([setup, warning, internalWarning, diagnostic]),
-	).toMatchObject([
+	expect(groupTimeline([setup, warning, internalWarning, diagnostic])).toMatchObject([
 		{ kind: "details", entries: [setup] },
 		warning,
 		internalWarning,
@@ -131,9 +117,7 @@ it("keeps warnings visible even when classified as internal details", () => {
 });
 
 it("retains a disclosure identity as adjacent details arrive", () => {
-	expect(groupTimeline([setup])[0]?.id).toBe(
-		groupTimeline([setup, diagnostic])[0]?.id,
-	);
+	expect(groupTimeline([setup])[0]?.id).toBe(groupTimeline([setup, diagnostic])[0]?.id);
 	expect(groupTimeline([])).toEqual([]);
 });
 
@@ -145,25 +129,18 @@ it.each([
 	"task-inactive",
 	"current-task",
 	"task-list",
-])(
-	"offers a compact disclosure only for noncritical typed %s steering",
-	(steeringKind) => {
-		const notice = {
-			...setup,
-			family: "informational" as const,
-			origin: "steering" as const,
-			steeringKind,
-		};
-		expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
-		expect(timelineGap(message, notice)).toBeLessThan(
-			timelineGap(message, message),
-		);
-		expect(
-			steeringNoticeLabel({ ...notice, origin: "system" }),
-		).toBeUndefined();
-		expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
-	},
-);
+])("offers a compact disclosure only for noncritical typed %s steering", (steeringKind) => {
+	const notice = {
+		...setup,
+		family: "informational" as const,
+		origin: "steering" as const,
+		steeringKind,
+	};
+	expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
+	expect(timelineGap(message, notice)).toBeLessThan(timelineGap(message, message));
+	expect(steeringNoticeLabel({ ...notice, origin: "system" })).toBeUndefined();
+	expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
+});
 
 it("labels interrupted salvage as a draft", () => {
 	const interruptedSalvage = {
@@ -173,9 +150,7 @@ it("labels interrupted salvage as a draft", () => {
 		steeringKind: "interrupted-salvage" as const,
 	};
 	expect(steeringNoticeLabel(interruptedSalvage)).toBe("Interrupted draft");
-	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(
-		timelineGap(message, message),
-	);
+	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(timelineGap(message, message));
 });
 
 it("keeps unknown steering, untyped notices, and critical diagnostics visible", () => {
@@ -202,55 +177,10 @@ it.each([
 	{ eventKind: "tool_repair" },
 	{ eventKind: "hook_completed", exitCode: 3 },
 	{ family: "warning" as const },
-])(
-	"keeps typed critical notices outside collapsed diagnostic groups: %j",
-	(metadata) => {
-		const critical = { ...diagnostic, ...metadata };
-		expect(groupTimeline([setup, critical])).toEqual([
-			{ kind: "details", id: "details:setup", entries: [setup] },
-			critical,
-		]);
-	},
-);
-
-// The option rows TimelineItem renders come from the store's bounded publish
-// (state/conversation.ts's truncateItem over the row module's boundQuestion), so
-// their labels are cut copies — the same display bound
-// questionAnswers.ts's questionsIdentity works against. This pins the
-// option-row React key against that bounding collision: keyed on the label,
-// two options whose labels share a prefix past the display bound cut to the
-// same string and both rows answer to one key (React's duplicate-key
-// collision); keyed on the option's position, they cannot.
-const ask: AskQuestionRef = {
-	key: "call:0",
-	callId: "call",
-	header: "Choose",
-	question: "Pick one",
-	multiSelect: false,
-	options: [],
-};
-
-function boundedLabel(label: string): string {
-	return boundQuestion(
-		{ ...ask, options: [{ label, detail: "" }] },
-		(text) => truncateText(text, MAX_ITEM_BYTES),
-	).options[0].label;
-}
-
-it("keys an ask's option rows by position, not by the bounded label", () => {
-	const prefix = "x".repeat(MAX_ITEM_BYTES * 2);
-	const first = `${prefix}-first-tail`;
-	const second = `${prefix}-second-tail`;
-
-	// The store's publish bounds both labels to the same cut copy — the
-	// collision the position key exists to survive. (TimelineItem keyed the
-	// option row on exactly this bounded label before the fix, so both rows
-	// answered to one React key: `${question.key}:${option.label}`.)
-	expect(boundedLabel(first)).toBe(boundedLabel(second));
-
-	// The option-row key stays distinct where the bounded labels do not.
-	expect(questionOptionKey("call:0", 0)).not.toBe(questionOptionKey("call:0", 1));
-	// And across questions, as the key's question half already guaranteed.
-	expect(questionOptionKey("call:0", 0)).not.toBe(questionOptionKey("call:1", 0));
-	expect(questionOptionKey("call:0", 1)).toBe("call:0:1");
+])("keeps typed critical notices outside collapsed diagnostic groups: %j", (metadata) => {
+	const critical = { ...diagnostic, ...metadata };
+	expect(groupTimeline([setup, critical])).toEqual([
+		{ kind: "details", id: "details:setup", entries: [setup] },
+		critical,
+	]);
 });

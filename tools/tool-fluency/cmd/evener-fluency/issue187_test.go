@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
@@ -43,7 +44,7 @@ func subagentMeta(t *testing.T, stateDir, sid, parent string) {
 // does, for tests that exercise provider-visible tool names.
 func mustWireNamesForModel(t *testing.T, modelRef string) map[string]string {
 	t.Helper()
-	wireNames, err := wireNameToCanonicalForModel(modelRef)
+	wireNames, err := wireNameToCanonicalForModel(provider.EmbeddedRegistry(), modelRef)
 	if err != nil {
 		t.Fatalf("wireNameToCanonicalForModel(%q): %v", modelRef, err)
 	}
@@ -607,7 +608,7 @@ func TestWireNamesDeriveFromTheRunProfile(t *testing.T) {
 		{"anthropic/test-model", nil},
 	}
 	for _, tc := range cases {
-		got, err := wireNameToCanonicalForModel(tc.modelRef)
+		got, err := wireNameToCanonicalForModel(provider.EmbeddedRegistry(), tc.modelRef)
 		if err != nil {
 			t.Fatalf("wireNameToCanonicalForModel(%q): %v", tc.modelRef, err)
 		}

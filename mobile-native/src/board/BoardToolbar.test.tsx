@@ -12,6 +12,11 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+// The status reads the provider's connection and its clock.
+const connection = vi.hoisted(() => ({
+	value: { state: "ready", fatal: false, downSince: null as number | null, lastLiveAt: null as number | null },
+}));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
 
 const palette = paletteFor("light");
 
@@ -24,15 +29,18 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-function toolbar(state: ConnectionState, over: { fatal?: boolean; onNewSession?: () => void; disabled?: boolean } = {}) {
-	return (
-		<BoardToolbar
-			state={state}
-			fatal={over.fatal ?? false}
-			newSessionDisabled={over.disabled ?? false}
-			onNewSession={over.onNewSession ?? (() => {})}
-		/>
-	);
+function toolbar(
+	state: ConnectionState,
+	over: { fatal?: boolean; onNewSession?: () => void; disabled?: boolean } = {},
+) {
+	const now = Date.now();
+	connection.value = {
+		state,
+		fatal: over.fatal ?? false,
+		downSince: state === "ready" ? null : now,
+		lastLiveAt: state === "ready" ? null : now,
+	};
+	return <BoardToolbar newSessionDisabled={over.disabled ?? false} onNewSession={over.onNewSession ?? (() => {})} />;
 }
 it("shows the status in the middle ink", () => {
 	const tree = render(toolbar("closed", { fatal: true }));
@@ -65,9 +73,7 @@ it("leads with Select while the Board shows a session, and not otherwise", () =>
 	const onSelect = vi.fn();
 	const select = (tree: ReturnType<typeof render>) =>
 		tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Select");
-	const tree = render(
-		<BoardToolbar state="ready" fatal={false} newSessionDisabled={false} onNewSession={() => {}} onSelect={onSelect} />,
-	);
+	const tree = render(<BoardToolbar newSessionDisabled={false} onNewSession={() => {}} onSelect={onSelect} />);
 	const [button] = select(tree);
 	expect(button.findByType("Text" as never).props.style).toMatchObject({ fontSize: 17, color: palette.accentInk });
 	act(() => button.props.onPress());

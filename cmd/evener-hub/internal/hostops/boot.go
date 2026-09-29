@@ -4,7 +4,8 @@ import "errors"
 
 // RecoverInterrupted is the boot pass of spec §7's interrupted transition: with
 // the store loaded and before it serves any request, every record still in
-// `pending`/`running` transitions to `interrupted` — a terminal unknown outcome
+// `pending`/`running` and carrying no open spawn intent transitions to
+// `interrupted` — a terminal unknown outcome
 // — with a note naming the crash. Each moved record is stamped with the value
 // the durable sequence advanced to for it, in stored order, and the whole pass
 // lands in one atomic write (spec §4 advances the sequence once per record the
@@ -38,6 +39,16 @@ func (s *Store) RecoverInterrupted() (int, error) {
 	for i := range next.Records {
 		record := &next.Records[i]
 		if !record.State.InFlight() {
+			continue
+		}
+		// §3/§7: a record carrying an open `pending-spawn` intent is never
+		// boot's to move to `interrupted`. Its spawn may still be running, and
+		// §3's rule is that such a record stays fenced (and is marked
+		// `orphan-unverified` by the local reap, which runs before this pass)
+		// rather than being silently adopted as a terminal unknown outcome. The
+		// guard matters even though the reap runs first: a reap that could not
+		// write its verdict must not lose the fence to this later pass.
+		if len(record.PendingSpawns) > 0 {
 			continue
 		}
 		record.State = StateInterrupted

@@ -4045,8 +4045,11 @@ func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 }
 
 // If the note can't be carried, the rename must say so rather than silently
-// deleting the old record and its marker: a caller told only "renamed" would
-// have no way to know the sign-in signal was dropped.
+// dropping the sign-in signal - but it still finishes the rename like every
+// other layer's own failure does (the stored-key move and the OAuth record
+// copy/delete are each attempted independently of the others' outcome), so a
+// marker-copy failure alone does not leave the instance under both names at
+// once.
 func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -4077,14 +4080,16 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 	if err == nil || !strings.Contains(err.Error(), "refresh-refusal marker") {
 		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
 	}
-	// The old record (and its marker) is left in place rather than deleted,
-	// since deleting it would drop the only surviving copy of the marker.
-	old, loadErr := authopenai.LoadAuth(f.stateDir, "work")
-	if loadErr != nil {
-		t.Fatalf("the old OAuth record was deleted even though its marker could not be carried: %v", loadErr)
+	// The rename still finished: no duplicate record under both names.
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); !errors.Is(loadErr, authopenai.ErrAuthNotFound) {
+		t.Fatalf("the old OAuth record was left behind even though the rename otherwise finished (err = %v)", loadErr)
 	}
-	if !authopenai.RefreshRejected(f.stateDir, "work", old) {
-		t.Fatal("the old instance's own marker was lost")
+	moved, loadErr := authopenai.LoadAuth(f.stateDir, "personal")
+	if loadErr != nil {
+		t.Fatalf("the new OAuth record is missing: %v", loadErr)
+	}
+	if authopenai.RefreshRejected(f.stateDir, "personal", moved) {
+		t.Fatal("the marker reports carried even though its copy failed")
 	}
 }
 

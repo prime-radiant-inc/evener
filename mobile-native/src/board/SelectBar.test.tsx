@@ -8,6 +8,10 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// The connection status (BoardToolbar's, spec 14) reads the provider.
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),
+}));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -39,9 +43,9 @@ it("runs each action it has sessions for", () => {
 	act(() => button("Pin").props.onPress());
 	act(() => button("Mark as read").props.onPress());
 	act(() => button("Done").props.onPress());
-	expect([handlers.onArchive, handlers.onPin, handlers.onMarkRead, handlers.onDone].map((fn) => fn.mock.calls.length)).toEqual([
-		1, 1, 1, 1,
-	]);
+	expect(
+		[handlers.onArchive, handlers.onPin, handlers.onMarkRead, handlers.onDone].map((fn) => fn.mock.calls.length),
+	).toEqual([1, 1, 1, 1]);
 });
 
 it("disables an action with no sessions to act on, and Done always works", () => {
@@ -52,7 +56,9 @@ it("disables an action with no sessions to act on, and Done always works", () =>
 		expect(ink(label)).toMatchObject({ color: palette.inkLow });
 		act(() => button(label).props.onPress?.());
 	}
-	expect([handlers.onArchive, handlers.onPin, handlers.onMarkRead].map((fn) => fn.mock.calls.length)).toEqual([0, 0, 0]);
+	expect([handlers.onArchive, handlers.onPin, handlers.onMarkRead].map((fn) => fn.mock.calls.length)).toEqual([
+		0, 0, 0,
+	]);
 	expect(button("Done").props.accessibilityState).toEqual({ disabled: false });
 	act(() => button("Done").props.onPress());
 	expect(handlers.onDone).toHaveBeenCalledTimes(1);

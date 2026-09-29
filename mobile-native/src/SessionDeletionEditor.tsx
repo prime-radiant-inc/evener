@@ -41,10 +41,7 @@ export function SessionDeletionEditor({
 }) {
 	const colors = useColors();
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
 				<Copy>{title}</Copy>
 				<Copy muted>{hubName}</Copy>
@@ -58,8 +55,8 @@ export function SessionDeletionEditor({
 					<>
 						<Copy>Deletion is unconfirmed.</Copy>
 						<Copy muted>
-							The request may have been applied. Check its current state before
-							deciding whether to allow another attempt.
+							The request may have been applied. Check its current state before deciding whether to allow another
+							attempt.
 						</Copy>
 						{retryAvailable ? (
 							<Action disabled={busy} onPress={allowRetry}>
@@ -71,8 +68,8 @@ export function SessionDeletionEditor({
 					<>
 						<Copy>Delete saved session?</Copy>
 						<Copy muted>
-							This permanently removes the saved hub history for “{title}”.
-							Other sessions and your local unsent draft are kept.
+							This permanently removes the saved hub history for “{title}”. Other sessions and your local unsent draft
+							are kept.
 						</Copy>
 						{skippedReason ? (
 							<>
@@ -81,13 +78,9 @@ export function SessionDeletionEditor({
 							</>
 						) : null}
 						{lastKnown ? (
-							<Copy muted>
-								Refresh to check the current session before deleting.
-							</Copy>
+							<Copy muted>Check the current session before deleting.</Copy>
 						) : !eligible ? (
-							<Copy muted>
-								End the session runtime before deleting its saved history.
-							</Copy>
+							<Copy muted>End the session runtime before deleting its saved history.</Copy>
 						) : null}
 						<Action disabled={!canDelete} onPress={requestDelete}>
 							Delete saved session
@@ -95,9 +88,11 @@ export function SessionDeletionEditor({
 					</>
 				)}
 				{busy ? <Copy muted>Checking the session…</Copy> : null}
-				<Action disabled={busy} onPress={refresh}>
-					{ready ? "Refresh session" : "Reconnect"}
-				</Action>
+				{ready ? (
+					<Action disabled={busy} onPress={refresh}>
+						Check again
+					</Action>
+				) : null}
 				<Action tone="quiet" disabled={busy} onPress={openSessions}>
 					{missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
 				</Action>

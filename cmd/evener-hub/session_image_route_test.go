@@ -2,7 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -29,16 +27,7 @@ func newRemoteSessionImageServer(
 	seen := func() []appwire.SessionImageParams {
 		return scriptedRemoteHubParams[appwire.SessionImageParams](t, calls(), appwire.MethodEvenerSessionImage)
 	}
-	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
-		return client, nil
-	})
-	source.SetHostClientIfAttached(func(host string) (*appwire.Client, bool) {
-		return client, host == "h1"
-	})
-	srv, web := newHubRPCTestServerWithWeb(t, cfg)
-	t.Cleanup(srv.Close)
-	web.sources.Add(source)
-	return srv, seen
+	return controllerOverHost(t, cfg, client), seen
 }
 
 func getSessionImageRoute(t *testing.T, srv *httptest.Server, path string) *http.Response {
@@ -161,23 +150,15 @@ func TestSessionImageRouteKeepsLocalSessionsLocal(t *testing.T) {
 // A remote route is refused typed when the host is not attached, and it never
 // falls back to a local read — the session id names a different machine.
 func TestSessionImageRouteRefusesUnattachedHost(t *testing.T) {
-	var dials int
-	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
-		dials++
-		return nil, appwire.SessionUnavailable("the attached-only path must never dial")
-	})
-	source.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
-	srv, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
-	t.Cleanup(srv.Close)
-	web.sources.Add(source)
+	srv, dials := controllerOverDetachedHost(t)
 
 	resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sessionImageRouteSha)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unattached host = status %d, want 503", resp.StatusCode)
 	}
-	if dials != 0 {
-		t.Fatalf("the dialing connector ran %d times, want 0", dials)
+	if *dials != 0 {
+		t.Fatalf("the dialing connector ran %d times, want 0", *dials)
 	}
 }
 

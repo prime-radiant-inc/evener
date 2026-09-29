@@ -145,59 +145,63 @@ export type NoticeFamily =
 
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
-export type MobileTimelineItem = (
+export type MobileTimelineItem =
 	// origin is set only when this row projects a user-sourced steering item
 	// (the message was steered into the transcript mid-turn); a userMessage
 	// row never carries it.
-	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
-	| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
-	| {
-			kind: "activity";
-			id: string;
-			label: string;
-			// Durable activity-family discriminator, independent of `label`. The
-			// projection sets this from the item's type (commandExecution → "tool",
-			// reasoning → "reasoning", anything else → "unknown"), never from the
-			// label text. Required: every activity constructor MUST set it to a
-			// concrete ActivityFamily; consumers branch on `family`, never `label`.
-			family: ActivityFamily;
-			state: ActivityState;
-			detail: ActivityDetail;
-			// The operator's summary-only ruling: the row shows ONLY its
-			// summary line (detail.description) — nothing to expand. Set on the
-			// projector's intent entries; the presentation layer renders the line
-			// without an expansion affordance.
-			summaryOnly?: boolean;
-			members?: ActivityMember[];
-		}
-	| {
-			kind: "notice";
-			id: string;
-			origin: NoticeOrigin;
-			steeringKind?: string;
-			eventKind?: string;
-			exitCode?: number;
-			family: NoticeFamily;
-			tone: NoticeTone;
-			text: string;
-		}
-	// The pending ask_user questions of one call, each carrying that call's id
-	// (AskQuestionRef.callId); the composer renders them as interactive cards
-	// with a single "Send answers" action.
-	| { kind: "question"; id: string; questions: AskQuestionRef[] }
-	// thought: a thought the projector didn't show (its redacted critical
-	// reasoning), which the transcript reads as one quiet line.
-	| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
-	| { kind: "attachments"; id: string; items: AttachmentRef[] }
-) & {
-	transcriptKey?: string;
-	sourceTranscriptKey?: string;
-	position?: { entry: number; item: number };
-	// The turn this row's item belongs to (ItemModel.turnId), or the failing
-	// turn's id on a turn-error failure row (failureItem). Absent when the
-	// source carried none.
-	turnId?: string;
-};
+	(
+		| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
+		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
+		// apart from "user" rows so it never renders as a message bubble.
+		| { kind: "note"; id: string; text: string }
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		| {
+				kind: "activity";
+				id: string;
+				label: string;
+				// Durable activity-family discriminator, independent of `label`. The
+				// projection sets this from the item's type (commandExecution → "tool",
+				// reasoning → "reasoning", anything else → "unknown"), never from the
+				// label text. Required: every activity constructor MUST set it to a
+				// concrete ActivityFamily; consumers branch on `family`, never `label`.
+				family: ActivityFamily;
+				state: ActivityState;
+				detail: ActivityDetail;
+				// The operator's summary-only ruling: the row shows ONLY its
+				// summary line (detail.description) — nothing to expand. Set on the
+				// projector's intent entries; the presentation layer renders the line
+				// without an expansion affordance.
+				summaryOnly?: boolean;
+				members?: ActivityMember[];
+		  }
+		| {
+				kind: "notice";
+				id: string;
+				origin: NoticeOrigin;
+				steeringKind?: string;
+				eventKind?: string;
+				exitCode?: number;
+				family: NoticeFamily;
+				tone: NoticeTone;
+				text: string;
+		  }
+		// The pending ask_user questions of one call, each carrying that call's id
+		// (AskQuestionRef.callId); the composer renders them as interactive cards
+		// with a single "Send answers" action.
+		| { kind: "question"; id: string; questions: AskQuestionRef[] }
+		// thought: a thought the projector didn't show (its redacted critical
+		// reasoning), which the transcript reads as one quiet line.
+		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
+		| { kind: "attachments"; id: string; items: AttachmentRef[] }
+	) & {
+		transcriptKey?: string;
+		sourceTranscriptKey?: string;
+		position?: { entry: number; item: number };
+		// The turn this row's item belongs to (ItemModel.turnId), or the failing
+		// turn's id on a turn-error failure row (failureItem). Absent when the
+		// source carried none.
+		turnId?: string;
+	};
 
 // --- the entry mapping --------------------------------------------------------
 
@@ -218,10 +222,7 @@ export interface ProjectedRowContext {
 // show). Attachments emitted alongside a source row are the timeline fold's
 // concern (itemAttachments below), not this mapping's — the row kinds here
 // are the four the projector emits.
-export function projectedRow(
-	entry: ProjectedEntry,
-	context: ProjectedRowContext = {},
-): MobileTimelineItem | null {
+export function projectedRow(entry: ProjectedEntry, context: ProjectedRowContext = {}): MobileTimelineItem | null {
 	switch (entry.kind) {
 		case "item":
 			return rowForItem(entry.item, context);
@@ -296,6 +297,13 @@ function intentRow(
 
 function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimelineItem | null {
 	const identity = itemIdentity(it);
+
+	// A shared-notes update steers in as its own row, never a user bubble
+	// (spec 8.8): it shows at every level, since the projector keeps steering
+	// at every level.
+	if (it.type === "steering" && it.source === "user" && it.steeringKind === "human-note") {
+		return { kind: "note", id: it.id, text: noteFromSteer(it.text), ...identity };
+	}
 
 	// Human steering shares user input's presentation.
 	if (it.type === "userMessage" || (it.type === "steering" && it.source === "user")) {
@@ -376,9 +384,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 
 // A content-free activity row for a live current thought whose text the config
 // hides: label and liveness only, no detail body.
-function reasoningPlaceholderRow(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "activity" }> {
+function reasoningPlaceholderRow(it: ItemModel): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: it.id,
@@ -392,9 +398,7 @@ function reasoningPlaceholderRow(
 // A critical reasoning item is always redacted when it reaches here (the
 // projector only routes a reasoning item to critical while the `reasoning`
 // flag is off). It shows a neutral summary, never the thought.
-function criticalReasoningRow(
-	entry: Extract<ProjectedEntry, { kind: "critical" }>,
-): MobileTimelineItem {
+function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" }>): MobileTimelineItem {
 	const it = entry.item;
 	const identity = itemIdentity(it);
 	if (entry.redacted) {
@@ -414,6 +418,17 @@ function criticalReasoningRow(
 }
 
 // --- item helpers ---------------------------------------------------------------
+
+// The daemon's shared-notes steer opens with this marker (last-resort
+// provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
+// the note itself or "(whiteboard cleared)" for an emptied note.
+const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
+const NOTE_STEER_CLEARED = "(whiteboard cleared)";
+
+export function noteFromSteer(text: string): string {
+	const stripped = text.startsWith(NOTE_STEER_PREFIX) ? text.slice(NOTE_STEER_PREFIX.length) : text;
+	return stripped === NOTE_STEER_CLEARED ? "" : stripped;
+}
 
 function isAskUser(it: ItemModel): boolean {
 	return it.type === "commandExecution" && it.toolName === "ask_user";
@@ -523,11 +538,7 @@ function questionRow(
 
 // Attachment rows keyed by their item and index; the package resolved each
 // image's src at hydrate (url, inline bytes, sha route, path, name).
-function attachmentRows(
-	itemId: string,
-	images: ItemImage[] | undefined,
-	prefix = "",
-): AttachmentRef[] | undefined {
+function attachmentRows(itemId: string, images: ItemImage[] | undefined, prefix = ""): AttachmentRef[] | undefined {
 	if (!images?.length) return undefined;
 	return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
 }
@@ -562,17 +573,16 @@ function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
 	return byCall;
 }
 
-// liveAskQuestions has no memory of its own (its own doc comment) — it rescans
-// every turn's items and re-parses every pending ask_user's argumentsJson on
-// every call, gated on model.askPending (#1731 piece A round 4). Keyed on
-// model.turns AND model.askPending, this reuses ONE scan for every caller
-// that shares both: projectTimeline's own default argument below, and
-// pendingQuestions (mobile-native/src/questionAnswers.ts), which both run
-// against the same conversation within one publish. It does not make the scan
-// itself incremental — the reducer (reducer.ts's mapTurn/settleFirstMatchingTurn)
-// returns a new turns array on every fold, even when only the newest turn
-// changed, so a delta still pays for one scan; this removes paying for it twice
-// or more within that one delta.
+// liveAskQuestions memoizes each ask_user item's parse now (#1709), but it
+// still rescans every turn's items per call, gated on model.askPending (#1731
+// piece A round 4). Keyed on model.turns AND model.askPending, this reuses ONE
+// scan for every caller that shares both: projectTimeline's own default
+// argument below, and pendingQuestions (mobile-native/src/questionAnswers.ts),
+// which both run against the same conversation within one publish. It does not
+// make the scan itself incremental — the reducer (reducer.ts's
+// mapTurn and mergeHistory) returns a new turns array on every fold,
+// even when only the newest turn changed, so a delta still pays for one scan;
+// this removes paying for it twice or more within that one delta.
 //
 // askPending has to be part of the key, not just turns: a status-only frame
 // (conversation.ts's changesRows) can flip askPending while handing back the
@@ -584,9 +594,7 @@ const asksByTurns = new WeakMap<
 	{ askPending: boolean; asks: ReadonlyMap<string, AskQuestionRef[]> }
 >();
 
-export function liveAsksFor(
-	model: ThreadModel,
-): ReadonlyMap<string, AskQuestionRef[]> {
+export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestionRef[]> {
 	const cached = asksByTurns.get(model.turns);
 	if (cached !== undefined && cached.askPending === model.askPending) {
 		return cached.asks;
@@ -598,11 +606,7 @@ export function liveAsksFor(
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_STEERING_KINDS = new Set([
-	"loop-detected",
-	"turn-limit",
-	"provider-failure",
-]);
+const WARNING_STEERING_KINDS = new Set(["loop-detected", "turn-limit", "provider-failure"]);
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
@@ -635,11 +639,8 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-function steeringNotice(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone =
-		it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
+function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	const tone: NoticeTone = it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
 	return {
 		kind: "notice",
 		id: it.id,
@@ -651,9 +652,7 @@ function steeringNotice(
 	};
 }
 
-function systemNotice(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "notice" }> {
+function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
@@ -672,9 +671,7 @@ function systemNotice(
 
 // A warning's attention row, or null when it carries nothing to show (the web
 // renders no row for exactly that case).
-function warningFailure(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "failure" }> | null {
+function warningFailure(it: ItemModel): Extract<MobileTimelineItem, { kind: "failure" }> | null {
 	const rawTitle = it.warning?.title;
 	// The blank check is exactly "no titled part AND no body part": a warning
 	// with nothing to show produces no row (the web renders none either). The
@@ -705,15 +702,11 @@ interface PreActivity {
 // carried for the renderer that expands them. A run of one is that row itself.
 // The caller groups by family (projectTimeline's flushActivityRun), so this is
 // handed a homogeneous run and does no regrouping of its own.
-function clusterActivityRun(
-	run: PreActivity[],
-): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
+function clusterActivityRun(run: PreActivity[]): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
 	const first = run[0]?.item;
 	if (first === undefined) return undefined;
 	if (run.length === 1) return first;
-	const state: ActivityState = run.some((p) => p.item.state === "running")
-		? "running"
-		: "completed";
+	const state: ActivityState = run.some((p) => p.item.state === "running") ? "running" : "completed";
 	const members: ActivityMember[] = run.map(({ item }) => ({
 		id: item.id,
 		label: item.label,
@@ -772,10 +765,7 @@ interface TurnRows {
 // items never merge (each failed call is its own attention row, exactly the
 // pre-re-home family rules); reasoning rows — the live-thought placeholder
 // included — merge under one family; completed tools merge under "tool".
-function clusterFamilyFor(
-	entry: ProjectedEntry,
-	row: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string {
+function clusterFamilyFor(entry: ProjectedEntry, row: Extract<MobileTimelineItem, { kind: "activity" }>): string {
 	if (row.state === "failed" && (row.family === "tool" || row.family === "unknown")) {
 		return `failed:${row.id}`;
 	}
@@ -787,10 +777,7 @@ function clusterFamilyFor(
 // The attachments emitted alongside an entry's row: the item mapping's own
 // rule (itemAttachments) for the kinds that carry them, none for the
 // content-free placeholder and the redacted critical failure.
-function attachmentsFor(
-	entry: ProjectedEntry,
-	turnStatus: string | undefined,
-): AttachmentRef[] | undefined {
+function attachmentsFor(entry: ProjectedEntry, turnStatus: string | undefined): AttachmentRef[] | undefined {
 	switch (entry.kind) {
 		case "item":
 		case "critical":
@@ -815,7 +802,7 @@ function attachmentsFor(
 
 // Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
 // UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
-// and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
+// and mergeHistory), so a delta into the newest turn leaves every older
 // turn's rows exactly as they were. Re-deriving them per frame is the transcript's
 // whole width of work — the shared projector's classification scan for the turn
 // plus this module's row construction, which still pays a JSON parse per ask and
@@ -845,10 +832,7 @@ function rowsForProjectedTurn(
 	fingerprint: string,
 ): Ordered[] {
 	const cached = turnRowCache.get(turn)?.get(fingerprint);
-	if (
-		cached !== undefined &&
-		cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
-	) {
+	if (cached !== undefined && cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)) {
 		return cached.entries;
 	}
 	// Project this turn alone. One turn in, one ProjectedTurn out, carrying the
@@ -983,11 +967,7 @@ export function projectTimeline(
 			items.push(entry.item);
 		}
 		// Attachments follow the item that produced them.
-		if (
-			!(entry.type === "activity" && entry.pre) &&
-			entry.attachments &&
-			entry.attachments.length > 0
-		) {
+		if (!(entry.type === "activity" && entry.pre) && entry.attachments && entry.attachments.length > 0) {
 			items.push({ kind: "attachments", ...attachmentsRow(entry.item, entry.attachments) });
 		}
 	}
@@ -1053,9 +1033,7 @@ export function attachmentSourceId(item: MobileTimelineItem): string | null {
 }
 
 export function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-	return item.kind === "attachments"
-		? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-		: null;
+	return item.kind === "attachments" ? (item.sourceTranscriptKey ?? attachmentSourceId(item)) : null;
 }
 
 export function timelineIdentity(item: MobileTimelineItem): string {
@@ -1152,12 +1130,26 @@ export type BoundText = (text: string) => string;
 // (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
 // as much as the output is.
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
+	const description = detail.description ? bound(detail.description) : detail.description;
+	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
+	const output = detail.output ? bound(detail.output) : detail.output;
+	const error = detail.error ? bound(detail.error) : detail.error;
+	// Nothing was cut: hand back the source detail so a settled row keeps its
+	// identity across publishes (see truncateItem).
+	if (
+		description === detail.description &&
+		args === detail.arguments &&
+		output === detail.output &&
+		error === detail.error
+	) {
+		return detail;
+	}
 	return {
 		...detail,
-		description: detail.description ? bound(detail.description) : detail.description,
-		arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
-		output: detail.output ? bound(detail.output) : detail.output,
-		error: detail.error ? bound(detail.error) : detail.error,
+		description,
+		arguments: args,
+		output,
+		error,
 	};
 }
 
@@ -1171,23 +1163,34 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 // projected from — so a submitted answer always names exactly the label the
 // agent offered, never a cut remnant, and two options sharing a prefix
 // longer than the bound stay distinguishable to the answer composer.
-export function boundQuestion(
-	question: AskQuestionRef,
-	bound: BoundText,
-): AskQuestionRef {
+export function boundQuestion(question: AskQuestionRef, bound: BoundText): AskQuestionRef {
+	const header = bound(question.header);
+	const text = bound(question.question);
+	const why = question.why === undefined ? undefined : bound(question.why);
+	const ifUnanswered = question.ifUnanswered === undefined ? undefined : bound(question.ifUnanswered);
+	const options = question.options.map((option) => {
+		const label = bound(option.label);
+		const detail = bound(option.detail);
+		return label === option.label && detail === option.detail ? option : { ...option, label, detail };
+	});
+	// Nothing was cut: hand back the source question so a settled row keeps its
+	// identity across publishes (see truncateItem).
+	if (
+		header === question.header &&
+		text === question.question &&
+		why === question.why &&
+		ifUnanswered === question.ifUnanswered &&
+		options.every((option, index) => option === question.options[index])
+	) {
+		return question;
+	}
 	return {
 		...question,
-		header: bound(question.header),
-		question: bound(question.question),
-		...(question.why === undefined ? {} : { why: bound(question.why) }),
-		...(question.ifUnanswered === undefined
-			? {}
-			: { ifUnanswered: bound(question.ifUnanswered) }),
-		options: question.options.map((option) => ({
-			...option,
-			label: bound(option.label),
-			detail: bound(option.detail),
-		})),
+		header,
+		question: text,
+		...(why === undefined ? {} : { why }),
+		...(ifUnanswered === undefined ? {} : { ifUnanswered }),
+		options,
 	};
 }
 
@@ -1196,51 +1199,72 @@ export function boundQuestion(
 // own detail is bounded too — not just the cluster's top-level detail (the first
 // member's). A pasted user message, a daemon notice and a tool failure's stack
 // are as large as anything that streams, so each kind that carries prose is here.
+// When the bound cuts nothing (the common case: every settled row is already
+// under the limit, and the store's caching bound returns its input unchanged),
+// the row is returned by reference. capAndTruncate runs on every publish, so
+// cloning here would discard the row identity the per-turn cache
+// (rowsForProjectedTurn) hands an untouched turn's rows, allocating a fresh
+// row per retained row per frame while streaming.
 export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
 	switch (item.kind) {
 		case "user":
-			return { ...item, text: bound(item.text) };
-		case "assistant":
-			return { ...item, markdown: bound(item.markdown) };
-		case "notice":
-			return { ...item, text: bound(item.text) };
-		case "failure":
-			return { ...item, title: bound(item.title), detail: bound(item.detail) };
-		case "question":
-			return {
-				...item,
-				questions: item.questions.map((question) => boundQuestion(question, bound)),
-			};
-		case "activity":
+		case "note":
+		case "notice": {
+			const text = bound(item.text);
+			return text === item.text ? item : { ...item, text };
+		}
+		case "assistant": {
+			const markdown = bound(item.markdown);
+			return markdown === item.markdown ? item : { ...item, markdown };
+		}
+		case "failure": {
+			const title = bound(item.title);
+			const detail = bound(item.detail);
+			return title === item.title && detail === item.detail ? item : { ...item, title, detail };
+		}
+		case "question": {
+			const questions = item.questions.map((question) => boundQuestion(question, bound));
+			return questions.every((question, index) => question === item.questions[index]) ? item : { ...item, questions };
+		}
+		case "activity": {
 			// The label is rendered twice on the phone — the disclosure line and its
 			// accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
 			// bounded like the detail it heads, for the row and for every member.
+			const label = bound(item.label);
+			const detail = truncateActivityDetail(item.detail, bound);
+			const sourceMembers = item.members;
+			const members = sourceMembers?.map((member) => {
+				const memberLabel = bound(member.label);
+				const memberDetail = truncateActivityDetail(member.detail, bound);
+				return memberLabel === member.label && memberDetail === member.detail
+					? member
+					: { ...member, label: memberLabel, detail: memberDetail };
+			});
+			if (
+				label === item.label &&
+				detail === item.detail &&
+				(members === undefined || members.every((member, index) => member === sourceMembers?.[index]))
+			) {
+				return item;
+			}
 			return {
 				...item,
-				label: bound(item.label),
-				detail: truncateActivityDetail(item.detail, bound),
-				...(item.members
-					? {
-							members: item.members.map((member) => ({
-								...member,
-								label: bound(member.label),
-								detail: truncateActivityDetail(member.detail, bound),
-							})),
-						}
-					: {}),
+				label,
+				detail,
+				...(members ? { members } : {}),
 			};
-		case "attachments":
+		}
+		case "attachments": {
 			// Only the display name is bounded — it is plain display text the
 			// renderer inserts into accessibility labels and modal copy. src is a
 			// data URI or a resolved fetch URL, and cutting it yields something the
 			// renderer cannot decode, so it passes through verbatim.
-			return {
-				...item,
-				items: item.items.map((attachment) => ({
-					...attachment,
-					name: attachment.name ? bound(attachment.name) : attachment.name,
-				})),
-			};
+			const items = item.items.map((attachment) => {
+				const name = attachment.name ? bound(attachment.name) : attachment.name;
+				return name === attachment.name ? attachment : { ...attachment, name };
+			});
+			return items.every((attachment, index) => attachment === item.items[index]) ? item : { ...item, items };
+		}
 		default:
 			// A forward-compatible row kind: nothing here knows its fields, so it
 			// passes through untouched rather than guessed at.

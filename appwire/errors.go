@@ -45,6 +45,11 @@ const (
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
 	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
+	// ErrorPathOutsideSession marks a file read whose path, or a symlink along
+	// it, leads outside the session's working directory. It shares
+	// CodeInvalidParams; the controller's /doc/file proxy maps it to 403, the
+	// status the local route answers.
+	ErrorPathOutsideSession ErrorInfo = "pathOutsideSession"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -115,6 +120,17 @@ const (
 	// CodeConflict with the other refusals, so a client matches this
 	// discriminant, never the code.
 	ErrorCursorTooLarge ErrorInfo = "cursor-too-large"
+	// ErrorCursorInvalidated marks deploy pipeline 08b's mid-pagination
+	// compaction refusal (§§8, 11): a compaction removed rows at or before the
+	// cursor's `pos` since the cursor was minted, so the continuation cannot
+	// describe the record set it resumes into and the client restarts from the
+	// first page. Its data is CursorInvalidatedErrorData — the compacting
+	// `compactSeq` (the envelope-global value, never the live one when a later
+	// compaction advanced it) plus the affected host's bounds entry as stored at
+	// mint. Distinct from stale-entry's generation-mismatch re-list refusal;
+	// shares CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorInvalidated ErrorInfo = "cursor-invalidated"
 	// ErrorHostBusyOperation marks a deploy-pipeline refusal because the host's
 	// per-host gate is held by a deploy/restart operation — including an
 	// Ensure-triggered deploy, which holds its own operation-store record
@@ -184,6 +200,29 @@ const (
 	// class, with the unknown id in the data. A cleared remnant whose resolved
 	// record still survives is NOT this arm: it returns `already-cleared`.
 	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
+	// ErrorFencingFailure marks crash-fencing spec 08c §8's quarantine refusal:
+	// a host with an open fencing-quarantine marker admits no new lifecycle or
+	// mutation call past admission until the operator resolves the
+	// `orphan-unverified` record through `evener/host/orphan-resolve`. Conflict
+	// class, with the quarantined host in the data. It is also the class a
+	// fencing kill/wait timeout's outcome reports.
+	ErrorFencingFailure ErrorInfo = "fencing-failure"
+	// ErrorFencingHelperAbsent marks §8's helper gate: the pinned fencing helper
+	// is absent, the remote cannot run it, or the bootstrap-guard claim was lost
+	// or unverifiable. Conflict class, with the host and the helper version the
+	// operator must install out-of-band in the data. Never `probe-failed`, so a
+	// client never mistakes the gate for a retryable probe failure.
+	ErrorFencingHelperAbsent ErrorInfo = "fencing-helper-absent"
+	// ErrorFencingHelperUntrusted marks §8's helper gate for an older,
+	// incompatible, or explicitly untrusted helper: the same data shape as the
+	// absent arm, naming the distrusted version in place of the absent one.
+	ErrorFencingHelperUntrusted ErrorInfo = "fencing-helper-untrusted"
+	// ErrorOrphanFencedBusy marks §8's distinct discriminator on
+	// `teardown-retry`/`teardown-recover` while an `orphan-unverified` record is
+	// open for the host: the refusal names the blocking record id plus the
+	// `orphan-resolve` next step, never `host-busy-transient`, because a bare
+	// retry of the repair call is silently refused by the fence. Conflict class.
+	ErrorOrphanFencedBusy ErrorInfo = "orphan-fenced-busy"
 	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
 	// found the file moved between the validation read and the check, after
 	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and
@@ -249,6 +288,36 @@ func CursorTooLarge(capBytes int, message string) WireError {
 		Data: CursorTooLargeErrorData{
 			ErrorData: ErrorData{EvenerErrorInfo: ErrorCursorTooLarge},
 			CapBytes:  capBytes,
+		},
+	}
+}
+
+// CursorInvalidatedErrorData is the mid-pagination compaction refusal's data
+// (deploy pipeline 08b §11): the standard ErrorData plus the compacting
+// `compactSeq` (the envelope-global value), the affected host, and that host's
+// `bounds` entry as stored at the cursor's mint — the {generation,
+// incarnationId, presenceEpoch} object, or the literal "absent"
+// (HostBoundaryAbsent), the same value union hostBoundaries carries.
+type CursorInvalidatedErrorData struct {
+	ErrorData
+	CompactSeq uint64 `json:"compactSeq"`
+	Host       string `json:"host"`
+	Bounds     any    `json:"bounds"`
+}
+
+// CursorInvalidated is deploy pipeline 08b's `cursor-invalidated` refusal: a
+// mid-pagination compaction removed rows at or before the cursor's position,
+// so the client restarts from the first page. bounds carries the affected
+// host's stored bounds entry — a HostBoundary, or HostBoundaryAbsent.
+func CursorInvalidated(compactSeq uint64, host string, bounds any, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorInvalidatedErrorData{
+			ErrorData:  ErrorData{EvenerErrorInfo: ErrorCursorInvalidated},
+			CompactSeq: compactSeq,
+			Host:       host,
+			Bounds:     bounds,
 		},
 	}
 }
@@ -508,6 +577,14 @@ func TranscriptItemCursorStale() WireError {
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
 		},
+	}
+}
+
+func PathOutsideSession(message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorPathOutsideSession},
 	}
 }
 

@@ -13,7 +13,7 @@
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
 import { Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors } from "../ui";
 import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
 
 export interface SheetController {
@@ -37,7 +37,11 @@ export interface SheetOptions {
 	onClosed?: () => void;
 }
 
-export function useSheet({ dirty = false, discardTitle = DISCARD_TITLE, onClosed }: SheetOptions = {}): SheetController {
+export function useSheet({
+	dirty = false,
+	discardTitle = DISCARD_TITLE,
+	onClosed,
+}: SheetOptions = {}): SheetController {
 	const navigation = useNavigation();
 	const finishing = useRef(false);
 	// A refused swipe down (native-stack's onNativeDismissCancelled), Cancel and
@@ -103,7 +107,7 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 					{title ? (
 						<Text
 							accessibilityRole="header"
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							numberOfLines={1}
 							style={{
 								flexShrink: 1,
@@ -119,12 +123,7 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 					) : null}
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
 						{done ? (
-							<HeaderButton
-								label={done.label ?? "Done"}
-								strong
-								disabled={done.disabled}
-								onPress={done.onPress}
-							/>
+							<HeaderButton label={done.label ?? "Done"} strong disabled={done.disabled} onPress={done.onPress} />
 						) : null}
 					</View>
 				</View>
@@ -166,7 +165,7 @@ function HeaderButton({
 			})}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.accentInk,
 					fontSize: 17 * scale,

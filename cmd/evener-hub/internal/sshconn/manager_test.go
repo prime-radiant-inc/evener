@@ -405,6 +405,8 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		// With no BuildSource/BuildBinary there is no deploy to offer, so the
@@ -435,6 +437,8 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		ch, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -464,6 +468,8 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 			startFn: goodStartFn(t),
 		}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		// The refusal is a fact about the binary, but with no deploy configured
@@ -494,6 +500,8 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		ch, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -533,6 +541,8 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 				return os.WriteFile(out, []byte("bin"), 0o755)
 			},
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		if !errors.Is(err, ErrLaunchContract) {
@@ -566,6 +576,8 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 			controllerVersionOverride: "dev",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 			t.Fatalf("Ensure: %v", err)

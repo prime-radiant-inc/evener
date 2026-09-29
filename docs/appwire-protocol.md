@@ -138,7 +138,7 @@ no router (reserved).
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
-| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -195,6 +195,7 @@ no router (reserved).
 | `evener/settings/agentsDoc/get` | hub | `EmptyParams` | `AgentsDocResponse` | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
 | `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
+| `evener/delegate/stop` | both | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
 | `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
@@ -204,6 +205,7 @@ no router (reserved).
 | `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
+| `evener/host/orphan-resolve` | hub | `HostOrphanResolveParams` | `OperationRecord` | Resolves one orphan-unverified record by its opaque id (crash-fencing 08c §5): re-runs the persisted-boundary enumeration under the caller's session authentication, validates a present attestation (caller, record, boundary, freshness), and on a clean boundary transitions the record to interrupted with the orphanResolved marker and the attestation, clearing the record's boundary, every open pending-spawn intent and the per-host quarantine marker in one atomic store write. Members still present refuse transient-busy; an unknown id is typed not-found; a boundary-unavailable record resolves only with the attestation; a lost-response retry replays the persisted resolution. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
 | `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
@@ -211,11 +213,12 @@ no router (reserved).
 | `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 | `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
+| `evener/session/document` | hub | `SessionDocumentParams` | `SessionDocumentResponse` | Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route. |
 
 ## Notifications (server → client)
 
 Pushed to subscribed connections; no `id`. The web client maps these in
-`cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`).
+`cmd/serf-hub/assets/appwire.js` (`eventsFromNotification`).
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
@@ -569,6 +572,22 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `lifecycle` | `appwire.DaemonLifecycle` |  |  |
+
+
+### `DelegateStopParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `delegateId` | `string` |  |  |
+
+
+### `DelegateStopResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `appwire.DelegateStopOutcome` |  |  |
 
 
 ### `DirsCreateParams`
@@ -955,6 +974,14 @@ _(no fields)_
 | `incarnationId` | `string` | yes |  |
 | `hostBoundaries` | `map[string]interface {}` | yes |  |
 | `nextCursor` | `string` | yes |  |
+
+
+### `HostOrphanResolveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
 
 
 ### `HostPlan`
@@ -1838,6 +1865,28 @@ _(no fields)_
 | `notices` | `[]appwire.HubNotice` |  |  |
 
 
+### `OperationRecord`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+| `orphanBoundary` | `*[]appwire.BoundaryEntry` | yes |  |
+| `orphanResolved` | `bool` | yes |  |
+| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
+| `progress` | `[]appwire.OperationProgressEntry` | yes |  |
+| `result` | `*appwire.OperationResult` | yes |  |
+| `createdAt` | `string` |  |  |
+| `updatedAt` | `string` |  |  |
+| `hostRemoved` | `bool` |  |  |
+| `compacted` | `bool` | yes |  |
+
+
 ### `OverlayDeltaParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2084,11 +2133,21 @@ _(no fields)_
 | `escalationId` | `string` |  |  |
 
 
+### `SearchHit`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `transcriptKey` | `string` |  |  |
+| `position` | `appwire.ThreadItemPosition` |  |  |
+| `snippet` | `[]appwire.SearchSnippetPart` |  |  |
+
+
 ### `SearchParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `query` | `string` | yes |  |
+| `scope` | `string` | yes |  |
 
 
 ### `SearchResponse`
@@ -2097,6 +2156,33 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `live` | `[]appwire.SearchResult` |  |  |
 | `past` | `[]appwire.SearchResult` |  |  |
+| `inSessions` | `[]appwire.SearchResult` | yes |  |
+| `scope` | `string` | yes |  |
+
+
+### `SearchResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` |  |  |
+| `state` | `string` |  |  |
+| `age` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
+| `archived` | `bool` | yes |  |
+| `hits` | `[]appwire.SearchHit` | yes |  |
+| `hitCount` | `int` | yes |  |
+
+
+### `SearchSnippetPart`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `text` | `string` |  |  |
+| `match` | `bool` | yes |  |
 
 
 ### `SessionDeleteParams`
@@ -2113,6 +2199,24 @@ _(no fields)_
 | `deleted` | `[]string` |  |  |
 | `skipped` | `[]appwire.DeletionSkip` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionDocumentParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessionId` | `string` |  |  |
+| `path` | `string` |  |  |
+
+
+### `SessionDocumentResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `[]uint8` |  |  |
+| `totalSize` | `int64` |  |  |
+| `revision` | `string` | yes |  |
+| `modifiedAt` | `int64` | yes |  |
 
 
 ### `SessionImageParams`

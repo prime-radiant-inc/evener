@@ -4,13 +4,7 @@
 // never shows the journal's own error text: while a change is unresolved,
 // `ready` is false and the Board hides its organization actions.
 import { useIsFocused } from "@react-navigation/native";
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { useConnection } from "../ConnectionProvider";
 import { organizationJournal } from "../nativeOrganization";
@@ -51,16 +45,10 @@ export function useBoardOrganization(hubId: string): BoardOrganization {
 				: null,
 		[client, belongs],
 	);
-	const binding = useMemo(
-		() => ({ client, pinPages, ready, focused }),
-		[client, pinPages, ready, focused],
-	);
+	const binding = useMemo(() => ({ client, pinPages, ready, focused }), [client, pinPages, ready, focused]);
 	const owner = useRef<typeof binding | null>(binding);
 	owner.current = binding;
-	const isCurrent = useCallback(
-		() => owner.current === binding && binding.ready && binding.focused,
-		[binding],
-	);
+	const isCurrent = useCallback(() => owner.current === binding && binding.ready && binding.focused, [binding]);
 	const actions = useMemo(() => {
 		if (!client || !pinPages) return null;
 		return new NavigationActions(
@@ -79,10 +67,7 @@ export function useBoardOrganization(hubId: string): BoardOrganization {
 			journal,
 		);
 	}, [client, pinPages, journal, isCurrent]);
-	const actionState = useSyncExternalStore(
-		actions?.subscribe ?? noSubscription,
-		actions?.getSnapshot ?? noSnapshot,
-	);
+	const actionState = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	useEffect(() => {
 		if (ready && focused) void actions?.reconcile();
 		return () => {

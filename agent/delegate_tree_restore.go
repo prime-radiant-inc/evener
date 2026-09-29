@@ -416,20 +416,13 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 				stabilize:     true,
 			}}}, nil, nil
 		}
-		packet := delegateStoppedTerminalPacket()
-		deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
-		if _, err := c.appendLocked(delegateRunFinishedEvent(
-			lease,
-			delegatestore.OutcomeStopped,
-			delegatestore.DispositionTerminalError,
-			"stopped_by_parent",
-			c.now(),
-			deliveryID,
-			&packet,
-		)); err != nil {
-			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, err)
+		plans, cancel, finishErr := c.executeFinishDecisionLocked(c.reduceStoppedGenerationFinishIntent(finishIntent{
+			lease: lease,
+			latch: finishLatchNone,
+		}))
+		if finishErr != nil {
+			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, finishErr)
 		}
-		plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
 		return plans, cancel, nil
 	}
 	return delegateMutationPlans{}, nil, nil
@@ -775,31 +768,23 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 			if aggregate.PreparedTerminal == nil {
 				return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s: settling without prepared terminal", lease.delegateID)
 			}
-			finish := delegatePreparedFinish(*aggregate.PreparedTerminal)
-			if !finish.endedAt.IsZero() {
-				endedAt = finish.endedAt
+			settled := settledGenerationFinish(*aggregate.PreparedTerminal, delegateFinish{})
+			if !settled.prepared.endedAt.IsZero() {
+				endedAt = settled.prepared.endedAt
 			}
 			events = []delegatestore.Event{delegateRunFinishedEvent(
 				lease,
-				finish.outcome,
-				finish.disposition,
-				finish.reason,
+				settled.outcome,
+				settled.disposition,
+				settled.reason,
 				endedAt,
 				delegateDeliveryID(lease.delegateID, lease.generation),
 				nil,
 			)}
-			events = delegateFinishMetadataEvents(events, lease, finish, finish.outcome, finish.reason)
+			events = delegateFinishMetadataEvents(events, lease, settled.meta, settled.outcome, settled.reason)
 		case delegatestore.PhaseStopping:
-			stoppedPacket := delegateStoppedTerminalPacket()
-			events = []delegatestore.Event{delegateRunFinishedEvent(
-				lease,
-				delegatestore.OutcomeStopped,
-				delegatestore.DispositionTerminalError,
-				"stopped_by_parent",
-				endedAt,
-				delegateDeliveryID(lease.delegateID, lease.generation),
-				&stoppedPacket,
-			)}
+			event, _ := stoppedGenerationFinishEvent(lease, nil, endedAt)
+			events = []delegatestore.Event{event}
 		default:
 			return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s: open run has phase %s", lease.delegateID, aggregate.Phase)
 		}

@@ -16,29 +16,26 @@
 // the store owns profile/connection/conversation generations and view publication.
 
 import type {
-  AnyNotification,
-  AppwireClient,
-  InputItem,
-  MethodName,
-  MethodTypes,
-  ModelListParams,
-  ModelListResponse,
-  MutationReceipt,
-  Thread,
-  ThreadCapabilities,
-  ThreadClearResponse,
-  ThreadForkResponse,
-  ThreadReadResponse,
-  ThreadTurnsListResponse,
-  TranscriptDisplayConfigV1,
-  TurnCancelQueuedResponse,
-  TurnDrainAsSteerResponse,
-  TurnPromoteQueuedAsSteerResponse,
+	AnyNotification,
+	AppwireClient,
+	InputItem,
+	MethodName,
+	MethodTypes,
+	ModelListParams,
+	ModelListResponse,
+	MutationReceipt,
+	Thread,
+	ThreadCapabilities,
+	ThreadClearResponse,
+	ThreadForkResponse,
+	ThreadReadResponse,
+	ThreadTurnsListResponse,
+	TranscriptDisplayConfigV1,
+	TurnCancelQueuedResponse,
+	TurnDrainAsSteerResponse,
+	TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
-import {
-  hydrateThread,
-  isStaleCursorError,
-} from "@evener/appwire-client";
+import { hydrateThread, isStaleCursorError } from "@evener/appwire-client";
 import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
 import { projectConversation } from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "./activity";
@@ -66,21 +63,21 @@ const FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID = "mobile-fork-entry";
 // so the ordinal is transcriptEntryIndex - 1; part is 0 (the divergence names
 // a transcript position, not a specific content part).
 function forkEntrySourceItemKey(transcriptEntryIndex: number): string {
-  return `apptranscript-item-v2:${FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID}:${transcriptEntryIndex - 1}:0`;
+	return `apptranscript-item-v2:${FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID}:${transcriptEntryIndex - 1}:0`;
 }
 
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
 // pulling the real class's reconnect/heartbeat machinery.
 export interface ConversationClientLike {
-  request<M extends MethodName>(
-    method: M,
-    params: MethodTypes[M]["params"],
-    opts?: { timeoutMs?: number },
-  ): Promise<MethodTypes[M]["result"]>;
-  onNotification(cb: (n: AnyNotification) => void): () => void;
-  forceStop?(ref: string): Promise<void>;
-  resumeThread?(ref: string): Promise<MethodTypes["thread/resume"]["result"]>;
+	request<M extends MethodName>(
+		method: M,
+		params: MethodTypes[M]["params"],
+		opts?: { timeoutMs?: number },
+	): Promise<MethodTypes[M]["result"]>;
+	onNotification(cb: (n: AnyNotification) => void): () => void;
+	forceStop?(ref: string): Promise<void>;
+	resumeThread?(ref: string): Promise<MethodTypes["thread/resume"]["result"]>;
 }
 
 // A function that generates a clientMutationId. Default uses crypto.randomUUID
@@ -96,81 +93,68 @@ export type IdFactory = () => string;
 // the mutations it offers can never disagree about the instance.
 
 export interface ConversationServiceOptions<ReadLease = unknown> {
-  readonly idFactory?: IdFactory;
-  // The clock hydrateThread stamps the model with; tests inject a fixed one.
-  readonly now?: () => number;
-  // The transcript display config the projection runs at (D24-5's content
-  // dimension, routed through the seam): read at projection time, so a read
-  // that starts under one level and lands after the user changed it projects
-  // at the level the store will republish anyway. Null/undefined means the
-  // show-everything default — a hub that does not support the settings, or a
-  // host that has not supplied the resolver.
-  readonly resolveDisplayConfig?: () => TranscriptDisplayConfigV1 | null;
-  // Native wires these to its durable mutation host: onReadStart leases the
-  // target just before the raw authoritative read, and onReadComplete hands
-  // the same raw response back so the runtime can settle its dispatch gate
-  // from exactly the snapshot that produces the conversation projection. A
-  // host that has no runtime passes neither and nothing changes.
-  readonly onReadStart?: (
-    threadRef: string,
-    expectedThreadId?: string,
-  ) => ReadLease | undefined;
-  readonly onReadComplete?: (
-    lease: ReadLease | undefined,
-    response: ThreadReadResponse,
-  ) => void | Promise<unknown>;
+	readonly idFactory?: IdFactory;
+	// The clock hydrateThread stamps the model with; tests inject a fixed one.
+	readonly now?: () => number;
+	// The transcript display config the projection runs at (D24-5's content
+	// dimension, routed through the seam): read at projection time, so a read
+	// that starts under one level and lands after the user changed it projects
+	// at the level the store will republish anyway. Null/undefined means the
+	// show-everything default — a hub that does not support the settings, or a
+	// host that has not supplied the resolver.
+	readonly resolveDisplayConfig?: () => TranscriptDisplayConfigV1 | null;
+	// Native wires these to its durable mutation host: onReadStart leases the
+	// target just before the raw authoritative read, and onReadComplete hands
+	// the same raw response back so the runtime can settle its dispatch gate
+	// from exactly the snapshot that produces the conversation projection. A
+	// host that has no runtime passes neither and nothing changes.
+	readonly onReadStart?: (threadRef: string, expectedThreadId?: string) => ReadLease | undefined;
+	readonly onReadComplete?: (lease: ReadLease | undefined, response: ThreadReadResponse) => void | Promise<unknown>;
 }
 
 export interface ConversationReadProjection {
-  conversation: MobileConversation;
-  activity: ActivityView;
-  olderCursor: string | null;
-  hasEarlierItems?: boolean;
-  hasLaterItems?: boolean;
+	conversation: MobileConversation;
+	activity: ActivityView;
+	olderCursor: string | null;
+	hasEarlierItems?: boolean;
+	hasLaterItems?: boolean;
 }
 
 // The canonical service interface — preserved for screen test mocks that only
 // need the basic open/send/steer/queue/interrupt/close surface.
 export interface ConversationService {
-  open(ref: string, cursor?: string): Promise<MobileConversation>;
-  loadOlder(cursor: string): Promise<{
-    // The page's own wire turns - the store
-    // folds these into conversation.turns via the package's own
-    // identity-aware merge (a turn can be split into fragments across the
-    // page boundary; an id-only filter drops or double-counts the split),
-    // so sessionTokens's turn-summed fallback covers what's actually loaded,
-    // not just the first page, and projects the display rows from that
-    // merged model (D23d: the model owns the older page and its cursor).
-    turnsPage: ThreadTurnsListResponse;
-    nextCursor?: string;
-    hasEarlierItems?: boolean;
-    hasLaterItems?: boolean;
-  }>;
-  subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
-  send(input: InputItem[]): Promise<MutationReceipt>;
-  steer(
-    input: InputItem[],
-    expectedQueueRevision?: number,
-  ): Promise<MutationReceipt>;
-  queue(input: InputItem[]): Promise<MutationReceipt>;
-  interrupt(): Promise<MutationReceipt>;
-  compact(): Promise<void>;
-  shutdown(): Promise<void>;
-  changeModel(modelProvider: string, model: string): Promise<void>;
-  setVisionModel(visionModel: string): Promise<void>;
-  setReasoningEffort(effort: string): Promise<void>;
-  rename(name: string): Promise<void>;
-  cancelQueued(
-    index: number,
-    expectedEntryId: string,
-    expectedInstanceId: string,
-  ): Promise<TurnCancelQueuedResponse>;
-  close(): void;
+	open(ref: string, cursor?: string): Promise<MobileConversation>;
+	loadOlder(cursor: string): Promise<{
+		// The page's own wire turns - the store
+		// folds these into conversation.turns via the package's own
+		// identity-aware merge (a turn can be split into fragments across the
+		// page boundary; an id-only filter drops or double-counts the split),
+		// so sessionTokens's turn-summed fallback covers what's actually loaded,
+		// not just the first page, and projects the display rows from that
+		// merged model (D23d: the model owns the older page and its cursor).
+		turnsPage: ThreadTurnsListResponse;
+		nextCursor?: string;
+		hasEarlierItems?: boolean;
+		hasLaterItems?: boolean;
+	}>;
+	subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
+	send(input: InputItem[]): Promise<MutationReceipt>;
+	steer(input: InputItem[], expectedQueueRevision?: number): Promise<MutationReceipt>;
+	queue(input: InputItem[]): Promise<MutationReceipt>;
+	interrupt(): Promise<MutationReceipt>;
+	compact(): Promise<void>;
+	shutdown(): Promise<void>;
+	changeModel(modelProvider: string, model: string): Promise<void>;
+	setVisionModel(visionModel: string): Promise<void>;
+	setReasoningEffort(effort: string): Promise<void>;
+	rename(name: string): Promise<void>;
+	cancelQueued(index: number, expectedEntryId: string, expectedInstanceId: string): Promise<TurnCancelQueuedResponse>;
+	close(): void;
 }
 
 export interface ConversationRecoveryActions {
-  forceStop(): Promise<void>;
-  resume(): Promise<void>;
+	forceStop(): Promise<void>;
+	resume(): Promise<void>;
 }
 
 // Required live behavior interface for the live read/projection path. This
@@ -179,52 +163,46 @@ export interface ConversationRecoveryActions {
 // state). It extends the canonical ConversationService with the live-only
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
-  readProjection(ref: string): Promise<ConversationReadProjection>;
+	readProjection(ref: string): Promise<ConversationReadProjection>;
 }
 
 export interface ConversationModelCatalog {
-  models(): Promise<ModelListResponse>;
+	models(): Promise<ModelListResponse>;
 }
 
 export interface ConversationGoalActions {
-  setGoal(objective: string): Promise<void>;
+	setGoal(objective: string): Promise<void>;
 }
 
 export interface ConversationForkActions {
-  forkAside(): Promise<ThreadForkResponse>;
+	forkAside(): Promise<ThreadForkResponse>;
 }
 
 export interface ConversationTurnForkActions {
-  forkFromTurn(transcriptEntryIndex: number): Promise<ThreadForkResponse>;
+	forkFromTurn(transcriptEntryIndex: number): Promise<ThreadForkResponse>;
 }
 
 export interface ConversationClearActions {
-  clear(): Promise<ThreadClearResponse>;
-  adoptClear(response: ThreadClearResponse): ConversationReadProjection;
+	clear(): Promise<ThreadClearResponse>;
+	adoptClear(response: ThreadClearResponse): ConversationReadProjection;
 }
 
 export interface QueueConversationService extends LiveConversationService {
-  promoteQueuedAsSteer(
-    index: number,
-    expectedEntryId: string,
-    expectedInstanceId: string,
-  ): Promise<TurnPromoteQueuedAsSteerResponse>;
-  drainAsSteer(
-    expectedQueueRevision: number,
-    expectedInstanceId: string,
-  ): Promise<TurnDrainAsSteerResponse>;
+	promoteQueuedAsSteer(
+		index: number,
+		expectedEntryId: string,
+		expectedInstanceId: string,
+	): Promise<TurnPromoteQueuedAsSteerResponse>;
+	drainAsSteer(expectedQueueRevision: number, expectedInstanceId: string): Promise<TurnDrainAsSteerResponse>;
 }
 
 let defaultIdCounter = 0;
 function defaultIdFactory(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  defaultIdCounter += 1;
-  return `cmid-${Date.now()}-${defaultIdCounter}`;
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID();
+	}
+	defaultIdCounter += 1;
+	return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
 // The 12 legacy capability fields that must be present and boolean in every
@@ -232,18 +210,18 @@ function defaultIdFactory(): string {
 // never retained in the extracted copy; sharedNotes is one of those extras (see
 // the absent-means-unsupported handling below).
 const REQUIRED_CAPABILITY_FIELDS = [
-  "send",
-  "steer",
-  "interrupt",
-  "compact",
-  "clear",
-  "forkFromTurn",
-  "shutdown",
-  "changeModel",
-  "changeVisionModel",
-  "queue",
-  "goal",
-  "rename",
+	"send",
+	"steer",
+	"interrupt",
+	"compact",
+	"clear",
+	"forkFromTurn",
+	"shutdown",
+	"changeModel",
+	"changeVisionModel",
+	"queue",
+	"goal",
+	"rename",
 ] as const;
 
 // Extract and runtime-validate capabilities into a complete plain local
@@ -253,106 +231,82 @@ const REQUIRED_CAPABILITY_FIELDS = [
 // leaving the ref+capabilities pair null/fail-closed. The returned copy
 // never retains the response object or its getters.
 function extractCapabilities(raw: unknown): ThreadCapabilities {
-  if (raw === null || typeof raw !== "object") {
-    throw new Error("ConversationService: capabilities is not an object");
-  }
-  const obj = raw as Record<string, unknown>;
-  const caps: ThreadCapabilities = {
-    send: false,
-    steer: false,
-    interrupt: false,
-    compact: false,
-    clear: false,
-    forkFromTurn: false,
-    shutdown: false,
-    changeModel: false,
-    changeVisionModel: false,
-    sharedNotes: false,
-    queue: false,
-    goal: false,
-    rename: false,
-  };
-  for (const field of REQUIRED_CAPABILITY_FIELDS) {
-    const value = obj[field];
-    if (typeof value !== "boolean") {
-      throw new Error(
-        `ConversationService: capability "${field}" is not a boolean`,
-      );
-    }
-    caps[field] = value;
-  }
-  // sharedNotes is newer than the protocol version this client still speaks, so
-  // a peer built before it omits the field entirely: absent means "not
-  // supported" and must not reject the whole payload, which would fail every
-  // capability-gated action for the session. A present value is still validated.
-  const sharedNotes = obj.sharedNotes;
-  if (sharedNotes !== undefined) {
-    if (typeof sharedNotes !== "boolean") {
-      throw new Error(
-        `ConversationService: capability "sharedNotes" is not a boolean`,
-      );
-    }
-    caps.sharedNotes = sharedNotes;
-  }
-  return caps;
+	if (raw === null || typeof raw !== "object") {
+		throw new Error("ConversationService: capabilities is not an object");
+	}
+	const obj = raw as Record<string, unknown>;
+	const caps: ThreadCapabilities = {
+		send: false,
+		steer: false,
+		interrupt: false,
+		compact: false,
+		clear: false,
+		forkFromTurn: false,
+		shutdown: false,
+		changeModel: false,
+		changeVisionModel: false,
+		sharedNotes: false,
+		queue: false,
+		goal: false,
+		rename: false,
+	};
+	for (const field of REQUIRED_CAPABILITY_FIELDS) {
+		const value = obj[field];
+		if (typeof value !== "boolean") {
+			throw new Error(`ConversationService: capability "${field}" is not a boolean`);
+		}
+		caps[field] = value;
+	}
+	// sharedNotes is newer than the protocol version this client still speaks, so
+	// a peer built before it omits the field entirely: absent means "not
+	// supported" and must not reject the whole payload, which would fail every
+	// capability-gated action for the session. A present value is still validated.
+	const sharedNotes = obj.sharedNotes;
+	if (sharedNotes !== undefined) {
+		if (typeof sharedNotes !== "boolean") {
+			throw new Error(`ConversationService: capability "sharedNotes" is not a boolean`);
+		}
+		caps.sharedNotes = sharedNotes;
+	}
+	return caps;
 }
 
-type MutationKind =
-  | "send"
-  | "steer"
-  | "drain"
-  | "queue"
-  | "cancel"
-  | "interrupt"
-  | "clear";
+type MutationKind = "send" | "steer" | "drain" | "queue" | "cancel" | "interrupt" | "clear";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
-export type CanonicalMutationDisposition =
-  (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
+export type CanonicalMutationDisposition = (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
 
-const CANONICAL_MUTATION_PROJECTION: Readonly<
-  Record<MutationKind, "pending" | "reflected" | "removed">
-> = {
-  send: "pending",
-  steer: "pending",
-  drain: "pending",
-  queue: "pending",
-  cancel: "removed",
-  interrupt: "reflected",
-  clear: "reflected",
+const CANONICAL_MUTATION_PROJECTION: Readonly<Record<MutationKind, "pending" | "reflected" | "removed">> = {
+	send: "pending",
+	steer: "pending",
+	drain: "pending",
+	queue: "pending",
+	cancel: "removed",
+	interrupt: "reflected",
+	clear: "reflected",
 };
 
-function requireObject(
-  raw: unknown,
-  label: string,
-): Record<string, unknown> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`ConversationService: ${label} is not an object`);
-  }
-  return raw as Record<string, unknown>;
+function requireObject(raw: unknown, label: string): Record<string, unknown> {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+		throw new Error(`ConversationService: ${label} is not an object`);
+	}
+	return raw as Record<string, unknown>;
 }
 
-function exactObject(
-  raw: unknown,
-  keys: readonly string[],
-  label: string,
-): Record<string, unknown> {
-  const object = requireObject(raw, label);
-  const actual = Object.keys(object).sort();
-  const expected = [...keys].sort();
-  if (
-    actual.length !== expected.length ||
-    actual.some((key, index) => key !== expected[index])
-  ) {
-    throw new Error(`ConversationService: ${label} has unexpected keys`);
-  }
-  return object;
+function exactObject(raw: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+	const object = requireObject(raw, label);
+	const actual = Object.keys(object).sort();
+	const expected = [...keys].sort();
+	if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+		throw new Error(`ConversationService: ${label} has unexpected keys`);
+	}
+	return object;
 }
 
 function nonemptyString(raw: unknown, label: string): string {
-  if (typeof raw !== "string" || raw.trim() === "") {
-    throw new Error(`ConversationService: ${label} is empty or invalid`);
-  }
-  return raw;
+	if (typeof raw !== "string" || raw.trim() === "") {
+		throw new Error(`ConversationService: ${label} is empty or invalid`);
+	}
+	return raw;
 }
 
 // Every receipt carries the correlation fields below, and each mutation kind
@@ -365,941 +319,782 @@ function nonemptyString(raw: unknown, label: string): string {
 // failure for a phone build already in testers' hands (issue #1759). The
 // vocabulary is derived from the per-kind tables below so the two cannot drift.
 // The result envelope around a receipt stays exact via exactObject.
-const RECEIPT_CORRELATION_KEYS = [
-  "clientMutationId",
-  "disposition",
-  "threadId",
-  "projectionState",
-] as const;
+const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId", "projectionState"] as const;
 
-const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<
-  Record<MutationKind, readonly string[]>
-> = {
-  send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-  steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-  drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-  interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-  queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
-  cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
-  clear: [...RECEIPT_CORRELATION_KEYS],
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
+	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+	steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+	drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+	cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+	clear: [...RECEIPT_CORRELATION_KEYS],
 };
 
 // Receipt keys the daemon includes only when it has something to report: a
 // drain may name the queue entries and client mutations it consumed, and any
 // kind may name the instance the receipt is bound to.
-const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<
-  Partial<Record<MutationKind, readonly string[]>>
-> = {
-  drain: ["queueEntryIds", "consumedClientMutationIds"],
+const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<Partial<Record<MutationKind, readonly string[]>>> = {
+	drain: ["queueEntryIds", "consumedClientMutationIds"],
 };
 const OPTIONAL_RECEIPT_KEYS_ANY_KIND = ["instanceId"] as const;
 
 const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
-  ...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
-  ...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
-  ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
+	...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
+	...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
+	...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
 ]);
 
-function decodedReceipt(
-  raw: unknown,
-  expectedKeys: readonly string[],
-  label: string,
-): Record<string, unknown> {
-  const receipt = requireObject(raw, label);
-  const expected = new Set(expectedKeys);
-  for (const key of Object.keys(receipt)) {
-    if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {
-      throw new Error(`ConversationService: ${label} has unexpected keys`);
-    }
-  }
-  for (const key of expected) {
-    if (!Object.hasOwn(receipt, key)) {
-      throw new Error(`ConversationService: ${label} is missing ${key}`);
-    }
-  }
-  return receipt;
+function decodedReceipt(raw: unknown, expectedKeys: readonly string[], label: string): Record<string, unknown> {
+	const receipt = requireObject(raw, label);
+	const expected = new Set(expectedKeys);
+	for (const key of Object.keys(receipt)) {
+		if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {
+			throw new Error(`ConversationService: ${label} has unexpected keys`);
+		}
+	}
+	for (const key of expected) {
+		if (!Object.hasOwn(receipt, key)) {
+			throw new Error(`ConversationService: ${label} is missing ${key}`);
+		}
+	}
+	return receipt;
 }
 
 function decodeMutationResult(
-  kind: MutationKind,
-  raw: unknown,
-  clientMutationId: string,
-  expectedInstanceId: string,
+	kind: MutationKind,
+	raw: unknown,
+	clientMutationId: string,
+	expectedInstanceId: string,
 ): MutationReceipt {
-  const resultKeys =
-    kind === "clear"
-      ? ["receipt", "thread", "ref"]
-      : kind === "send"
-        ? ["receipt", "turn"]
-        : kind === "cancel"
-          ? [
-              "receipt",
-              "removedText",
-              ...(raw !== null &&
-              typeof raw === "object" &&
-              "removedImages" in raw
-                ? ["removedImages"]
-                : []),
-            ]
-          : ["receipt"];
-  const result = exactObject(raw, resultKeys, `${kind} result`);
-  if (kind === "cancel") {
-    if (
-      typeof result.removedText !== "string" ||
-      ("removedImages" in result &&
-        (!Number.isSafeInteger(result.removedImages) ||
-          (result.removedImages as number) < 0))
-    ) {
-      throw new Error("ConversationService: invalid cancellation echo");
-    }
-  }
-  if (kind === "send") {
-    const turn = result.turn;
-    if (turn === null || typeof turn !== "object" || Array.isArray(turn)) {
-      throw new Error("ConversationService: send result turn is not an object");
-    }
-    nonemptyString((turn as Record<string, unknown>).id, "send turn id");
-  }
+	const resultKeys =
+		kind === "clear"
+			? ["receipt", "thread", "ref"]
+			: kind === "send"
+				? ["receipt", "turn"]
+				: kind === "cancel"
+					? [
+							"receipt",
+							"removedText",
+							...(raw !== null && typeof raw === "object" && "removedImages" in raw ? ["removedImages"] : []),
+						]
+					: ["receipt"];
+	const result = exactObject(raw, resultKeys, `${kind} result`);
+	if (kind === "cancel") {
+		if (
+			typeof result.removedText !== "string" ||
+			("removedImages" in result &&
+				(!Number.isSafeInteger(result.removedImages) || (result.removedImages as number) < 0))
+		) {
+			throw new Error("ConversationService: invalid cancellation echo");
+		}
+	}
+	if (kind === "send") {
+		const turn = result.turn;
+		if (turn === null || typeof turn !== "object" || Array.isArray(turn)) {
+			throw new Error("ConversationService: send result turn is not an object");
+		}
+		nonemptyString((turn as Record<string, unknown>).id, "send turn id");
+	}
 
-  const receiptObject =
-    result.receipt !== null && typeof result.receipt === "object"
-      ? (result.receipt as Record<string, unknown>)
-      : null;
-  const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
-  for (const key of [
-    ...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []),
-    ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
-  ]) {
-    if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
-      requiredReceiptKeys.push(key);
-    }
-  }
-  const hasDrainedEntries =
-    kind === "drain" &&
-    receiptObject !== null &&
-    Object.hasOwn(receiptObject, "queueEntryIds");
-  const hasConsumedClientMutationIds =
-    kind === "drain" &&
-    receiptObject !== null &&
-    Object.hasOwn(receiptObject, "consumedClientMutationIds");
-  const receipt = decodedReceipt(
-    result.receipt,
-    requiredReceiptKeys,
-    `${kind} receipt`,
-  );
-  if (receipt.clientMutationId !== clientMutationId) {
-    throw new Error(
-      `ConversationService: ${kind} receipt correlation mismatch`,
-    );
-  }
-  if (
-    !CANONICAL_MUTATION_DISPOSITIONS.includes(
-      receipt.disposition as CanonicalMutationDisposition,
-    )
-  ) {
-    throw new Error(`ConversationService: ${kind} receipt was not applied`);
-  }
-  const disposition = receipt.disposition as CanonicalMutationDisposition;
-  if (receipt.projectionState !== CANONICAL_MUTATION_PROJECTION[kind]) {
-    throw new Error(`ConversationService: ${kind} projection state is invalid`);
-  }
-  const decoded: MutationReceipt = {
-    clientMutationId,
-    disposition,
-    threadId: nonemptyString(receipt.threadId, `${kind} thread id`),
-    projectionState: nonemptyString(
-      receipt.projectionState,
-      `${kind} projection state`,
-    ),
-  };
-  if (Object.hasOwn(receipt, "instanceId")) {
-    if (receipt.instanceId !== expectedInstanceId) {
-      throw new Error(`ConversationService: ${kind} receipt instance mismatch`);
-    }
-    decoded.instanceId = expectedInstanceId;
-  }
-  if (
-    kind === "send" ||
-    kind === "steer" ||
-    kind === "drain" ||
-    kind === "interrupt"
-  ) {
-    decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
-  }
-  if (kind === "queue" || kind === "cancel" || hasDrainedEntries) {
-    const ids = receipt.queueEntryIds;
-    if (
-      !Array.isArray(ids) ||
-      ids.length === 0 ||
-      ids.some((id) => typeof id !== "string" || id.trim() === "")
-    ) {
-      throw new Error(
-        "ConversationService: queue entry ids are empty or invalid",
-      );
-    }
-    decoded.queueEntryIds = [...ids];
-  }
-  if (hasConsumedClientMutationIds) {
-    const consumed = receipt.consumedClientMutationIds;
-    if (
-      !Array.isArray(consumed) ||
-      consumed.length === 0 ||
-      consumed.some((id) => typeof id !== "string" || id.trim() === "")
-    ) {
-      throw new Error(
-        `ConversationService: ${kind} receipt consumed client mutation ids are invalid`,
-      );
-    }
-    decoded.consumedClientMutationIds = [...consumed];
-  }
-  return decoded;
+	const receiptObject =
+		result.receipt !== null && typeof result.receipt === "object" ? (result.receipt as Record<string, unknown>) : null;
+	const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
+	for (const key of [...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []), ...OPTIONAL_RECEIPT_KEYS_ANY_KIND]) {
+		if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
+			requiredReceiptKeys.push(key);
+		}
+	}
+	const hasDrainedEntries = kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "queueEntryIds");
+	const hasConsumedClientMutationIds =
+		kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "consumedClientMutationIds");
+	const receipt = decodedReceipt(result.receipt, requiredReceiptKeys, `${kind} receipt`);
+	if (receipt.clientMutationId !== clientMutationId) {
+		throw new Error(`ConversationService: ${kind} receipt correlation mismatch`);
+	}
+	if (!CANONICAL_MUTATION_DISPOSITIONS.includes(receipt.disposition as CanonicalMutationDisposition)) {
+		throw new Error(`ConversationService: ${kind} receipt was not applied`);
+	}
+	const disposition = receipt.disposition as CanonicalMutationDisposition;
+	if (receipt.projectionState !== CANONICAL_MUTATION_PROJECTION[kind]) {
+		throw new Error(`ConversationService: ${kind} projection state is invalid`);
+	}
+	const decoded: MutationReceipt = {
+		clientMutationId,
+		disposition,
+		threadId: nonemptyString(receipt.threadId, `${kind} thread id`),
+		projectionState: nonemptyString(receipt.projectionState, `${kind} projection state`),
+	};
+	if (Object.hasOwn(receipt, "instanceId")) {
+		if (receipt.instanceId !== expectedInstanceId) {
+			throw new Error(`ConversationService: ${kind} receipt instance mismatch`);
+		}
+		decoded.instanceId = expectedInstanceId;
+	}
+	if (kind === "send" || kind === "steer" || kind === "drain" || kind === "interrupt") {
+		decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
+	}
+	if (kind === "queue" || kind === "cancel" || hasDrainedEntries) {
+		const ids = receipt.queueEntryIds;
+		if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || id.trim() === "")) {
+			throw new Error("ConversationService: queue entry ids are empty or invalid");
+		}
+		decoded.queueEntryIds = [...ids];
+	}
+	if (hasConsumedClientMutationIds) {
+		const consumed = receipt.consumedClientMutationIds;
+		if (
+			!Array.isArray(consumed) ||
+			consumed.length === 0 ||
+			consumed.some((id) => typeof id !== "string" || id.trim() === "")
+		) {
+			throw new Error(`ConversationService: ${kind} receipt consumed client mutation ids are invalid`);
+		}
+		decoded.consumedClientMutationIds = [...consumed];
+	}
+	return decoded;
 }
 
 function validateQueueAction(
-  kind: "cancel" | "promote" | "drain",
-  result: unknown,
-  clientMutationId: string,
-  expectedInstanceId: string,
-  expectedThreadId: string,
-  expectedEntryId?: string,
+	kind: "cancel" | "promote" | "drain",
+	result: unknown,
+	clientMutationId: string,
+	expectedInstanceId: string,
+	expectedThreadId: string,
+	expectedEntryId?: string,
 ): void {
-  const receipt = decodeMutationResult(
-    kind === "cancel" ? "cancel" : "drain",
-    result,
-    clientMutationId,
-    expectedInstanceId,
-  );
-  const ids = receipt.queueEntryIds;
-  if (
-    receipt.threadId !== expectedThreadId ||
-    receipt.instanceId !== expectedInstanceId ||
-    !ids?.length ||
-    new Set(ids).size !== ids.length ||
-    (kind !== "drain" && (ids.length !== 1 || ids[0] !== expectedEntryId))
-  ) {
-    throw new Error(
-      "ConversationService: queue action receipt identity mismatch",
-    );
-  }
+	const receipt = decodeMutationResult(
+		kind === "cancel" ? "cancel" : "drain",
+		result,
+		clientMutationId,
+		expectedInstanceId,
+	);
+	const ids = receipt.queueEntryIds;
+	if (
+		receipt.threadId !== expectedThreadId ||
+		receipt.instanceId !== expectedInstanceId ||
+		!ids?.length ||
+		new Set(ids).size !== ids.length ||
+		(kind !== "drain" && (ids.length !== 1 || ids[0] !== expectedEntryId))
+	) {
+		throw new Error("ConversationService: queue action receipt identity mismatch");
+	}
 }
 
 export function createConversationService<ReadLease = unknown>(
-  client: ConversationClientLike | AppwireClient,
-  options: ConversationServiceOptions<ReadLease> = {},
+	client: ConversationClientLike | AppwireClient,
+	options: ConversationServiceOptions<ReadLease> = {},
 ): QueueConversationService &
-  ConversationModelCatalog &
-  ConversationGoalActions &
-  ConversationForkActions &
-  ConversationTurnForkActions &
-  ConversationClearActions &
-  ConversationRecoveryActions {
-  const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
-  const now = options.now ?? Date.now;
-  // The display config this read's projection runs at, read at projection
-  // time (see the option's own comment). A null/undefined answer keeps the
-  // show-everything default.
-  const displayConfig = (): TranscriptDisplayConfigV1 | undefined =>
-    options.resolveDisplayConfig?.() ?? undefined;
-  const activityService = createActivityService();
+	ConversationModelCatalog &
+	ConversationGoalActions &
+	ConversationForkActions &
+	ConversationTurnForkActions &
+	ConversationClearActions &
+	ConversationRecoveryActions {
+	const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
+	const now = options.now ?? Date.now;
+	// The display config this read's projection runs at, read at projection
+	// time (see the option's own comment). A null/undefined answer keeps the
+	// show-everything default.
+	const displayConfig = (): TranscriptDisplayConfigV1 | undefined => options.resolveDisplayConfig?.() ?? undefined;
+	const activityService = createActivityService();
 
-  // Current thread identity and capabilities, set by open() / readProjection().
-  // Mutations check these before reaching the wire; a re-read on
-  // actionUnavailable refreshes them. ref+capabilities form one fail-closed
-  // lifecycle pair: a new open/readProjection clears BOTH ref=null and
-  // capabilities=null BEFORE awaiting so the service is fail-closed while the
-  // read is in flight (a mutation cannot send against a prior thread's gates
-  // or the pending thread's not-yet-validated ref). The pair is installed
-  // together only on the current epoch's success; a failed read leaves both
-  // null, so requireRef-only operations (setReasoningEffort, cancelQueued,
-  // loadOlder) also fail before any wire call.
-  let ref: string | null = null;
-  let modelScope: ModelListParams | null = null;
-  // Retain the instance shown by the full read; a capability-only refresh
-  // must not redirect a draft to a replacement session.
-  let instanceId: string | null = null;
-  let threadId: string | null = null;
-  let opening: {
-    ref: string;
-    threadId: string | null;
-    pushed: { threadId: string; caps: ThreadCapabilities } | null;
-  } | null = null;
-  let capabilities: ThreadCapabilities | null = null;
-  let notificationUnsub: (() => void) | null = null;
-  type PendingProjection = {
-    ref: string;
-    instanceId: string | null;
-    // Paging waits on the whole projected publish, not the raw RPC: the
-    // response alone is not the state a page's cursor must be seated against.
-    // The publish spans the raw response, the projection work and commit, and
-    // the host's read fence, so paging that waited on the raw read could seat a
-    // cursor against a projection the publish had not installed yet.
-    publish: Promise<ConversationReadProjection>;
-  };
-  let pendingProjection: PendingProjection | null = null;
+	// Current thread identity and capabilities, set by open() / readProjection().
+	// Mutations check these before reaching the wire; a re-read on
+	// actionUnavailable refreshes them. ref+capabilities form one fail-closed
+	// lifecycle pair: a new open/readProjection clears BOTH ref=null and
+	// capabilities=null BEFORE awaiting so the service is fail-closed while the
+	// read is in flight (a mutation cannot send against a prior thread's gates
+	// or the pending thread's not-yet-validated ref). The pair is installed
+	// together only on the current epoch's success; a failed read leaves both
+	// null, so requireRef-only operations (setReasoningEffort, cancelQueued,
+	// loadOlder) also fail before any wire call.
+	let ref: string | null = null;
+	let modelScope: ModelListParams | null = null;
+	// Retain the instance shown by the full read; a capability-only refresh
+	// must not redirect a draft to a replacement session.
+	let instanceId: string | null = null;
+	let threadId: string | null = null;
+	let opening: {
+		ref: string;
+		threadId: string | null;
+		pushed: { threadId: string; caps: ThreadCapabilities } | null;
+	} | null = null;
+	let capabilities: ThreadCapabilities | null = null;
+	let notificationUnsub: (() => void) | null = null;
+	type PendingProjection = {
+		ref: string;
+		instanceId: string | null;
+		// Paging waits on the whole projected publish, not the raw RPC: the
+		// response alone is not the state a page's cursor must be seated against.
+		// The publish spans the raw response, the projection work and commit, and
+		// the host's read fence, so paging that waited on the raw read could seat a
+		// cursor against a projection the publish had not installed yet.
+		publish: Promise<ConversationReadProjection>;
+	};
+	let pendingProjection: PendingProjection | null = null;
 
-  // Monotonic service/open epoch. Every open/readProjection/close increments
-  // it; an in-flight read captures its epoch and only installs ref+caps if
-  // its epoch is still current when it resolves. This makes stale
-  // completions (an older open resolving after a newer open, or a refresh
-  // resolving after close/reopen) no-ops against the live pair.
-  let openEpoch = 0;
+	// Monotonic service/open epoch. Every open/readProjection/close increments
+	// it; an in-flight read captures its epoch and only installs ref+caps if
+	// its epoch is still current when it resolves. This makes stale
+	// completions (an older open resolving after a newer open, or a refresh
+	// resolving after close/reopen) no-ops against the live pair.
+	let openEpoch = 0;
 
-  function requireQueueRun(): void {
-    // The capability half of a drain or promote: the harness steers (the
-    // daemon converts the entries into steering, which a send-only harness
-    // cannot take). The status half -- a running turn, or a queue a Stop
-    // parked -- is the caller's, through the SDK's sessionControls.
-    if (!capabilities?.steer)
-      throw new Error(
-        "Running queued messages is unavailable for this session.",
-      );
-  }
+	function requireQueueRun(): void {
+		// The capability half of a drain or promote: the harness steers (the
+		// daemon converts the entries into steering, which a send-only harness
+		// cannot take). The status half -- a running turn, or a queue a Stop
+		// parked -- is the caller's, through the SDK's sessionControls.
+		if (!capabilities?.steer) throw new Error("Running queued messages is unavailable for this session.");
+	}
 
-  function requireQueueInstance(expected: string): string {
-    const threadRef = requireRef();
-    if (nonemptyString(expected, "observed thread instance id") !== instanceId)
-      throw new Error("The session instance changed. Refresh its queue.");
-    return threadRef;
-  }
+	function requireQueueInstance(expected: string): string {
+		const threadRef = requireRef();
+		if (nonemptyString(expected, "observed thread instance id") !== instanceId)
+			throw new Error("The session instance changed. Try again.");
+		return threadRef;
+	}
 
-  function beginOpen(threadRef: string): number {
-    opening = {
-      ref: threadRef,
-      threadId: ref === threadRef ? threadId : null,
-      pushed: null,
-    };
-    // Starting a new open invalidates the prior epoch and clears BOTH ref
-    // and capabilities before the await, so the service is truly fail-closed
-    // while the read is in flight: no mutation or requireRef-only operation
-    // (setReasoningEffort, cancelQueued, loadOlder) can reach the wire until
-    // the pair is installed together on success. The requested threadRef is
-    // captured only in the epoch; it is NOT written to ref until success.
-    openEpoch += 1;
-    const epoch = openEpoch;
-    ref = null;
-    modelScope = null;
-    instanceId = null;
-    threadId = null;
-    capabilities = null;
-    return epoch;
-  }
+	function beginOpen(threadRef: string): number {
+		opening = {
+			ref: threadRef,
+			threadId: ref === threadRef ? threadId : null,
+			pushed: null,
+		};
+		// Starting a new open invalidates the prior epoch and clears BOTH ref
+		// and capabilities before the await, so the service is truly fail-closed
+		// while the read is in flight: no mutation or requireRef-only operation
+		// (setReasoningEffort, cancelQueued, loadOlder) can reach the wire until
+		// the pair is installed together on success. The requested threadRef is
+		// captured only in the epoch; it is NOT written to ref until success.
+		openEpoch += 1;
+		const epoch = openEpoch;
+		ref = null;
+		modelScope = null;
+		instanceId = null;
+		threadId = null;
+		capabilities = null;
+		return epoch;
+	}
 
-  function readWithPushedCapabilities(thread: Thread, epoch: number): Thread {
-    extractCapabilities(thread.evener.capabilities);
-    const pushed = opening?.pushed;
-    if (openEpoch !== epoch || pushed?.threadId !== thread.id) return thread;
-    return {
-      ...thread,
-      evener: { ...thread.evener, capabilities: pushed.caps },
-    };
-  }
+	function readWithPushedCapabilities(thread: Thread, epoch: number): Thread {
+		extractCapabilities(thread.evener.capabilities);
+		const pushed = opening?.pushed;
+		if (openEpoch !== epoch || pushed?.threadId !== thread.id) return thread;
+		return {
+			...thread,
+			evener: { ...thread.evener, capabilities: pushed.caps },
+		};
+	}
 
-  function requireRef(): string {
-    if (ref === null) throw new Error("ConversationService: no thread open");
-    return ref;
-  }
+	function requireRef(): string {
+		if (ref === null) throw new Error("ConversationService: no thread open");
+		return ref;
+	}
 
-  function requireCap(cap: keyof ThreadCapabilities, action: string): void {
-    if (capabilities === null || !capabilities[cap]) {
-      throw new Error(`Action "${action}" is not available for this thread`);
-    }
-  }
+	function requireCap(cap: keyof ThreadCapabilities, action: string): void {
+		if (capabilities === null || !capabilities[cap]) {
+			throw new Error(`Action "${action}" is not available for this thread`);
+		}
+	}
 
-  // Hand the same raw authoritative read back to the host's fence. A fence
-  // failure is non-fatal to the conversation read: the read itself succeeded,
-  // and a fence that cannot settle leaves the runtime's durable dispatch gate
-  // blocked (the fail-safe direction) until a later read reconciles it. It must
-  // never turn a good projection into a conversation error.
-  async function reconcileRead(
-    lease: ReadLease | undefined,
-    response: ThreadReadResponse,
-  ): Promise<void> {
-    if (options.onReadComplete === undefined) return;
-    try {
-      await options.onReadComplete(lease, response);
-    } catch (error) {
-      console.error("ConversationService: read fence failed", error);
-    }
-  }
+	// Hand the same raw authoritative read back to the host's fence. A fence
+	// failure is non-fatal to the conversation read: the read itself succeeded,
+	// and a fence that cannot settle leaves the runtime's durable dispatch gate
+	// blocked (the fail-safe direction) until a later read reconciles it. It must
+	// never turn a good projection into a conversation error.
+	async function reconcileRead(lease: ReadLease | undefined, response: ThreadReadResponse): Promise<void> {
+		if (options.onReadComplete === undefined) return;
+		try {
+			await options.onReadComplete(lease, response);
+		} catch (error) {
+			console.error("ConversationService: read fence failed", error);
+		}
+	}
 
-  return {
-    async open(threadRef, _cursor) {
-      pendingProjection = null;
-      // The compatibility cursor is intentionally ignored: open() must send
-      // exactly the canonical unbounded subscribed open request. Bounded
-      // live projection lives exclusively in readProjection; cursor paging
-      // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
-      // and capabilities before the await so the service is fail-closed
-      // during the read; the pair is installed together only on success.
-      const expectedThreadId = threadId ?? undefined;
-      const epoch = beginOpen(threadRef);
-      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-      const response: ThreadReadResponse = await client.request("thread/read", {
-        ref: threadRef,
-        includeTurns: true,
-        subscribe: true,
-        replaceSubscription: true,
-      });
-      // Compute ALL response-derived projection work BEFORE committing the
-      // pair — a throw here leaves ref+capabilities null/fail-closed. Only
-      // commit the pair after projection succeeds and the epoch is still
-      // current; a stale successful result returns without committing.
-      const thread = readWithPushedCapabilities(response.thread, epoch);
-      const readInstanceId = nonemptyString(
-        response.thread.evener.instanceId ?? response.thread.id,
-        "thread instance id",
-      );
-      const conversation = projectConversation(
-        {
-          ...hydrateThread({ ...response, thread }, threadRef, now()),
-          instanceId: readInstanceId,
-        },
-        undefined,
-        displayConfig(),
-      );
-      const caps = extractCapabilities(thread.evener.capabilities);
-      const readModelScope = { harness: thread.source, cwd: thread.cwd };
-      if (openEpoch === epoch) {
-        modelScope = readModelScope;
-        instanceId = readInstanceId;
-        threadId = response.thread.id;
-        ref = threadRef;
-        capabilities = caps;
-        opening = null;
-      }
-      // Reconcile the host's durable dispatch gate only for a read whose
-      // projection actually installed: a failed projection or a stale epoch
-      // leaves the gate blocked.
-      if (openEpoch === epoch) await reconcileRead(readLease, response);
-      return conversation;
-    },
+	return {
+		async open(threadRef, _cursor) {
+			pendingProjection = null;
+			// The compatibility cursor is intentionally ignored: open() must send
+			// exactly the canonical unbounded subscribed open request. Bounded
+			// live projection lives exclusively in readProjection; cursor paging
+			// lives exclusively in thread/turns/list. beginOpen clears BOTH ref
+			// and capabilities before the await so the service is fail-closed
+			// during the read; the pair is installed together only on success.
+			const expectedThreadId = threadId ?? undefined;
+			const epoch = beginOpen(threadRef);
+			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
+			const response: ThreadReadResponse = await client.request("thread/read", {
+				ref: threadRef,
+				includeTurns: true,
+				subscribe: true,
+				replaceSubscription: true,
+			});
+			// Compute ALL response-derived projection work BEFORE committing the
+			// pair — a throw here leaves ref+capabilities null/fail-closed. Only
+			// commit the pair after projection succeeds and the epoch is still
+			// current; a stale successful result returns without committing.
+			const thread = readWithPushedCapabilities(response.thread, epoch);
+			const readInstanceId = nonemptyString(
+				response.thread.evener.instanceId ?? response.thread.id,
+				"thread instance id",
+			);
+			const conversation = projectConversation(
+				{
+					...hydrateThread({ ...response, thread }, threadRef, now()),
+					instanceId: readInstanceId,
+				},
+				undefined,
+				displayConfig(),
+			);
+			const caps = extractCapabilities(thread.evener.capabilities);
+			const readModelScope = { harness: thread.source, cwd: thread.cwd };
+			if (openEpoch === epoch) {
+				modelScope = readModelScope;
+				instanceId = readInstanceId;
+				threadId = response.thread.id;
+				ref = threadRef;
+				capabilities = caps;
+				opening = null;
+			}
+			// Reconcile the host's durable dispatch gate only for a read whose
+			// projection actually installed: a failed projection or a stale epoch
+			// leaves the gate blocked.
+			if (openEpoch === epoch) await reconcileRead(readLease, response);
+			return conversation;
+		},
 
-    async readProjection(threadRef) {
-      const pagingInstance =
-        ref === threadRef
-          ? instanceId
-          : pendingProjection?.ref === threadRef
-            ? pendingProjection.instanceId
-            : null;
-      const expectedThreadId = threadId ?? undefined;
-      const epoch = beginOpen(threadRef);
-      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-      const read = client.request("thread/read", {
-        ref: threadRef,
-        includeTurns: true,
-        subscribe: true,
-        replaceSubscription: true,
-        itemsView: "fragment",
-        itemLimit: READ_ITEM_LIMIT,
-      });
-      // The publish is the whole projected read: the raw response, the
-      // projection work and pair commit, and then the host's read fence. Paging
-      // waits on it (see PendingProjection), so a page can never be seated
-      // against a projection the publish has not installed.
-      const publish = (async (): Promise<ConversationReadProjection> => {
-        const response: ThreadReadResponse = await read;
-        // Compute ALL response-derived projection work BEFORE committing the
-        // pair — a throw in hydration, projectConversation or activity
-        // projection (or a malformed response) leaves ref+capabilities
-        // null/fail-closed. Only commit the
-        // pair after all projection succeeds and the epoch is still current;
-        // a stale successful result returns without committing.
-        const thread = readWithPushedCapabilities(response.thread, epoch);
-        const readInstanceId = nonemptyString(
-          response.thread.evener.instanceId ?? response.thread.id,
-          "thread instance id",
-        );
-        const conversation = projectConversation(
-          {
-            ...hydrateThread({ ...response, thread }, threadRef, now()),
-            instanceId: readInstanceId,
-          },
-          undefined,
-          displayConfig(),
-        );
-        const activity = activityService.projectActivity(thread);
-        const olderCursor = response.olderCursor ?? null;
-        const caps = extractCapabilities(thread.evener.capabilities);
-        const readModelScope = { harness: thread.source, cwd: thread.cwd };
-        if (openEpoch === epoch) {
-          modelScope = readModelScope;
-          instanceId = readInstanceId;
-          threadId = response.thread.id;
-          ref = threadRef;
-          capabilities = caps;
-          opening = null;
-        }
-        // Reconcile the host's durable dispatch gate only after the projection
-        // installed, so a failed projection or a stale epoch leaves it blocked.
-        if (openEpoch === epoch) await reconcileRead(readLease, response);
-        return {
-          conversation,
-          activity,
-          olderCursor,
-          hasEarlierItems:
-            thread.turns?.some((turn) => turn.hasEarlierItems === true) ??
-            false,
-          hasLaterItems:
-            thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
-        };
-      })();
-      pendingProjection = { ref: threadRef, instanceId: pagingInstance, publish };
-      return publish;
-    },
+		async readProjection(threadRef) {
+			const pagingInstance =
+				ref === threadRef ? instanceId : pendingProjection?.ref === threadRef ? pendingProjection.instanceId : null;
+			const expectedThreadId = threadId ?? undefined;
+			const epoch = beginOpen(threadRef);
+			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
+			const read = client.request("thread/read", {
+				ref: threadRef,
+				includeTurns: true,
+				subscribe: true,
+				replaceSubscription: true,
+				itemsView: "fragment",
+				itemLimit: READ_ITEM_LIMIT,
+			});
+			// The publish is the whole projected read: the raw response, the
+			// projection work and pair commit, and then the host's read fence. Paging
+			// waits on it (see PendingProjection), so a page can never be seated
+			// against a projection the publish has not installed.
+			const publish = (async (): Promise<ConversationReadProjection> => {
+				const response: ThreadReadResponse = await read;
+				// Compute ALL response-derived projection work BEFORE committing the
+				// pair — a throw in hydration, projectConversation or activity
+				// projection (or a malformed response) leaves ref+capabilities
+				// null/fail-closed. Only commit the
+				// pair after all projection succeeds and the epoch is still current;
+				// a stale successful result returns without committing.
+				const thread = readWithPushedCapabilities(response.thread, epoch);
+				const readInstanceId = nonemptyString(
+					response.thread.evener.instanceId ?? response.thread.id,
+					"thread instance id",
+				);
+				const conversation = projectConversation(
+					{
+						...hydrateThread({ ...response, thread }, threadRef, now()),
+						instanceId: readInstanceId,
+					},
+					undefined,
+					displayConfig(),
+				);
+				const activity = activityService.projectActivity(thread);
+				const olderCursor = response.olderCursor ?? null;
+				const caps = extractCapabilities(thread.evener.capabilities);
+				const readModelScope = { harness: thread.source, cwd: thread.cwd };
+				if (openEpoch === epoch) {
+					modelScope = readModelScope;
+					instanceId = readInstanceId;
+					threadId = response.thread.id;
+					ref = threadRef;
+					capabilities = caps;
+					opening = null;
+				}
+				// Reconcile the host's durable dispatch gate only after the projection
+				// installed, so a failed projection or a stale epoch leaves it blocked.
+				if (openEpoch === epoch) await reconcileRead(readLease, response);
+				return {
+					conversation,
+					activity,
+					olderCursor,
+					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
+					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
+				};
+			})();
+			pendingProjection = { ref: threadRef, instanceId: pagingInstance, publish };
+			return publish;
+		},
 
-    async loadOlder(cursor) {
-      const pending = pendingProjection;
-      if (ref === null && pending !== null && pending.instanceId !== null) {
-        // A same-session refresh closes mutation gates while validating its
-        // snapshot. Paging waits for validation while retaining its cursor.
-        const expected = pending;
-        let projection: PendingProjection = pending;
-        for (;;) {
-          // Wait for the projected publish, not the raw RPC: the host's read
-          // fence and the pair commit both sit inside it, so a page is seated
-          // only after the state it pages against is installed. A rejection
-          // here is the read's own failure, surfaced unchanged.
-          await projection.publish;
-          if (pendingProjection === projection) break;
-          const next: PendingProjection | null = pendingProjection;
-          if (
-            next === null ||
-            next.ref !== expected.ref ||
-            next.instanceId !== expected.instanceId
-          ) {
-            throw new Error("ConversationService: thread changed while paging");
-          }
-          projection = next;
-        }
-        if (ref !== expected.ref || instanceId !== expected.instanceId) {
-          throw new Error("ConversationService: thread changed while paging");
-        }
-      }
-      const threadRef = requireRef();
-      let response: ThreadTurnsListResponse;
-      try {
-        response = await client.request("thread/turns/list", {
-          ref: threadRef,
-          cursor,
-          itemsView: "fragment",
-          itemLimit: READ_ITEM_LIMIT,
-        });
-      } catch (error) {
-        if (!isStaleCursorError(error)) throw error;
-        // The store owns the single authoritative refresh so the refreshed
-        // cursor and visible projection are published together.
-        throw error;
-      }
-      return {
-        turnsPage: response,
-        nextCursor: response.nextCursor,
-        hasEarlierItems: response.data.some(
-          (turn) => turn.hasEarlierItems === true,
-        ),
-        hasLaterItems: response.data.some(
-          (turn) => turn.hasLaterItems === true,
-        ),
-      };
-    },
+		async loadOlder(cursor) {
+			const pending = pendingProjection;
+			if (ref === null && pending !== null && pending.instanceId !== null) {
+				// A same-session refresh closes mutation gates while validating its
+				// snapshot. Paging waits for validation while retaining its cursor.
+				const expected = pending;
+				let projection: PendingProjection = pending;
+				for (;;) {
+					// Wait for the projected publish, not the raw RPC: the host's read
+					// fence and the pair commit both sit inside it, so a page is seated
+					// only after the state it pages against is installed. A rejection
+					// here is the read's own failure, surfaced unchanged.
+					await projection.publish;
+					if (pendingProjection === projection) break;
+					const next: PendingProjection | null = pendingProjection;
+					if (next === null || next.ref !== expected.ref || next.instanceId !== expected.instanceId) {
+						throw new Error("ConversationService: thread changed while paging");
+					}
+					projection = next;
+				}
+				if (ref !== expected.ref || instanceId !== expected.instanceId) {
+					throw new Error("ConversationService: thread changed while paging");
+				}
+			}
+			const threadRef = requireRef();
+			let response: ThreadTurnsListResponse;
+			try {
+				response = await client.request("thread/turns/list", {
+					ref: threadRef,
+					cursor,
+					itemsView: "fragment",
+					itemLimit: READ_ITEM_LIMIT,
+				});
+			} catch (error) {
+				if (!isStaleCursorError(error)) throw error;
+				// The store owns the single authoritative refresh so the refreshed
+				// cursor and visible projection are published together.
+				throw error;
+			}
+			return {
+				turnsPage: response,
+				nextCursor: response.nextCursor,
+				hasEarlierItems: response.data.some((turn) => turn.hasEarlierItems === true),
+				hasLaterItems: response.data.some((turn) => turn.hasLaterItems === true),
+			};
+		},
 
+		subscribeNotifications(handler) {
+			if (notificationUnsub !== null) {
+				notificationUnsub();
+			}
+			const unsubscribe = client.onNotification((notification) => {
+				if (notification.method === "thread/status/changed") {
+					const params = notification.params;
+					const committed = ref !== null && params.ref === ref && params.threadId === threadId;
+					const pending =
+						opening !== null &&
+						params.ref === opening.ref &&
+						(opening.threadId === null || params.threadId === opening.threadId);
+					if ((committed || pending) && params.capabilities !== undefined) {
+						// Preserve pushes during hydration without permitting mutations until its read succeeds.
+						try {
+							const next = extractCapabilities(params.capabilities);
+							if (committed) capabilities = next;
+							if (pending && opening) opening.pushed = { threadId: params.threadId, caps: next };
+						} catch {
+							return;
+						}
+					}
+				}
+				handler(notification);
+			});
+			notificationUnsub = unsubscribe;
+			return () => {
+				if (notificationUnsub === unsubscribe) {
+					unsubscribe();
+					notificationUnsub = null;
+				}
+			};
+		},
 
-    subscribeNotifications(handler) {
-      if (notificationUnsub !== null) {
-        notificationUnsub();
-      }
-      const unsubscribe = client.onNotification((notification) => {
-        if (notification.method === "thread/status/changed") {
-          const params = notification.params;
-          const committed =
-            ref !== null && params.ref === ref && params.threadId === threadId;
-          const pending =
-            opening !== null &&
-            params.ref === opening.ref &&
-            (opening.threadId === null || params.threadId === opening.threadId);
-          if ((committed || pending) && params.capabilities !== undefined) {
-            // Preserve pushes during hydration without permitting mutations until its read succeeds.
-            try {
-              const next = extractCapabilities(params.capabilities);
-              if (committed) capabilities = next;
-              if (pending && opening)
-                opening.pushed = { threadId: params.threadId, caps: next };
-            } catch {
-              return;
-            }
-          }
-        }
-        handler(notification);
-      });
-      notificationUnsub = unsubscribe;
-      return () => {
-        if (notificationUnsub === unsubscribe) {
-          unsubscribe();
-          notificationUnsub = null;
-        }
-      };
-    },
+		async send(input) {
+			requireCap("send", "send");
+			const threadRef = requireRef();
+			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/start", {
+				ref: threadRef,
+				clientMutationId,
+				expectedInstanceId,
+				input,
+			});
+			return decodeMutationResult("send", result, clientMutationId, expectedInstanceId);
+		},
 
-    async send(input) {
-      requireCap("send", "send");
-      const threadRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/start", {
-        ref: threadRef,
-        clientMutationId,
-        expectedInstanceId,
-        input,
-      });
-      return decodeMutationResult(
-        "send",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-      );
-    },
+		async steer(input, expectedQueueRevision) {
+			requireCap("steer", "steer");
+			const threadRef = requireRef();
+			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
+			const clientMutationId = idFactory();
+			const result = await (expectedQueueRevision === undefined
+				? client.request("turn/steer", {
+						ref: threadRef,
+						clientMutationId,
+						expectedInstanceId,
+						input,
+					})
+				: client.request("turn/drainAsSteer", {
+						ref: threadRef,
+						clientMutationId,
+						expectedInstanceId,
+						expectedQueueRevision,
+						input,
+					}));
+			return decodeMutationResult(
+				expectedQueueRevision === undefined ? "steer" : "drain",
+				result,
+				clientMutationId,
+				expectedInstanceId,
+			);
+		},
 
-    async steer(input, expectedQueueRevision) {
-      requireCap("steer", "steer");
-      const threadRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
-      const clientMutationId = idFactory();
-      const result = await (expectedQueueRevision === undefined
-        ? client.request("turn/steer", {
-            ref: threadRef,
-            clientMutationId,
-            expectedInstanceId,
-            input,
-          })
-        : client.request("turn/drainAsSteer", {
-            ref: threadRef,
-            clientMutationId,
-            expectedInstanceId,
-            expectedQueueRevision,
-            input,
-          }));
-      return decodeMutationResult(
-        expectedQueueRevision === undefined ? "steer" : "drain",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-      );
-    },
+		async queue(input) {
+			requireCap("queue", "queue");
+			const threadRef = requireRef();
+			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/queue", {
+				ref: threadRef,
+				clientMutationId,
+				expectedInstanceId,
+				input,
+			});
+			return decodeMutationResult("queue", result, clientMutationId, expectedInstanceId);
+		},
 
-    async queue(input) {
-      requireCap("queue", "queue");
-      const threadRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/queue", {
-        ref: threadRef,
-        clientMutationId,
-        expectedInstanceId,
-        input,
-      });
-      return decodeMutationResult(
-        "queue",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-      );
-    },
+		async interrupt() {
+			requireCap("interrupt", "interrupt");
+			const threadRef = requireRef();
+			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/interrupt", {
+				ref: threadRef,
+				clientMutationId,
+				expectedInstanceId,
+			});
+			return decodeMutationResult("interrupt", result, clientMutationId, expectedInstanceId);
+		},
 
-    async interrupt() {
-      requireCap("interrupt", "interrupt");
-      const threadRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/interrupt", {
-        ref: threadRef,
-        clientMutationId,
-        expectedInstanceId,
-      });
-      return decodeMutationResult(
-        "interrupt",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-      );
-    },
+		async compact() {
+			requireCap("compact", "compact");
+			const threadRef = requireRef();
+			await client.request("thread/compact/start", { ref: threadRef });
+		},
 
-    async compact() {
-      requireCap("compact", "compact");
-      const threadRef = requireRef();
-      await client.request("thread/compact/start", { ref: threadRef });
-    },
+		async clear() {
+			requireCap("clear", "clear");
+			const targetRef = requireRef();
+			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
+			const clientMutationId = idFactory();
+			const response = await client.request("thread/clear", {
+				ref: targetRef,
+				expectedInstanceId,
+				clientMutationId,
+			});
+			const replacementInstance = nonemptyString(response.thread?.evener?.instanceId, "replacement instance id");
+			const receipt = decodeMutationResult("clear", response, clientMutationId, replacementInstance);
+			if (
+				response.ref !== targetRef ||
+				response.thread.evener.ref !== targetRef ||
+				receipt.threadId !== response.thread.id ||
+				receipt.instanceId !== replacementInstance
+			)
+				throw new Error("The clear response does not match the replacement session.");
+			return response;
+		},
 
-    async clear() {
-      requireCap("clear", "clear");
-      const targetRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
-      const clientMutationId = idFactory();
-      const response = await client.request("thread/clear", {
-        ref: targetRef,
-        expectedInstanceId,
-        clientMutationId,
-      });
-      const replacementInstance = nonemptyString(
-        response.thread?.evener?.instanceId,
-        "replacement instance id",
-      );
-      const receipt = decodeMutationResult(
-        "clear",
-        response,
-        clientMutationId,
-        replacementInstance,
-      );
-      if (
-        response.ref !== targetRef ||
-        response.thread.evener.ref !== targetRef ||
-        receipt.threadId !== response.thread.id ||
-        receipt.instanceId !== replacementInstance
-      )
-        throw new Error(
-          "The clear response does not match the replacement session.",
-        );
-      return response;
-    },
+		adoptClear(response) {
+			if ((ref ?? opening?.ref) !== response.ref)
+				throw new Error("The conversation changed before the clear could be displayed.");
+			const thread = response.thread;
+			beginOpen(response.ref);
+			const replacementInstance = nonemptyString(thread.evener.instanceId, "replacement instance id");
+			const conversation = projectConversation(
+				{
+					...hydrateThread({ thread }, response.ref, now()),
+					instanceId: replacementInstance,
+				},
+				undefined,
+				displayConfig(),
+			);
+			const activity = activityService.projectActivity(thread);
+			const caps = extractCapabilities(thread.evener.capabilities);
+			modelScope = { harness: thread.source, cwd: thread.cwd };
+			instanceId = replacementInstance;
+			threadId = thread.id;
+			ref = response.ref;
+			capabilities = caps;
+			opening = null;
+			return { conversation, activity, olderCursor: null };
+		},
 
-    adoptClear(response) {
-      if ((ref ?? opening?.ref) !== response.ref)
-        throw new Error(
-          "The conversation changed before the clear could be displayed.",
-        );
-      const thread = response.thread;
-      beginOpen(response.ref);
-      const replacementInstance = nonemptyString(
-        thread.evener.instanceId,
-        "replacement instance id",
-      );
-      const conversation = projectConversation(
-        {
-          ...hydrateThread({ thread }, response.ref, now()),
-          instanceId: replacementInstance,
-        },
-        undefined,
-        displayConfig(),
-      );
-      const activity = activityService.projectActivity(thread);
-      const caps = extractCapabilities(thread.evener.capabilities);
-      modelScope = { harness: thread.source, cwd: thread.cwd };
-      instanceId = replacementInstance;
-      threadId = thread.id;
-      ref = response.ref;
-      capabilities = caps;
-      opening = null;
-      return { conversation, activity, olderCursor: null };
-    },
+		async forkFromTurn(transcriptEntryIndex) {
+			if (!Number.isSafeInteger(transcriptEntryIndex) || transcriptEntryIndex <= 0)
+				throw new Error("The selected message has no persisted fork position.");
+			requireCap("forkFromTurn", "forkFromTurn");
+			const parentRef = requireRef();
+			const response = await client.request("thread/fork", {
+				ref: parentRef,
+				sourceItemKey: forkEntrySourceItemKey(transcriptEntryIndex),
+				deferInput: true,
+			});
+			const childRef = nonemptyString(response.thread?.evener?.ref, "fork session reference");
+			if (childRef === parentRef) throw new Error("The fork response did not identify a new session.");
+			return response;
+		},
 
-    async forkFromTurn(transcriptEntryIndex) {
-      if (
-        !Number.isSafeInteger(transcriptEntryIndex) ||
-        transcriptEntryIndex <= 0
-      )
-        throw new Error("The selected message has no persisted fork position.");
-      requireCap("forkFromTurn", "forkFromTurn");
-      const parentRef = requireRef();
-      const response = await client.request("thread/fork", {
-        ref: parentRef,
-        sourceItemKey: forkEntrySourceItemKey(transcriptEntryIndex),
-        deferInput: true,
-      });
-      const childRef = nonemptyString(
-        response.thread?.evener?.ref,
-        "fork session reference",
-      );
-      if (childRef === parentRef)
-        throw new Error("The fork response did not identify a new session.");
-      return response;
-    },
+		async forkAside() {
+			requireCap("forkFromTurn", "forkAside");
+			const parentRef = requireRef();
+			const response = await client.request("thread/fork", {
+				ref: parentRef,
+				aside: true,
+			});
+			const childRef = nonemptyString(response.thread?.evener?.ref, "aside session reference");
+			if (childRef === parentRef) throw new Error("The aside response did not identify a new session.");
+			return response;
+		},
 
-    async forkAside() {
-      requireCap("forkFromTurn", "forkAside");
-      const parentRef = requireRef();
-      const response = await client.request("thread/fork", {
-        ref: parentRef,
-        aside: true,
-      });
-      const childRef = nonemptyString(
-        response.thread?.evener?.ref,
-        "aside session reference",
-      );
-      if (childRef === parentRef)
-        throw new Error("The aside response did not identify a new session.");
-      return response;
-    },
+		async shutdown() {
+			requireCap("shutdown", "shutdown");
+			const threadRef = requireRef();
+			await client.request("thread/shutdown", { ref: threadRef });
+		},
 
-    async shutdown() {
-      requireCap("shutdown", "shutdown");
-      const threadRef = requireRef();
-      await client.request("thread/shutdown", { ref: threadRef });
-    },
+		async forceStop() {
+			const threadRef = requireRef();
+			if (typeof client.forceStop !== "function") {
+				throw new Error("ConversationService: force stop is unavailable");
+			}
+			await client.forceStop(threadRef);
+		},
 
-    async forceStop() {
-      const threadRef = requireRef();
-      if (typeof client.forceStop !== "function") {
-        throw new Error("ConversationService: force stop is unavailable");
-      }
-      await client.forceStop(threadRef);
-    },
+		async resume() {
+			const threadRef = requireRef();
+			if (typeof client.resumeThread !== "function") {
+				throw new Error("ConversationService: resume is unavailable");
+			}
+			await client.resumeThread(threadRef);
+		},
 
-    async resume() {
-      const threadRef = requireRef();
-      if (typeof client.resumeThread !== "function") {
-        throw new Error("ConversationService: resume is unavailable");
-      }
-      await client.resumeThread(threadRef);
-    },
+		async models() {
+			requireRef();
+			if (!modelScope) throw new Error("No model catalog scope is available.");
+			const epoch = openEpoch;
+			const catalog = await client.request("model/list", { ...modelScope });
+			if (epoch !== openEpoch) throw new Error("The conversation changed while loading models.");
+			return catalog;
+		},
 
-    async models() {
-      requireRef();
-      if (!modelScope) throw new Error("No model catalog scope is available.");
-      const epoch = openEpoch;
-      const catalog = await client.request("model/list", { ...modelScope });
-      if (epoch !== openEpoch)
-        throw new Error("The conversation changed while loading models.");
-      return catalog;
-    },
+		async changeModel(modelProvider, model) {
+			requireCap("changeModel", "changeModel");
+			const threadRef = requireRef();
+			await client.request("thread/model/set", {
+				ref: threadRef,
+				modelProvider,
+				model,
+			});
+		},
 
-    async changeModel(modelProvider, model) {
-      requireCap("changeModel", "changeModel");
-      const threadRef = requireRef();
-      await client.request("thread/model/set", {
-        ref: threadRef,
-        modelProvider,
-        model,
-      });
-    },
+		async setVisionModel(visionModel) {
+			requireCap("changeVisionModel", "setVisionModel");
+			const threadRef = requireRef();
+			await client.request("thread/vision-model/set", {
+				ref: threadRef,
+				visionModel,
+			});
+		},
 
-    async setVisionModel(visionModel) {
-      requireCap("changeVisionModel", "setVisionModel");
-      const threadRef = requireRef();
-      await client.request("thread/vision-model/set", {
-        ref: threadRef,
-        visionModel,
-      });
-    },
+		async setReasoningEffort(effort) {
+			const threadRef = requireRef();
+			await client.request("thread/reasoning-effort/set", {
+				ref: threadRef,
+				reasoningEffort: effort,
+			});
+		},
 
-    async setReasoningEffort(effort) {
-      const threadRef = requireRef();
-      await client.request("thread/reasoning-effort/set", {
-        ref: threadRef,
-        reasoningEffort: effort,
-      });
-    },
+		async setGoal(objective) {
+			requireCap("goal", "setGoal");
+			const threadRef = requireRef();
+			const result = await client.request("goal/set", { ref: threadRef, objective });
+			const response = exactObject(result, ["started"], "goal result");
+			if (typeof response.started !== "boolean") {
+				throw new Error("ConversationService: invalid goal acknowledgment");
+			}
+		},
 
-    async setGoal(objective) {
-      requireCap("goal", "setGoal");
-      const threadRef = requireRef();
-      const result = await client.request("goal/set", { ref: threadRef, objective });
-      const response = exactObject(result, ["started"], "goal result");
-      if (typeof response.started !== "boolean") {
-        throw new Error("ConversationService: invalid goal acknowledgment");
-      }
-    },
+		async rename(name) {
+			requireCap("rename", "rename");
+			const threadRef = requireRef();
+			await client.request("evener/thread/name/set", { ref: threadRef, name });
+		},
 
-    async rename(name) {
-      requireCap("rename", "rename");
-      const threadRef = requireRef();
-      await client.request("evener/thread/name/set", { ref: threadRef, name });
-    },
+		async cancelQueued(index, expectedEntryId, expectedInstanceId) {
+			const threadRef = requireQueueInstance(expectedInstanceId);
+			const expectedThreadId = nonemptyString(threadId, "thread id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/cancelQueued", {
+				ref: threadRef,
+				index,
+				clientMutationId,
+				expectedEntryId,
+				expectedInstanceId,
+			});
+			validateQueueAction("cancel", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
+			return result;
+		},
 
-    async cancelQueued(index, expectedEntryId, expectedInstanceId) {
-      const threadRef = requireQueueInstance(expectedInstanceId);
-      const expectedThreadId = nonemptyString(threadId, "thread id");
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/cancelQueued", {
-        ref: threadRef,
-        index,
-        clientMutationId,
-        expectedEntryId,
-        expectedInstanceId,
-      });
-      validateQueueAction(
-        "cancel",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-        expectedThreadId,
-        expectedEntryId,
-      );
-      return result;
-    },
+		async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
+			const threadRef = requireQueueInstance(expectedInstanceId);
+			requireQueueRun();
+			const expectedThreadId = nonemptyString(threadId, "thread id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/promoteQueuedAsSteer", {
+				ref: threadRef,
+				index,
+				expectedEntryId,
+				expectedInstanceId,
+				clientMutationId,
+			});
+			validateQueueAction("promote", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
+			return result;
+		},
 
-    async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
-      const threadRef = requireQueueInstance(expectedInstanceId);
-      requireQueueRun();
-      const expectedThreadId = nonemptyString(threadId, "thread id");
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/promoteQueuedAsSteer", {
-        ref: threadRef,
-        index,
-        expectedEntryId,
-        expectedInstanceId,
-        clientMutationId,
-      });
-      validateQueueAction(
-        "promote",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-        expectedThreadId,
-        expectedEntryId,
-      );
-      return result;
-    },
+		async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
+			const threadRef = requireQueueInstance(expectedInstanceId);
+			requireQueueRun();
+			const expectedThreadId = nonemptyString(threadId, "thread id");
+			const clientMutationId = idFactory();
+			const result = await client.request("turn/drainAsSteer", {
+				ref: threadRef,
+				expectedQueueRevision,
+				expectedInstanceId,
+				clientMutationId,
+			});
+			validateQueueAction("drain", result, clientMutationId, expectedInstanceId, expectedThreadId);
+			return result;
+		},
 
-    async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
-      const threadRef = requireQueueInstance(expectedInstanceId);
-      requireQueueRun();
-      const expectedThreadId = nonemptyString(threadId, "thread id");
-      const clientMutationId = idFactory();
-      const result = await client.request("turn/drainAsSteer", {
-        ref: threadRef,
-        expectedQueueRevision,
-        expectedInstanceId,
-        clientMutationId,
-      });
-      validateQueueAction(
-        "drain",
-        result,
-        clientMutationId,
-        expectedInstanceId,
-        expectedThreadId,
-      );
-      return result;
-    },
-
-    close() {
-      pendingProjection = null;
-      if (notificationUnsub !== null) {
-        notificationUnsub();
-        notificationUnsub = null;
-      }
-      // Increment the epoch and clear the pair so a refresh that was in
-      // flight before close cannot republish into the closed service.
-      openEpoch += 1;
-      opening = null;
-      ref = null;
-      modelScope = null;
-      instanceId = null;
-      threadId = null;
-      capabilities = null;
-    },
-  };
+		close() {
+			pendingProjection = null;
+			if (notificationUnsub !== null) {
+				notificationUnsub();
+				notificationUnsub = null;
+			}
+			// Increment the epoch and clear the pair so a refresh that was in
+			// flight before close cannot republish into the closed service.
+			openEpoch += 1;
+			opening = null;
+			ref = null;
+			modelScope = null;
+			instanceId = null;
+			threadId = null;
+			capabilities = null;
+		},
+	};
 }
-

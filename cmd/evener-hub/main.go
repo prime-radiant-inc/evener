@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -346,7 +347,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if _, err := past.Rebuild(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -395,7 +396,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
+		_, _ = fmt.Fprintf(stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
@@ -599,6 +600,24 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
 		}
 	}
+	// The operation store opens before the hub serves anything. A corrupt store
+	// file takes §4's custody-first quarantine; a corrupt file whose custody
+	// snapshot is incomplete refuses the boot outright — the hub must never serve
+	// hosts past a fence the quarantine cannot prove.
+	opsStore, err := openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	// The operation store loads before the web server is built; a loaded
+	// compensation record whose stash reference is not this hub.toml family's
+	// own must never become a read, restore, or remove target, so a foreign
+	// path refuses startup (the machine-managed-file posture: a record this
+	// build cannot account for is refused loudly, never served).
+	if err := validateHostOpsStashReferences(opsStore, opts.configPath); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -641,7 +660,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
+		RemoteHostOpsStore:   opsStore,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -871,12 +890,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		ln: hubListener,
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	_, _ = fmt.Fprintf(stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
+	_, _ = fmt.Fprintf(stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -886,12 +905,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 // openHostOpsStore opens the hub's operation store — the file the
 // host-management surface mirrors per-host boundary records into — beside the
-// hub's other durable stores. A store that cannot be opened (a corrupt file,
-// an unreadable one) is logged and left unwired rather than refusing startup:
-// the mirror is a copy of hub.toml's machine records and never their authority,
-// and the custody-first quarantine a corrupt store file earns belongs to the
-// crash-fencing slice. Until then this is the interim posture: the hub serves,
-// and host mutations commit without mirroring.
+// hub's other durable stores. A corrupt store file takes §4's custody-first
+// quarantine: the corrupt file is renamed aside with its custody file, the
+// replacement store serves empty, and a crash between the custody write and the
+// rename, or between the rename and the replacement open, is completed on the
+// next boot. The quarantine's operator-visible health signal names the
+// quarantined file and its custody, and stays visible for as long as the
+// custody file keeps the names it closed closed.
+//
+// A corrupt file whose custody snapshot is incomplete — anything that would
+// leave a fence unprovable — fails startup here, never serves: the error aborts
+// the boot rather than leaving host operations unwired. Every other open failure
+// keeps the pre-quarantine disposition: the failure is logged and the hub
+// serves with host operations unwired, because a transient permission or I/O
+// problem is not a fence the hub cannot prove.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -905,11 +932,36 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // state-root write probe's crash orphans: an epoch with no mint behind it is
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
-func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
+	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
+		if errors.Is(err, hostops.ErrStoreCorrupt) {
+			return nil, fmt.Errorf("host operation store: %w", err)
+		}
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
-		return nil
+		return nil, nil
+	}
+	if signal := store.Quarantine(); signal != nil {
+		_, _ = fmt.Fprintf(stderr,
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified records only, and every name that custody closed stays closed until orphan-resolve\n",
+			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
+	}
+	// §7's boot order starts here: the store load plus the safety-critical local
+	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
+	// interrupted transition, and before anything serves. Crash-fencing §3
+	// (slice S19) owns that reap and `reapLocalOrphanBoundary` below fills this
+	// seam: it enumerates every open `pending-spawn` intent's persisted local
+	// boundary and converges it, touching no host and advancing no epoch. Its
+	// failure contract is fail-closed and durable, never a startup refusal: an
+	// unverifiable boundary keeps its `pending-spawn` intent open and marks the
+	// affected records `orphan-unverified` with the host admission-fenced,
+	// retried on every boot (crash-fencing §3's local-reap rule and §7's boot
+	// reaping order). The error below is what that implementation reports; the
+	// hub serves either way.
+	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d local orphan boundary row(s)\n", reaped)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
@@ -929,7 +981,40 @@ func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 	} else if interrupted > 0 {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
-	return store
+	return store, nil
+}
+
+// reapLocalOrphanBoundary is crash-fencing §3's safety-critical local reap: the
+// FIRST step of §7's boot order, run immediately after the operation store
+// loads and before hub.toml loads, the interrupted transition, or any request
+// is served. It delegates to the fencing package's pass, which resolves every
+// open `pending-spawn` intent's local boundary so a crashed incarnation's
+// orphan is never crossed locally.
+//
+// The reap's failure contract, per crash-fencing §3, is fail-closed and
+// durable, never a startup refusal: enumeration that cannot verify an orphan
+// keeps the boundary's `pending-spawn` intent open and marks the affected
+// records `orphan-unverified` with the host admission-fenced, and every
+// subsequent boot retries it (§7). The returned error names what the pass could
+// not converge; this call site logs it and serves, because a failed reap fences
+// affected hosts through the record, not through the hub's startup.
+func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
+	return hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{})
+}
+
+// hostOperationRetention maps the hub's owner knobs onto the operation store's
+// §4 retention policy: the five terminal/tombstone/store-byte/age bounds, with
+// the removed-host horizon being the tombstoneRetention knob §4 cites
+// (registry spec §15). Every zero value floors to the store's shipped default.
+func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
+	return hostops.RetentionPolicy{
+		TerminalPerHost:    cfg.HostOperationTerminalPerHost,
+		TerminalStoreWide:  cfg.HostOperationTerminalStoreWide,
+		StoreMaxBytes:      cfg.HostOperationStoreMaxBytes,
+		TerminalMaxAge:     cfg.HostOperationTerminalMaxAge,
+		TombstonesPerHost:  cfg.HostOperationTombstonesPerHost,
+		RemovedHostHorizon: cfg.HostTombstoneRetention,
+	}
 }
 
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host

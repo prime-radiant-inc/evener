@@ -16,18 +16,13 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import {
-	alertRequests,
-	render,
-	renderedText,
-	screenConnection,
-} from "./renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
-import { SessionSheet } from "./SessionSheet";
-import { ActivitySheet } from "./ActivitySheet";
+import { sessionInfoHosts } from "./session/SessionInfoSheet";
+import { sheetKey } from "./sheet/sheetHosts";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -84,6 +79,13 @@ vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("expo-web-browser", () => ({}));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
@@ -91,11 +93,9 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
 		useIsFocused: () => stack.focused,
-		useNavigationState: <T,>(select: (state: typeof stack.state) => T) =>
-			select(stack.state),
+		useNavigationState: <T,>(select: (state: typeof stack.state) => T) => select(stack.state),
 	};
 });
 vi.mock("expo-clipboard", () => ({
@@ -252,17 +252,10 @@ async function flush() {
 }
 
 const screen = () => (
-	<ConversationScreen
-		route={route}
-		navigation={navigation as unknown as ConversationScreenProps["navigation"]}
-	/>
+	<ConversationScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
 );
 
-function mount(
-	read: Thread = thread,
-	answers: Answers = {},
-	connection: Record<string, unknown> = {},
-) {
+function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
 	const { client, requests } = sessionClient(read, answers);
 	harness.connection = {
 		...screenConnection(client, "ready"),
@@ -276,9 +269,7 @@ function mount(
 
 function subscribedReads(requests: { method: string; params: unknown }[]) {
 	return requests.filter(
-		(request) =>
-			request.method === "thread/read" &&
-			(request.params as { subscribe?: boolean }).subscribe === true,
+		(request) => request.method === "thread/read" && (request.params as { subscribe?: boolean }).subscribe === true,
 	);
 }
 
@@ -340,9 +331,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 			menu: { items: { label: string; onPress(): void }[] };
 		}[];
 	};
-	const tasks = options
-		.unstable_headerRightItems()[0]
-		?.menu.items.find((item) => item.label === "Tasks");
+	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
 	if (!tasks) throw new Error("no Tasks item in the header menu");
 	act(() => tasks.onPress());
 
@@ -351,6 +340,26 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 		ref,
 		threadId: "thread-1",
 		hasTasks: true,
+	});
+	tree.unmount();
+});
+
+it("opens Notes & links from the header menu as the NotesSheet route, without focusing the editor", async () => {
+	const { tree } = mount(withCapabilities({ sharedNotes: true }));
+	await flush();
+
+	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
+		unstable_headerRightItems: () => {
+			menu: { items: { label: string; onPress(): void }[] };
+		}[];
+	};
+	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
+	if (!notes) throw new Error("no Notes & links item in the header menu");
+	act(() => notes.onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
+		hubId: "hub-1",
+		ref,
 	});
 	tree.unmount();
 });
@@ -377,9 +386,7 @@ it("follows no session while a screen is pushed over it", async () => {
 	const { tree, requests } = mount();
 	await flush();
 
-	expect(requests.filter((request) => request.method === "thread/read")).toEqual(
-		[],
-	);
+	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
 	tree.unmount();
 });
 
@@ -392,10 +399,99 @@ it("titles the header with the session's state, and opens its info on a press", 
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
 	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Finished" } });
-	expect(tree.root.findAllByType(SessionSheet)).toEqual([]);
 	act(() => element.props.onPress());
 
-	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
+	// The sheet reads the session through the host the screen provides.
+	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
+	tree.unmount();
+});
+
+it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuAction("Session info").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
+	tree.unmount();
+});
+
+/** The Session sheet's host, as the screen provides it now. */
+function sessionInfoHost() {
+	const host = sessionInfoHosts.get(sheetKey("hub-1", ref));
+	if (!host) throw new Error("the screen provides no Session sheet host");
+	return host;
+}
+
+it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
+	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
+		"evener/archive/set": {},
+		"thread/compact/start": {},
+		"thread/shutdown": {},
+	});
+	await flush();
+
+	let archived: unknown;
+	await act(async () => {
+		archived = await sessionInfoHost().act("archive");
+	});
+	expect(archived).toMatchObject({ text: "Session archived", action: { label: "Undo" } });
+	expect(requests.filter(({ method }) => method === "evener/archive/set").map(({ params }) => params)).toEqual([
+		{ kind: "session", id: ref, archived: true },
+	]);
+
+	let compacted: unknown;
+	await act(async () => {
+		compacted = await sessionInfoHost().act("compact");
+	});
+	expect(compacted).toEqual({ text: "Compacting context" });
+	expect(requests.map(({ method }) => method)).toContain("thread/compact/start");
+
+	let stopped: unknown;
+	await act(async () => {
+		stopped = await sessionInfoHost().act("shutDown");
+	});
+	expect(stopped).toEqual({ text: "Session shut down" });
+	expect(requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
+		{ method: "thread/shutdown", params: { ref } },
+	]);
+	// No second question: the sheet asked before it handed Shut down over.
+	expect(alertRequests).toEqual([]);
+
+	// Its toast shows on the session, once the sheet has gone.
+	act(() => sessionInfoHost().toast({ text: "Session archived" }));
+	expect(renderedText(tree)).toContain("Session archived");
+	tree.unmount();
+});
+
+it("says so when the hub went away before a Session sheet action could run", async () => {
+	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }));
+	await flush();
+	// The confirmation was up when the connection dropped.
+	harness.connection = { ...harness.connection, state: "connecting" };
+	act(() => tree.update(screen()));
+	await flush();
+
+	let stopped: unknown;
+	let compacted: unknown;
+	await act(async () => {
+		stopped = await sessionInfoHost().act("shutDown");
+		compacted = await sessionInfoHost().act("compact");
+	});
+	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
+	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
+	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
+	tree.unmount();
+});
+
+it("opens Pin to category… from the Session sheet as its screen", async () => {
+	const { tree } = mount();
+	await flush();
+
+	await act(async () => {
+		await sessionInfoHost().act("pin");
+	});
+	expect(navigation.navigate).toHaveBeenCalledWith("PinAssignment", { hubId: "hub-1", ref, title: "Session" });
 	tree.unmount();
 });
 
@@ -522,14 +618,20 @@ it("says so when the hub refuses to archive", async () => {
 });
 
 it("opens an aside as its own session", async () => {
-	const aside = { thread: { ...thread, id: "thread-2", name: "Side question", evener: { ...thread.evener, ref: "local:aside" } } };
+	const aside = {
+		thread: { ...thread, id: "thread-2", name: "Side question", evener: { ...thread.evener, ref: "local:aside" } },
+	};
 	const { tree } = mount(withCapabilities({ forkFromTurn: true }), { "thread/fork": aside });
 	await flush();
 
 	act(() => menuAction("Ask aside…").onPress());
 	await flush();
 
-	expect(navigation.push).toHaveBeenCalledWith("Conversation", { hubId: "hub-1", ref: "local:aside", title: "Side question" });
+	expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+		hubId: "hub-1",
+		ref: "local:aside",
+		title: "Side question",
+	});
 	tree.unmount();
 });
 
@@ -617,8 +719,7 @@ function sessionList(tree: ReturnType<typeof render>) {
 		block,
 		list,
 		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) =>
-			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
@@ -649,9 +750,9 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
 	const chip = (label: string) => {
-		const found = session.block().findAll(
-			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
-		)[0];
+		const found = session
+			.block()
+			.findAll((node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label)[0];
 		if (!found) throw new Error(`no ${label} chip`);
 		return found;
 	};
@@ -660,9 +761,21 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
-	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 	act(() => chip("Subagents, 1").props.onPress());
-	expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
+	vi.mocked(navigation.navigate).mockClear();
+	act(() => menuAction("Subagents").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
 
 	act(() => chip("Tasks, 1 of 2 done").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
@@ -672,9 +785,8 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		hasTasks: true,
 	});
 
-	expect(tree.root.findAllByType(SessionSheet)).toEqual([]);
 	act(() => chip("Goal, blocked").props.onPress());
-	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 
 	act(() => chip("2 queued messages").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref });
@@ -690,7 +802,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 });
 
 it("hides the Subagents and Tasks chips once the connection bar itself would say something, but keeps the cached Goal and Queue chips", async () => {
-	const { tree } = mount(busy);
+	const { tree, client } = mount(busy);
 	await flush();
 	vi.useFakeTimers();
 	try {
@@ -699,7 +811,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		expect(label("Subagents, 1")).toHaveLength(1);
 
 		// The connection drops; the thread's cached delegates/tasks survive.
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 		// A blip shorter than the bar's own grace period (spec 14) - the chips
 		// stay exactly as visible as they were, since the bar itself says
@@ -722,11 +834,11 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 });
 
 it("a Subagents/Tasks chip tap still works during a blip shorter than the connection bar's own grace period (Calm)", async () => {
-	const { tree } = mount(busy);
+	const { tree, client } = mount(busy);
 	await flush();
 	vi.useFakeTimers();
 	try {
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 
 		const { block } = sessionList(tree);
@@ -734,9 +846,14 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 			block().findAll(
 				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
 			)[0];
-		expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
+		vi.mocked(navigation.navigate).mockClear();
 		act(() => chip("Subagents, 1").props.onPress());
-		expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+			hubId: "hub-1",
+			ref,
+			threadId: "thread-1",
+			title: "Session",
+		});
 	} finally {
 		vi.useRealTimers();
 	}
@@ -827,9 +944,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	await flush();
 
 	expect(sessionList(tree).block().props.status).toBe("Update needed");
-	const bar = tree.root.find(
-		(node) => node.type === ("Text" as never) && node.props.children === "Update needed",
-	);
+	const bar = tree.root.find((node) => node.type === ("Text" as never) && node.props.children === "Update needed");
 	expect(bar.props.accessibilityHint).toBe(
 		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
 	);
@@ -844,7 +959,7 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 	try {
 		harness.connection = {
 			...harness.connection,
-			state: "reconnecting",
+			...screenConnection(client, "reconnecting"),
 			error: OLD_TRANSPORT_ERROR,
 		};
 		act(() => tree.update(screen()));
@@ -858,7 +973,11 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 		expect(status()).toBe("Reconnecting…");
 		advance(28_000);
 		expect(status()).toBe("Offline · updated 1m ago");
-		advance(180_000);
+		// The status re-renders once a minute of the data's age, one tick per
+		// act.
+		advance(30_000);
+		advance(60_000);
+		advance(60_000);
 		expect(status()).toBe("Offline · updated 3m ago");
 		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
 		expect(renderedText(tree)).toContain("Offline · updated 3m ago");

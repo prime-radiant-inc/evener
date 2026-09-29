@@ -1,13 +1,6 @@
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { MobileConversation } from "./projectedRows";
@@ -21,24 +14,19 @@ import { locations } from "./nativeLocation";
 import { forkJournal } from "./nativeOrganization";
 import type { Routes } from "./screens";
 import { Copy, styles, useColors } from "./ui";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
 
-export function ForkScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "Fork">) {
+export function ForkScreen({ route, navigation }: NativeStackScreenProps<Routes, "Fork">) {
 	const { hubId, ref, title, instanceId, entryIndex, preview } = route.params;
-	const { client, activeProfile, state, retry } = useConnection();
+	const { client, activeProfile, state } = useConnection();
 	const focused = useIsFocused();
 	const belongs = activeProfile?.id === hubId;
 	const ready = belongs && !!client && state === "ready";
 	const colors = useColors();
-	const service = useMemo(
-		() => (client && belongs ? createConversationService(client) : null),
-		[client, belongs],
-	);
+	const service = useMemo(() => (client && belongs ? createConversationService(client) : null), [client, belongs]);
 	const repository = useMemo(() => forkJournal(hubId, ref), [hubId, ref]);
 	const binding = useMemo(
 		() => ({
@@ -55,10 +43,7 @@ export function ForkScreen({
 	);
 	const owner = useRef<typeof binding | null>(binding);
 	owner.current = binding;
-	const isCurrent = useCallback(
-		() => owner.current === binding && binding.ready && binding.focused,
-		[binding],
-	);
+	const isCurrent = useCallback(() => owner.current === binding && binding.ready && binding.focused, [binding]);
 	const source = useRef<{
 		owner: typeof binding;
 		conversation: MobileConversation;
@@ -73,18 +58,14 @@ export function ForkScreen({
 		() =>
 			service
 				? new ForkActions(repository, service, drafts, hubId, isCurrent, () =>
-						source.current?.owner === binding &&
-						source.current.conversation.capabilities?.forkFromTurn
+						source.current?.owner === binding && source.current.conversation.capabilities?.forkFromTurn
 							? (source.current.conversation.instanceId ?? null)
 							: null,
 					)
 				: null,
 		[service, repository, hubId, isCurrent, binding],
 	);
-	const action = useSyncExternalStore(
-		actions?.subscribe ?? noSubscription,
-		actions?.getSnapshot ?? noSnapshot,
-	);
+	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	const readSource = useCallback(async () => {
 		if (!service || !isCurrent() || reading.current === binding) return false;
 		reading.current = binding;
@@ -95,8 +76,7 @@ export function ForkScreen({
 			if (!isCurrent()) return false;
 			source.current = { owner: binding, conversation: value.conversation };
 			const valid =
-				value.conversation.instanceId === instanceId &&
-				value.conversation.capabilities?.forkFromTurn === true;
+				value.conversation.instanceId === instanceId && value.conversation.capabilities?.forkFromTurn === true;
 			setReadState({
 				owner: binding,
 				pending: false,
@@ -113,8 +93,7 @@ export function ForkScreen({
 				setReadState({
 					owner: binding,
 					pending: false,
-					error:
-						"The source session could not be checked. Retry before creating a fork.",
+					error: "The source session could not be checked. Retry before creating a fork.",
 				});
 			return false;
 		} finally {
@@ -141,8 +120,7 @@ export function ForkScreen({
 	}
 	async function create() {
 		if (!actions || actions.getSnapshot().pending || !isCurrent()) return;
-		if (await readSource())
-			open(await actions.create({ instanceId, entryIndex, preview }));
+		if (await readSource()) open(await actions.create({ instanceId, entryIndex, preview }));
 	}
 	function allowAnother() {
 		const saved = actions?.getSnapshot().checkpoint;
@@ -163,39 +141,29 @@ export function ForkScreen({
 	}
 	const checked = readState?.owner === binding ? readState : null;
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!belongs ? (
-				<Copy>
-					This hub is no longer selected. Return to Hubs to reconnect.
-				</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<ForkEditor
 					title={title || "Fork session"}
 					hubName={activeProfile?.name ?? "Hub"}
 					preview={action?.checkpoint?.target.preview ?? preview}
 					connected={ready && focused}
-					canCreate={
-						!!checked && !checked.pending && !checked.error && !!actions
-					}
+					canCreate={!!checked && !checked.pending && !checked.error && !!actions}
 					pending={!!action?.pending || !!checked?.pending}
 					hasCheckpoint={!!action?.checkpoint}
 					hasChild={!!action?.checkpoint?.child}
 					storageUnavailable={!!action?.storageUnavailable}
 					error={action?.error ?? null}
-					sourceError={
-						action?.checkpoint?.child ? null : (checked?.error ?? null)
-					}
+					sourceError={action?.checkpoint?.child ? null : (checked?.error ?? null)}
 					create={() => void create()}
 					openChild={() => {
 						open(actions?.openChild() ?? null);
 					}}
 					retry={() => {
 						actions?.retryStorage();
-						if (!ready) retry();
-						else void readSource();
+						if (ready) void readSource();
 					}}
 					browseSessions={() => navigation.popTo("Sessions")}
 					allowAnother={allowAnother}

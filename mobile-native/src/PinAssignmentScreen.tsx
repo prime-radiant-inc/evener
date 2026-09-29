@@ -5,36 +5,18 @@ import { KeyboardAvoidingView, Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { pinDrafts } from "./nativeOrganization";
 import { PinAssignmentEditor } from "./PinAssignmentEditor";
-import type {
-	PinAssignmentDraft,
-	PinAssignmentSelection,
-} from "./pinAssignmentDrafts";
+import type { PinAssignmentDraft, PinAssignmentSelection } from "./pinAssignmentDrafts";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
-const draftError =
-	"Your last saved pin proposal is kept. This edit could not be saved on this device; refresh to retry.";
+const draftError = "Your last saved pin proposal is kept. This edit could not be saved on this device. Try again.";
 
-export function PinAssignmentScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "PinAssignment">) {
+export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinAssignment">) {
 	const { hubId, ref, title } = route.params;
-	const {
-		activeProfile,
-		ready,
-		belongs,
-		focused,
-		retry,
-		pages,
-		page,
-		actions,
-		action,
-		observed,
-		confirmed,
-		isCurrent,
-	} = usePinNavigation(hubId, ref);
+	const { activeProfile, ready, belongs, focused, pages, page, actions, action, observed, confirmed, isCurrent } =
+		usePinNavigation(hubId, ref);
 	const colors = useColors();
 	const headerHeight = useHeaderHeight();
 	const repository = useMemo(() => pinDrafts(hubId, ref), [hubId, ref]);
@@ -58,14 +40,8 @@ export function PinAssignmentScreen({
 			setProposal({ owner: repository, draft: null, error: draftError });
 		}
 	}, [repository, proposal.owner]);
-	const available =
-		ready && focused && confirmed && !!observed?.location?.top_level;
-	const currentAssignment =
-		ready &&
-		confirmed &&
-		!page?.stale &&
-		!action?.pending &&
-		!action?.uncertain;
+	const available = ready && focused && confirmed && !!observed?.location?.top_level;
+	const currentAssignment = ready && confirmed && !page?.stale && !action?.pending && !action?.uncertain;
 	const blocked =
 		!available ||
 		!page?.loaded ||
@@ -81,7 +57,6 @@ export function PinAssignmentScreen({
 			setProposal((previous) => ({ ...previous, error: draftError }));
 		}
 		if (ready) void actions?.reconcile();
-		else retry();
 	}
 	function change(selection: PinAssignmentSelection) {
 		if (blocked) return;
@@ -101,8 +76,7 @@ export function PinAssignmentScreen({
 		const selection = saved?.selection;
 		if (unpin) await actions.unpin({ sessionRef: ref });
 		else if (selection?.kind === "existing") {
-			if (!page?.rows.some((section) => section.id === selection.sectionId))
-				return;
+			if (!page?.rows.some((section) => section.id === selection.sectionId)) return;
 			await actions.assignPin({
 				sessionRef: ref,
 				sectionId: selection.sectionId,
@@ -113,30 +87,23 @@ export function PinAssignmentScreen({
 			await actions.assignPin({ sessionRef: ref, sectionName: name });
 		} else return;
 		const result = actions.getSnapshot();
-		if (!isCurrent() || result.pending || result.uncertain || result.error)
-			return;
+		if (!isCurrent() || result.pending || result.uncertain || result.error) return;
 		if (saved) {
 			try {
-				if (repository.removeIf(saved))
-					setProposal({ owner: repository, draft: null, error: null });
+				if (repository.removeIf(saved)) setProposal({ owner: repository, draft: null, error: null });
 			} catch {
 				setProposal((previous) => ({
 					...previous,
 					error:
-						"The pin change was confirmed, but its saved proposal could not be cleared. Refresh before editing again.",
+						"The pin change was confirmed, but its saved proposal could not be cleared. Check the pins before editing again.",
 				}));
 			}
 		}
 	}
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!belongs ? (
-				<Copy>
-					This hub is no longer selected. Return to Hubs to reconnect.
-				</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -146,11 +113,8 @@ export function PinAssignmentScreen({
 					<PinAssignmentEditor
 						status={
 							<View style={{ gap: 8 }}>
-								{!ready ? <Action onPress={retry}>Reconnect</Action> : null}
 								<ErrorMessage message={selected?.error ?? null} />
-								{selected?.error ? (
-									<Action onPress={refresh}>Retry saved proposal</Action>
-								) : null}
+								{selected?.error ? <Action onPress={refresh}>Retry saved proposal</Action> : null}
 								{observed ? (
 									<Copy muted>
 										{!observed.location
@@ -178,6 +142,7 @@ export function PinAssignmentScreen({
 						remaining={page?.remaining ?? 0}
 						pending={action?.pending ?? false}
 						uncertain={!!action?.uncertain || !!action?.storageUnavailable}
+						previousChange={!!action?.recovery}
 						error={action?.error ?? page?.error ?? null}
 						refresh={refresh}
 						more={() => {

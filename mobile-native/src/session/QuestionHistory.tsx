@@ -7,8 +7,13 @@ import { Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-
-export function QuestionHistory({ questions, answer }: { questions: readonly AskUserQuestion[]; answer: string | undefined }) {
+export function QuestionHistory({
+	questions,
+	answer,
+}: {
+	questions: readonly AskUserQuestion[];
+	answer: string | undefined;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
@@ -23,7 +28,10 @@ export function QuestionHistory({ questions, answer }: { questions: readonly Ask
 				</Text>
 			))}
 			{answer ? (
-				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
+				>
 					{`You answered: ${answer}`}
 				</Text>
 			) : null}

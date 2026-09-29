@@ -117,7 +117,7 @@ the renderer singleton is the *only* hard blocker to running two sessions on one
   divider would be net-new (mousedown/move/up handler, persisted width).
 
 ### Realtime transport (already multi-session-capable)
-- **One WebSocket per page.** Module-level `let ws = null` — `cmd/evener-hub/assets/appwire.js:26`;
+- **One WebSocket per page.** Module-level `let ws = null` — `cmd/serf-hub/assets/appwire.js:26`;
   opened once via `new WebSocket(rpcURL())` — `appwire.js:46`; `rpcURL()` points at `/rpc`
   — `appwire.js:39`. Server route `mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)` —
   `web.go:115`; one `Connection` per socket — `internal/appserver/websocket.go:31`.

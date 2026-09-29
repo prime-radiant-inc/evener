@@ -29,12 +29,7 @@ function Detail({ label, value }: { label: string; value?: string }) {
 }
 
 function ResponseDetails({ state }: { state: UpgradeState }) {
-	if (
-		state.kind !== "installed" &&
-		state.kind !== "uncertain" &&
-		state.kind !== "storageUnavailable"
-	)
-		return null;
+	if (state.kind !== "installed" && state.kind !== "uncertain" && state.kind !== "storageUnavailable") return null;
 	const response = state.response;
 	if (!response) return null;
 	return (
@@ -58,21 +53,15 @@ export function HubUpgradeSection({
 }: HubUpgradeSectionProps) {
 	const colors = useColors();
 	const confirmStart = useCallback(() => {
-		Alert.alert(
-			`Upgrade ${hubName}?`,
-			`Install an update on ${hubName}. The hub may need to restart before it runs.`,
-			[
-				{ text: "Cancel", style: "cancel" },
-				{ text: "Upgrade", style: "destructive", onPress: onStart },
-			],
-		);
+		Alert.alert(`Upgrade ${hubName}?`, `Install an update on ${hubName}. The hub may need to restart before it runs.`, [
+			{ text: "Cancel", style: "cancel" },
+			{ text: "Upgrade", style: "destructive", onPress: onStart },
+		]);
 	}, [hubName, onStart]);
 	const overview = "overview" in state ? state.overview : undefined;
 	const running = overview?.hub ?? runningIdentity;
 	const error =
-		state.kind === "installed" ||
-		state.kind === "uncertain" ||
-		state.kind === "storageUnavailable"
+		state.kind === "installed" || state.kind === "uncertain" || state.kind === "storageUnavailable"
 			? (state.message ?? null)
 			: null;
 
@@ -96,22 +85,14 @@ export function HubUpgradeSection({
 					Upgrade hub
 				</Action>
 			)}
-			{state.kind === "uncertain" && (
-				<Copy muted>
-					The update may have been installed. Refresh to check the running
-					version.
-				</Copy>
-			)}
+			{state.kind === "uncertain" && <Copy muted>The update may have been installed. Check the running version.</Copy>}
 			{state.kind === "storageUnavailable" && (
-				<Copy muted>
-					The update status could not be read or saved on this device. Reopen
-					Hub Settings to check it.
-				</Copy>
+				<Copy muted>The update status could not be read or saved on this device. Reopen Hub Settings to check it.</Copy>
 			)}
 			{(state.kind === "installed" || state.kind === "uncertain") && (
 				<>
 					<Action tone="quiet" onPress={onRefresh}>
-						Refresh running version
+						Check running version
 					</Action>
 					<Action tone="quiet" onPress={onReviewAnother}>
 						Review another update

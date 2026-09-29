@@ -24,32 +24,18 @@ export interface ForkEditorProps {
 export function ForkEditor(props: ForkEditorProps) {
 	const colors = useColors();
 	const busy = props.pending || props.storageUnavailable;
-	const preview =
-		props.preview.length > 1000
-			? `${props.preview.slice(0, 1000)}…`
-			: props.preview;
+	const preview = props.preview.length > 1000 ? `${props.preview.slice(0, 1000)}…` : props.preview;
 	return (
-		<ScrollView
-			style={styles.fill}
-			contentContainerStyle={{ padding: 20, gap: 16 }}
-		>
+		<ScrollView style={styles.fill} contentContainerStyle={{ padding: 20, gap: 16 }}>
 			<View style={{ gap: 4 }}>
 				<Copy>{props.title}</Copy>
 				<Copy muted>{props.hubName}</Copy>
 			</View>
 			<ErrorMessage message={props.sourceError} />
 			<ErrorMessage message={props.error} />
-			{!props.connected ? (
-				<Action onPress={props.retry}>Reconnect</Action>
-			) : null}
 			<View style={{ gap: 8 }}>
-				<Copy>
-					History before this message will be copied into a new session.
-				</Copy>
-				<Copy muted>
-					The message opens as an editable draft. You can change it before
-					sending.
-				</Copy>
+				<Copy>History before this message will be copied into a new session.</Copy>
+				<Copy muted>The message opens as an editable draft. You can change it before sending.</Copy>
 				<View
 					style={{
 						padding: 14,
@@ -71,32 +57,20 @@ export function ForkEditor(props: ForkEditorProps) {
 						</Copy>
 					) : null}
 					{props.hasChild ? (
-						<Action
-							disabled={!props.connected || busy}
-							onPress={props.openChild}
-							tone="primary"
-						>
+						<Action disabled={!props.connected || busy} onPress={props.openChild} tone="primary">
 							Open fork
 						</Action>
 					) : (
 						<View style={[styles.row, { flexWrap: "wrap" }]}>
 							<Action onPress={props.browseSessions}>Check Sessions</Action>
-							<Action
-								disabled={!props.connected || busy}
-								onPress={props.allowAnother}
-								tone="quiet"
-							>
+							<Action disabled={!props.connected || busy} onPress={props.allowAnother} tone="quiet">
 								Allow another fork
 							</Action>
 						</View>
 					)}
 				</View>
 			) : (
-				<Action
-					disabled={!props.connected || !props.canCreate || busy}
-					onPress={props.create}
-					tone="primary"
-				>
+				<Action disabled={!props.connected || !props.canCreate || busy} onPress={props.create} tone="primary">
 					Create fork
 				</Action>
 			)}

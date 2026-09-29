@@ -3,14 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
-import {
-	boundQuestionText,
-	questionsIdentity,
-} from "./questionAnswers";
-import {
-	boundQuestion,
-	MAX_ITEM_BYTES,
-} from "./projectedRows";
+import { boundQuestionText, questionsIdentity } from "./questionAnswers";
+import { boundQuestion, MAX_ITEM_BYTES } from "./projectedRows";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
@@ -61,23 +55,17 @@ test("image bytes and draft references survive reopen without following another 
 		mediaType: "image/png",
 		name: "proof.png",
 	};
-	repository.write(
-		destination,
-		{ draft: "[image 3]", unconfirmed: null, images: [image] },
-		[{ ...image, data: "AQID" }],
-	);
+	repository.write(destination, { draft: "[image 3]", unconfirmed: null, images: [image] }, [
+		{ ...image, data: "AQID" },
+	]);
 	database.close();
 	openRepository();
 	expect(repository.read(destination).images).toEqual([image]);
 	expect(repository.imageInputs(destination, [image])).toEqual([
 		{ marker: 3, mediaType: "image/png", name: "proof.png", data: "AQID" },
 	]);
-	expect(
-		repository.read({ ...destination, hubId: "hub-b" }).images,
-	).toBeUndefined();
-	expect(() =>
-		repository.imageInputs({ ...destination, hubId: "hub-b" }, [image]),
-	).toThrow();
+	expect(repository.read({ ...destination, hubId: "hub-b" }).images).toBeUndefined();
+	expect(() => repository.imageInputs({ ...destination, hubId: "hub-b" }, [image])).toThrow();
 });
 
 test("text edits do not rewrite image bytes and a failed checkpoint rolls back references", () => {
@@ -104,11 +92,9 @@ test("text edits do not rewrite image bytes and a failed checkpoint rolls back r
 
 test("retains uncertain images and deletes bytes only after their final reference is cleared", () => {
 	const image = { id: "image-a", marker: 1, mediaType: "image/png" };
-	repository.write(
-		destination,
-		{ draft: "", unconfirmed: "[image 1]", unconfirmedImages: [image] },
-		[{ ...image, data: "AQID" }],
-	);
+	repository.write(destination, { draft: "", unconfirmed: "[image 1]", unconfirmedImages: [image] }, [
+		{ ...image, data: "AQID" },
+	]);
 	expect(repository.imageInputs(destination, [image])).toHaveLength(1);
 	repository.write(destination, { draft: "", unconfirmed: null });
 	expect(() => repository.imageInputs(destination, [image])).toThrow();
@@ -127,9 +113,7 @@ test("rejects replacing immutable image identity and hub removal only clears tha
 	const record = { draft: "", unconfirmed: null, images: [image] };
 	repository.write(destination, record, [{ ...image, data: "AQID" }]);
 	repository.write(otherHub, record, [{ ...image, data: "BAUG" }]);
-	expect(() =>
-		repository.write(destination, record, [{ ...image, data: "replaced" }]),
-	).toThrow();
+	expect(() => repository.write(destination, record, [{ ...image, data: "replaced" }])).toThrow();
 	expect(repository.imageInputs(destination, [image])[0]?.data).toBe("AQID");
 	repository.removeHub(destination.hubId);
 	expect(() => repository.imageInputs(destination, [image])).toThrow();
@@ -138,15 +122,9 @@ test("rejects replacing immutable image identity and hub removal only clears tha
 
 test("a failure after adding bytes rolls back the bytes and the new reference together", () => {
 	const image = { id: "photo", marker: 1, mediaType: "image/png" };
-	database.exec(
-		"CREATE TRIGGER reject_text BEFORE INSERT ON drafts BEGIN SELECT RAISE(ABORT, 'text rejected'); END",
-	);
+	database.exec("CREATE TRIGGER reject_text BEFORE INSERT ON drafts BEGIN SELECT RAISE(ABORT, 'text rejected'); END");
 	expect(() =>
-		repository.write(
-			destination,
-			{ draft: "image", unconfirmed: null, images: [image] },
-			[{ ...image, data: "AQID" }],
-		),
+		repository.write(destination, { draft: "image", unconfirmed: null, images: [image] }, [{ ...image, data: "AQID" }]),
 	).toThrow();
 	expect(repository.read(destination)).toEqual({
 		draft: "",
@@ -260,25 +238,13 @@ test("question selections survive reopening only for the exact destination and q
 	repository.writeQuestions(destination, questionSignature, selections);
 	database.close();
 	openRepository();
-	expect(repository.readQuestions(destination, questionSignature)).toEqual(
-		selections,
-	);
+	expect(repository.readQuestions(destination, questionSignature)).toEqual(selections);
 	expect(repository.readQuestions(destination, changedSignature)).toEqual({});
-	expect(
-		repository.readQuestions(
-			{ ...destination, hubId: "other" },
-			questionSignature,
-		),
-	).toEqual({});
-	expect(
-		repository.readQuestions(
-			{ ...destination, sessionRef: "other" },
-			questionSignature,
-		),
-	).toEqual({});
+	expect(repository.readQuestions({ ...destination, hubId: "other" }, questionSignature)).toEqual({});
+	expect(repository.readQuestions({ ...destination, sessionRef: "other" }, questionSignature)).toEqual({});
 });
 // questionsIdentity (questionAnswers.ts) is the SIGNATURE writeQuestions/
-// readQuestions actually receive from QuestionSheet.tsx in production — not
+// readQuestions actually receive from useQuestionDraft.ts in production, not
 // the hand-built JSON-array literals the other cases in this file use.
 // questionDefinitions (draftRepository.ts) parses that signature expecting
 // an array it can index per key; an identity that returns anything else
@@ -303,9 +269,7 @@ test("questionsIdentity's own signature round-trips through the real repository"
 	repository.writeQuestions(destination, signature, selections);
 	database.close();
 	openRepository();
-	expect(repository.readQuestions(destination, signature)).toEqual(
-		selections,
-	);
+	expect(repository.readQuestions(destination, signature)).toEqual(selections);
 	// A genuinely different question set gets a different identity and does
 	// not inherit the prior answer.
 	const changed = questionsIdentity([{ ...question, question: "Changed" }]);
@@ -334,23 +298,12 @@ test("a draft saved under the pre-identity full-question signature still loads t
 			note: "",
 		},
 	};
-	repository.writeQuestions(
-		destination,
-		JSON.stringify([question]),
-		selections,
-	);
+	repository.writeQuestions(destination, JSON.stringify([question]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([question])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([question]))).toEqual(selections);
 	// A genuinely different question still does not inherit the draft.
-	expect(
-		repository.readQuestions(
-			destination,
-			questionsIdentity([{ ...question, question: "Changed" }]),
-		),
-	).toEqual({});
+	expect(repository.readQuestions(destination, questionsIdentity([{ ...question, question: "Changed" }]))).toEqual({});
 });
 
 // Older still than the full-question signature above: the sheet's questions
@@ -377,22 +330,13 @@ test("a draft saved under the pre-identity bounded-copy signature still loads th
 			note: "context",
 		},
 	};
-	repository.writeQuestions(
-		destination,
-		JSON.stringify([boundQuestion(oversized, boundQuestionText)]),
-		selections,
-	);
+	repository.writeQuestions(destination, JSON.stringify([boundQuestion(oversized, boundQuestionText)]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([oversized])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([oversized]))).toEqual(selections);
 	// A genuinely different question still does not inherit the draft.
 	expect(
-		repository.readQuestions(
-			destination,
-			questionsIdentity([{ ...oversized, header: `different ${huge}` }]),
-		),
+		repository.readQuestions(destination, questionsIdentity([{ ...oversized, header: `different ${huge}` }])),
 	).toEqual({});
 });
 
@@ -420,16 +364,10 @@ test("a legacy bounded draft loads for a same-key question that differs only pas
 			note: "",
 		},
 	};
-	repository.writeQuestions(
-		destination,
-		JSON.stringify([boundQuestion(first, boundQuestionText)]),
-		selections,
-	);
+	repository.writeQuestions(destination, JSON.stringify([boundQuestion(first, boundQuestionText)]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([second])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([second]))).toEqual(selections);
 	// The reader's first save rewrites the stored definition canonically: the
 	// draft now follows the current question's own digest, and the superseded
 	// question no longer matches either stored digest.
@@ -440,12 +378,8 @@ test("a legacy bounded draft loads for a same-key question that differs only pas
 		},
 	};
 	repository.writeQuestions(destination, questionsIdentity([second]), edited);
-	expect(
-		repository.readQuestions(destination, questionsIdentity([second])),
-	).toEqual(edited);
-	expect(
-		repository.readQuestions(destination, questionsIdentity([first])),
-	).toEqual({});
+	expect(repository.readQuestions(destination, questionsIdentity([second]))).toEqual(edited);
+	expect(repository.readQuestions(destination, questionsIdentity([first]))).toEqual({});
 });
 
 // A window of the display-bound work persisted a third shape: the sheet's
@@ -483,22 +417,13 @@ test("a draft saved under the display-twin signature still loads through questio
 			note: "context",
 		},
 	};
-	repository.writeQuestions(
-		destination,
-		JSON.stringify([displayEra]),
-		selections,
-	);
+	repository.writeQuestions(destination, JSON.stringify([displayEra]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([canonical])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([canonical]))).toEqual(selections);
 	// A genuinely different question still does not inherit the draft.
 	expect(
-		repository.readQuestions(
-			destination,
-			questionsIdentity([{ ...canonical, header: `different ${huge}` }]),
-		),
+		repository.readQuestions(destination, questionsIdentity([{ ...canonical, header: `different ${huge}` }])),
 	).toEqual({});
 });
 
@@ -534,23 +459,12 @@ test("a draft saved under the checkpoint's key-first signature still loads throu
 			note: "",
 		},
 	};
-	repository.writeQuestions(
-		destination,
-		JSON.stringify([checkpointEra]),
-		selections,
-	);
+	repository.writeQuestions(destination, JSON.stringify([checkpointEra]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([canonical])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([canonical]))).toEqual(selections);
 	// A genuinely different question still does not inherit the draft.
-	expect(
-		repository.readQuestions(
-			destination,
-			questionsIdentity([{ ...canonical, question: "Changed" }]),
-		),
-	).toEqual({});
+	expect(repository.readQuestions(destination, questionsIdentity([{ ...canonical, question: "Changed" }]))).toEqual({});
 });
 
 // Between the checkpoint and the projection cutover, #1488's shim built each
@@ -586,16 +500,9 @@ test("a draft saved under the shim-era parsed-fields-first signature still loads
 	repository.writeQuestions(destination, JSON.stringify([shimEra]), selections);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, questionsIdentity([canonical])),
-	).toEqual(selections);
+	expect(repository.readQuestions(destination, questionsIdentity([canonical]))).toEqual(selections);
 	// A genuinely different question still does not inherit the draft.
-	expect(
-		repository.readQuestions(
-			destination,
-			questionsIdentity([{ ...canonical, question: "Changed" }]),
-		),
-	).toEqual({});
+	expect(repository.readQuestions(destination, questionsIdentity([{ ...canonical, question: "Changed" }]))).toEqual({});
 });
 
 test("hub removal also clears question selections without affecting another hub", () => {
@@ -603,22 +510,17 @@ test("hub removal also clears question selections without affecting another hub"
 	const selections = {
 		"call:0": { resolution: { kind: "skip" as const }, note: "" },
 	};
-	for (const target of [destination, other])
-		repository.writeQuestions(target, questionSignature, selections);
+	for (const target of [destination, other]) repository.writeQuestions(target, questionSignature, selections);
 	repository.removeHub(destination.hubId);
 	expect(repository.readQuestions(destination, questionSignature)).toEqual({});
-	expect(repository.readQuestions(other, questionSignature)).toEqual(
-		selections,
-	);
+	expect(repository.readQuestions(other, questionSignature)).toEqual(selections);
 });
 test("malformed question selections report corruption instead of enabling submission", () => {
 	repository.writeQuestions(destination, questionSignature, {});
 	database
 		.prepare("UPDATE question_drafts SET selections = ?")
 		.run('{"call:0":{"note":"","resolution":{"kind":"option","labels":42}}}');
-	expect(() =>
-		repository.readQuestions(destination, questionSignature),
-	).toThrow();
+	expect(() => repository.readQuestions(destination, questionSignature)).toThrow();
 });
 
 test("adding questions and writing a sibling batch preserves unfinished answers", () => {
@@ -638,49 +540,26 @@ test("adding questions and writing a sibling batch preserves unfinished answers"
 	};
 	const b = { [second.key]: { resolution: null, note: "second note" } };
 	repository.writeQuestions(destination, JSON.stringify([first]), a);
-	expect(
-		repository.readQuestions(destination, JSON.stringify([first, second])),
-	).toEqual(a);
+	expect(repository.readQuestions(destination, JSON.stringify([first, second]))).toEqual(a);
 	repository.writeQuestions(destination, JSON.stringify([second]), b);
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestions(destination, JSON.stringify([first, second])),
-	).toEqual({ ...a, ...b });
-	expect(
-		repository.readQuestions(
-			destination,
-			JSON.stringify([{ ...first, question: "Changed" }, second]),
-		),
-	).toEqual(b);
+	expect(repository.readQuestions(destination, JSON.stringify([first, second]))).toEqual({ ...a, ...b });
+	expect(repository.readQuestions(destination, JSON.stringify([{ ...first, question: "Changed" }, second]))).toEqual(b);
 });
 
 test("active question survives reopen and stays within its destination and pending set", () => {
 	repository.writeQuestionPosition(destination, "second:0");
 	database.close();
 	openRepository();
-	expect(
-		repository.readQuestionPosition(destination, ["first:0", "second:0"]),
-	).toBe("second:0");
-	expect(repository.readQuestionPosition(destination, ["replacement:0"])).toBe(
-		"replacement:0",
+	expect(repository.readQuestionPosition(destination, ["first:0", "second:0"])).toBe("second:0");
+	expect(repository.readQuestionPosition(destination, ["replacement:0"])).toBe("replacement:0");
+	expect(repository.readQuestionPosition({ ...destination, hubId: "other" }, ["first:0", "second:0"])).toBe("first:0");
+	expect(repository.readQuestionPosition({ ...destination, sessionRef: "other" }, ["first:0", "second:0"])).toBe(
+		"first:0",
 	);
-	expect(
-		repository.readQuestionPosition({ ...destination, hubId: "other" }, [
-			"first:0",
-			"second:0",
-		]),
-	).toBe("first:0");
-	expect(
-		repository.readQuestionPosition({ ...destination, sessionRef: "other" }, [
-			"first:0",
-			"second:0",
-		]),
-	).toBe("first:0");
 	repository.removeHub(destination.hubId);
-	expect(
-		repository.readQuestionPosition(destination, ["first:0", "second:0"]),
-	).toBe("first:0");
+	expect(repository.readQuestionPosition(destination, ["first:0", "second:0"])).toBe("first:0");
 });
 
 test("refsWithDrafts names the sessions with typed, unconfirmed or image-only drafts, for that hub only", () => {
@@ -688,19 +567,11 @@ test("refsWithDrafts names the sessions with typed, unconfirmed or image-only dr
 	const image = { id: "image-a", marker: 1, mediaType: "image/png" };
 	repository.write(at("typed"), { draft: "half a thought", unconfirmed: null });
 	repository.write(at("unconfirmed"), { draft: "", unconfirmed: "sent, not confirmed" });
-	repository.write(
-		at("images-only"),
-		{ draft: "", unconfirmed: null, images: [image] },
-		[{ ...image, data: "AQID" }],
-	);
+	repository.write(at("images-only"), { draft: "", unconfirmed: null, images: [image] }, [{ ...image, data: "AQID" }]);
 	repository.write(at("cleared"), { draft: "gone soon", unconfirmed: null });
 	repository.write(at("cleared"), { draft: "", unconfirmed: null });
 	repository.write(at("elsewhere", "hub-b"), { draft: "other hub", unconfirmed: null });
-	expect([...repository.refsWithDrafts("hub-a")].sort()).toEqual([
-		"images-only",
-		"typed",
-		"unconfirmed",
-	]);
+	expect([...repository.refsWithDrafts("hub-a")].sort()).toEqual(["images-only", "typed", "unconfirmed"]);
 	expect([...repository.refsWithDrafts("hub-b")]).toEqual(["elsewhere"]);
 	expect(repository.refsWithDrafts("hub-c").size).toBe(0);
 });

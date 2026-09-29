@@ -5,10 +5,7 @@ import {
 	projectThread as sharedProjectThread,
 	THREAD_ITEM_EVENT_KINDS,
 } from "@evener/appwire-client";
-import type {
-	MobileConversation,
-	MobileTimelineItem,
-} from "./projectedRows";
+import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { projectConversation } from "./projectedRows";
 import type {
 	TranscriptDisplayAdvancedV1,
@@ -39,9 +36,7 @@ const member = (
 	id: string,
 	description: string,
 	item: number,
-): NonNullable<
-	Extract<MobileTimelineItem, { kind: "activity" }>["members"]
->[number] => ({
+): NonNullable<Extract<MobileTimelineItem, { kind: "activity" }>["members"]>[number] => ({
 	id,
 	label: "shell",
 	family: "tool",
@@ -111,11 +106,7 @@ it("unrolls members, applies preset content, and keeps source-linked attachments
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"a",
-		"b",
-		"b:attachments",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["a", "b", "b:attachments"]);
 	expect(result.items[0]).toMatchObject({ position: { entry: 1, item: 0 } });
 	expect(result.activityPresentation.get("a")).toEqual({ mode: "full" });
 	expect(result.activityPresentation.get("b")).toEqual({ mode: "full" });
@@ -193,13 +184,7 @@ it("renders summary-only rows as intent, active or failed as critical, and never
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("chat") }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"summarized",
-		"settled",
-		"failed",
-		"active",
-		"unknown",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["summarized", "settled", "failed", "active", "unknown"]);
 	expect(result.activityPresentation.get("summarized")).toEqual({
 		mode: "intent",
 		summary: "Inspect source",
@@ -286,46 +271,48 @@ it("keeps every system-event row the seam produced and masks usage fields indepe
 			{ promptEvents: true, tokenCounts: false, estimatedCost: false },
 		),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"prompt",
-		"hook",
-			"routine",
-		"error",
-	]);
-	expect(result.usage).toEqual({ usage: null, cost: null });
+	expect(result.items.map((item) => item.id)).toEqual(["prompt", "hook", "routine", "error"]);
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // tokenCounts gates the token aggregate and estimatedCost gates the cost, each
 // on its own: a crossed gate or an always-null branch fails one of these rows.
 it.each([
-	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: "$1" },
-	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: null },
-	{ tokenCounts: false, estimatedCost: true, usage: null, cost: "$1" },
-	{ tokenCounts: false, estimatedCost: false, usage: null, cost: null },
+	{
+		tokenCounts: true,
+		estimatedCost: true,
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
+		cost: "$1",
+	},
+	{
+		tokenCounts: true,
+		estimatedCost: false,
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
+		cost: null,
+	},
+	{ tokenCounts: false, estimatedCost: true, derived: null, cumulative: null, cost: "$1" },
+	{ tokenCounts: false, estimatedCost: false, derived: null, cumulative: null, cost: null },
 ])(
 	"passes usage through only under tokenCounts=$tokenCounts and cost only under estimatedCost=$estimatedCost",
-	({ tokenCounts, estimatedCost, usage, cost }) => {
+	({ tokenCounts, estimatedCost, derived, cumulative, cost }) => {
 		const result = projectNativeTranscript(
 			conversation([]),
-			makeTranscriptDisplayConfig(
-				{ kind: "preset", level: "chat" },
-				{ tokenCounts, estimatedCost },
-			),
+			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts, estimatedCost }),
 		);
-		expect(result.usage).toEqual({ usage, cost });
+		expect(result.usage).toEqual({ derived, cumulative, cost });
 	},
 );
 
 it("reads an unknown cost as null even when estimatedCost is on", () => {
 	const result = projectNativeTranscript(
 		{ ...conversation([]), cost: undefined },
-		makeTranscriptDisplayConfig(
-			{ kind: "preset", level: "chat" },
-			{ tokenCounts: true, estimatedCost: true },
-		),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: true }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -340,7 +327,8 @@ it("falls back to summing the loaded turns when the thread has no cumulative tot
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		derived: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -354,7 +342,8 @@ it("labels a derived total over a truncated turn window as covering only the loa
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
+		derived: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -368,7 +357,7 @@ it("keeps a cache-only cumulative breakdown even when sessionTokens finds no inp
 		conversation([], { usage: { cacheReadTokens: 42 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: { cacheReadTokens: 42 }, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: { cacheReadTokens: 42 }, cost: null });
 });
 
 it("keeps a total-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
@@ -376,7 +365,7 @@ it("keeps a total-only cumulative breakdown even when sessionTokens finds no inp
 		conversation([], { usage: { totalTokens: 500 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: { totalTokens: 500 }, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: { totalTokens: 500 }, cost: null });
 });
 
 // D18 B3 round 6 (Low): a cumulative field's Go zero value signals absence,
@@ -388,7 +377,7 @@ it("treats a zero cacheReadTokens/totalTokens the same as an absent one", () => 
 		conversation([], { usage: { cacheReadTokens: 0, totalTokens: 0 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: null, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // A sparse cumulative object (total-only, no input/output) alongside a
@@ -405,17 +394,38 @@ it("keeps the cumulative breakdown's scope independent of a turn-summed loaded r
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 60, outputTokens: 40, scope: "loaded", totalTokens: 500 },
+		derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+		cumulative: { totalTokens: 500 },
 		cost: null,
 	});
 	// The data alone doesn't show which unit each field renders with - that's
 	// usageRows's job, and it must never stamp the whole-session Total row
 	// with the derived pair's "loaded" scope.
-	expect(usageRows(result.usage!.usage)).toEqual([
+	expect(usageRows(result.usage!)).toEqual([
 		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
 		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
 		{ label: "Total", value: 500, unit: "tokens" },
 	]);
+});
+
+// The derived input/output pair carries the scope it counts inside `derived`,
+// and the whole-session cumulative breakdown is its own field. Keeping them
+// apart is what stops a "loaded"-scoped derived pair from ever reading as the
+// scope of the cumulative Cached/Total figures.
+it("keeps the derived pair and its scope in their own field, apart from the cumulative breakdown", () => {
+	const result = projectNativeTranscript(
+		conversation([], {
+			usage: { totalTokens: 500 },
+			turns: [usageTurn("t1", 60, 40)],
+			olderCursor: "cursor_1",
+		}),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+		cumulative: { totalTokens: 500 },
+		cost: null,
+	});
 });
 
 it("does not mutate clustered members or source items while projecting", () => {
@@ -476,13 +486,7 @@ it("preserves canonical interleaving and defers source-linked attachments to mem
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"before",
-		"a",
-		"b",
-		"b:image",
-		"after",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["before", "a", "b", "b:image", "after"]);
 });
 
 it("renders a missing-description tool call in full rather than second-guessing the level", () => {
@@ -599,15 +603,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
 	);
-	expect(full.items.map((item) => item.id)).toEqual([
-		"user",
-		"warning",
-		"a",
-		"image-a",
-		"b",
-		"image-b",
-		"reply",
-	]);
+	expect(full.items.map((item) => item.id)).toEqual(["user", "warning", "a", "image-a", "b", "image-b", "reply"]);
 	const hidden = projectNativeTranscript(
 		conversation(items),
 		makeTranscriptDisplayConfig({
@@ -621,15 +617,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 	// D24-6: the members survive whatever the config — a custom vector that
 	// disables calls and intent would have the PROJECTOR drop these rows at
 	// the seam, and the presentation layer no longer re-decides it here.
-	expect(hidden.items.map((item) => item.id)).toEqual([
-		"user",
-		"warning",
-		"a",
-		"image-a",
-		"b",
-		"image-b",
-		"reply",
-	]);
+	expect(hidden.items.map((item) => item.id)).toEqual(["user", "warning", "a", "image-a", "b", "image-b", "reply"]);
 });
 
 it("falls back safely for malformed or empty write_file arguments", () => {
@@ -660,9 +648,7 @@ it("falls back safely for malformed or empty write_file arguments", () => {
 			]),
 			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 		);
-		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe(
-			"Action summary unavailable",
-		);
+		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe("Action summary unavailable");
 	}
 });
 
@@ -711,46 +697,41 @@ it("keeps an authoritative write_file description ahead of derived details", () 
 		]),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 	);
-	expect(result.activityPresentation.get("write-described")?.summary).toBe(
-		"Save the fixture",
-	);
+	expect(result.activityPresentation.get("write-described")?.summary).toBe("Save the fixture");
 });
 
-it.each([null, undefined])(
-	"keeps each clustered member's attachment beside it when preferences are %s",
-	(config) => {
-		const items: MobileTimelineItem[] = [
-			{
-				kind: "activity",
-				id: "cluster",
-				label: "shell",
-				family: "tool",
-				state: "completed",
-				detail: {},
-				members: [member("a", "first", 0), member("b", "second", 1)],
-			},
-			{
-				kind: "attachments",
-				id: "a:attachments",
-				sourceTranscriptKey: "key-a",
-				items: [{ id: "image-a", src: "data:image/png;base64,a" }],
-			},
-			{
-				kind: "attachments",
-				id: "b:attachments",
-				sourceTranscriptKey: "key-b",
-				items: [{ id: "image-b", src: "data:image/png;base64,b" }],
-			},
-		];
-		const result = projectNativeTranscript(conversation(items), config);
-		expect(result.items).toEqual([
-			{ kind: "activity", ...member("a", "first", 0) },
-			items[1],
-			{ kind: "activity", ...member("b", "second", 1) },
-			items[2],
-		]);
-	},
-);
+it.each([null, undefined])("keeps each clustered member's attachment beside it when preferences are %s", (config) => {
+	const items: MobileTimelineItem[] = [
+		{
+			kind: "activity",
+			id: "cluster",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {},
+			members: [member("a", "first", 0), member("b", "second", 1)],
+		},
+		{
+			kind: "attachments",
+			id: "a:attachments",
+			sourceTranscriptKey: "key-a",
+			items: [{ id: "image-a", src: "data:image/png;base64,a" }],
+		},
+		{
+			kind: "attachments",
+			id: "b:attachments",
+			sourceTranscriptKey: "key-b",
+			items: [{ id: "image-b", src: "data:image/png;base64,b" }],
+		},
+	];
+	const result = projectNativeTranscript(conversation(items), config);
+	expect(result.items).toEqual([
+		{ kind: "activity", ...member("a", "first", 0) },
+		items[1],
+		{ kind: "activity", ...member("b", "second", 1) },
+		items[2],
+	]);
+});
 
 // tokenUnitLabel itself moved to appwire-client/typescript/threadUsage.ts
 // (D18 B3 round 3): its tests moved with it, to threadUsage.test.ts.
@@ -761,7 +742,10 @@ it.each([null, undefined])(
 // unit borrowed from a different row's scope.
 it("labels Input/Output with the derived pair's own scope and Cached/Total plainly, even when the derived pair is loaded-scoped", () => {
 	expect(
-		usageRows({ inputTokens: 60, outputTokens: 40, scope: "loaded", cacheReadTokens: 10, totalTokens: 500 }),
+		usageRows({
+			derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+			cumulative: { cacheReadTokens: 10, totalTokens: 500 },
+		}),
 	).toEqual([
 		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
 		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
@@ -771,7 +755,9 @@ it("labels Input/Output with the derived pair's own scope and Cached/Total plain
 });
 
 it("renders only the cumulative Total row when there is no derived input/output pair", () => {
-	expect(usageRows({ totalTokens: 500 })).toEqual([{ label: "Total", value: 500, unit: "tokens" }]);
+	expect(usageRows({ derived: null, cumulative: { totalTokens: 500 } })).toEqual([
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
 });
 
 it("renders no rows for null usage", () => {
@@ -837,10 +823,7 @@ const EVENT_KIND_CASES: { eventKind?: string; exitCode?: number }[] = [
 // the seam's projectConversation keep or drop an event exactly as projectThread
 // does, at the same config? The probe thread ids every entry "system-event-probe"
 // and the seam's notice row carries the same id.
-function expectSeamVisibilityLikeProjector(
-	model: ThreadModel,
-	config: TranscriptDisplayConfigV1,
-): void {
+function expectSeamVisibilityLikeProjector(model: ThreadModel, config: TranscriptDisplayConfigV1): void {
 	const seamVisible = projectConversation(model, undefined, config).items.some(
 		(item) => item.id === "system-event-probe",
 	);
@@ -853,10 +836,7 @@ function expectSeamVisibilityLikeProjector(
 // A one-item thread for classifying a single system event (the deleted
 // project.ts's systemEventProbe, kept here as the sweep's local fixture):
 // projectThread reads only `turns`, so the rest of the shape is inert.
-function systemEventModel(
-	eventKind: string | undefined,
-	exitCode: number | undefined,
-): ThreadModel {
+function systemEventModel(eventKind: string | undefined, exitCode: number | undefined): ThreadModel {
 	return {
 		ref: "system-event-probe",
 		threadId: "system-event-probe",
@@ -964,10 +944,7 @@ it.each([
 			...(eventKind ? { eventKind } : {}),
 			...(exitCode !== undefined ? { exitCode } : {}),
 		};
-		const result = projectNativeTranscript(
-			conversation([notice]),
-			NEVER_EVENTS_CONFIG,
-		);
+		const result = projectNativeTranscript(conversation([notice]), NEVER_EVENTS_CONFIG);
 		expect(result.items.map((item) => item.id)).toEqual(["notice"]);
 	},
 );

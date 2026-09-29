@@ -1,8 +1,4 @@
-import type {
-	NavigationInvalidationTarget,
-	NavigationMutation,
-	NavigationReadParams,
-} from "@evener/appwire-client";
+import type { NavigationInvalidationTarget, NavigationMutation, NavigationReadParams } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeSnapshot,
@@ -11,9 +7,7 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
-function resourceFor(
-	target: NavigationInvalidationTarget,
-): NavigationReadParams | null {
+function resourceFor(target: NavigationInvalidationTarget): NavigationReadParams | null {
 	const base = { representationVersion: 2, resource: target.kind };
 	switch (target.kind) {
 		case "manifest":
@@ -43,13 +37,10 @@ export async function navigationReadback(
 	confirmReceipt = false,
 ) {
 	const check = () => {
-		if (!current())
-			throw Error("This check belongs to another screen or connection.");
+		if (!current()) throw Error("This check belongs to another screen or connection.");
 	};
 	let generationId: string | undefined;
-	const read = async (
-		input: Omit<NavigationReadParams, "representationVersion">,
-	) => {
+	const read = async (input: Omit<NavigationReadParams, "representationVersion">) => {
 		const params = { ...input, representationVersion: 2 };
 		check();
 		const key = navigationParamsToResourceKey(params);
@@ -59,17 +50,14 @@ export async function navigationReadback(
 		});
 		check();
 		const decoded = decodeNavigationResponse(key, undefined, wire);
-		if (decoded.status !== "snapshot" && decoded.status !== "gone")
-			throw Error("Navigation could not be refreshed.");
+		if (decoded.status !== "snapshot" && decoded.status !== "gone") throw Error("Navigation could not be refreshed.");
 		if (generationId && decoded.version.generationId !== generationId)
-			throw Error("The hub restarted during the check. Refresh to try again.");
+			throw Error("The hub restarted during the check. Try again.");
 		if (
 			receipt?.generation_id === decoded.version.generationId &&
 			decoded.version.revision < requiredRevision(key, receipt.targets)
 		)
-			throw Error(
-				"Navigation is older than the acknowledged change. Refresh to try again.",
-			);
+			throw Error("Navigation is older than the acknowledged change. Try again.");
 		return {
 			...decoded,
 			data: decoded.status === "snapshot" ? materializeSnapshot(key, decoded) : null,
@@ -77,22 +65,17 @@ export async function navigationReadback(
 	};
 	const manifestParams = { resource: "manifest" };
 	const manifest = await read(manifestParams);
-	if (manifest.status !== "snapshot")
-		throw Error("Hub navigation is unavailable.");
+	if (manifest.status !== "snapshot") throw Error("Hub navigation is unavailable.");
 	generationId = manifest.version.generationId;
 	if (confirmReceipt && receipt && receipt.generation_id !== generationId)
-		throw Error(
-			"The hub restarted before the change could be confirmed. Refresh to check its current state.",
-		);
+		throw Error("The hub restarted before the change could be confirmed. Check its current state.");
 	if (receipt?.generation_id === generationId) {
 		for (const target of receipt.targets) {
 			const params = resourceFor(target);
 			if (!params) continue;
 			const result = await read(params);
 			if (result.version.revision < (target.revision ?? 0))
-				throw Error(
-					"Navigation is older than the acknowledged change. Refresh to try again.",
-				);
+				throw Error("Navigation is older than the acknowledged change. Try again.");
 		}
 	}
 	return {
@@ -100,8 +83,7 @@ export async function navigationReadback(
 		read,
 		finish: async () => {
 			const after = await read(manifestParams);
-			if (after.status !== "snapshot")
-				throw Error("Hub navigation is unavailable.");
+			if (after.status !== "snapshot") throw Error("Hub navigation is unavailable.");
 		},
 	};
 }

@@ -1,13 +1,14 @@
 // The Reader (spec 10.2): a document from a session's folder, read quietly.
 // It marks what changed since you last read it and steps through those
-// changes, reopens where you were, offers its outline, and remembers what you
-// read when you leave. It never shows a Retry, Refresh or Reconnect: it reads
+// changes, reopens where you were, offers its outline, takes your comments
+// on its paragraphs and list items, and remembers what you read when you
+// leave. It never shows a Retry, Refresh or Reconnect: it reads
 // again on its own when it comes back to the front, when the connection
 // returns, and when the document's session ends a turn.
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
-import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	FlatList,
 	type CellRendererProps,
@@ -27,17 +28,18 @@ import { nativeDocImageSource } from "../nativeDocPort";
 import type { Routes } from "../screens";
 import { compactDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
+import { holdQuote } from "../session/pendingQuote";
 import { returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type DocumentBlock, hashText, outline } from "./documentBlocks";
-import { changedBlocks, changesCaption, type Place, restoreBlock } from "./documentChanges";
+import { anchorBlock, changedBlocks, changesCaption, type Place, restoreBlock } from "./documentChanges";
 import type { ReadingPosition } from "./documentMemory";
 import { documentKind, documentNotice, type LoadedDocument, truncationNote } from "./documentSource";
 import { documentMemory } from "./nativeDocumentMemory";
-import { ReaderBlock, useCodeText } from "./ReaderBlock";
+import { type BlockAction, ReaderBlock, useCodeText } from "./ReaderBlock";
 import { type ReaderHost, readerHosts } from "./readerHosts";
 import { useDocument } from "./useDocument";
 
@@ -89,10 +91,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const now = useMinuteClock();
 	const blocks = document?.kind === "markdown" ? document.blocks : null;
 	const rows = useMemo(() => rowsOf(document), [document]);
-	const changed = useMemo(
-		() => (blocks ? changedBlocks(blocks, lastRead?.blocks ?? null) : []),
-		[blocks, lastRead],
-	);
+	const changed = useMemo(() => (blocks ? changedBlocks(blocks, lastRead?.blocks ?? null) : []), [blocks, lastRead]);
 	const changedSet = useMemo(() => new Set(changed), [changed]);
 	const headings = useMemo(() => (blocks ? outline(blocks) : []), [blocks]);
 	// Where a position can point: each block, or each line of a code file.
@@ -147,7 +146,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	// The nav bar takes the title once the first heading (or the first row)
 	// has scrolled out of view and a later row is on screen.
 	const anchor = useRef(0);
-	anchor.current = headings[0]?.index ?? 0;
+	useEffect(() => {
+		anchor.current = headings[0]?.index ?? 0;
+	}, [headings]);
 	const [titleShown, setTitleShown] = useState(false);
 	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ViewToken, "index">[] }) => {
 		viewable.current = viewableItems.flatMap((token) => (token.index === null ? [] : [token.index]));
@@ -208,15 +209,20 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		};
 	}, [memory, key]);
 
-	// The document's session ending a turn may have rewritten the file.
+	// The document's session ending a turn may have rewritten the file. The
+	// same read says whether it can take the review: the review always goes to
+	// the session the document was opened in (ruling 16), which is this one.
+	const [canReview, setCanReview] = useState(false);
 	useEffect(() => {
 		if (!inFront || !client) return;
 		const link = new SessionLink(client, sessionRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
-			const next = link.getSnapshot()?.status ?? null;
+			const session = link.getSnapshot();
+			const next = session?.status ?? null;
 			if (status === "active" && next !== "active") reload();
 			status = next;
+			setCanReview(Boolean(session?.capabilities.send || session?.capabilities.queue));
 		});
 		link.read({ follow: true }).catch(() => {
 			// Quiet: the Reader shows the document it has either way.
@@ -227,16 +233,37 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		};
 	}, [inFront, client, sessionRef, reload]);
 
+	// Your comments on this document, followed as the comment sheets change
+	// them, and how many sit on each block now (ruling 14).
+	const revision = useSyncExternalStore(memory.subscribe, memory.getRevision);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the revision is what says the comments changed
+	const comments = useMemo(() => memory.comments(key), [memory, key, revision]);
+	const commentCounts = useMemo(() => {
+		const counts = new Map<number, number>();
+		if (!blocks) return counts;
+		for (const comment of comments) {
+			const index = anchorBlock(comment, blocks);
+			if (index !== null) counts.set(index, (counts.get(index) ?? 0) + 1);
+		}
+		return counts;
+	}, [comments, blocks]);
+
 	const host = useMemo<ReaderHost>(
-		() => ({ outline: headings, jumpTo: (index) => scrollTo({ index, animated: true }) }),
-		[headings, scrollTo],
+		() => ({
+			outline: headings,
+			jumpTo: (index) => scrollTo({ index, animated: true }),
+			anchor: (comment) => (blocks ? anchorBlock(comment, blocks) : null),
+			canReview,
+		}),
+		[headings, scrollTo, blocks, canReview],
 	);
 	useProvideSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), host);
 
 	const updated = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
-	const about = [documentKind(path), ...(Number.isNaN(updated) ? [] : [`updated ${compactDuration(now - updated)} ago`])].join(
-		" · ",
-	);
+	const about = [
+		documentKind(path),
+		...(Number.isNaN(updated) ? [] : [`updated ${compactDuration(now - updated)} ago`]),
+	].join(" · ");
 	const changeNote = lastRead ? changesCaption(changed.length, lastRead.readAt, now) : null;
 	const title = document?.title ?? "";
 	const text = document?.kind === "markdown" || document?.kind === "code" ? document.text : null;
@@ -303,18 +330,71 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		[rowTops],
 	);
 
-	// The change you stepped to, in the list of changes it belongs to: a
-	// re-read that changes what changed starts the steps over.
-	const [stepped, setStepped] = useState<{ changed: number[]; step: number } | null>(null);
-	const step = stepped?.changed === changed ? stepped.step : null;
+	// The change you stepped to, in the set of changes it belongs to: a
+	// re-read that changes what changed starts the steps over. Every re-read
+	// builds new arrays, so the set is compared by its blocks.
+	const changeSet = changed.join(",");
+	const [stepped, setStepped] = useState<{ changeSet: string; step: number } | null>(null);
+	const step = stepped?.changeSet === changeSet ? stepped.step : null;
 	const stepBy = (delta: 1 | -1) => {
 		const count = changed.length;
 		const next = step === null ? (delta === 1 ? 0 : count - 1) : (step + delta + count) % count;
-		setStepped({ changed, step: next });
+		setStepped({ changeSet, step: next });
 		const index = changed[next];
 		if (index !== undefined) scrollTo({ index, animated: true });
 	};
 
+	// The block whose menu is open, and the one Select text chose. Pressing
+	// another block ends a selection, and so does a tap on any block: the
+	// markdown view doesn't say when its selection menu closes.
+	const [menuOpen, setMenuOpen] = useState<number | null>(null);
+	const [selecting, setSelecting] = useState<number | null>(null);
+	const onMenu = useCallback((index: number | null) => {
+		setMenuOpen(index);
+		if (index !== null) setSelecting((current) => (current === index ? current : null));
+	}, []);
+	const endSelection = useCallback(() => setSelecting(null), []);
+	const sheetParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
+	// The rows keep one callback; it reaches this render's values through the ref.
+	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
+	act.current = (action, block, words) => {
+		const selected = words ?? block.text;
+		switch (action) {
+			case "comment":
+				setSelecting(null);
+				navigation.navigate("CommentSheet", {
+					hubId,
+					sessionRef,
+					path,
+					blockIndex: block.index,
+					blockHash: block.hash,
+					quote: selected,
+				});
+				return;
+			case "quote":
+				setSelecting(null);
+				holdQuote(hubId, reviewRef, selected);
+				returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle });
+				return;
+			case "copy":
+				void copyText(block.text);
+				return;
+			case "select":
+				setSelecting(block.index);
+				return;
+			case "comments":
+				navigation.navigate("CommentsSheet", sheetParams);
+		}
+	};
+	const onAction = useCallback(
+		(action: BlockAction, block: DocumentBlock, words?: string) => act.current(action, block, words),
+		[],
+	);
+
+	const rowState = useMemo(
+		() => ({ changedSet, menuOpen, selecting, commentCounts }),
+		[changedSet, menuOpen, selecting, commentCounts],
+	);
 	const lines = document?.kind === "code" ? rows.length : 0;
 	const notice = document ? documentNotice(document) : null;
 	// The caption and the truncation note: 13/18 in ink-low.
@@ -359,12 +439,22 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				keyExtractor={(row) => (row.kind === "block" ? `b${row.block.index}` : `l${row.index}`)}
 				renderItem={({ item }) =>
 					item.kind === "block" ? (
-						<ReaderBlock block={item.block} changed={changedSet.has(item.block.index)} />
+						<ReaderBlock
+							block={item.block}
+							changed={changedSet.has(item.block.index)}
+							selected={menuOpen === item.block.index}
+							selecting={selecting === item.block.index}
+							commentCount={commentCounts.get(item.block.index)}
+							onAction={onAction}
+							onMenu={onMenu}
+							onTap={endSelection}
+						/>
 					) : (
 						<CodeLine number={item.index + 1} text={item.text} lines={lines} />
 					)
 				}
 				ItemSeparatorComponent={document?.kind === "markdown" ? BlockGap : undefined}
+				extraData={rowState}
 				ListHeaderComponent={header}
 				CellRendererComponent={cellRenderer}
 				initialNumToRender={12}
@@ -382,28 +472,121 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				}}
 				onScrollToIndexFailed={scrollFailed}
 			/>
-			{changed.length > 0 ? (
-				<View
-					style={{
-						flexDirection: "row",
-						alignItems: "center",
-						justifyContent: "center",
-						paddingBottom: insets.bottom,
-					}}
-				>
-					<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, minWidth: 120, textAlign: "center" }}
-					>
-						{step === null
-							? `${changed.length} ${changed.length === 1 ? "change" : "changes"}`
-							: `Change ${step + 1} of ${changed.length}`}
-					</Text>
-					<Chevron name="chevron.right" label="Next change" onPress={() => stepBy(1)} />
+			{blocks ? (
+				<View style={{ paddingBottom: insets.bottom, paddingHorizontal: 16 }}>
+					{comments.length === 0 ? <CommentTip /> : null}
+					{/* The two ends take the room their words need, and the change
+					    stepper the rest: in equal thirds Send review wrapped. */}
+					<View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>
+						<View style={{ alignItems: "flex-start" }}>
+							{comments.length > 0 ? (
+								<BarButton
+									label="Comments"
+									symbol="bubble.left"
+									text={String(comments.length)}
+									onPress={() => navigation.navigate("CommentsSheet", sheetParams)}
+								/>
+							) : null}
+						</View>
+						{changed.length > 0 ? (
+							<View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{
+										color: palette.inkMid,
+										fontSize: 15 * scale,
+										lineHeight: 20 * scale,
+										minWidth: 120,
+										textAlign: "center",
+									}}
+								>
+									{step === null
+										? `${changed.length} ${changed.length === 1 ? "change" : "changes"}`
+										: `Change ${step + 1} of ${changed.length}`}
+								</Text>
+								<Chevron name="chevron.right" label="Next change" onPress={() => stepBy(1)} />
+							</View>
+						) : (
+							<View style={{ flex: 1 }} />
+						)}
+						<View style={{ alignItems: "flex-end" }}>
+							{canReview ? (
+								<Pressable
+									accessibilityRole="button"
+									accessibilityLabel="Send review"
+									onPress={() => navigation.navigate("ReviewSheet", sheetParams)}
+									style={{ minHeight: 44, justifyContent: "center" }}
+								>
+									<Text
+										allowFontScaling={allowFontScaling}
+										numberOfLines={1}
+										style={{
+											color: palette.accentInk,
+											fontSize: 15 * scale,
+											lineHeight: 20 * scale,
+											fontWeight: "600",
+										}}
+									>
+										Send review
+									</Text>
+								</Pressable>
+							) : null}
+						</View>
+					</View>
 				</View>
 			) : null}
 		</View>
+	);
+}
+
+/** Until this document has a comment, how to leave one. */
+function CommentTip() {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingTop: 8 }}>
+			<SymbolView name="bubble.left" size={13} tintColor={palette.inkLow} />
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 17 * scale }}
+			>
+				Touch and hold a paragraph to comment on it
+			</Text>
+		</View>
+	);
+}
+
+/** A bottom-bar button: a symbol and a short word, 44pt tall. */
+function BarButton({
+	label,
+	symbol,
+	text,
+	onPress,
+}: {
+	label: string;
+	symbol: "bubble.left";
+	text: string;
+	onPress(): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={label}
+			accessibilityValue={{ text }}
+			onPress={onPress}
+			style={{ minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", gap: 6 }}
+		>
+			<SymbolView name={symbol} size={17} tintColor={palette.accentInk} />
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale }}
+			>
+				{text}
+			</Text>
+		</Pressable>
 	);
 }
 

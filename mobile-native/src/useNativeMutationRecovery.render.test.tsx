@@ -26,10 +26,7 @@ import {
 } from "./nativeMutationRuntime";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
-import {
-	type NativeMutationRecoveryProjection,
-	useNativeMutationRecovery,
-} from "./useNativeMutationRecovery";
+import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
 
 // The root stack the screen sits in, read by useScreenInFront and
 // screenInFront (screens.tsx). Kept at the screen's own route on top, so the
@@ -51,6 +48,8 @@ const harness = vi.hoisted(() => ({
 		client: null,
 		state: "idle",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 		error: null,
 		loading: false,
 		saveHub: async () => true,
@@ -58,7 +57,6 @@ const harness = vi.hoisted(() => ({
 		selectHub: () => {},
 		removeHub: async () => {},
 		disconnect: () => {},
-		retry: () => {},
 	},
 	preferences: {
 		hubId: null,
@@ -91,6 +89,13 @@ vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("expo-web-browser", () => ({}));
 // The enriched-markdown native component cannot load outside a device; as a
 // host string its children render as passed, which is all the screen's
 // timeline items need from it under this harness.
@@ -101,10 +106,8 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
-		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
-			select(navigationState.state),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 	};
 });
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -174,21 +177,10 @@ function useRenderPassDetector() {
 // Delegating phase recorders: every wrapped call still executes through the
 // real runtime's own method (the bound original), so the recorded behavior
 // is the runtime's, not a reimplementation.
-function instrumentRuntime(
-	runtime: NativeMutationRuntime,
-): NativeMutationRuntime {
-	for (const method of [
-		"read",
-		"registerTarget",
-		"start",
-		"discardRecovery",
-	] as const) {
-		const original = (runtime[method] as (...args: never[]) => unknown).bind(
-			runtime,
-		);
-		(runtime as unknown as Record<string, unknown>)[method] = (
-			...args: never[]
-		) => {
+function instrumentRuntime(runtime: NativeMutationRuntime): NativeMutationRuntime {
+	for (const method of ["read", "registerTarget", "start", "discardRecovery"] as const) {
+		const original = (runtime[method] as (...args: never[]) => unknown).bind(runtime);
+		(runtime as unknown as Record<string, unknown>)[method] = (...args: never[]) => {
 			recordedCalls.push({
 				method,
 				phase: recorder.inRenderPass ? "render" : "effect",
@@ -198,9 +190,7 @@ function instrumentRuntime(
 		};
 	}
 	const subscribe = runtime.subscribeStorage.bind(runtime);
-	(runtime as unknown as Record<string, unknown>).subscribeStorage = (
-		listener: NativeMutationStorageListener,
-	) => {
+	(runtime as unknown as Record<string, unknown>).subscribeStorage = (listener: NativeMutationStorageListener) => {
 		recordedCalls.push({
 			method: "subscribeStorage",
 			phase: recorder.inRenderPass ? "render" : "effect",
@@ -216,19 +206,12 @@ function instrumentRuntime(
 	return runtime;
 }
 
-function RecoveryProbe(props: {
-	runtime: NativeMutationRuntime;
-	hubId: string;
-	targetRef: string;
-}) {
+function RecoveryProbe(props: { runtime: NativeMutationRuntime; hubId: string; targetRef: string }) {
 	// The probe owns the hook's state, so its state-triggered re-renders
 	// (every read or refresh landing) do not re-render PhaseMarker - the
 	// state-owner arming below is what keeps those passes classified.
 	useRenderPassDetector();
-	latestProjection = useNativeMutationRecovery(
-		props.runtime,
-		nativeMutationTargetKey(props.hubId, props.targetRef),
-	);
+	latestProjection = useNativeMutationRecovery(props.runtime, nativeMutationTargetKey(props.hubId, props.targetRef));
 	return null;
 }
 
@@ -274,10 +257,7 @@ function PhaseMarker(props: { children?: ReactNode }) {
 	return props.children ?? null;
 }
 
-async function seedRecoveryRow(
-	runtime: NativeMutationRuntime,
-	targetKey: string,
-) {
+async function seedRecoveryRow(runtime: NativeMutationRuntime, targetKey: string) {
 	const record = await runtime.storage.enqueueIntent({
 		targetRef: targetKey,
 		method: "turn/queue",
@@ -285,11 +265,7 @@ async function seedRecoveryRow(
 		attachments: [],
 		optimisticDisplay: { method: "turn/queue" },
 	});
-	const recovery = await runtime.storage.transferToRecovery(
-		record.clientMutationId,
-		"rejected",
-		"daemon refused",
-	);
+	const recovery = await runtime.storage.transferToRecovery(record.clientMutationId, "rejected", "daemon refused");
 	if (!recovery) throw new Error("seeding recovery failed");
 	return recovery;
 }
@@ -318,16 +294,8 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	function tree(): ReactElement {
 		return (
 			<PhaseMarker>
-				<ConversationScreen
-					route={conversationRoute(targetRef)}
-					navigation={navigation}
-				/>
-				<RecoveryProbe
-					key={targetRef}
-					runtime={runtime}
-					hubId={hubId}
-					targetRef={targetRef}
-				/>
+				<ConversationScreen route={conversationRoute(targetRef)} navigation={navigation} />
+				<RecoveryProbe key={targetRef} runtime={runtime} hubId={hubId} targetRef={targetRef} />
 			</PhaseMarker>
 		);
 	}
@@ -348,40 +316,24 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 		database: "evener-drafts.db",
 		phase: "render",
 	});
-	expect(
-		recordedCalls.find((call) => call.method === "subscribeStorage")?.phase,
-	).toBe("effect");
-	expect(recordedCalls.find((call) => call.method === "read")?.phase).toBe(
-		"effect",
-	);
-	expect(recorder.opens.map((open) => open.database)).not.toContain(
-		"evener-mutations.db",
-	);
-	expect(new Set(recorder.opens.map((open) => open.database))).toEqual(
-		new Set(["evener-drafts.db"]),
-	);
+	expect(recordedCalls.find((call) => call.method === "subscribeStorage")?.phase).toBe("effect");
+	expect(recordedCalls.find((call) => call.method === "read")?.phase).toBe("effect");
+	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
+	expect(new Set(recorder.opens.map((open) => open.database))).toEqual(new Set(["evener-drafts.db"]));
 
 	// EFFECT-OWNED: subscribe and read happen in the mount effects, with the
 	// read captured to the route's exact composite target key.
-	expect(
-		recordedCalls.filter((call) => call.method === "subscribeStorage"),
-	).toHaveLength(1);
+	expect(recordedCalls.filter((call) => call.method === "subscribeStorage")).toHaveLength(1);
 	const reads = recordedCalls.filter((call) => call.method === "read");
 	expect(reads).toHaveLength(1);
 	expect(reads[0].args).toEqual([firstKey]);
-	expect(
-		recordedCalls.filter(
-			(call) => call.method === "registerTarget" || call.method === "start",
-		),
-	).toEqual([]);
+	expect(recordedCalls.filter((call) => call.method === "registerTarget" || call.method === "start")).toEqual([]);
 
 	// The recovery surface really enumerated the seeded durable row through
 	// the real runtime's read pipeline, inside the real screen's tree.
 	await flush();
 	expect(latestProjection?.loading).toBe(false);
-	expect(
-		latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId),
-	).toEqual(["render-1"]);
+	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-1"]);
 	// The screen rendered its actual content, not a stub: the composer's
 	// message field, which the disconnected screen still shows.
 	expect(
@@ -402,25 +354,19 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	const readsAfter = recordedCalls.filter((call) => call.method === "read");
 	expect(readsAfter).toHaveLength(2);
-	expect(readsAfter[1].args).toEqual([
-		nativeMutationTargetKey("hub-1", "ref-2"),
-	]);
+	expect(readsAfter[1].args).toEqual([nativeMutationTargetKey("hub-1", "ref-2")]);
 	expect(subscriptionLifetime.added - subscriptionLifetime.removed).toBe(1);
 
 	// A storage change for the OLD route's key never re-reads the new
 	// generation, even though both generations shared this runtime.
 	const secondKey = nativeMutationTargetKey("hub-1", "ref-2");
-	const readsAfterRouteChange = recordedCalls.filter(
-		(call) => call.method === "read",
-	).length;
+	const readsAfterRouteChange = recordedCalls.filter((call) => call.method === "read").length;
 	await seedRecoveryRow(runtime, firstKey);
 	await act(async () => {
 		await runtime.discardRecovery("missing", firstKey);
 	});
 	await flush();
-	const readsSinceRouteChange = recordedCalls
-		.filter((call) => call.method === "read")
-		.slice(readsAfterRouteChange);
+	const readsSinceRouteChange = recordedCalls.filter((call) => call.method === "read").slice(readsAfterRouteChange);
 	expect(readsSinceRouteChange).toEqual([]);
 	expect(latestProjection?.snapshot?.recovery).toEqual([]);
 
@@ -430,19 +376,13 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 		await runtime.discardRecovery("missing", secondKey);
 	});
 	await flush();
-	const readsSinceRefresh = recordedCalls
-		.filter((call) => call.method === "read")
-		.slice(readsAfterRouteChange);
+	const readsSinceRefresh = recordedCalls.filter((call) => call.method === "read").slice(readsAfterRouteChange);
 	expect(readsSinceRefresh.map((call) => call.args[0])).toEqual([secondKey]);
-	expect(
-		latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId),
-	).toEqual(["render-3"]);
+	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-3"]);
 
 	// The render-pass fence held across the route-change render too.
 	expect(recordedCalls.filter((call) => call.phase === "render")).toEqual([]);
-	expect(recorder.opens.map((open) => open.database)).not.toContain(
-		"evener-mutations.db",
-	);
+	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
 });
 
 it("classifies a deliberate render-time runtime call as render-pass, proving the detector is armed", () => {
@@ -470,9 +410,7 @@ it("classifies a deliberate render-time runtime call as render-pass, proving the
 			</PhaseMarker>,
 		);
 	});
-	const renderReads = recordedCalls.filter(
-		(call) => call.method === "read" && call.phase === "render",
-	);
+	const renderReads = recordedCalls.filter((call) => call.method === "read" && call.phase === "render");
 	expect(renderReads).toHaveLength(1);
 	expect(renderReads[0].args).toEqual([key]);
 });
@@ -509,9 +447,7 @@ it("classifies a forbidden runtime call during a state-triggered rerender as ren
 		);
 	});
 	await flush();
-	const renderReads = recordedCalls.filter(
-		(call) => call.method === "read" && call.phase === "render",
-	);
+	const renderReads = recordedCalls.filter((call) => call.method === "read" && call.phase === "render");
 	expect(renderReads).toHaveLength(1);
 	expect(renderReads[0].args).toEqual([key]);
 });

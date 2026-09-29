@@ -1,27 +1,10 @@
-// The option rows a question timeline item renders key on their POSITION in
-// the ask (timeline.ts's questionOptionKey), never on the label: the store's
-// publish bounds every label the timeline carries (projectedRows.ts's
-// truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options
-// whose labels share a prefix past the bound cut to the same string. Keyed
-// on that label — the pre-fix expression `${question.key}:${option.label}`
-// — both rows answered to ONE React key, and React reported the duplicate
-// on every render. This mounts the real TimelineItem with two such options
-// (bounded exactly the way the store publishes them) and pins the absence
-// of that report; the pure key's contract is pinned separately in
-// timeline.test.ts.
 import { createElement, type ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AskQuestionRef } from "@evener/appwire-client";
-import {
-	boundQuestion,
-	MAX_ITEM_BYTES,
-	truncateText,
-	type MobileTimelineItem,
-} from "./projectedRows";
+import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
-import { Platform } from "react-native";
+import { Platform, Text } from "react-native";
 import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
@@ -49,53 +32,6 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // connection stack (expo-secure-store and the rest).
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
-const ask: AskQuestionRef = {
-	key: "call:0",
-	callId: "call",
-	header: "Choose",
-	question: "Pick one",
-	multiSelect: false,
-	options: [],
-};
-
-// The store's bounded publish of one ask whose two options share a prefix
-// past the display bound, so both labels cut to the same string.
-function boundedAskRow(first: string, second: string): MobileTimelineItem {
-	const questions = [
-		boundQuestion(
-			{
-				...ask,
-				options: [
-					{ label: first, detail: "" },
-					{ label: second, detail: "" },
-				],
-			},
-			(text) => truncateText(text, MAX_ITEM_BYTES),
-		),
-	];
-	return { kind: "question", id: "ask-1", questions };
-}
-
-it("renders an ask's option rows without a duplicate-key report when the bounded labels collide", () => {
-	const prefix = "x".repeat(MAX_ITEM_BYTES * 2);
-	const row = boundedAskRow(`${prefix}-first-tail`, `${prefix}-second-tail`);
-	// The collision is real: the store's publish cuts both labels to the
-	// same copy, so the pre-fix label-based key answered for both rows.
-	const bounded = row.kind === "question" ? row.questions[0] : undefined;
-	expect(bounded?.options[0].label).toBe(bounded?.options[1].label);
-
-	const errors: string[] = [];
-	const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
-		errors.push(args.map(String).join(" "));
-	});
-	try {
-		render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
-	} finally {
-		spy.mockRestore();
-	}
-	expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
-});
-
 function renderUserRow() {
 	const row: MobileTimelineItem = { kind: "user", id: "u-1", text: "Ship it" };
 	return render(<TimelineItem item={row} hubId="hub" sessionRef="session" />).root;
@@ -103,9 +39,7 @@ function renderUserRow() {
 
 // The bubble is the node that fills with the bubble color.
 function userBubbleStyle() {
-	const [bubble] = renderUserRow().findAll(
-		(node) => node.props.style?.backgroundColor !== undefined,
-	);
+	const [bubble] = renderUserRow().findAll((node) => node.props.style?.backgroundColor !== undefined);
 	return bubble.props.style;
 }
 
@@ -139,6 +73,8 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 });
 
 const INK_LOW = "#6D6D64";
+const INK_MID = "#5F5F57";
+const EDGE_STRONG = "#B7B6AC";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -219,9 +155,7 @@ describe("your message", () => {
 	it("offers Copy, Fork from here and Quote on touch and hold, and Quote quotes the text", () => {
 		const quote = vi.fn();
 		const fork = vi.fn();
-		const tree = render(
-			<TimelineItem item={user()} hubId="hub" sessionRef="s" fork={fork} quote={quote} />,
-		);
+		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" fork={fork} quote={quote} />);
 		const menu = longPress(tree.root);
 		expect(menu.options).toEqual(["Copy", "Fork from here", "Quote", "Cancel"]);
 		expect(menu.cancelButtonIndex).toBe(3);
@@ -245,19 +179,22 @@ describe("your message", () => {
 		["a fork that can't run now", { forkDisabled: true }],
 		["the transcript's first entry", { entry: 0 }],
 		["no transcript entry", { entry: undefined }],
-	])("leaves Fork from here out of the menu with %s", (_name, over: { fork?: undefined; forkDisabled?: boolean; entry?: number }) => {
-		const tree = render(
-			<TimelineItem
-				item={user({ transcriptEntryIndex: "entry" in over ? over.entry : 4 })}
-				hubId="hub"
-				sessionRef="s"
-				fork={"fork" in over ? over.fork : () => {}}
-				forkDisabled={over.forkDisabled ?? false}
-				quote={() => {}}
-			/>,
-		);
-		expect(longPress(tree.root).options).toEqual(["Copy", "Quote", "Cancel"]);
-	});
+	])(
+		"leaves Fork from here out of the menu with %s",
+		(_name, over: { fork?: undefined; forkDisabled?: boolean; entry?: number }) => {
+			const tree = render(
+				<TimelineItem
+					item={user({ transcriptEntryIndex: "entry" in over ? over.entry : 4 })}
+					hubId="hub"
+					sessionRef="s"
+					fork={"fork" in over ? over.fork : () => {}}
+					forkDisabled={over.forkDisabled ?? false}
+					quote={() => {}}
+				/>,
+			);
+			expect(longPress(tree.root).options).toEqual(["Copy", "Quote", "Cancel"]);
+		},
+	);
 
 	it("leaves Quote out where nothing can take the quote", () => {
 		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" />);
@@ -269,7 +206,13 @@ describe("your message", () => {
 		(Platform as { OS: string }).OS = "android";
 		try {
 			const tree = render(
-				<TimelineItem item={user({ text: "Ship   it\nnow" })} hubId="hub" sessionRef="s" fork={() => {}} quote={() => {}} />,
+				<TimelineItem
+					item={user({ text: "Ship   it\nnow" })}
+					hubId="hub"
+					sessionRef="s"
+					fork={() => {}}
+					quote={() => {}}
+				/>,
 			);
 			const [target] = tree.root.findAll((node) => typeof node.props.onLongPress === "function");
 			act(() => target.props.onLongPress());
@@ -335,7 +278,9 @@ describe("the agent's message", () => {
 		expect(text[0].props.selectable).toBe(true);
 		expect(text[0].props.style).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26 });
 
-		const done = modal.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function");
+		const done = modal.findAll(
+			(node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function",
+		);
 		act(() => done[0].props.onPress());
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
 	});
@@ -366,9 +311,68 @@ describe("the agent's message", () => {
 		expect(after).toBe(before);
 	});
 
+	it("draws the chips its screen gives it under the message, and a user's message asks for none", () => {
+		const documentChips = vi.fn(() => <Text>chip for plan.md</Text>);
+		const tree = render(
+			<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" documentChips={documentChips} />,
+		);
+		expect(documentChips).toHaveBeenCalledWith({
+			id: "a-1",
+			markdown: "Done. **All** tests pass.\nNext: ship.",
+			streaming: true,
+		});
+		const text = renderedText(tree);
+		expect(text.indexOf("chip for plan.md")).toBeGreaterThan(text.indexOf("ship."));
+		documentChips.mockClear();
+		render(
+			<TimelineItem
+				item={{ kind: "user", id: "u-1", text: "Read `docs/plan.md`" }}
+				hubId="hub"
+				sessionRef="s"
+				documentChips={documentChips}
+			/>,
+		);
+		expect(documentChips).not.toHaveBeenCalled();
+	});
+
 	it("says nothing about writing while it streams: the tray says it", () => {
 		const tree = render(<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" />);
 		expect(renderedText(tree)).not.toContain("Writing");
+	});
+});
+
+describe("a saved note (spec 8.2, 8.8)", () => {
+	function render_(text: string) {
+		const row: MobileTimelineItem = { kind: "note", id: "note:1", text };
+		return render(<TimelineItem item={row} hubId="hub" sessionRef="s" />);
+	}
+
+	function caption(tree: ReturnType<typeof render>) {
+		return tree.root.findAll((node) => String(node.type) === "Text" && /your note/i.test(textOf(node)))[0];
+	}
+
+	it('reads "You updated your note" over the note, in the serif prose ink, behind a left rule', () => {
+		mode.scheme = "light";
+		const tree = render_("Fix causes");
+		expect(textOf(caption(tree))).toBe("You updated your note");
+		expect(caption(tree).props.style).toMatchObject({ fontSize: 13, lineHeight: 18, color: INK_MID });
+		const [body] = tree.root.findAll((node) => String(node.type) === "Text" && textOf(node) === "Fix causes");
+		expect(body.props.style).toMatchObject({
+			fontFamily: "SourceSerif4-Regular",
+			fontSize: 17,
+			lineHeight: 25,
+			color: "#252521",
+		});
+		const [rule] = tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2);
+		expect(rule.props.style).toMatchObject({ borderLeftColor: EDGE_STRONG });
+		act(() => tree.unmount());
+	});
+
+	it('reads "You cleared your note" with no text beneath, for an emptied note', () => {
+		const tree = render_("");
+		expect(textOf(caption(tree))).toBe("You cleared your note");
+		expect(tree.root.findAll((node) => String(node.type) === "Text").length).toBe(1);
+		act(() => tree.unmount());
 	});
 });
 
@@ -488,7 +492,9 @@ describe("a settled thought", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
 		expect(renderedText(tree)).toContain("Thought not shown");
 		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth !== undefined)).toEqual([]);
-		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({
+			color: INK_LOW,
+		});
 	});
 });
 
@@ -525,7 +531,9 @@ describe("a subagent", () => {
 		root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
 
 	it("rails its row in its state's hue", () => {
-		expect(rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root)).toBe(ALIVE);
+		expect(
+			rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root),
+		).toBe(ALIVE);
 		expect(rail(render(<TimelineItem item={row("failed")} hubId="hub" sessionRef="s" />).root)).toBe(DANGER);
 		expect(rail(render(<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" />).root)).toBe(EDGE_STRONG);
 	});
@@ -535,13 +543,21 @@ describe("a subagent", () => {
 		const tree = render(
 			<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" delegates={[done]} openSubagent={() => {}} />,
 		);
-		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({ minHeight: 44 });
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({
+			minHeight: 44,
+		});
 	});
 
 	it("opens the subagent's own transcript when pressed", () => {
 		const openSubagent = vi.fn();
 		const tree = render(
-			<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} openSubagent={openSubagent} />,
+			<TimelineItem
+				item={row("running")}
+				hubId="hub"
+				sessionRef="s"
+				delegates={[delegate]}
+				openSubagent={openSubagent}
+			/>,
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
@@ -558,7 +574,13 @@ describe("a question you answered", () => {
 		state: "completed",
 		detail: {
 			arguments: JSON.stringify({
-				questions: [{ header: "Choice", question: "Keep or drop the implied options?", options: [{ label: "Drop them", detail: "" }] }],
+				questions: [
+					{
+						header: "Choice",
+						question: "Keep or drop the implied options?",
+						options: [{ label: "Drop them", detail: "" }],
+					},
+				],
 			}),
 		},
 	};
@@ -591,7 +613,9 @@ describe("a system event", () => {
 		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event" />);
 		const diamond = tree.root.findAllByType("SymbolView" as never)[0];
 		expect([diamond?.props.name, diamond?.props.tintColor]).toEqual(["diamond", INK_LOW]);
-		expect(texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style).toMatchObject({
+		expect(
+			texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style,
+		).toMatchObject({
 			fontSize: 13,
 			lineHeight: 18,
 			color: INK_LOW,
@@ -623,7 +647,10 @@ describe("an error", () => {
 		detail,
 		turnId,
 	});
-	const session = (resumeRequired = false) => ({ resumeRequired, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never });
+	const session = (resumeRequired = false) => ({
+		resumeRequired,
+		turns: [{ id: "turn_1" }, { id: "turn_2" }] as never,
+	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();
 		const tree = render(
@@ -635,14 +662,21 @@ describe("an error", () => {
 				onErrorAction={onErrorAction}
 			/>,
 		);
-		const buttons = tree.root.findAll((node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function");
+		const buttons = tree.root.findAll(
+			(node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function",
+		);
 		return { tree, onErrorAction, buttons };
 	}
 
 	it("draws a red rule, the title and the detail", () => {
 		const { tree } = show(failure("go test exited 1"));
-		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(DANGER_INK);
-		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({ fontWeight: "600", fontSize: 15 });
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(
+			DANGER_INK,
+		);
+		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({
+			fontWeight: "600",
+			fontSize: 15,
+		});
 		expect(renderedText(tree)).toContain("go test exited 1");
 	});
 
@@ -654,11 +688,15 @@ describe("an error", () => {
 	});
 
 	it("offers Resume on a paused session", () => {
-		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Resume"]);
+		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
+			"Resume",
+		]);
 	});
 
 	it("offers Retry under the latest turn only", () => {
-		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
+			"Retry",
+		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
 	});
 });

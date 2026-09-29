@@ -74,11 +74,7 @@ function snapshot(
 // The rows the surface's read shows for its own target, as the screen
 // projects them.
 function recoveryRowCount(surface: RecoveryPanelSurface): number {
-	return projectNativeMutationRecovery(
-		surface.targetKey,
-		surface.snapshot,
-		() => true,
-	).length;
+	return projectNativeMutationRecovery(surface.targetKey, surface.snapshot).length;
 }
 
 it("projects only the exact target's recovery rows, in intent order", () => {
@@ -89,7 +85,6 @@ it("projects only the exact target's recovery rows, in intent order", () => {
 			recovery(TARGET_B, "other", 1, "rejected"),
 			recovery(TARGET_A, "first", 1, "rejected"),
 		]),
-		() => true,
 	);
 
 	expect(rows.map((row) => row.clientMutationId)).toEqual(["first", "second"]);
@@ -97,14 +92,9 @@ it("projects only the exact target's recovery rows, in intent order", () => {
 	expect(rows.map((row) => row.status)).toEqual(["rejected", "orphaned"]);
 });
 
-it("offers restore only for an eligible rejected record and an eligible converter result", () => {
+it("offers restore only for an eligible rejected record", () => {
 	const eligible = recovery(TARGET_A, "eligible", 1, "rejected");
-	expect(nativeMutationRecoveryActions(eligible, true)).toEqual([
-		"restore",
-		"discard",
-	]);
-	// An eligible record whose converter result withholds cannot restore.
-	expect(nativeMutationRecoveryActions(eligible, false)).toEqual(["discard"]);
+	expect(nativeMutationRecoveryActions(eligible)).toEqual(["restore", "discard"]);
 	// No text a restore could write.
 	expect(
 		nativeMutationRecoveryActions(
@@ -112,7 +102,6 @@ it("offers restore only for an eligible rejected record and an eligible converte
 				composerText: undefined,
 				payload: { input: [] },
 			}),
-			true,
 		),
 	).toEqual(["discard"]);
 	// An attachment a text-only restore would silently drop.
@@ -123,36 +112,23 @@ it("offers restore only for an eligible rejected record and an eligible converte
 					input: [{ type: "image", mediaType: "image/png", data: "AQID" }],
 				},
 			}),
-			true,
 		),
 	).toEqual(["discard"]);
 	// An orphaned record has no daemon message to replay.
-	expect(
-		nativeMutationRecoveryActions(
-			recovery(TARGET_A, "orphan", 1, "orphaned"),
-			true,
-		),
-	).toEqual(["discard"]);
+	expect(nativeMutationRecoveryActions(recovery(TARGET_A, "orphan", 1, "orphaned"))).toEqual(["discard"]);
 });
 
-it("withholds restore from a projected row when the converter result withholds it", () => {
-	const rows = projectNativeMutationRecovery(
-		TARGET_A,
-		snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
-		() => false,
-	);
-	// The record still offers Restore, but the withholding converter leaves the
-	// row's actions discard-only: offered-but-blocked, not unoffered.
+it("carries restoreOffered from the record alone, and the row's actions agree with it", () => {
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]));
+	// The record offers Restore, so the row reports restoreOffered and carries
+	// the restore action. Whether the composer can take it right now is the
+	// ghost's canEdit, decided at render time, not a projection input.
 	expect(rows[0].restoreOffered).toBe(true);
-	expect(rows[0].actions).toEqual(["discard"]);
+	expect(rows[0].actions).toEqual(["restore", "discard"]);
 });
 
 it("offers an ordinary eligible rejected record restore and discard", () => {
-	const rows = projectNativeMutationRecovery(
-		TARGET_A,
-		snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
-		() => true,
-	);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]));
 	expect(rows[0].actions).toEqual(["restore", "discard"]);
 });
 
@@ -161,12 +137,8 @@ it("never offers restore for a rejected interrupt, even when it somehow carries 
 		method: "turn/interrupt",
 		composerText: "stop",
 	});
-	expect(nativeMutationRecoveryActions(interrupt, true)).toEqual(["discard"]);
-	const rows = projectNativeMutationRecovery(
-		TARGET_A,
-		snapshot([interrupt]),
-		() => true,
-	);
+	expect(nativeMutationRecoveryActions(interrupt)).toEqual(["discard"]);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([interrupt]));
 	expect(rows[0].actions).toEqual(["discard"]);
 });
 
@@ -190,11 +162,7 @@ it("reports the payload's text when a record carries no composer text", () => {
 it("discards exactly the row's clientMutationId through the target's own projection", async () => {
 	const discard = vi.fn(async () => true);
 	const projection = { targetKey: TARGET_A, discard };
-	const row = projectNativeMutationRecovery(
-		TARGET_A,
-		snapshot([recovery(TARGET_A, "row-1", 1, "rejected")]),
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(TARGET_A, snapshot([recovery(TARGET_A, "row-1", 1, "rejected")]))[0];
 
 	expect(await discardRecoveredMutation(projection, row)).toBe(true);
 	expect(discard).toHaveBeenCalledTimes(1);
@@ -203,28 +171,18 @@ it("discards exactly the row's clientMutationId through the target's own project
 
 it("refuses to discard a row another target owns, so a discard is never blanket", async () => {
 	const discard = vi.fn(async () => true);
-	const foreign = projectNativeMutationRecovery(
-		TARGET_B,
-		snapshot([recovery(TARGET_B, "foreign", 1, "rejected")]),
-		() => true,
-	)[0];
+	const foreign = projectNativeMutationRecovery(TARGET_B, snapshot([recovery(TARGET_B, "foreign", 1, "rejected")]))[0];
 
-	expect(
-		await discardRecoveredMutation({ targetKey: TARGET_A, discard }, foreign),
-	).toBe(false);
+	expect(await discardRecoveredMutation({ targetKey: TARGET_A, discard }, foreign)).toBe(false);
 	expect(discard).not.toHaveBeenCalled();
 });
 
 it("surfaces a read error with its own words", () => {
-	const tree = render(
-		<RecoveryFailure error={new Error("recovery table unavailable")} onRetry={() => {}} />,
-	);
+	const tree = render(<RecoveryFailure error={new Error("recovery table unavailable")} onRetry={() => {}} />);
 	expect(renderedText(tree)).toContain("recovery table unavailable");
 });
 
-function fakeRuntime(
-	overrides: Partial<NativeMutationRecoveryRuntime> = {},
-): NativeMutationRecoveryRuntime {
+function fakeRuntime(overrides: Partial<NativeMutationRecoveryRuntime> = {}): NativeMutationRecoveryRuntime {
 	return {
 		read: async (targetKey) => ({
 			outbox: [],
@@ -284,9 +242,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 
 	expect(result.current.error).toBeInstanceOf(Error);
 	expect(result.current.failed).toBe(true);
-	expect(recoveryFailureMessage(result.current.error)).toBe(
-		"mutations db unavailable",
-	);
+	expect(recoveryFailureMessage(result.current.error)).toBe("mutations db unavailable");
 	expect(recoveryRowCount(result.current)).toBe(0);
 
 	mode = "ok";
@@ -313,11 +269,7 @@ it("surfaces a rejected discard instead of leaving an unhandled rejection", asyn
 		}),
 	);
 	await flush();
-	const row = projectNativeMutationRecovery(
-		result.current.targetKey,
-		result.current.snapshot,
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 
 	act(() => {
 		result.current.discard(row);
@@ -339,11 +291,7 @@ it("leaves no failure after a successful discard", async () => {
 		}),
 	);
 	await flush();
-	const row = projectNativeMutationRecovery(
-		result.current.targetKey,
-		result.current.snapshot,
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 
 	act(() => {
 		result.current.discard(row);
@@ -396,9 +344,7 @@ it("refreshes a failed read on retry", async () => {
 
 it("shows a failure with no rows, and its Retry is reachable", () => {
 	const onRetry = vi.fn();
-	const tree = render(
-		<RecoveryFailure error={new Error("mutations db unavailable")} onRetry={onRetry} />,
-	);
+	const tree = render(<RecoveryFailure error={new Error("mutations db unavailable")} onRetry={onRetry} />);
 	expect(renderedText(tree)).toContain("mutations db unavailable");
 	const retry = tree.root.findByProps({ accessibilityLabel: "Retry" });
 	act(() => retry.props.onPress());
@@ -419,7 +365,7 @@ it("treats a record with attachment metadata as carrying attachments even withou
 		payload: { input: [{ type: "text", text: "look [image 1]" }] },
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 });
@@ -440,10 +386,9 @@ it("withholds restore for a rejected record that carries an image, which the gho
 		composerText: "look [image 1]",
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
-
 });
 
 it("clears a stale acquisition failure when a later acquisition succeeds", async () => {
@@ -494,11 +439,7 @@ it("clears an in-scope discard failure after a later successful discard", async 
 		}),
 	);
 	await flush();
-	const row = projectNativeMutationRecovery(
-		result.current.targetKey,
-		result.current.snapshot,
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
 	});
@@ -530,11 +471,7 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 		}),
 	);
 	await flush();
-	const row = projectNativeMutationRecovery(
-		result.current.targetKey,
-		result.current.snapshot,
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
 	});
@@ -562,7 +499,7 @@ it("withholds restore for an image input carried by path or metadata without inl
 		},
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 });
@@ -618,11 +555,7 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 		}),
 	);
 	await flush();
-	const row = projectNativeMutationRecovery(
-		result.current.targetKey,
-		result.current.snapshot,
-		() => true,
-	)[0];
+	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
 	});

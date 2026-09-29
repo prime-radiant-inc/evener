@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type {
-	AppwireClient,
-	ConnectionState,
-	WebSocketLike,
-} from "@evener/appwire-client";
+import type { AppwireClient, ConnectionState, WebSocketLike } from "@evener/appwire-client";
 import { createConnectionStore } from "@evener/appwire-client/state/connection";
 import { createHubClient } from "./connection";
 import { recordClientReadyHub } from "./connectionIdentity";
@@ -29,6 +25,12 @@ export function reconnectDelay(failures: number): number {
 	const wholeFailures = Math.floor(failures);
 	return wholeFailures <= 0 ? 0 : Math.min(1000 * 2 ** (wholeFailures - 1), 30_000);
 }
+
+/** How often a close no retry can fix (a protocol mismatch) is tried again
+ * while the app is in front. Nothing on screen offers Reconnect (spec
+ * principle 2), so this is how the phone finds a hub or app that was updated
+ * while it waited, rather than failing closed until it leaves the front. */
+export const FATAL_RETRY_MS = 60_000;
 
 /** The one HubProfiles method this hook needs; HubProfiles itself satisfies
  * it, and a test can hand in a lighter fake without building a real one. */
@@ -79,21 +81,23 @@ export function useHubConnection(
 	// hook existed (`session?.profileId === selected`) and still has to do
 	// here - just keyed on every input that opens a new connection, not only
 	// the hub id.
-	const connectedFor = useRef<{ key: string; client: AppwireClient } | undefined>(
-		undefined,
-	);
+	const connectedFor = useRef<{ key: string; client: AppwireClient } | undefined>(undefined);
 	const targetKey = JSON.stringify([activeId, activeOrigin, foreground, attempt, retry]);
 	const [fatal, setFatal] = useState(false);
+	// A fresh generation of the caller's inputs starts with no verdict and no
+	// error. The hook's own retries keep both until the attempt settles, so a
+	// fatal close says "Update needed" steadily while it tries again, and a
+	// transport failure's sentence doesn't blink out during each redial.
 	useEffect(() => {
 		failures.current = 0;
+		setError(null);
+		setFatal(false);
 	}, [activeId, activeOrigin, foreground, attempt]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
 		let connection: AppwireClient | null = null;
 		let unsubscribe: (() => void) | undefined;
-		setError(null);
-		setFatal(false);
 		if (!activeId || !activeOrigin || !foreground) return;
 		store.setState({ state: "connecting" });
 		void repository
@@ -180,8 +184,7 @@ export function useHubConnection(
 	// case so backgrounded and profile-less mounts keep their exact "idle"
 	// report, and a fresh attempt's own effect body re-arms "connecting"
 	// synchronously, so the verdict never outlives its generation.
-	const closedWithoutClient =
-		!client && activeId && foreground && coreState.state === "closed";
+	const closedWithoutClient = !client && activeId && foreground && coreState.state === "closed";
 	const state: ConnectionState = client
 		? coreState.state
 		: closedWithoutClient
@@ -189,19 +192,25 @@ export function useHubConnection(
 			: activeId && foreground
 				? "connecting"
 				: "idle";
-	// A connection that closed for a reason a retry can fix tries again on its
-	// own while the app is in front (spec 14), so the Board needs no Reconnect
-	// button. A protocol mismatch (fatal) is left alone: retrying can't fix it.
+	// A closed connection tries again on its own while the app is in front
+	// (spec 14), so no screen needs a Reconnect button: a transport failure on
+	// reconnectDelay's backoff, a protocol mismatch (fatal) once a minute,
+	// since only an update on one side can fix it.
 	// `attempt` is a dependency though the body never reads it: a caller-driven
-	// manual retry must cancel a pending auto-retry timer at once, the same as
+	// attempt must cancel a pending auto-retry timer at once, the same as
 	// any other generation change, rather than wait for the reconnect it starts
 	// to itself move `state` off "closed".
 	useEffect(() => {
-		if (state !== "closed" || fatal || !activeId || !activeOrigin || !foreground) return;
-		const timer = setTimeout(() => {
-			failures.current += 1;
-			setRetry((value) => value + 1);
-		}, reconnectDelay(failures.current));
+		if (state !== "closed" || !activeId || !activeOrigin || !foreground) return;
+		const timer = setTimeout(
+			() => {
+				// Only transport failures back off; a fatal close keeps its own
+				// once-a-minute cadence and never lengthens the next backoff.
+				if (!fatal) failures.current += 1;
+				setRetry((value) => value + 1);
+			},
+			fatal ? FATAL_RETRY_MS : reconnectDelay(failures.current),
+		);
 		return () => clearTimeout(timer);
 	}, [state, fatal, activeId, activeOrigin, foreground, attempt]);
 	return { client, state, fatal };

@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
@@ -137,6 +138,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
 			LastMessage:        item.LastMessage,
 			Tasks:              item.Tasks,
+			CurrentModel:       item.CurrentModel,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire threads,
@@ -1168,6 +1170,14 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		wirePluginStoreBroadcast(mgr, server)
 	}
 	cfg.PluginManager = mgr
+	// §8's admission fence is installed BEFORE registerThreadHandlers below:
+	// that call captures cfg by value, and the thread-list handler's explicit
+	// SourceIDs attach dials through dialRemoteHost with its own cfg copy — the
+	// second attach trigger, which must refuse while a name is quarantined or
+	// orphan-fenced. Installing it here also covers the attach handler's later
+	// by-value capture. It reads the operation store directly (the manager is
+	// not built yet); a hub without one fences nothing.
+	cfg.HostOrphanFence = func(name string) error { return orphanAdmissionRefusalFor(cfg.RemoteHostOpsStore, name) }
 	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
@@ -1222,6 +1232,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// afterwards would leave the handler reading an empty seam and dialing over
 	// a host whose teardown is still open.
 	cfg.HostRemnantFence = hostManage.openRemnantID
+	// The orphan fence seam was installed earlier (before registerThreadHandlers,
+	// whose by-value cfg copy the thread-list dial path uses); the attach handler
+	// registered below captures the same seam.
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
@@ -1289,6 +1302,11 @@ func registerThreadHandlers(
 	// this hub's own local session state.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 		return sessionImageFromHub(cfg, params)
+	})
+	// evener/session/document is the AppWire counterpart of the raw /doc/file
+	// read, for the controller's /doc/file proxy (S7).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(cfg, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -1784,6 +1802,22 @@ func registerThreadHandlers(
 			return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
 		})
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDelegateStop, func(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.DelegateStopResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			stopper, ok := source.(appsource.DelegateStopSource)
+			if !ok {
+				return appwire.DelegateStopResponse{}, appwire.Unavailable("this session's source cannot stop a subagent")
+			}
+			return stopper.StopDelegate(ctx, params)
+		})
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
@@ -2243,8 +2277,8 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateCheck, hubUpdateCheck)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateApply, hubUpdateApply)
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(_ context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
-		return hubSearch(cfg, params), nil
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(ctx context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
+		return hubSearch(ctx, cfg, params, time.Now())
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)

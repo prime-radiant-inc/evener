@@ -17,10 +17,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import {
-	getNativeMutationRuntime,
-	nativeMutationTargetKey,
-} from "./nativeMutationRuntime";
+import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 
@@ -69,6 +66,13 @@ vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("expo-web-browser", () => ({}));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
@@ -76,10 +80,8 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
-		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
-			select(navigationState.state),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 	};
 });
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -169,9 +171,7 @@ function pressables(tree: ReactTestRenderer) {
 }
 
 function pressLabel(tree: ReactTestRenderer, label: string) {
-	const target = pressables(tree).find(
-		(node) => node.props.accessibilityLabel === label,
-	);
+	const target = pressables(tree).find((node) => node.props.accessibilityLabel === label);
 	if (!target) throw new Error(`no pressable labelled ${label}`);
 	act(() => target.props.onPress());
 }
@@ -206,12 +206,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	const runtime = getNativeMutationRuntime();
 	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 
-	const tree = render(
-		<ConversationScreen
-			route={conversationRoute(ref)}
-			navigation={navigation}
-		/>,
-	);
+	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
 	await flush();
 
 	// PHASE 1 - empty snapshot, connected: no ghost. Positive control first:
@@ -228,9 +223,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	const retired = ["Recovery", "Review status", "Check delivery", "Reconnect", "Review error"];
 	const expectNoRetiredControls = () => {
 		for (const label of retired) {
-			expect(
-				pressables(tree).find((n) => n.props.accessibilityLabel === label),
-			).toBeUndefined();
+			expect(pressables(tree).find((n) => n.props.accessibilityLabel === label)).toBeUndefined();
 			expect(renderedText(tree)).not.toContain(label);
 		}
 	};
@@ -245,11 +238,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 		attachments: [],
 		optimisticDisplay: { method: "turn/queue" },
 	});
-	const recovery = await runtime.storage.transferToRecovery(
-		record.clientMutationId,
-		"rejected",
-		"daemon refused",
-	);
+	const recovery = await runtime.storage.transferToRecovery(record.clientMutationId, "rejected", "daemon refused");
 	if (!recovery) throw new Error("seeding the recovery row failed");
 	await act(async () => {
 		// A zero-row discard is the runtime's own publish: it notifies storage
@@ -266,10 +255,8 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	// PHASE 3 - the #2247 converter gate at screen level. With an empty,
 	// loaded composer the eligible record meets the converter's true, so Edit
 	// is enabled, and it puts the text back in the composer.
-	const edit = () =>
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Edit");
-	const discard = () =>
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Discard");
+	const edit = () => pressables(tree).find((n) => n.props.accessibilityLabel === "Edit");
+	const discard = () => pressables(tree).find((n) => n.props.accessibilityLabel === "Discard");
 	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: false });
 	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
 	await act(async () => edit()?.props.onPress());
@@ -282,9 +269,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	act(() => composer()?.props.onChangeText("a draft already in progress"));
 	await flush();
 	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: true });
-	expect(renderedText(tree)).toContain(
-		"Clear or send your current draft to restore this message.",
-	);
+	expect(renderedText(tree)).toContain("Clear or send your current draft to restore this message.");
 	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
 
 	// PHASE 4 - Discard retires exactly this row, and its ghost goes.

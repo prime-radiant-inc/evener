@@ -94,11 +94,9 @@ function levelsThread(): Thread {
 			}),
 			item({ id: "r1", type: "reasoning", text: "auditing quietly", status: "completed" }),
 		]),
-		turn(
-			"t2",
-			[item({ id: "r2", type: "reasoning", text: "secret live thought", status: "inProgress" })],
-			{ status: "inProgress" },
-		),
+		turn("t2", [item({ id: "r2", type: "reasoning", text: "secret live thought", status: "inProgress" })], {
+			status: "inProgress",
+		}),
 	]);
 }
 
@@ -108,8 +106,7 @@ function rowsAt(config: TranscriptDisplayConfigV1 | null) {
 	return projectConversation(model, undefined, config ?? undefined).items;
 }
 
-const rowById = (items: ReturnType<typeof rowsAt>, id: string) =>
-	items.find((row) => row.id === id);
+const rowById = (items: ReturnType<typeof rowsAt>, id: string) => items.find((row) => row.id === id);
 
 const chat = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
 const intent = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
@@ -140,9 +137,10 @@ describe("the seam projects the conversation at the user's content level", () =>
 		// reasoning family as the settled thought, so the two cluster across
 		// the turn boundary and the live one rides as a member.
 		const r1 = rowById(rows, "r1");
-		expect(r1?.kind === "activity" && r1.members?.some(
-			(member) => member.id === "r2" && member.detail.output === "secret live thought",
-		)).toBe(true);
+		expect(
+			r1?.kind === "activity" &&
+				r1.members?.some((member) => member.id === "r2" && member.detail.output === "secret live thought"),
+		).toBe(true);
 		expect(rowById(rows, "c1")).toMatchObject({
 			kind: "activity",
 			detail: {
@@ -229,8 +227,7 @@ describe("the summary-only ruling at compact levels", () => {
 				config,
 			);
 			const f1 = conversation.items.find((row) => row.id === "f1");
-			if (f1?.kind !== "activity")
-				throw new Error(`the ${config.content} level lost the failed call`);
+			if (f1?.kind !== "activity") throw new Error(`the ${config.content} level lost the failed call`);
 			expect(f1.state).toBe("failed");
 			expect(f1.summaryOnly).toBeUndefined();
 			expect(f1.detail.error).toBe("opaque failure text");
@@ -285,16 +282,10 @@ describe("the summary-only ruling at compact levels", () => {
 			]),
 		]);
 		for (const config of [chat, intent]) {
-			const conversation = projectConversation(
-				hydrateThread({ thread: writeThread }, "ref-1", 0),
-				undefined,
-				config,
-			);
+			const conversation = projectConversation(hydrateThread({ thread: writeThread }, "ref-1", 0), undefined, config);
 			const presented = projectNativeTranscript(conversation, config);
 			const presentation = presented.activityPresentation.get("w1");
-			expect(presentation?.summary, `the ${config.content} level lost the write line`).toBe(
-				"Write /tmp/x",
-			);
+			expect(presentation?.summary, `the ${config.content} level lost the write line`).toBe("Write /tmp/x");
 		}
 	});
 });
@@ -306,11 +297,7 @@ describe("the presentation layer maps the level-correct rows without filtering",
 	// presentation keeps every row the seam produced and only reshapes them
 	// (cluster member expansion, attachment adjacency).
 	it("keeps every row the seam projected at the level", () => {
-		const conversation = projectConversation(
-			hydrateThread({ thread: levelsThread() }, "ref-1", 0),
-			undefined,
-			intent,
-		);
+		const conversation = projectConversation(hydrateThread({ thread: levelsThread() }, "ref-1", 0), undefined, intent);
 		const presented = projectNativeTranscript(conversation, intent);
 		for (const row of conversation.items) {
 			const present =
@@ -320,19 +307,13 @@ describe("the presentation layer maps the level-correct rows without filtering",
 				row.kind === "attachments" ||
 				// A clustered row expands into its members' own rows.
 				(row.kind === "activity" &&
-					row.members?.some((member) =>
-						presented.items.some((candidate) => candidate.id === member.id),
-					));
+					row.members?.some((member) => presented.items.some((candidate) => candidate.id === member.id)));
 			expect(present, `presentation dropped seam row ${row.id}`).toBe(true);
 		}
 	});
 
 	it("renders the summarized row from its own summary line", () => {
-		const conversation = projectConversation(
-			hydrateThread({ thread: levelsThread() }, "ref-1", 0),
-			undefined,
-			intent,
-		);
+		const conversation = projectConversation(hydrateThread({ thread: levelsThread() }, "ref-1", 0), undefined, intent);
 		const presented = projectNativeTranscript(conversation, intent);
 		expect(presented.activityPresentation.get("c1")).toEqual({
 			mode: "intent",

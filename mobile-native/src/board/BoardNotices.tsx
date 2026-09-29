@@ -1,8 +1,8 @@
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { Routes } from "../screens";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Notice } from "./notices";
 
 /** The Board's notices, one row each under the chips (spec 7.1). Each action
@@ -51,7 +51,7 @@ export function NoticeRow({ text, action }: { text: string; action?: { label: st
 				<SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />
 			</View>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
 			>
 				{text}
@@ -67,7 +67,7 @@ export function NoticeRow({ text, action }: { text: string; action?: { label: st
 					style={({ pressed }) => ({ minHeight: 30, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
 				>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.accentInk }}
 					>
 						{action.label}

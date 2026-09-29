@@ -260,6 +260,13 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	if !ok {
 		return appwire.HostPlanResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
+	// §8's admission fence, before anything else is done for the name: a
+	// quarantined host refuses with the fencing-failure form, and a host holding
+	// an open orphan-unverified record refuses transient busy — neither may
+	// reach a refresh, a probe, or a mint.
+	if err := m.orphanAdmissionRefusal(name); err != nil {
+		return appwire.HostPlanResult{}, err
+	}
 	// The local attachment answer is resolved first so every arm this handler can
 	// emit reports it truthfully — including the controller-dirty refusal, which
 	// is about this hub but still tells a client whether its host is attached: a
@@ -734,12 +741,17 @@ func hostopsState(state appwire.OperationState) (hostops.State, error) {
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
-// stale-entry (a cursor pin drifted), cursor-too-large (the over-cap first
-// page), and invalid params for a malformed query. Anything else — a record
-// host without its mirrored boundary included — is an internal error.
+// stale-entry (a cursor pin drifted), cursor-invalidated (a mid-pagination
+// compaction), cursor-too-large (the over-cap first page), and invalid params
+// for a malformed query. Anything else — a record host without its mirrored
+// boundary included — is an internal error.
 func operationsRefusal(err error) error {
 	if stale, ok := errors.AsType[*hostops.CursorStaleError](err); ok {
 		return appwire.StaleEntry(appwire.StaleEntryBinding(stale.Binding), err.Error())
+	}
+	if invalidated, ok := errors.AsType[*hostops.CursorInvalidatedError](err); ok {
+		return appwire.CursorInvalidated(invalidated.CompactSeq, invalidated.Host,
+			cursorBoundWire(invalidated.Bound), err.Error())
 	}
 	if tooLarge, ok := errors.AsType[*hostops.CursorTooLargeError](err); ok {
 		return appwire.CursorTooLarge(tooLarge.CapBytes, err.Error())
@@ -748,6 +760,20 @@ func operationsRefusal(err error) error {
 		return appwire.InvalidParams(err.Error())
 	}
 	return appwire.InternalError(fmt.Sprintf("reading the operation store failed: %v", err))
+}
+
+// cursorBoundWire renders one cursor bounds entry as §11's value union: the
+// {generation, incarnationId, presenceEpoch} object, or the literal "absent"
+// the hostBoundaries map also carries.
+func cursorBoundWire(bound hostops.CursorBound) any {
+	if bound.Absent {
+		return appwire.HostBoundaryAbsent
+	}
+	return appwire.HostBoundary{
+		Generation:    bound.Boundary.Generation,
+		IncarnationID: bound.Boundary.IncarnationID,
+		PresenceEpoch: bound.Boundary.PresenceEpoch,
+	}
 }
 
 // operationsResponse renders one store page as §10's response: the records
@@ -787,9 +813,11 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 }
 
 // operationRecordWire renders one stored record as §10's OperationRecord. The
-// fencing-owned fields (`orphanBoundary`, `orphanResolved`, `attestation`) and
-// S6's `compacted` marker stay absent until their owning slices register them,
-// exactly as appwire.OperationRecord's own comment records.
+// `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
+// tombstone; `orphanBoundary` is the §9 per-member union present exactly on an
+// `orphan-unverified` record (an explicit `[]` when verified empty), and
+// `orphanResolved`/`attestation` are §5's resolved-record marker and the
+// operator attestation persisted beside it.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
 	state, err := operationWireState(record.State)
 	if err != nil {
@@ -806,6 +834,32 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		CreatedAt:         record.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:         record.UpdatedAt.Format(time.RFC3339),
 		HostRemoved:       record.HostRemoved,
+		Compacted:         record.Compacted,
+	}
+	if record.State == hostops.StateOrphanUnverified {
+		entries, err := decodeOrphanBoundary(record.OrphanBoundary)
+		if err != nil {
+			return appwire.OperationRecord{}, fmt.Errorf("record %s carries an unreadable orphan boundary: %w", record.ID, err)
+		}
+		if entries == nil {
+			// The wire spelling of a verified-empty boundary is an explicit `[]`,
+			// never null: normalize a nil decode so the pointer always renders the
+			// array §9's presence rule requires.
+			entries = []appwire.BoundaryEntry{}
+		}
+		wire.OrphanBoundary = &entries
+	}
+	if record.OrphanResolved {
+		wire.OrphanResolved = true
+	}
+	if record.OrphanAttestation != nil {
+		wire.Attestation = &appwire.HostOrphanResolveAttestation{
+			Operator:    record.OrphanAttestation.Operator,
+			Statement:   record.OrphanAttestation.Statement,
+			RecordID:    record.OrphanAttestation.RecordID,
+			BoundaryRef: record.OrphanAttestation.BoundaryRef,
+			ObservedAt:  record.OrphanAttestation.ObservedAt,
+		}
 	}
 	for _, entry := range record.Progress {
 		wire.Progress = append(wire.Progress, appwire.OperationProgressEntry{
@@ -817,19 +871,4 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		wire.Result = &appwire.OperationResult{OK: record.Result.OK, Message: record.Result.Message}
 	}
 	return wire, nil
-}
-
-// revokeHostTokens drops name's outstanding confirmation tokens (§3's live
-// removal revocation). A missing operation store has no rows to drop, and a
-// store failure is logged rather than returned: the removal's hub.toml commit
-// has already landed and cannot be unwound, and the rows it would leave behind
-// are inert — see the call site in Remove, and the deploy slice's binding
-// comparison that refuses them.
-func (m *hubHostManager) revokeHostTokens(name string) {
-	if m.cfg.ops == nil {
-		return
-	}
-	if err := m.cfg.ops.RevokeTokens(name); err != nil {
-		m.logf("host %q removed, but its outstanding confirmation tokens could not be dropped: %v", name, err)
-	}
 }

@@ -56,18 +56,19 @@ package hostops
 // What this file deliberately does not own, and the named seams its read path
 // leaves:
 //
-//   - Post-cursor compaction (`cursor-invalidated`): S6 owns retention and
-//     compaction. No write advances a `compactSeq` yet, so the live value is
-//     always 0 and checkCursorCompactionLocked is the single seam where S6's
-//     envelope-global comparison — and the refusal's `{compactSeq, host,
-//     bounds}` data — lands (§8 "Refusals", §11 `cursor-invalidated`).
+//   - Post-cursor compaction (`cursor-invalidated`) is implemented here
+//     (checkCursorCompactionLocked), reading the tombstones and `compactSeq`
+//     retention.go persists: the comparison is envelope-global, exactly once,
+//     and the refusal names the compacting `compactSeq` plus the affected
+//     host's stored bounds entry (§8 "Refusals", §11 `cursor-invalidated`).
 //   - The live `quarantineEpoch`: the custody-first quarantine (S8) persists
 //     and advances the counter outside the store file. The comparison itself
 //     is implemented here; CursorEpoch returns zero until that slice lands.
-//   - The compacted-ID tombstone replay's `compacted: true` field (S6) and the
-//     fencing paths' `orphanResolved`/`attestation` fields: the read passes
-//     records through untouched and the wire carries those fields when their
-//     owning slices add them (see appwire.OperationRecord's own comment).
+//   - The fencing paths' `orphanResolved`/`attestation` fields: the read
+//     passes records through untouched and the wire carries those fields when
+//     their owning slice adds them (see appwire.OperationRecord's own
+//     comment). The compacted-ID tombstone replay's `compacted: true` field
+//     ships with S6 in ops.go and the wire carries it now.
 //
 // §11 pins a closed stale-entry value set with no cursor-specific value; every
 // cursor stale-entry arm names `generation`, the value the token paths use for
@@ -82,6 +83,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -108,14 +110,6 @@ const (
 // valid envelope of this codec. A structurally valid envelope whose version or
 // pins are stale is CursorStaleError instead.
 var ErrInvalidOperationsQuery = errors.New("hostops: invalid operations query")
-
-// ErrMissingHostBoundary reports a host that holds operation records but no
-// mirrored boundary triple. The store's own writes never produce this state —
-// records are created under a registry pair whose boundary mirror lands in the
-// same registry write, and §4 keeps the boundary until the host's last record
-// compacts — so the read refuses rather than minting a bounds entry it cannot
-// validate.
-var ErrMissingHostBoundary = errors.New("hostops: host holds records but no mirrored boundary")
 
 // CursorStaleError is §8's typed stale-entry re-list refusal for a cursor: the
 // envelope's version is not 2, the pinned quarantine epoch no longer equals the
@@ -144,6 +138,25 @@ func (e *CursorTooLargeError) Error() string {
 	return fmt.Sprintf("hostops: the cursor's bounds map would exceed the %d-byte encoded cap", e.CapBytes)
 }
 
+// CursorInvalidatedError is §8's mid-pagination compaction refusal: a
+// compaction removed rows at or before the cursor's `pos` since the cursor was
+// minted, so the continuation must restart from the first page. CompactSeq is
+// the compacting write's durable value (the envelope-global value §8 requires,
+// never the live one when a later compaction advanced it further), Host is the
+// affected (compacted) host, and Bound is that host's bounds entry as stored
+// at mint — the triple or the "absent" marker. It is distinct from the
+// stale-entry re-list refusal.
+type CursorInvalidatedError struct {
+	CompactSeq uint64
+	Host       string
+	Bound      CursorBound
+}
+
+func (e *CursorInvalidatedError) Error() string {
+	return fmt.Sprintf("hostops: a compaction (compactSeq %d) removed rows at or before the cursor's position on host %q; re-list from the first page",
+		e.CompactSeq, e.Host)
+}
+
 // CursorBound is one host's entry in a cursor's bounds map or a page's
 // hostBoundaries map: the {generation, incarnationId, presenceEpoch} triple, or
 // §8's literal "absent" marker for a host that holds no records at all. Exactly
@@ -156,6 +169,21 @@ type CursorBound struct {
 	Absent bool
 	// Boundary is the host's pinned triple when Absent is false.
 	Boundary Boundary
+	// Unmirrored marks an entry minted from the host's own records because no
+	// mirrored triple exists: §4's custody import is the one writer of such a
+	// host (custody ownership carries no presence epoch, so no valid mirror can
+	// be seeded), and grounding the entry in the imported record keeps the
+	// closed name addressable by id. The mark never reaches the wire — the
+	// envelope carries the triple — and comparison is by value (sameEntry), so a
+	// cursor round-tripped through the client still continues.
+	Unmirrored bool
+}
+
+// sameEntry compares two bounds entries by the values §8 pins, not by how they
+// were grounded: a synthesized entry and the same triple decoded back from a
+// cursor are the same entry, because the envelope can only carry the triple.
+func (b CursorBound) sameEntry(other CursorBound) bool {
+	return b.Absent == other.Absent && b.Boundary == other.Boundary
 }
 
 // CursorWindow names the scope a cursor was minted over: "host" for a
@@ -220,9 +248,12 @@ func (b *CursorBound) UnmarshalJSON(raw []byte) error {
 }
 
 // validateBoundaryContainsIncarnation checks the three values of a bounds
-// triple, which has no host name of its own: a zero generation or presence
-// epoch, or an empty or oversized or non-UTF-8 incarnation id, is no triple any
-// writer of this store emits.
+// triple, which has no host name of its own: a zero generation, or an empty or
+// oversized or non-UTF-8 incarnation id, is no triple any writer of this store
+// emits. A zero presence epoch is allowed here and only here: it is the
+// placeholder a synthesized entry carries for a mirror-less host (§4's custody
+// import, whose record grounds the pair but not the presence), while every
+// mirror triple carries a non-zero epoch (validateBoundary refuses a zero one).
 func validateBoundaryContainsIncarnation(boundary Boundary) error {
 	switch {
 	case boundary.Generation == 0:
@@ -233,8 +264,6 @@ func validateBoundaryContainsIncarnation(boundary Boundary) error {
 		return fmt.Errorf("incarnation id is %d bytes, over the %d-byte bound", len(boundary.IncarnationID), MaxIncarnationIDBytes)
 	case !utf8.ValidString(boundary.IncarnationID):
 		return errors.New("incarnation id is not valid UTF-8")
-	case boundary.PresenceEpoch == 0:
-		return errors.New("no presence epoch")
 	}
 	return nil
 }
@@ -428,13 +457,10 @@ type CursorEpoch struct {
 	QuarantineEpoch uint64
 }
 
-// CursorEpoch returns the live epoch pair. It is the S6/S8 seam: compaction
-// (S6) and the custody-first quarantine (S8) do not exist yet, so no write
-// advances either counter and both read zero. The cursor codec, the mint and
-// the continuation comparison already thread the values through, so the owning
-// slices replace this body — `compactSeq` persisted in the store file with
-// every compacting write (§4), `quarantineEpoch` persisted outside the
-// quarantined file (§4) — without touching the read path.
+// CursorEpoch returns the live epoch pair: the compaction position, persisted
+// in the store file and advanced by every compacting write (§4), and the
+// quarantine epoch, persisted outside the quarantined file and advanced by
+// exactly one per corrupt-store quarantine (§4).
 func (s *Store) CursorEpoch() CursorEpoch {
 	if s == nil {
 		return CursorEpoch{}
@@ -447,20 +473,166 @@ func (s *Store) CursorEpoch() CursorEpoch {
 // cursorEpochLocked is CursorEpoch's locked body, which ReadOperations' caller
 // already holds the store mutex for.
 func (s *Store) cursorEpochLocked() CursorEpoch {
-	return CursorEpoch{}
+	return CursorEpoch{CompactSeq: s.cell.state.CompactSeq, QuarantineEpoch: s.cell.quarantineEpoch}
 }
 
-// checkCursorCompactionLocked is the named S6 seam for §8's post-cursor
-// compaction refusal. Compaction (§4's retention half) does not exist yet: no
-// write removes rows and no write advances a `compactSeq`, so no cursor can be
-// invalidated by one and the answer is always nil. When S6 lands, the live
-// CompactSeq is compared once, envelope-globally, against the cursor's, and a
-// compaction that removed rows at or before the cursor's `pos` refuses
-// `cursor-invalidated` naming the compacting `compactSeq` plus the affected
-// host's stored bounds entry (§8 "Refusals", §11) — never per-host, and never
-// a mixed page. The caller holds the store mutex.
-func checkCursorCompactionLocked(_ *snapshot, _ CursorEnvelope, _ CursorEpoch) error {
+// checkCursorCompactionLocked implements §8's post-cursor compaction refusal:
+// "A compaction that removed rows at or before the cursor's `pos` since the
+// cursor was minted surfaces a typed `cursor-invalidated` refusal naming the
+// compacting `compactSeq` (the envelope-global value) plus the affected host's
+// `bounds` entry (`[generation, incarnationId, presenceEpoch]` as stored at
+// mint, or `"absent"`)"; the client restarts from the first page. "A
+// host-pinned page names the single listed host's entry; an unfiltered
+// cross-host page names the compacted host's entry."
+//
+// The evidence is the compaction ledger, deliberately independent of the
+// bounded dedup tombstones: one mark per compacting write carries every
+// affected host's smallest removed row id, so the predicate "some compacting
+// write after the cursor's pin removed a row at or before `pos` in this
+// cursor's window" is "a mark with Seq above the pin names a window host whose
+// smallest removed id is at or before `pos`", evaluated across every retained
+// mark — exact for every compaction the ledger still covers, and per host, so
+// a write that removed rows on several hosts cannot hide one window's removal
+// behind another's. The window is the cursor's own bounds map: a pinned cursor
+// lists one host, an unfiltered one every host in its query. The earliest such
+// write (its compacting `compactSeq`) is named.
+//
+// The ledger is bounded (MaxCompactionMarks), so once marks have been dropped
+// above the cursor's pin the exact answer is unknowable. The store persists
+// that as the dropped-marks floor, and the check refuses coarsely — naming the
+// oldest retained in-window mark, or, when the window kept none, the live
+// compaction value with the window's own host. Over-refusing only re-lists the
+// client from page one; silently serving on could skip removed rows. The
+// caller holds the store mutex.
+func checkCursorCompactionLocked(state *snapshot, envelope CursorEnvelope, live CursorEpoch) error {
+	// Evidence is complete exactly while the dropped-marks floor sits at or
+	// below the cursor's pin: every compacting write after the pin still has
+	// its per-host marks. Once the floor is above the pin, some write in the
+	// cursor's range lost its marks, the exact answer is unknowable, and a
+	// retained later mark must not be presented as "the compacting" write —
+	// refuse coarsely instead of serving on.
+	if state.CompactionFloor > envelope.CompactSeq {
+		return coarseCursorInvalidated(state, envelope, live)
+	}
+	exact := -1
+	exactHost := ""
+	for i := range state.CompactionMarks {
+		mark := state.CompactionMarks[i]
+		if mark.Seq <= envelope.CompactSeq {
+			continue
+		}
+		host, invalidates := mark.invalidatingHost(envelope)
+		if !invalidates {
+			continue
+		}
+		if exact < 0 || mark.Seq < state.CompactionMarks[exact].Seq {
+			exact, exactHost = i, host
+		}
+	}
+	if exact >= 0 {
+		return cursorInvalidatedFor(state.CompactionMarks[exact].Seq, exactHost, envelope)
+	}
 	return nil
+}
+
+// coarseCursorInvalidated is the lost-evidence refusal: the oldest retained
+// in-window mark if the window kept one, else the live compaction value with
+// the window's own host. Over-refusing only re-lists the client from page one;
+// silently serving on could skip removed rows.
+func coarseCursorInvalidated(state *snapshot, envelope CursorEnvelope, live CursorEpoch) error {
+	oldest := -1
+	oldestHost := ""
+	for i := range state.CompactionMarks {
+		mark := state.CompactionMarks[i]
+		if mark.Seq <= envelope.CompactSeq {
+			continue
+		}
+		host, affects := mark.affectsWindow(envelope)
+		if !affects {
+			continue
+		}
+		if oldest < 0 || mark.Seq < state.CompactionMarks[oldest].Seq {
+			oldest, oldestHost = i, host
+		}
+	}
+	if oldest >= 0 {
+		return cursorInvalidatedFor(state.CompactionMarks[oldest].Seq, oldestHost, envelope)
+	}
+	host := coarseWindowHost(envelope)
+	if host == "" {
+		// An empty window has no host to name; no page over it can list a row.
+		return nil
+	}
+	return &CursorInvalidatedError{CompactSeq: live.CompactSeq, Host: host, Bound: envelope.Bounds[host]}
+}
+
+// invalidatingHost returns the host whose removal a mark evidences for the
+// cursor: an affected host in the cursor's window with a removed row id at or
+// before the cursor's position. When several qualify, the smallest removed id
+// (then the host name) is the deterministic choice.
+func (m CompactionMark) invalidatingHost(envelope CursorEnvelope) (string, bool) {
+	return m.windowHost(envelope, true)
+}
+
+// affectsWindow reports whether a mark removed rows on any host in the
+// cursor's window, without requiring the row to sit at or before its position.
+// It is the coarse fallback's test for a write whose exact evidence is gone.
+func (m CompactionMark) affectsWindow(envelope CursorEnvelope) (string, bool) {
+	return m.windowHost(envelope, false)
+}
+
+// windowHost picks one affected host from a mark's per-host evidence, smallest
+// removed id first; with atMostPos only hosts whose smallest removed id is at
+// or before the cursor's position qualify.
+func (m CompactionMark) windowHost(envelope CursorEnvelope, atMostPos bool) (string, bool) {
+	best, bestID := "", ""
+	for host, id := range m.Hosts {
+		if _, inWindow := envelope.Bounds[host]; !inWindow {
+			continue
+		}
+		if atMostPos && id > envelope.Position {
+			continue
+		}
+		if best == "" || id < bestID || (id == bestID && host < best) {
+			best, bestID = host, id
+		}
+	}
+	return best, best != ""
+}
+
+// cursorInvalidatedFor builds the refusal one compacting write names, with the
+// affected host's bounds entry as stored at the cursor's mint.
+func cursorInvalidatedFor(compactSeq uint64, host string, envelope CursorEnvelope) error {
+	bound, stored := envelope.Bounds[host]
+	if !stored {
+		// Unreachable by the window checks above; keep the refusal typed rather
+		// than guessing a triple the cursor never carried.
+		bound = CursorBound{Absent: true}
+	}
+	return &CursorInvalidatedError{CompactSeq: compactSeq, Host: host, Bound: bound}
+}
+
+// coarseWindowHost names the host a lost-evidence refusal carries: the pinned
+// cursor's single host, or the first host of an unfiltered window, preferring
+// a host whose entry is a triple over an "absent" marker. It is deliberately
+// the cursor's own data — no dropped ledger entry can be asked for its host.
+func coarseWindowHost(envelope CursorEnvelope) string {
+	if envelope.Window == CursorWindowHost || len(envelope.Bounds) == 1 {
+		for host := range envelope.Bounds {
+			return host
+		}
+		return ""
+	}
+	hosts := slices.Sorted(maps.Keys(envelope.Bounds))
+	for _, host := range hosts {
+		if !envelope.Bounds[host].Absent {
+			return host
+		}
+	}
+	if len(hosts) > 0 {
+		return hosts[0]
+	}
+	return ""
 }
 
 // OperationsQuery is one `evener/host/operations` read (§10's params, mapped
@@ -578,14 +750,6 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		limit = MaxOperationsLimit
 	}
 
-	// The current entry of every host the store knows, computed once: the
-	// continuation validation and the unfiltered host universe both read it, so
-	// no pass scans the record set per host.
-	current, err := currentCursorBoundsLocked(state)
-	if err != nil {
-		return OperationsPage{}, err
-	}
-
 	// The presented cursor: decode, then the two store-wide checks — the pinned
 	// quarantine epoch first (§8: "before any boundary comparison"), then the
 	// S6 compaction seam.
@@ -609,6 +773,14 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		window = decoded
 	}
 
+	// The current entry of every host the store knows, computed once: the
+	// continuation validation and the unfiltered host universe both read it, so
+	// no pass scans the record set per host. It runs after the cursor's
+	// store-wide checks, so a pre-quarantine cursor is the typed stale-entry
+	// refusal even when the replacement store's imported hosts carry no mirrored
+	// boundary yet.
+	current := currentCursorBoundsLocked(state)
+
 	// §8's bounds validation: every host in the cursor's map must still match
 	// the host's current entry. A host the store has never seen is a refusal
 	// too: a forged "absent" entry must not be echoed as authoritative, and a
@@ -623,7 +795,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 					Binding: StaleBindingGeneration,
 				}
 			}
-			if currentEntry != stored {
+			if !currentEntry.sameEntry(stored) {
 				return OperationsPage{}, &CursorStaleError{
 					Reason:  fmt.Sprintf("host %q's stored boundary no longer matches its current boundary; re-list from the first page", host),
 					Binding: StaleBindingGeneration,
@@ -679,11 +851,13 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			// The pinned-cursor window: the pair of the row the cursor resumes
 			// after — the last row the page listed. Never the host's current
 			// pair, so an omitted filter reads as the pinned window (§8).
-			anchor, ok := recordAtLocked(state, window.Position)
+			anchor, ok := anchorRecordLocked(state, window.Position)
 			if !ok {
-				// S6 seam: once compaction exists, a row at or before `pos`
-				// removed since mint is §8's `cursor-invalidated` arm; until
-				// then a missing row is a stale re-list.
+				// A row at or before `pos` removed by a compaction since mint
+				// is §8's `cursor-invalidated` arm, and checkCursorCompactionLocked
+				// answered it above before this point. What remains here is a
+				// position this store never held (a forged or truncated
+				// cursor): the stale re-list.
 				return OperationsPage{}, &CursorStaleError{
 					Reason:  fmt.Sprintf("the row this cursor resumes after (%s) is not in the store; re-list from the first page", window.Position),
 					Binding: StaleBindingGeneration,
@@ -709,10 +883,11 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		} else if !detailOnly {
 			// A detail lookup resolves no window pair: the row it returns is the
 			// pair that page lists under, and the response echoes that row.
-			pinnedPair, havePinnedPair, err = resolvePinnedPair(state, q)
+			resolved, ok, err := resolvePinnedPair(state, q)
 			if err != nil {
 				return OperationsPage{}, err
 			}
+			pinnedPair, havePinnedPair = resolved, ok
 		}
 		if havePinnedPair && !detailOnly {
 			windowPairs[q.Host] = pinnedPair
@@ -723,6 +898,18 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			mintBounds = window.Bounds
 		} else if entry, ok := current[q.Host]; ok {
 			mintBounds = map[string]CursorBound{q.Host: entry}
+			if !havePinnedPair && !detailOnly && entry.Unmirrored {
+				// A mirror-less host (the custody import) has one ground truth:
+				// its own record set's pair. Listing under it keeps a host-pinned
+				// read of a closed name from being a silently empty page. A detail
+				// lookup resolves no window pair — the row it names is the pair
+				// that page lists under — so it is left to address its own row,
+				// exactly as a mirrored host's detail lookup is.
+				windowPairs[q.Host] = OperationPair{
+					Generation:    entry.Boundary.Generation,
+					IncarnationID: entry.Boundary.IncarnationID,
+				}
+			}
 		} else {
 			mintBounds = map[string]CursorBound{q.Host: {Absent: true}}
 		}
@@ -756,8 +943,10 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			// window presented without the host name lands here, and that
 			// mismatch is the refusal — never a mixed page.
 			if !detailOnly {
-				anchor, ok := recordAtLocked(state, window.Position)
+				anchor, ok := anchorRecordLocked(state, window.Position)
 				if !ok {
+					// The compaction arm is checkCursorCompactionLocked's,
+					// answered above; this is the never-held position.
 					return OperationsPage{}, &CursorStaleError{
 						Reason:  fmt.Sprintf("the row this cursor resumes after (%s) is not in the store; re-list from the first page", window.Position),
 						Binding: StaleBindingGeneration,
@@ -829,6 +1018,63 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	}
 	page.Records = records
 
+	// §4's replay is retrievable: a detail lookup — the `id` filter for the
+	// controller-assigned id, or `operationId` for the client operation id —
+	// resolves a compacted record out of its dedup tombstone with
+	// `compacted: true`, because the record itself no longer sits in the
+	// record set and without this the contract has no retrieval path. Listing
+	// pages stay record-only: a tombstone is a replay source, not a listed
+	// row, and pagination never resumes on one.
+	if q.ID != "" || q.ClientOperationID != "" {
+		for i := range state.Tombstones {
+			tombstone := state.Tombstones[i]
+			if continuing && tombstone.ID <= window.Position {
+				// A continuation resumes after its cursor's position: the replay
+				// this page already answered is never served again, or a page
+				// whose only result is a tombstone would mint the identical
+				// cursor forever.
+				continue
+			}
+			if q.ID != "" {
+				// A direct id lookup addresses the row itself: a retained
+				// tombstone is retrievable even when its host no longer appears
+				// in the current host set — a removed host's boundary drops
+				// with its last record while its tombstones stay — so the
+				// unfiltered and host-pinned spellings of the same lookup agree.
+				if q.Host != "" && tombstone.Host != q.Host {
+					continue
+				}
+			} else if !pageHosts[tombstone.Host] {
+				// The operationId filter stays a listing filter over the
+				// cursor's window: retrieval of a compacted record is by its
+				// controller-assigned id, which deploy/restart return.
+				continue
+			}
+			if q.ClientOperationID != "" && tombstone.ClientOperationID != q.ClientOperationID {
+				continue
+			}
+			if q.State != "" && tombstone.State != q.State {
+				continue
+			}
+			if q.ID != "" && tombstone.ID != q.ID {
+				continue
+			}
+			if pair, ok := windowPairs[tombstone.Host]; ok {
+				if tombstone.Generation != pair.Generation || tombstone.IncarnationID != pair.IncarnationID {
+					continue
+				}
+			} else if !detailOnly {
+				continue
+			}
+			records = append(records, tombstone.record())
+		}
+		slices.SortStableFunc(records, func(a, b Record) int { return strings.Compare(a.ID, b.ID) })
+		if len(records) > limit {
+			records = records[:limit]
+		}
+		page.Records = records
+	}
+
 	if pinned {
 		// §8: the host-pinned response carries "the effective generation and
 		// incarnationId actually listed". The window pair is that; a detail
@@ -839,6 +1085,10 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			generation, incarnation = pinnedPair.Generation, pinnedPair.IncarnationID
 		case detailOnly && len(records) == 1:
 			generation, incarnation = records[0].Generation, records[0].IncarnationID
+		case !havePinnedPair && !detailOnly && q.Generation == nil:
+			if entry, ok := current[q.Host]; ok && entry.Unmirrored {
+				generation, incarnation = entry.Boundary.Generation, entry.Boundary.IncarnationID
+			}
 		case q.Generation != nil:
 			generation, incarnation = *q.Generation, q.IncarnationID
 		}
@@ -890,6 +1140,14 @@ func resolvePinnedPair(state *snapshot, q OperationsQuery) (OperationPair, bool,
 		if hasBoundary && boundary.Generation == *q.Generation {
 			return OperationPair{Generation: *q.Generation, IncarnationID: boundary.IncarnationID}, true, nil
 		}
+		if !hasBoundary {
+			// A mirror-less host — §4's custody import — is pinned by its own
+			// newest record, and a generation-only read naming that pair resolves
+			// like any other current pair instead of refusing.
+			if pair, ok := currentHostPairLocked(state, q.Host); ok && pair.Generation == *q.Generation {
+				return pair, true, nil
+			}
+		}
 		return OperationPair{}, false, fmt.Errorf(
 			"%w: host %q has moved past generation %d, so the read needs its incarnationId",
 			ErrInvalidOperationsQuery, q.Host, *q.Generation)
@@ -909,27 +1167,84 @@ func recordAtLocked(state *snapshot, id string) (Record, bool) {
 	return Record{}, false
 }
 
+// anchorRecordLocked resolves a cursor's anchor row: the retained record with
+// that id, or — when the previous page's last row was itself a tombstone replay
+// (the `id`/`operationId` detail filters resolve those) — the replay rebuilt
+// from its tombstone. The anchor's host and pair are what a continuation
+// recovers its pinned window from, and a compacted replay carries both.
+func anchorRecordLocked(state *snapshot, id string) (Record, bool) {
+	if record, ok := recordAtLocked(state, id); ok {
+		return record, true
+	}
+	for i := range state.Tombstones {
+		if state.Tombstones[i].ID == id {
+			return state.Tombstones[i].record(), true
+		}
+	}
+	return Record{}, false
+}
+
 // currentCursorBoundsLocked computes every known host's current bounds entry in
 // one pass: the record-holding hosts get their mirrored boundary triple, and
 // the mirrored-boundary names that hold no records get the "absent" marker. A
-// host that holds records but no mirrored boundary is the state no writer of
-// this store produces, refused as ErrMissingHostBoundary rather than minting or
-// validating an entry the store cannot ground.
-func currentCursorBoundsLocked(state *snapshot) (map[string]CursorBound, error) {
+// host that holds records but no mirrored boundary — the state §4's custody
+// import produces, and the one state no other writer of this store creates —
+// gets an entry minted from its own newest record: its pinned pair with the
+// documented zero presence placeholder, marked Unmirrored. Grounding the entry
+// in the record keeps every closed name addressable by id, which §4 requires of
+// the operations detail filter, and never fabricates a mirror triple: any later
+// mirror write moves the host's entry and refuses stale continuations.
+func currentCursorBoundsLocked(state *snapshot) map[string]CursorBound {
 	bounds := make(map[string]CursorBound, len(state.Boundaries))
 	for name := range state.Boundaries {
 		bounds[name] = CursorBound{Absent: true}
 	}
-	for i := range state.Records {
-		host := state.Records[i].Host
-		if entry, known := bounds[host]; known && !entry.Absent {
+	newest := newestRecordByHostLocked(state)
+	for host, boundary := range state.Boundaries {
+		if _, holdsRecords := newest[host]; holdsRecords {
+			bounds[host] = CursorBound{Boundary: boundary}
+		}
+	}
+	for host, record := range newest {
+		if _, mirrored := state.Boundaries[host]; mirrored {
 			continue
 		}
-		boundary, ok := state.Boundaries[host]
-		if !ok {
-			return nil, fmt.Errorf("%w: host %q", ErrMissingHostBoundary, host)
+		bounds[host] = CursorBound{
+			Boundary:   Boundary{Generation: record.Generation, IncarnationID: record.IncarnationID},
+			Unmirrored: true,
 		}
-		bounds[host] = CursorBound{Boundary: boundary}
 	}
-	return bounds, nil
+	return bounds
+}
+
+// newestRecordByHostLocked returns, per host, the record whose identity is the
+// host's current one: the highest generation, ties broken by the newest record
+// id. It is the ground truth a mirror-less host's bounds entry and pair are
+// minted from (§4's custody import), and mirrors do not participate.
+func newestRecordByHostLocked(state *snapshot) map[string]Record {
+	newest := make(map[string]Record, len(state.Records))
+	for i := range state.Records {
+		record := state.Records[i]
+		current, held := newest[record.Host]
+		if !held || record.Generation > current.Generation ||
+			(record.Generation == current.Generation && record.ID > current.ID) {
+			newest[record.Host] = record
+		}
+	}
+	return newest
+}
+
+// currentHostPairLocked returns the pair a host is pinned by: its mirrored
+// triple when one exists, and otherwise the pair its own newest record carries —
+// the state §4's custody import produces, which a host-and-generation read must
+// resolve like any other current pair.
+func currentHostPairLocked(state *snapshot, host string) (OperationPair, bool) {
+	if boundary, ok := state.Boundaries[host]; ok {
+		return OperationPair{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID}, true
+	}
+	record, ok := newestRecordByHostLocked(state)[host]
+	if !ok {
+		return OperationPair{}, false
+	}
+	return OperationPair{Generation: record.Generation, IncarnationID: record.IncarnationID}, true
 }
