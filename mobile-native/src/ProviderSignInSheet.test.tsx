@@ -2,8 +2,6 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignIn.testkit";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { HeaderButton } from "./sheet/HeaderButton";
-import { Sheet } from "./sheet/Sheet";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
 
 // What the sheet's native edges saw, in order: the clipboard write and the
@@ -20,9 +18,6 @@ vi.mock("react-native", async () => ({
 	AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-// The modal's header is the shared Sheet chrome, whose module also holds
-// useSheet; the chrome itself calls no navigation hook.
-vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}), usePreventRemove: () => {} }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: async (text: string) => {
@@ -414,10 +409,9 @@ it("disables Check again while not connected", async () => {
 
 it("has the shared header: Cancel while signing in, Done once signed in", async () => {
 	const waiting = await mount(deviceFlow);
-	const sheet = waiting.tree.root.findByType(Sheet);
-	expect(sheet.props.title).toBe(`Sign in to ${PROVIDER}`);
-	expect(sheet.props.done).toBeUndefined();
-	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Cancel"]);
+	expect(waiting.tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(`Sign in to ${PROVIDER}`);
+	expect(pressable(waiting.tree, "Cancel")).toBeDefined();
+	expect(pressable(waiting.tree, "Done")).toBeUndefined();
 	const { tree } = await mount({
 		...deviceFlow,
 		"evener/auth/device/poll": () => ({ state: "authorized", status: authorizedStatus }),
@@ -426,16 +420,14 @@ it("has the shared header: Cancel while signing in, Done once signed in", async 
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(2000);
 	});
-	const signedIn = tree.root.findByType(Sheet);
-	expect(signedIn.props.onCancel).toBeUndefined();
-	expect(signedIn.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Done"]);
+	expect(pressable(tree, "Done")).toBeDefined();
+	expect(pressable(tree, "Cancel")).toBeUndefined();
 });
 
-it("keeps a stretch's bottom space unless a group follows it", async () => {
+it("keeps a stretch's bottom space unless a group or a footer follows it", async () => {
 	const sectionOf = (tree: ReactTestRenderer, text: string) => {
 		let node = tree.root.find((candidate) => String(candidate.type) === "Text" && textOf(candidate) === text);
-		while (node.parent && !(String(node.type) === "View" && node.props.style?.paddingHorizontal === 20))
-			node = node.parent;
+		while (node.parent && node.props.testID !== "sign-in-stretch") node = node.parent;
 		return node.props.style;
 	};
 	const { tree } = await mount({
@@ -455,6 +447,17 @@ it("keeps a stretch's bottom space unless a group follows it", async () => {
 	const waiting = await mount(deviceFlow);
 	await press(waiting.tree, "Open sign-in page");
 	expect(sectionOf(waiting.tree, "Waiting for you to finish signing in…").paddingBottom).toBe(12);
+	// A page that couldn't open: the explanation sits over the error footer,
+	// whose own top padding is the gap.
+	edges.openFails = true;
+	try {
+		const failed = await mount(deviceFlow);
+		await press(failed.tree, "Open sign-in page");
+		expect(renderedText(failed.tree)).toContain("Could not open the sign-in page.");
+		expect(sectionOf(failed.tree, "Open sign-in page").paddingBottom).toBe(0);
+	} finally {
+		edges.openFails = false;
+	}
 });
 
 it("Cancel closes the sheet", async () => {

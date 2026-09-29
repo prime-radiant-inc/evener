@@ -17,7 +17,6 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { ActivityIndicator, Alert } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import type {
 	AnyNotification,
 	ConnectionState,
@@ -29,7 +28,6 @@ import type {
 } from "@evener/appwire-client";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { HoldingModal } from "../alerts/HoldingModal";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
@@ -41,9 +39,8 @@ import {
 } from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
-import { Sheet } from "../sheet/Sheet";
+import { ModalSheet } from "../sheet/ModalSheet";
 import { Connecting, SheetStatus } from "../sheet/SheetStatus";
-import { useColors } from "../ui";
 import type { HubRoutes } from "./hubSheetContext";
 
 type Segment = "installed" | "marketplaces" | "browse";
@@ -338,7 +335,6 @@ function Plugins({
 	focus: PluginFocus | undefined;
 	onFocused(): void;
 }) {
-	const { palette } = useColors();
 	const model = useMemo(() => createPluginsStore(client), [client]);
 	// The hub's add answer is the one place that names what the write
 	// registered, and the store cannot be trusted to hand it over: a newer
@@ -573,60 +569,56 @@ function Plugins({
 				/>
 			)}
 			{entry && selected && (
-				<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-					<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
-						<Sheet title={entry.plugin} done={{ onPress: close }}>
-							<GroupedPage>
-								{/* The sheet covers the page's status line, so it carries its own. */}
-								{connectionState === "ready" ? null : <SheetStatus />}
-								{entry.broken ? (
-									<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
-								) : null}
-								<Group>
-									<SwitchRow
-										label="On by default"
-										value={entry.enabled}
-										disabled={busy || !ready}
-										onChange={(enabled) => setOnByDefault(selected, enabled)}
-									/>
-									<SwitchRow
-										label="Upgrade automatically"
-										value={entry.autoUpgrade}
-										disabled={busy || !ready}
-										onChange={(value) => {
-											const target = selected;
-											void act(() => state.setPluginAutoUpgrade(target.plugin, target.marketplace, value));
-										}}
-									/>
-								</Group>
-								<Group>
-									<Row
-										label="Upgrade"
-										tone="accent"
-										disabled={busy || !ready}
-										onPress={() => upgrade(selected, entry)}
-									/>
-									<Row
-										label="Remove"
-										accessibilityLabel="Remove plugin"
-										tone="danger"
-										disabled={busy || !ready}
-										onPress={remove}
-									/>
-								</Group>
-								{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-								{notice ? <GroupFooter>{notice}</GroupFooter> : null}
-								{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
-								<Group label="Details">
-									<Row label="Version" value={entry.version || "Unknown version"} />
-									<Row label="Marketplace" sub={entry.marketplace} machineSub />
-									<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
-									{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
-								</Group>
-							</GroupedPage>
-						</Sheet>
-					</SafeAreaView>
-				</HoldingModal>
+				<ModalSheet title={entry.plugin} done={{ onPress: close }} onRequestClose={close}>
+					<GroupedPage>
+						{/* The sheet covers the page's status line, so it carries its own. */}
+						{connectionState === "ready" ? null : <SheetStatus />}
+						{entry.broken ? (
+							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+						) : null}
+						<Group>
+							<SwitchRow
+								label="On by default"
+								value={entry.enabled}
+								disabled={busy || !ready}
+								onChange={(enabled) => setOnByDefault(selected, enabled)}
+							/>
+							<SwitchRow
+								label="Upgrade automatically"
+								value={entry.autoUpgrade}
+								disabled={busy || !ready}
+								onChange={(value) => {
+									const target = selected;
+									void act(() => state.setPluginAutoUpgrade(target.plugin, target.marketplace, value));
+								}}
+							/>
+						</Group>
+						<Group>
+							<Row
+								label="Upgrade"
+								tone="accent"
+								disabled={busy || !ready}
+								onPress={() => upgrade(selected, entry)}
+							/>
+							<Row
+								label="Remove"
+								accessibilityLabel="Remove plugin"
+								tone="danger"
+								disabled={busy || !ready}
+								onPress={remove}
+							/>
+						</Group>
+						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
+						{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
+						<Group label="Details">
+							<Row label="Version" value={entry.version || "Unknown version"} />
+							<Row label="Marketplace" sub={entry.marketplace} machineSub />
+							<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
+							{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
+						</Group>
+					</GroupedPage>
+				</ModalSheet>
 			)}
 		</GroupedPage>
 	);

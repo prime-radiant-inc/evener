@@ -1,9 +1,7 @@
 import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Switch, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { HoldingModal } from "./alerts/HoldingModal";
 import type { HubProfile, HubUpdate } from "./connection";
-import { Sheet } from "./sheet/Sheet";
+import { ModalSheet } from "./sheet/ModalSheet";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function HubEditor({
@@ -43,66 +41,58 @@ export function HubEditor({
 		if (!pending.current) close();
 	}
 	return (
-		<HoldingModal
-			animationType="slide"
-			presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
-			onRequestClose={cancel}
-		>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
-				<Sheet title="Edit hub" onCancel={cancel}>
-					<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-						<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
+		<ModalSheet title="Edit hub" onCancel={cancel} cancelDisabled={saving} onRequestClose={cancel}>
+			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
+					<TextInput
+						accessibilityLabel="Hub name"
+						value={name}
+						onChangeText={setName}
+						editable={!saving}
+						style={inputStyle}
+					/>
+					<Copy muted>{profile.origin}</Copy>
+					<Copy muted>To connect to another address, add a separate hub.</Copy>
+					<View style={[styles.row, { justifyContent: "space-between" }]}>
+						<Copy>Replace saved token</Copy>
+						<Switch
+							accessibilityLabel="Replace saved token"
+							value={replaceToken}
+							disabled={saving}
+							onValueChange={setReplaceToken}
+						/>
+					</View>
+					{replaceToken ? (
+						<>
 							<TextInput
-								accessibilityLabel="Hub name"
-								value={name}
-								onChangeText={setName}
+								accessibilityLabel="New bearer token"
+								placeholder="New bearer token"
+								placeholderTextColor={colors.secondary}
+								value={token}
+								onChangeText={setToken}
 								editable={!saving}
+								secureTextEntry
+								autoCapitalize="none"
+								autoCorrect={false}
 								style={inputStyle}
 							/>
-							<Copy muted>{profile.origin}</Copy>
-							<Copy muted>To connect to another address, add a separate hub.</Copy>
-							<View style={[styles.row, { justifyContent: "space-between" }]}>
-								<Copy>Replace saved token</Copy>
-								<Switch
-									accessibilityLabel="Replace saved token"
-									value={replaceToken}
-									disabled={saving}
-									onValueChange={setReplaceToken}
-								/>
-							</View>
-							{replaceToken ? (
-								<>
-									<TextInput
-										accessibilityLabel="New bearer token"
-										placeholder="New bearer token"
-										placeholderTextColor={colors.secondary}
-										value={token}
-										onChangeText={setToken}
-										editable={!saving}
-										secureTextEntry
-										autoCapitalize="none"
-										autoCorrect={false}
-										style={inputStyle}
-									/>
-									<Copy muted>Leave empty to remove the saved token.</Copy>
-								</>
-							) : (
-								<Copy muted>The saved token will be kept.</Copy>
-							)}
-							<ErrorMessage message={error} />
-							<Action
-								tone="primary"
-								disabled={saving || !name.trim()}
-								onPress={() => {
-									void submit();
-								}}
-							>
-								{saving ? "Saving…" : "Save changes"}
-							</Action>
-						</ScrollView>
-					</KeyboardAvoidingView>
-				</Sheet>
-			</SafeAreaView>
-		</HoldingModal>
+							<Copy muted>Leave empty to remove the saved token.</Copy>
+						</>
+					) : (
+						<Copy muted>The saved token will be kept.</Copy>
+					)}
+					<ErrorMessage message={error} />
+					<Action
+						tone="primary"
+						disabled={saving || !name.trim()}
+						onPress={() => {
+							void submit();
+						}}
+					>
+						{saving ? "Saving…" : "Save changes"}
+					</Action>
+				</ScrollView>
+			</KeyboardAvoidingView>
+		</ModalSheet>
 	);
 }

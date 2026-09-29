@@ -22,10 +22,7 @@ import { ProviderSignIn } from "../providerSignIn";
 import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
-import { HoldingModal } from "../alerts/HoldingModal";
 import { ProviderEditor } from "../ProviderEditor";
-import { HeaderButton } from "../sheet/HeaderButton";
-import { Sheet } from "../sheet/Sheet";
 import { Tag } from "../sheet/Grouped";
 import { ProvidersPage } from "./ProvidersPage";
 import {
@@ -285,14 +282,14 @@ it("heads a provider's detail with the shared sheet header: its name, and Done o
 	await act(async () => {});
 	press(tree, (label) => label.startsWith("lunaroute,"));
 	await act(async () => {});
-	const sheet = tree.root.findByType(Sheet);
-	expect(sheet.props.title).toBe("lunaroute");
-	expect(sheet.props.onCancel).toBeUndefined();
-	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Done"]);
+	const modal = tree.root.findByType("Modal" as never);
+	// The sheet's title comes first; the page's section labels are headers too.
+	expect(modal.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("lunaroute");
+	expect(modal.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" })).toHaveLength(0);
 	await act(async () => {
-		sheet.findByType(HeaderButton).props.onPress();
+		modal.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
 	});
-	expect(tree.root.findByType(HoldingModal).props.visible).toBe(false);
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
 });
 
 it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {
