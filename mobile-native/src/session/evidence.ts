@@ -198,6 +198,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const line = jobStatusDisplay(status, str(job, "reason"));
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}
+		case "message":
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
