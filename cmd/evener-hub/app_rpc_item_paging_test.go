@@ -1564,3 +1564,33 @@ func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
 		assertHubStaleCursor(t, name, err)
 	}
 }
+
+// Nothing precedes the transcript's first item: a cursorless before there is
+// an empty, exhausted page, as the daemon and a saved transcript answer, never
+// a stale cursor (which tells a client to re-read, forever).
+func TestHubRPCTurnsListCursorlessBeforeTheFirstItemIsEmpty(t *testing.T) {
+	client, ref := realDaemonBehindHub(t, "turns-list-before-first", 45)
+	wide, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 40})
+	if err != nil {
+		t.Fatalf("wide read: %v", err)
+	}
+	fifth := itemPosition(wide.Thread.Turns, "item-05")
+	if fifth == nil {
+		t.Fatal("wide read has no positioned item-05")
+	}
+	head, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 5, Before: fifth})
+	if err != nil {
+		t.Fatalf("page before item-05: %v", err)
+	}
+	first := itemPosition(head.Data, "item-00")
+	if first == nil {
+		t.Fatalf("page before item-05 = %v, want item-00 in it", itemTexts(head.Data))
+	}
+	page, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 5, Before: first})
+	if err != nil {
+		t.Fatalf("page before the first item: %v", err)
+	}
+	if got := itemTexts(page.Data); len(got) != 0 || page.NextCursor != "" {
+		t.Fatalf("page before the first item = %v (next %q), want empty and exhausted", got, page.NextCursor)
+	}
+}
