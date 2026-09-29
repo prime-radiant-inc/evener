@@ -70,6 +70,15 @@ func notificationWireBarePacketFrame(t *testing.T, delegateID, name string, pack
 	return content
 }
 
+// notificationWireStopFrame is the frame an owner receives when a parent's
+// stop ends the generation: the packet stoppedGenerationFinishEvent puts on
+// the RunFinished event, from the run loop's own packet when it left one.
+func notificationWireStopFrame(t *testing.T, delegateID, name string, runPacket *delegatestore.TerminalPacket) string {
+	t.Helper()
+	event, _ := stoppedGenerationFinishEvent(delegateLease{delegateID: delegateID, generation: 1}, runPacket, notificationWireStart)
+	return notificationWireBarePacketFrame(t, delegateID, name, *event.RunFinished.Packet)
+}
+
 func notificationWireDescriptor(name string) delegatestore.Descriptor {
 	return delegatestore.Descriptor{
 		Name:        name,
@@ -194,8 +203,18 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		},
 		{
 			name: "delegate-stopped-by-parent",
-			note: "The bare packet a parent's stop settles when the run left none: kind terminal_error, no metadata, so the frame carries no outcome.",
-			turn: notificationWireAttention(notificationWireReport("dlg_4"), notificationWireBarePacketFrame(t, "dlg_4", "Tail the hub log", delegateStoppedTerminalPacket())),
+			note: "The packet a parent's stop settles when the run left none: kind terminal_error, metadata outcome stopped, reason stopped_by_parent.",
+			turn: notificationWireAttention(notificationWireReport("dlg_4"), notificationWireStopFrame(t, "dlg_4", "Tail the hub log", nil)),
+		},
+		{
+			name: "delegate-stopped-by-parent-mid-run",
+			note: "A parent's stop that cancelled a run which left its own packet: the run loop's packet is carried, metadata outcome cancelled.",
+			turn: notificationWireAttention(notificationWireReport("dlg_6"), notificationWireStopFrame(t, "dlg_6", "Index the docs", stableDelegateFinishFromRun(delegateTerminalRunInputs{
+				runErr:     context.Canceled,
+				descriptor: notificationWireDescriptor("Index the docs"),
+				startedAt:  stoppedStart,
+				endedAt:    stoppedEnd,
+			}).packet)),
 		},
 		{
 			name: "delegate-exhausted",
