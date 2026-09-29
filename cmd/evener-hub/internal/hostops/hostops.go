@@ -7,7 +7,7 @@
 //
 // What this package deliberately does not own, because the spec hands each to a
 // later slice: the per-host gate (§5), the custody-first quarantine of a corrupt
-// store file (§4, crash-fencing spec), and the live `quarantineEpoch` (S8). Its
+// store file (§4), and the live `quarantineEpoch` (S8). Its
 // record schema, states, one atomic write discipline, one store mutex, and load
 // are the substrate those paths stand on; dedup and the create-from-consume
 // write (§6), operations pagination (§8), and retention and compaction with
@@ -189,8 +189,9 @@ type NewRecord struct {
 var ErrStoreReadableBeyondOwner = errors.New("hostops: store is readable beyond its owner")
 
 // ErrStoreCorrupt reports a store file that is unparseable or schema-invalid.
-// The custody-first quarantine spec §4 takes for such a file belongs to the
-// crash-fencing slice; here the load refuses and the caller must not serve.
+// The custody-first quarantine spec §4 defines for such a file is this store's
+// own path (quarantine.go/custody.go); the load refuses and the caller must not
+// serve past the corrupt file.
 var ErrStoreCorrupt = errors.New("hostops: store is corrupt")
 
 // ErrInvalidRecord reports a record that falls outside the store's schema.
@@ -346,8 +347,8 @@ func validateRecord(record Record) error {
 }
 
 // jsonFieldIsObject reports whether a raw field carries a JSON object: present,
-// not the literal null, and an object. The fencing epoch's shape belongs to the
-// crash-fencing spec, so this checks the outer form only.
+// not the literal null, and an object. The epoch's shape is the probe path's
+// own (§10), so this checks the outer form only.
 func jsonFieldIsObject(raw json.RawMessage) bool {
 	return !jsonFieldIsNull(raw) && json.Unmarshal(raw, &map[string]json.RawMessage{}) == nil
 }

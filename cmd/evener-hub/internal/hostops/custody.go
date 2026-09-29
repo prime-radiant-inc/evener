@@ -22,18 +22,18 @@ import (
 // replacement store opens with. That check is the slice's safety core: custody
 // is written only when the corrupt file parses whole and its record set is
 // accounted for with no gap or residue, so no fence the file carried can be
-// lost. Any shortfall — an unparseable record, a boundary that fails the §9
-// schema, ownership missing for a fenced name, an id below the file's own
-// allocator high-water mark with no retained evidence — refuses startup rather
-// than serving past a fence nobody can prove.
+// lost. Any shortfall — an unparseable record, a per-host boundary record that
+// fails its schema, ownership missing for a fenced name, an id below the file's
+// own allocator high-water mark with no retained evidence — refuses startup
+// rather than serving past a fence nobody can prove.
 //
-// The BoundaryEntry schema itself is defined field-for-field by the crash-fencing
-// spec §9 and only validated here, never restated: the later slices own the
-// verifier, the kill/wait, and `orphan-resolve`. The imported records this file
-// produces are that seam: every fence entry becomes an `orphan-unverified`
-// record carrying the custodial boundary under its original id, and every
-// ownership-only entry becomes one carrying the single `boundary-unavailable`
-// sentinel, so a resolver can address every closed name by record id.
+// The retired BoundaryEntry vocabulary and the later slices that once owned the
+// verifier, the kill/wait, and `orphan-resolve` were withdrawn with the
+// crash-fencing program (comp08). The imported records this file produces are
+// the retained seam: every fence entry becomes an `orphan-unverified` record
+// under its original id, and every ownership-only entry becomes one of the
+// carried kind under its stable `quarantineRecordId`, so the `operations` detail
+// filter can address every closed name by record id (no resolver runs).
 
 // ErrQuarantineIncomplete reports a corrupt store file whose custody snapshot
 // cannot be shown complete. Spec §4: "When the corrupt file cannot yield a

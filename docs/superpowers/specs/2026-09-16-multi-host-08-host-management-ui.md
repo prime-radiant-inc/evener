@@ -78,7 +78,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 
-**Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe; the serving hub persists the epoch it was last presented as its guard epoch and refuses stale epochs without probing (deploy-pipeline spec §10). The persisted process-boundary description and the fencing takeover/guard-file execution the epoch model once anticipated were removed with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2, master design doc §2).
+**Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe; the serving hub validates a presented epoch against the guard epoch it last admitted and refuses a stale same-boot epoch without probing (a different boot id has no defined cross-restart order and is admitted — deploy-pipeline spec §10). The persisted process-boundary description and the fencing takeover/guard-file execution the epoch model once anticipated were removed with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2, master design doc §2).
 
 **Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
 
@@ -247,7 +247,7 @@ pipeline PR where they register (with `teardown-retry`/`teardown-recover`
 origin-rejection tests in that PR); the pipeline document pins its own
 methods' orderings where they register. Twelve new methods plus `attach` is
 thirteen. The `evener/host/orphan-resolve` handler and its guard orderings are
-gone with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).)
+gone with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
 The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
@@ -816,7 +816,8 @@ marker a completed migration records. The crash-fencing bootstrap-attempt fence
 and `helper_installed`/`helper_version` flags an earlier revision of this spec
 placed here were withdrawn with the crash-fencing program (Jesse, 2026-09-29;
 comp08 pass 1): a prior file still decodes those keys (the load strips them),
-and every rewrite drops them.
+and every rewrite drops them — the tolerant owned-key set and its pinned
+round-trip coverage live in `cmd/evener-hub/internal/hostops/retired_keys_test.go`.
 
 Machine-managed record layout: every machine-managed record lives under a
 reserved top-level key beside `[[hosts]]` — never inside a host entry, and
@@ -1040,9 +1041,10 @@ both what was dropped and which fingerprint won. `remnantId` is present
 exactly when the commit staged a remnant, `remnantResolvedAt` exactly after
 `teardown-retry` or `teardown-recover` resolves it, `recoveryAttestation?`
 exactly on receipts resolved through `teardown-recover` (the `{operator,
-statement, observedAt}` attestation the recovery call accepted and recorded — the audited
-recovery contract's durable record, pinned field-for-field by the
-protocol-shape test), `bootRecovered` (as `true`) exactly when boot
+statement, observedAt}` attestation the recovery call accepted and recorded — the
+recovery contract's durable record, recorded as given and never verified where
+the transport names no principal (§6's amended posture), pinned field-for-field
+by the protocol-shape test), `bootRecovered` (as `true`) exactly when boot
 finalized a crash-window staged-receipt marker (§5). `prunedReceipts` maps the
 full pruned scope key (mutationId, host name, mutation kind, pruned post-commit
 generation, pruned incarnation id) to `{prunedAt}` — the bounded markers the
@@ -1179,21 +1181,21 @@ differs from the remnant's is refused, never executed, even when its
 generation tag equals the remnant's. Post-crash rehydration: boot rehydrates
 the remnant's actionable handle by loading the persisted `cleanupHandle` —
 rehydration is record load, never live-handle resurrection (no in-process
-handle survives restart — §7): for remote seams the handle is the remote
-guard-file identity plus the orphan epoch's lease-entry ownership tokens, so
-the retry kills and verifies through the lease wrapper without the dead
-worker's handles; for local seams it is the durable local cleanup handle (the
-pinned generation/incarnation identity, `HostCleanupHandle`), so the retry
-acts through the persisted handle. The
+handle survives restart — §7): the handle this build writes and acts through is the durable
+local cleanup handle (the pinned generation/incarnation identity,
+`HostCleanupHandle`), resolved against the store's mirrored ownership boundary
+by incarnation-id equality, and the retry then runs the pinned teardown
+directly through the manager's own teardown paths. The
 retry re-resolves live bindings by (generation, incarnation-id) equality only
 while the committer is still alive; after a crash it acts through the
 `cleanupHandle` alone. A retry executing a boot-recovered remnant runs the
-pinned teardown directly. The fenced remote-operation execution an earlier
-revision required here — persisting a fresh fencing epoch, kill/waiting the
-superseded epoch's lease-tracked entries, and compare-and-advancing the guard
-before the teardown — was withdrawn with the crash-fencing program (Jesse,
-2026-09-29; comp08 passes 1–2); the attempt records still persist their epoch
-fields, but no kill/wait or guard advance runs.
+pinned teardown directly. The remote handle arm an earlier
+revision described here — a remote guard-file identity plus the orphan epoch's
+lease-entry ownership tokens, resolved and killed through the `evener-fence`
+lease wrapper — was withdrawn with the crash-fencing program (Jesse,
+2026-09-29; comp08 passes 1–2); no remote handle kind is written, a prior
+file's remote-handle fields are inert (a non-local handle refuses the typed
+`teardown-unknown-key`), and no kill/wait or guard advance runs.
 
 Staged commit (order matters): add/update/remove never mutate live state
 incrementally. Holding the process-wide mutation lock only across the
@@ -1326,7 +1328,7 @@ teardown to completion with no mutation lock held — through the persisted
 owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic `hub.toml` write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic `hub.toml` write that marks its attempt record timed-out-but-open, then reports
 the terminal `committed-with-teardown-failure` outcome with the remnant still
 open plus its attempt record open — a stuck remote process therefore surfaces a terminal
-outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then adopts the timed-out attempt first: it marks the prior attempt record fenced-closed in the same atomic `hub.toml` write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so two retries never execute the same cleanup concurrently and a wedged gate never blocks repair. (The epoch takeover the earlier revision required here — kill/wait plus guard advance per the crash-fencing spec §4 — was withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2.) The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and marks the open attempt record). The retry
+outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then adopts the timed-out attempt first: it marks the prior attempt record fenced-closed in the same atomic `hub.toml` write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so a wedged gate never blocks repair. The fenced-closed mark is a durable claim marker, not a stop signal: the epoch takeover the earlier revision required here — kill/wait plus guard advance per the crash-fencing spec §4 — was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2), so the timed-out run's remote cleanup can still be executing when the later retry starts. No kill/wait, lease takeover, or guard-file advance exists to fence it off — this build does not promise that two runs never execute the same cleanup concurrently, and that overlap is the accepted residual of the simplification ruling. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and marks the open attempt record). The retry
 validates against the remnant's OWN pinned identity, never against the
 registry's current values: it re-resolves the pinned teardown target by the
 remnant's recorded `(generation, incarnationId)` plus its persisted
@@ -1334,8 +1336,8 @@ remnant's recorded `(generation, incarnationId)` plus its persisted
 newer incarnation (post-update) without blocking the retry — and refuses only
 when the remnant's own pinned target fails to resolve through its own handle
 (typed `teardown-unknown-key`), never because the registry moved on. An open remnant whose `cleanupHandle` cannot be resolved (backend reports the
-pinned target unresolvable) is recoverable only through the authenticated
-auditable `evener/host/teardown-recover` recovery mutation — a mutation
+pinned target unresolvable) is recoverable only through the operator-attested
+`evener/host/teardown-recover` recovery mutation — a mutation
 admitted like every other `evener/host/*` request (origin-guarded per §3,
 never in `remoteHostAdminMethods` per §3; the orphan and quarantine admission
 fences the crash-fencing spec §8 once defined here were withdrawn with that
@@ -1344,7 +1346,7 @@ program, Jesse, 2026-09-29; comp08 passes 1–2) — (params
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
 cleared `remnantId`): the call try-acquires the host's per-host gate first — the
 same gate a live `teardown-retry` attempt holds — failing fast with the typed busy error when a
-retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover adopts it first — a fenced-closed mark in the same atomic `hub.toml` write as the remnant claim (the epoch takeover, kill/wait and guard advance the crash-fencing spec §4 once required here were withdrawn, Jesse, 2026-09-29; comp08 passes 1–2) — before the safety checks below, so the clearance never lands past possibly-live cleanup. Under the gate it claims
+retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover adopts it first — a fenced-closed mark in the same atomic `hub.toml` write as the remnant claim (the epoch takeover, kill/wait and guard advance the crash-fencing spec §4 once required here were withdrawn, Jesse, 2026-09-29; comp08 passes 1–2) — before the safety checks below. The mark alone cannot stop a timed-out run: the safety checks read live controller-side handles and bindings, not a remote process, so a clearance can land while the abandoned remote cleanup still executes — the same accepted residual as the retry's. Under the gate it claims
 the remnant atomically (claim under the mutation lock with an attempt token, so a
 concurrent retry racing the claim loses exactly one of the two), then verifies
 the operator attestation is present and well-formed, re-runs the safety checks
@@ -1354,7 +1356,7 @@ re-checks the safety conditions immediately before the clearing write, and only
 then clears the remnant in one atomic `hub.toml` write — recording the attestation
 (operator, statement, observedAt) on the original mutation receipt beside
 `remnantResolvedAt` (outcome becomes `committed` with `remnantResolvedAt`) — so
-the forced clearance is an explicit audited operator decision, never a silent
+the forced clearance is an explicit operator decision recorded on the receipt — attributed to a session identity only where the transport carries one (§6's amended posture) — never a silent
 drop, and a concurrent retry can neither start inside the check nor have its
 in-progress cleanup marker cleared. The claimed attestation `operator` is
 matched against the caller's session identity only where the transport carries
@@ -1712,8 +1714,10 @@ owner-knob family as the cleared-marker TTL (every `hub.toml` mutation and every
 boot compacts markers past either bound in the same atomic write; defaults ship
 in the implementing PR) — so a live host's recovered clearances stay bounded
 exactly like its retry markers. A `recovered-cleared` replay past the bound
-reads as `teardown-unknown-key`, never a second clearance. The attestation is present and well-formed, and its operator bound where a
-  session identity exists, before admission completes; the safety checks in §6
+reads as `teardown-unknown-key`, never a second clearance. The attestation is present and well-formed, its operator checked against the
+  session identity where one exists and recorded as given otherwise (this
+  build's transport names no principal — §6's amended posture), before
+  admission completes; the safety checks in §6
   run before the clearing write; any failure refuses without clearing, naming
   the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
@@ -2037,7 +2041,7 @@ remnant-escalation bound (a multiple of the cleared-marker TTL, default ships
 in the implementing PR) surfaces an operator-escalation signal on the remnant
 (`teardown-retry` responses and `list` rows — live or tombstone — carry the
 escalation age), and the operator resolves it out-of-band (manual teardown of the pinned
-target, then a forced clearance through the authenticated `evener/host/teardown-recover` recovery mutation (§6); the
+target, then a forced clearance through the operator-attested `evener/host/teardown-recover` recovery mutation (§6); the
 gate still never auto-purges an open remnant — the bound escalates, never
 silently drops, so storage cannot pin forever without a visible operator
 action.
@@ -2326,7 +2330,7 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   — the live entry may be absent or newer without blocking it — and never acts
 against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
-naming the failed seam and the remnant still open for a later retry — the timed-out retry releases the gate while its open attempt record fences the name (a concurrent live attempt still busy-fails), and the later retry try-acquires the freed gate, fences the timed-out attempt (takeover, kill/wait, guard advance, fenced-closed mark) before re-running the teardown, so the same cleanup never runs concurrently and repair never wedges on a held gate;
+naming the failed seam and the remnant still open for a later retry — the timed-out retry releases the gate while its open attempt record fences the name (a concurrent live attempt still busy-fails), and the later retry try-acquires the freed gate, marks the timed-out attempt fenced-closed before re-running the teardown, and never wedges on a held gate — the abandoned run may still be executing (no kill/wait exists; the accepted residual, §6);
 protocol-shape tests pin the `changed-entry` refusal arm, the `concurrent-edit`,
 `tombstone-capacity` catalog entries with their envelope
 code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-arm mutation-result union (including the
@@ -2334,7 +2338,7 @@ code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-a
 `teardown-retry`/`teardown-recover` request/response shapes pin field-for-field in the pipeline PR where those handlers register (§2);
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation
-validation, safety-check refusals naming the blocking check, the audited
+validation, safety-check refusals naming the blocking check, the recorded
 `recovered-cleared` receipt (the protocol-shape test pins the
 `recoveryAttestation` receipt fields field-for-field), and replay-after-recovery returning the same
 `recovered-cleared` response (`remnantId`, `clearedName`, `clearedAt`) from

@@ -26,7 +26,7 @@ Every later section uses these terms with exactly these meanings.
 - **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the host's own `hub.toml` entry fingerprint (§3), facts, and running state it was minted from.
 - **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 - **Boundary record.** The per-host mirrored triple the store keeps beside the registry's live entry — (generation, incarnation id, presence epoch) — which mutation and cursor validation read (registry spec §7 defines the record; §4 here cites it). The process-ownership “boundary” vocabulary an earlier revision defined here (`local-linux`, `local-darwin`, `local-markerless`, `remote-fencing`, and the `boundary-unavailable` custody sentinel) was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2): no boundary payload is written or verified, and a prior file's boundary fields stay decodable and are dropped.
-- **Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe (its shape is defined in §10); the serving hub persists the epoch it was last presented as its guard epoch and refuses stale epochs without probing. The remote fencing protocol the epoch once carried (takeover, bounded kill/wait, guard-file advance) was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
+- **Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe (its shape is defined in §10); the serving hub validates a presented epoch against the guard epoch it last admitted — a same-boot epoch with a lower op sequence is refused as stale, without probing and without being written — and persists only an admitted epoch. A different boot id has no defined order against the stored one (§10), so it is admitted and replaces the guard: the stale-epoch guarantee holds within one controller boot only. The remote fencing protocol the epoch once carried (takeover, bounded kill/wait, guard-file advance) was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
 - **Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, registry spec §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§4); cursor validation reads the mirrored value (§8).
 - **Facts revision (`factsRevision`).** The canonical digest of every preflight field planning or deploy decides on: OS/arch, home directory, resolved roots, UID, installed version, protocol version, and launch flags. `plan` computes it over the refreshed facts at mint (§3) and `HostPlan.factsRevision` carries it as the mint-time reference; deploy checks the token's facts freshness rather than recomputing the digest (§6 step 3).
 
@@ -167,7 +167,16 @@ timestamps, the pinned host generation plus the pinned incarnation id, the worke
 `host-removed` mark. An `orphan-unverified` record is prior-build historical
 data (custody imports included): this build creates none in an ordinary
 pipeline path, and the only transition such a record may take is to
-`interrupted`. The wire shape is pinned field-for-field in §10.
+`interrupted`. Retained disposition: nothing consults it (the orphan admission
+fences were withdrawn with the crash-fencing program), it has no fencing
+effect, retention keeps every non-terminal record regardless of count, and
+boot leaves it in place — so a loaded or custody-imported row stays a
+listable historical record (`operations` renders `state: "orphan-unverified"`;
+`list`/`status` do not consult it) until a later store rewrite replaces it.
+(The tolerant decoder and its round-trip coverage — a prior-shape store loads
+and the next rewrite drops every retired key — live in
+`cmd/evener-hub/internal/hostops/retired_keys_test.go`.) The wire shape is
+pinned field-for-field in §10.
 `createdAt`/`updatedAt` are display-only. They never decide a race.
 
 Dedup scope is (host, kind, client operation ID, pinned generation, pinned incarnation
@@ -226,8 +235,8 @@ record identity that entry imports under —
 incarnation id) pair — so a fence import builds its `OperationRecord` from the
 entry itself and never joins an ambiguous per-host `recordIds` row. (A prior
 file's retired `quarantine: bool` and `boundary: BoundaryEntry[]` fields stay
-decodable and are dropped, never rewritten.) one
-ownership entry per name the corrupt file
+decodable and are dropped, never rewritten.)
+One ownership entry per name the corrupt file
 yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is addressable: boot imports each fence entry as
 an `orphan-unverified` record under its original
 record id, and each
@@ -311,7 +320,7 @@ mutation lock (for example `remove`'s token-row purge) may acquire the store mut
 path holding the store mutex ever acquires the mutation lock. Gate holders'
 post-acquisition re-reads are lock-free registry reads.
 
-Probe epochs are ephemeral non-listed rows: they carry no token, no worker, and no `deploy`/`restart` kind, never appear in `operations` reads, and boot reaps them silently (deleted, never transitioned to `interrupted`). Persisted-before-launch: no controller-authorized remote mutation precedes the durable controller-side record carrying its probe epoch. A probe epoch is itself that durable record: it is written in its own atomic store write before the probe's remote write half, and it authorizes only that bounded probe mutation (the `running` read, checked against the serving hub's guard epoch — §10 — with stale epochs refused without probing). A consumed `deploy`/`restart` additionally persists its ownership record, the `pending` operation record, in the same atomic write that consumes the token, and `Ensure`/`restart` persist their record before launching. A crash between the probe epoch's persist and the probe's remote write leaves an epoch-only row that boot deletes silently: the remote was never touched and nothing was owned. A crash after the probe's remote write but before the consume deletes the row the same way: no worker was ever launched for it, so nothing is left running to signal and no orphan exists. Only a consumed operation has an owner, so only a `pending`/`running` operation record transitions to `interrupted`; an epoch-only probe row never does. Crash recovery of records: at startup, before the store serves any request, every record
+Probe epochs are ephemeral non-listed rows: they carry no token, no worker, and no `deploy`/`restart` kind, never appear in `operations` reads, and boot reaps them silently (deleted, never transitioned to `interrupted`). Persisted-before-launch: no controller-authorized remote mutation precedes the durable controller-side record carrying its probe epoch. A probe epoch is itself that durable record: it is written in its own atomic store write before the probe's remote write half, and it authorizes only that bounded probe mutation (the `running` read, checked against the serving hub's guard epoch — §10: a same-boot lower sequence is refused as stale, while a different boot id is admitted, the accepted cross-restart limitation). A consumed `deploy`/`restart` additionally persists its ownership record, the `pending` operation record, in the same atomic write that consumes the token, and `Ensure`/`restart` persist their record before launching. A crash between the probe epoch's persist and the probe's remote write leaves an epoch-only row that boot deletes silently: the remote was never touched and nothing was owned. A crash after the probe's remote write but before the consume deletes the row the same way: no worker was ever launched for it, so nothing is left running to signal and no orphan exists. Only a consumed operation has an owner, so only a `pending`/`running` operation record transitions to `interrupted`; an epoch-only probe row never does. Crash recovery of records: at startup, before the store serves any request, every record
 still in `pending`/`running` transitions to `interrupted` (a terminal unknown outcome)
 with a note naming the crash. `orphan-unverified` is the one exception: prior-build
 historical data (custody imports included) this build neither creates nor
@@ -643,7 +652,8 @@ program, Jesse, 2026-09-29; comp08 passes 1–2), so boot serves `interrupted`
 records with remote processes untouched.
 
 Interrupted transition: every record still in `pending`/`running` transitions to
-`interrupted` with a note naming the crash. `orphan-unverified` is the one exception. An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) is an ephemeral non-listed row: boot deletes it silently, never transitions it to `interrupted`, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
+`interrupted` with a note naming the crash. `orphan-unverified` is the one exception (prior-build historical data; boot
+leaves it in place — §4). An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) is an ephemeral non-listed row: boot deletes it silently, never transitions it to `interrupted`, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
 A retry with the same operation ID gets the `interrupted` record back. A new operation
 ID starts fresh, but only after boot reaping completes and under a fresh probe
 epoch.
@@ -869,7 +879,9 @@ this section carries no fencing or orphan-resolve shapes.
   are absent — never null — on the no-token response.
 - `evener/host/running` (controller-side mutation — catalog entry plus TypeScript client
   with the handler): params `{fencingEpoch: {bootId: string, opSeq:
-  number}}` (required on the wire; the field keeps its `fencingEpoch` name, but
+  number}}` (required on the wire; the field keeps its `fencingEpoch` name as a retained
+  historical wire name (a `probeEpoch` rename is a wire-compat follow-up, not
+  this pass), but
   the value is the caller's probe epoch; the `plan`/`deploy` probe path always
   presents it — the persisted epoch the calling worker
   minted before launch — and the generated client carries the field, so no
@@ -894,12 +906,17 @@ this section carries no fencing or orphan-resolve shapes.
   mutating step, never a read and never a gateless bypass: the calling
   side issues it only while holding the host gate through the gate-aware probe
   primitive in §6 (which inherits the already-held gate instead of re-acquiring
-  it), presenting the worker's persisted probe epoch; the serving hub persists
-  the presented epoch per calling host before the write half runs, validates it
-  against the guard epoch it last admitted for the host, and refuses stale epochs without
-  probing. (The takeover, bounded kill/wait, and guard-file advance an earlier
-  revision ran before the write half were withdrawn with the crash-fencing
-  program, Jesse, 2026-09-29; comp08 passes 1–2.) It never runs gateless and its epoch never defaults. A call with the
+  it), presenting the worker's persisted probe epoch; the serving hub validates the
+  presented epoch against the guard epoch it last admitted for the host before
+  anything is written or probed: a same-boot epoch with a lower op sequence is
+  refused as stale (typed `probe-failed`, nothing persisted, no probe), and only
+  an admitted epoch is persisted before the write half runs. A presented epoch
+  carrying a different boot id has no defined order against the stored one, so it
+  is admitted and replaces the guard — the cross-restart limitation accepted
+  with the withdrawn program (the remote guard-file compare-and-advance that
+  once supplied that order is gone; comp08 passes 1–2). (The takeover, bounded
+  kill/wait, and guard-file advance an earlier revision ran before the write
+  half were withdrawn with the crash-fencing program, Jesse, 2026-09-29.) It never runs gateless and its epoch never defaults. A call with the
   epoch absent is refused with typed `probe-failed` (no epoch presented), never
   served without its epoch; a
   probe temp orphaned by a crash carries the probe-name prefix and

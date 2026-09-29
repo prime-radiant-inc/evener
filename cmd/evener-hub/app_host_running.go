@@ -124,13 +124,12 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	return response, nil
 }
 
-// admitPresentedEpoch validates and persists the epoch the caller presented
-// (§10: "the serving hub persists the presented epoch per calling host before
-// the write half runs, validates it against the host's current fencing epoch,
-// and refuses stale epochs without probing"). An absent or malformed epoch —
-// what a defaulted or omitted wire field decodes to — is refused with the
-// typed `probe-failed` family before anything is persisted, and a stale epoch
-// is refused without probing.
+// admitPresentedEpoch validates the epoch the caller presented and persists the
+// admitted one before the probe's write half runs (§10: a stale same-boot epoch
+// is refused without persisting or probing, and only an admitted epoch is
+// written). An absent or malformed epoch — what a defaulted or omitted wire
+// field decodes to — is refused with the typed `probe-failed` family before
+// anything is persisted, and a stale epoch is refused without probing.
 //
 // A hub with no operation store cannot persist the epoch, so it refuses rather
 // than authorizing an unfenced write; the same is true of a store write that

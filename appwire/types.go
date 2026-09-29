@@ -4908,11 +4908,11 @@ const (
 	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
 )
 
-// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
-// crash-fencing §9): the controller boot id plus the per-host monotonic op
-// sequence. `evener/host/running` requires it — absent or malformed is a typed
-// `probe-failed` refusal, never an unfenced write — and the fencing spec's
-// remote-fencing boundary carries the same pair.
+// FencingEpoch is the epoch wire shape (deploy pipeline 08b §10): the controller
+// boot id plus the per-host monotonic op sequence. `evener/host/running` requires
+// it — absent or malformed is a typed `probe-failed` refusal, never an unfenced
+// write. The name is retained historical wire vocabulary; a `probeEpoch` rename
+// is a wire-compat follow-up.
 type FencingEpoch struct {
 	BootID string `json:"bootId"`
 	OpSeq  uint64 `json:"opSeq"`
