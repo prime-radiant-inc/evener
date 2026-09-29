@@ -5,7 +5,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { Pressable, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { useColors } from "../ui";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -14,8 +14,7 @@ export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs
 	const { palette } = useColors();
 	return (
 		<GroupedPage>
-			<GroupLabel>Hubs</GroupLabel>
-			<Group>
+			<Group label="Hubs">
 				{profiles.map((profile) => {
 					const selected = profile.id === activeProfile?.id;
 					return (
@@ -43,8 +42,7 @@ export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs
 					);
 				})}
 			</Group>
-			<GroupLabel>Add a hub</GroupLabel>
-			<Group>
+			<Group label="Add a hub">
 				<Row
 					icon="qrcode.viewfinder"
 					label="Scan pairing code"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fonts, mix, paletteFor, palettes, typeRoles } from "./tokens";
+import { fonts, mix, paletteFor, palettes, scaledType, typeRoles, uiType } from "./tokens";
 
 describe("the palette is the spec's (section 16.1)", () => {
 	it("light", () => {
@@ -118,5 +118,24 @@ describe("type", () => {
 		expect(typeRoles.yourMessage).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 25 });
 		expect(typeRoles.document).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 18, lineHeight: 28 });
 		expect(typeRoles.machine).toEqual({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18 });
+	});
+	it("sets the spec's interface sizes for the grouped lists", () => {
+		expect(uiType.listRow).toEqual({ fontSize: 17, lineHeight: 22 });
+		expect(uiType.subheadline).toEqual({ fontSize: 15, lineHeight: 20 });
+		expect(uiType.footnote).toEqual({ fontSize: 13, lineHeight: 18 });
+		expect(uiType.sectionLabel).toEqual({
+			fontSize: 12,
+			lineHeight: 16,
+			fontWeight: "600",
+			letterSpacing: 0.72,
+			textTransform: "uppercase",
+		});
+	});
+	it("scales a role's size, line height and tracking by the text scale, and keeps the rest", () => {
+		const label = scaledType(uiType.sectionLabel, 1.5);
+		expect(label).toMatchObject({ fontSize: 18, lineHeight: 24, fontWeight: "600", textTransform: "uppercase" });
+		// +0.06em of the scaled 18pt.
+		expect(label.letterSpacing).toBeCloseTo(1.08);
+		expect(scaledType(typeRoles.machine, 2)).toEqual({ fontFamily: "Menlo", fontSize: 26, lineHeight: 36 });
 	});
 });

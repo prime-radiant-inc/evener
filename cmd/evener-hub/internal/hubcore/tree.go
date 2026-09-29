@@ -1220,6 +1220,41 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return m.TurnCount == 0 && m.AcceptedInputTurns == 0
 	}
 
+	// liveFieldsFor resolves every live-derived row field for a session ID in
+	// one place, so buildNode, the meta-less Live leaf and the NeedsYou node
+	// cannot drift apart and a new live fact lands on all three at once
+	// (#2506). Each earlier fact already resolved through its own closure
+	// (stateFor, askPendingFor, ...); this is the single helper the next fact
+	// joins. It reads liveMap and the per-child indexes rather than a caller's
+	// loop entry: Roster.listLocked keeps one entry per session ID, so live
+	// never repeats a SessionID and every row of one session resolves the
+	// identical facts. kind is forwarded to lastMessageFor and modelFor, whose
+	// rule differs for a subagent row. The returned node carries only
+	// live-derived fields; the caller overlays the meta-derived and
+	// node-specific ones.
+	liveFieldsFor := func(id, kind string) TreeNode {
+		approval := firstApprovalFor(id)
+		return TreeNode{
+			Ref:             liveRefMap[id],
+			State:           stateFor(id),
+			AskPending:      askPendingFor(id),
+			ApprovalPending: approvalPendingFor(id),
+			ApprovalTool:    approval.Tool,
+			ApprovalTarget:  approval.DeniedPath,
+			Question:        pendingQuestionFor(id),
+			Failure:         failureFor(id),
+			Dormant:         dormantFor(id),
+			RunningJobs:     appwire.CloneEvenerJobs(liveMap[id].RunningJobs),
+			CompletedJobs:   appwire.CloneEvenerJobs(liveMap[id].CompletedJobs),
+			Watches:         watchesFor(id),
+			Tasks:           tasksFor(id),
+			Subagents:       subagentsFor(id),
+			TurnEndedAt:     turnEndedAtFor(id),
+			LastMessage:     lastMessageFor(id, kind),
+			Model:           modelFor(id, kind),
+		}
+	}
+
 	// Group metas by canonical project identity while preserving each record's
 	// explicit parent lineage.
 	type projectAccum struct {
@@ -1354,57 +1389,30 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		path[m.ID] = true
 		defer delete(path, m.ID)
 
-		state := stateFor(m.ID)
-		askPending := askPendingFor(m.ID)
-		approvalPending := approvalPendingFor(m.ID)
-		approval := firstApprovalFor(m.ID)
-		question := pendingQuestionFor(m.ID)
-		failure := failureFor(m.ID)
-		subagentTally := subagentsFor(m.ID)
-		turnEndedAt := turnEndedAtFor(m.ID)
+		// Start from the one helper that fills every live-derived field, then
+		// overlay this node's meta-derived and node-specific ones. A subagent's
+		// state already resolved through liveFieldsFor's stateFor: its own live
+		// entry's status when it has one, else the parent's carried state (or
+		// idle when the daemon carried none — liveness is not activity).
+		node := liveFieldsFor(m.ID, kind)
+		node.ID = m.ID
+		node.Title = nodeTitle(m, kind)
+		node.Project = acc.name
+		node.Branch = m.EnvInfo.GitBranch
+		node.Kind = kind
+		node.CreatedAt = OrderCreatedAt(m.CreatedAt, m.UpdatedAt)
+		node.UpdatedAt = OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)
+		node.Age = AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt))
 		if parentDead {
-			state = "ended"
-			askPending = false
-			approvalPending = false
-			approval = appwire.SandboxEscalationRequested{}
-			question = nil
-			failure = nil
-			subagentTally = appwire.SubagentTally{}
-			turnEndedAt = time.Time{}
-		}
-		// A subagent's state already resolved through stateFor above: its own
-		// live entry's status when it has one, else the parent's carried state
-		// (or idle when the daemon carried none — liveness is not activity).
-		// The previous override here was redundant for children without their
-		// own live entry (stateFor already calls runningSubagentState) and wrong
-		// for children WITH one (it overwrote the child's own daemon-reported
-		// status with the parent's projection).
-		node := TreeNode{
-			ID:              m.ID,
-			Ref:             liveRefMap[m.ID],
-			Title:           nodeTitle(m, kind),
-			Project:         acc.name,
-			Branch:          m.EnvInfo.GitBranch,
-			State:           state,
-			AskPending:      askPending,
-			ApprovalPending: approvalPending,
-			ApprovalTool:    approval.Tool,
-			ApprovalTarget:  approval.DeniedPath,
-			Question:        question,
-			Failure:         failure,
-			Dormant:         dormantFor(m.ID),
-			Kind:            kind,
-			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-			UpdatedAt:       OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-			Age:             AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
-			RunningJobs:     appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
-			CompletedJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
-			Watches:         watchesFor(m.ID),
-			Tasks:           tasksFor(m.ID),
-			Subagents:       subagentTally,
-			TurnEndedAt:     turnEndedAt,
-			LastMessage:     lastMessageFor(m.ID, kind),
-			Model:           modelFor(m.ID, kind),
+			node.State = "ended"
+			node.AskPending = false
+			node.ApprovalPending = false
+			node.ApprovalTool = ""
+			node.ApprovalTarget = ""
+			node.Question = nil
+			node.Failure = nil
+			node.Subagents = appwire.SubagentTally{}
+			node.TurnEndedAt = time.Time{}
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1635,32 +1643,13 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// needs a meta to resolve kind/title/project, and a session with none
 		// has no lineage to recurse into.
 		if !hasMeta {
-			approval := firstApprovalFor(le.SessionID)
-			node := TreeNode{
-				ID:              le.SessionID,
-				Ref:             liveRefMap[le.SessionID],
-				State:           stateFor(le.SessionID),
-				AskPending:      askPendingFor(le.SessionID),
-				ApprovalPending: approvalPendingFor(le.SessionID),
-				ApprovalTool:    approval.Tool,
-				ApprovalTarget:  approval.DeniedPath,
-				Question:        pendingQuestionFor(le.SessionID),
-				Failure:         failureFor(le.SessionID),
-				Dormant:         dormantFor(le.SessionID),
-				Kind:            "session",
-				Title:           ShortID(le.SessionID),
-				CreatedAt:       le.StartedAt,
-				UpdatedAt:       le.StartedAt,
-				Age:             AgeString(le.StartedAt),
-				RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
-				CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
-				Watches:         appwire.CloneEvenerWatches(le.Watches),
-				Tasks:           tasksFor(le.SessionID),
-				Subagents:       subagentsFor(le.SessionID),
-				TurnEndedAt:     turnEndedAtFor(le.SessionID),
-				LastMessage:     lastMessageFor(le.SessionID, "session"),
-				Model:           modelFor(le.SessionID, "session"),
-			}
+			node := liveFieldsFor(le.SessionID, "session")
+			node.ID = le.SessionID
+			node.Kind = "session"
+			node.Title = ShortID(le.SessionID)
+			node.CreatedAt = le.StartedAt
+			node.UpdatedAt = le.StartedAt
+			node.Age = AgeString(le.StartedAt)
 			liveNodes = append(liveNodes, node)
 			continue
 		}
@@ -1743,28 +1732,10 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if !tierEligible(le.SessionID, roots, runningSubagentIDs, decisions) {
 			continue
 		}
-		approval := firstApprovalFor(le.SessionID)
-		node := TreeNode{
-			ID:              le.SessionID,
-			Ref:             liveRefMap[le.SessionID],
-			State:           st,
-			Kind:            "session",
-			AskPending:      le.PendingAsk,
-			ApprovalPending: le.PendingEscalation,
-			ApprovalTool:    approval.Tool,
-			ApprovalTarget:  approval.DeniedPath,
-			Question:        pendingQuestionFor(le.SessionID),
-			Failure:         failureFor(le.SessionID),
-			Dormant:         dormantFor(le.SessionID),
-			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
-			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
-			Watches:         appwire.CloneEvenerWatches(le.Watches),
-			Tasks:           tasksFor(le.SessionID),
-			Subagents:       subagentsFor(le.SessionID),
-			TurnEndedAt:     turnEndedAtFor(le.SessionID),
-			LastMessage:     lastMessageFor(le.SessionID, "session"),
-			Model:           modelFor(le.SessionID, "session"),
-		}
+		node := liveFieldsFor(le.SessionID, "session")
+		node.ID = le.SessionID
+		node.State = st
+		node.Kind = "session"
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
 			node.Project = projectName(*meta)
