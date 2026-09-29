@@ -5,8 +5,19 @@ import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Notice } from "./notices";
 
-/** The Board's notices, one row each under the chips (spec 7.1). Each action
- * opens today's screen for its kind; phase 5's Hub opens at the subject. */
+/** Opens today's screen for a notice's kind; phase 5's Hub opens at the
+ * subject. The Board's notice rows and a tapped notice banner both use it. */
+export function openNotice(
+	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">,
+	hubId: string,
+	notice: Notice,
+): void {
+	if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
+	else if (notice.kind === "host") navigation.navigate("HubSettings", { hubId });
+	else navigation.navigate("Plugins", { hubId });
+}
+
+/** The Board's notices, one row each under the chips (spec 7.1). */
 export function BoardNotices({
 	hubId,
 	notices,
@@ -17,13 +28,12 @@ export function BoardNotices({
 	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">;
 }) {
 	if (!notices.length) return null;
-	const open = (notice: Notice) => {
-		if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
-		else if (notice.kind === "host") navigation.navigate("HubSettings", { hubId });
-		else navigation.navigate("Plugins", { hubId });
-	};
 	return notices.map((notice) => (
-		<NoticeRow key={notice.key} text={notice.text} action={{ label: notice.action, onPress: () => open(notice) }} />
+		<NoticeRow
+			key={notice.key}
+			text={notice.text}
+			action={{ label: notice.action, onPress: () => openNotice(navigation, hubId, notice) }}
+		/>
 	));
 }
 

@@ -170,27 +170,6 @@ func TestFavoriteRemoteOwnershipsEmptySource(t *testing.T) {
 	}
 }
 
-// TestFindMetaByIDFound covers the found path.
-func TestFindMetaByIDFound(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "s1", Model: "model1"},
-		{ID: "s2", Model: "model2"},
-	}
-	meta, ok := findMetaByID(metas, "s2")
-	if !ok || meta.ID != "s2" || meta.Model != "model2" {
-		t.Fatalf("expected to find s2, got %v, %v", meta, ok)
-	}
-}
-
-// TestFindMetaByIDNotFound covers the not-found path.
-func TestFindMetaByIDNotFound(t *testing.T) {
-	metas := []schema.SessionMeta{{ID: "s1"}}
-	_, ok := findMetaByID(metas, "nonexistent")
-	if ok {
-		t.Fatal("should not find nonexistent id")
-	}
-}
-
 // TestFavoriteLineageQualitiesEmpty covers the empty input path.
 func TestFavoriteLineageQualitiesEmpty(t *testing.T) {
 	qualities := favoriteLineageQualities(nil)

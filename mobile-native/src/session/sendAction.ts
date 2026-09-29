@@ -17,7 +17,8 @@ export function sendAction(
 	pendingMutations: readonly PendingTurnEntry[] | null | undefined,
 	connected: boolean,
 ): SendAction {
-	if (!connected || conversation.resumeRequired) return "none";
+	if (conversation.resumeRequired) return "none";
+	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
 	const status = conversation.status.type;
 	const availability = deriveSendQueueAvailability({
 		statusType: status,
@@ -33,6 +34,24 @@ export function sendAction(
 	return "none";
 }
 
+/** Offline, a message waits in the phone's outbox (spec 8.5, phase 6
+ * ruling 13). By the time it arrives a turn may be running, which refuses a
+ * turn/start, so it goes as if a send of this phone's were already pending,
+ * the package's tier 6: it queues where the harness can (the daemon runs a
+ * queued message at once on an idle session), and waits for the connection
+ * where it can't. The first message to a shut-down session resumes it; a
+ * message after it queues behind it. */
+function offlineAction(conversation: SendSource, pendingSend: boolean): SendAction {
+	const status = conversation.status.type;
+	if (SHUT_DOWN_STATUSES.has(status) && !pendingSend) return conversation.capabilities.send ? "resume" : "none";
+	const availability = deriveSendQueueAvailability({
+		statusType: status,
+		capabilities: conversation.capabilities,
+		hasPendingSend: true,
+	});
+	return availability.canQueue ? "queue" : "none";
+}
+
 export function composerPlaceholder(action: SendAction, questionPending: boolean): string {
 	if (questionPending) return "Answer or ask…";
 	if (action === "queue") return "Tell the agent something…";
@@ -41,8 +60,9 @@ export function composerPlaceholder(action: SendAction, questionPending: boolean
 }
 
 /** Send is a paper airplane, so its accessibility label says what pressing it
- * does. */
-export function sendLabel(action: SendAction, questionPending: boolean): string {
+ * does: offline, that it waits for the connection (ruling 14). */
+export function sendLabel(action: SendAction, questionPending: boolean, connected = true): string {
+	if (!connected) return questionPending ? "Send answer when you're back online" : "Send when you're back online";
 	if (questionPending) return "Send answer";
 	if (action === "queue") return "Queue message";
 	if (action === "resume") return "Send and resume";
