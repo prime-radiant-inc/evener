@@ -24,22 +24,23 @@
 // minted timestamps. That State rides all the way to the client as
 // item.raw (registry.go marshals it straight into ToolState; appprojector
 // and apptranscript carry it onto ThreadItem.raw unchanged; reducer.ts's
-// wireItemToModel keeps it as item.raw verbatim), and taskData.ts's
-// parseTaskState narrows it - reusing the AppWire package's
-// parseTaskListData, since it's the same agent/task/task_store.go Task[]
-// shape the tasks side panel already parses from a different wire path.
+// wireItemToModel keeps it as item.raw verbatim), and the AppWire package's
+// parseTaskListData narrows it, since it's the same agent/task/task_store.go
+// Task[] shape the tasks side panel already parses from a different wire
+// path.
 //
 // raw is absent for an old daemon that predates StateResult.State and for a
 // transcript replayed from before it existed - a real, ongoing case, not
 // just a historical one - and the card then degrades to exactly its
 // argument-only rendering: the window cannot be derived from state it
 // doesn't have, so the body falls back to one row per touched task with
-// "#<id>" labels, and no fabricated auto-start (the AppWire package's taskListStep.ts contract).
+// "#<id>" labels, and no fabricated auto-start (the contract of the AppWire
+// package's taskListStep.ts).
 import type { ItemModel, TaskRow, TouchedRow } from "@evener/appwire-client";
 import {
   freshNotes,
   mutationRows,
-  parseTaskState,
+  parseTaskListData,
   taskAggregateLabel,
   taskMutationRecap,
   taskMutationSummary,
@@ -247,7 +248,7 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
     cancelled: progress?.cancelled,
     remaining: progress?.remaining,
   });
-  const state = parseTaskState(item.raw);
+  const state = parseTaskListData(item.raw);
   // The terminal task this call settled wins the window's stampless tie -
   // the body must name the same task the folded line does, and the line
   // names the LAST row (taskMutationSummary's .at(-1)), so the LAST

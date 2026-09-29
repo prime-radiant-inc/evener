@@ -502,7 +502,6 @@ export {
   freshNotes,
   type MutationTouch,
   mutationRows,
-  parseTaskState,
   SUMMARY_MARK,
   type TaskListStep,
   type TouchedRow,

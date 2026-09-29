@@ -28,10 +28,6 @@ import { parseArgs, str } from "./toolCallText";
  * task list it returned. */
 export type TaskListStep = Pick<ItemModel, "argumentsJSON" | "raw">;
 
-export function parseTaskState(raw: unknown): TaskRow[] | null {
-  return parseTaskListData(raw);
-}
-
 // The label an update row shows for a task: its description when the
 // authoritative state names one (mirrors the legacy card's
 // buildTaskRowLine, which preferred task.description over a bare id -
@@ -70,17 +66,19 @@ export function autoStartedTask(
   return tasks.find((t) => t.status === "in_progress" && !touchedIds.has(t.id));
 }
 
-// What a call did to a task. "pending" is a window-slot state (TaskCheck's
-// empty box) and never something a call did, so it is not one of these.
+// What a call did to a task: added it, completed it, dropped it or started
+// it. A task still waiting is not something a call did, so it is not one.
 export type MutationTouch = "added" | "done" | "cancelled" | "started";
 
 export interface TouchedRow {
   key: string;
   touch: MutationTouch;
-  label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
+  // The task's description, or "#<id>" for an update when the call returned
+  // no task list to look the id up in.
+  label: string;
   note?: string;
-  // The wire task id an update row touched; append rows mint no
-  // client-visible id. Drives the window's tie-break preference.
+  // The id of the task an update touched. An added task has no id a client
+  // can see yet.
   id?: number;
 }
 
@@ -197,7 +195,7 @@ function updateRows(item: TaskListStep, updates: Record<string, unknown>[]): Tou
   // Only a real status change earns a row - matching the legacy card, which
   // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
   // renders a note-only or reopened update as no per-row change at all.
-  const state = parseTaskState(item.raw);
+  const state = parseTaskListData(item.raw);
   const rows: TouchedRow[] = [];
   const touchedIds = new Set<number>();
   let completedAny = false;
@@ -289,8 +287,8 @@ export function taskMutationRecap(item: TaskListStep): string {
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
-// The notes THIS call added, keyed by task id - the only notes the card may
-// render (a stale note from an earlier call never shows). Update-shaped calls
+// The notes THIS call added, keyed by task id - the only notes a client
+// shows with the call (a stale note from an earlier call never shows). Update-shaped calls
 // carry them per update; append-shaped calls mint no client-visible ids, so
 // a fresh note on an appended task has no key to ride and stays unrendered.
 export function freshNotes(item: TaskListStep): ReadonlyMap<number, string> {
