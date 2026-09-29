@@ -146,7 +146,8 @@ export function answerTo(model: Pick<ThreadModel, "turns"> | null, itemId: strin
 }
 
 /** The run that is still growing: the last run of the turn in progress. A
- * live run never folds (spec 8.2). */
+ * run never folds on its own (spec 8.2): where it is held open while live,
+ * it stays open once it finishes. */
 export function liveRunId(rows: readonly TimelineRow[], activeTurnId: string | undefined): string | undefined {
 	if (activeTurnId === undefined) return undefined;
 	for (let index = rows.length - 1; index >= 0; index -= 1) {

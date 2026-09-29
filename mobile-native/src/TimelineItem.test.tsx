@@ -472,6 +472,32 @@ describe("a run in the transcript", () => {
 		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
 	});
 
+	it("stays open when you switch to a level that doesn't open live runs", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// A tool shown from the overlay carries the overlay's id until history
+	// records its call; the call id is the same on both.
+	it("stays open when its first step's id changes as history records the call", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const withStep = (id: string): TimelineRow => ({
+			kind: "run",
+			id: `run:${id}`,
+			turnId: "t1",
+			steps: [{ ...step, id, detail: { ...step.detail, callId: "call-1" } }],
+		});
+		const tree = render(
+			<TimelineItem item={withStep("tool:call:call-1")} hubId="hub" sessionRef="run-renamed" live liveRunsOpen />,
+		);
+		act(() =>
+			tree.update(<TimelineItem item={withStep("item_tool_1_0")} hubId="hub" sessionRef="run-renamed" liveRunsOpen />),
+		);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
 	// At Intent the tray shows the live step, so the run's line is enough.
 	it("doesn't open while live where the tray shows the live step", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" live />);

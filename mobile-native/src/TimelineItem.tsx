@@ -24,6 +24,17 @@ import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timel
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 
+// What a row's open state is stored under. A run's id is its first step's
+// row id, which changes when history records a call the overlay showed
+// (tool:call:<callId> becomes item_tool_<entry>_<part>); the call id is the
+// same on both, so a run keys by it and stays open across the change. A run
+// whose first step changes (a parallel call settling before it) still starts
+// a new key.
+function disclosureKey(item: TimelineRow): [string, string] {
+	const callId = item.kind === "run" ? item.steps[0]?.detail.callId : undefined;
+	return callId ? ["run-call", callId] : [item.kind, item.id];
+}
+
 export function TimelineItem({
 	item,
 	hubId,
@@ -71,7 +82,7 @@ export function TimelineItem({
 	 * decides which documents a message names and where a chip opens. */
 	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
 }) {
-	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify([item.kind, item.id]));
+	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(disclosureKey(item)));
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);

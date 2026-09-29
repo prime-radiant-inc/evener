@@ -1,8 +1,9 @@
 // A run of steps on the transcript (spec 8.2): one line that folds the steps
 // ("▸ 12 steps · 8m · read 6 files, ran go test (2 failed)"), and, expanded,
 // one line per step with its intent, its target and a status mark. A step
-// with evidence opens it under its line (StepEvidence). A live run (the last
-// run of the turn in progress) never folds.
+// with evidence opens it under its line (StepEvidence). A run held open while
+// it is live (the last run of the turn in progress, at the levels that show
+// tool calls) has no fold control until it finishes.
 import { scopedDisclosureId } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment, useMemo } from "react";
