@@ -176,7 +176,11 @@ func TestSessionOutputReductionWarnsOnlyWhenTheClampChanges(t *testing.T) {
 	warnings := warningEvents(<-eventsDone)
 	var allocations []string
 	for _, warning := range warnings {
-		allocations = append(allocations, warning.Message[strings.Index(warning.Message, "requested="):])
+		_, allocation, found := strings.Cut(warning.Message, "requested=")
+		if !found {
+			t.Fatalf("output-reduction warning %q names no requested allocation", warning.Message)
+		}
+		allocations = append(allocations, "requested="+allocation)
 	}
 	want := []string{"requested=131072 admitted=20000", "requested=65536 admitted=9000", "requested=65536 admitted=7000"}
 	if !slices.Equal(allocations, want) {
