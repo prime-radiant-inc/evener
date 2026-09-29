@@ -232,7 +232,6 @@ async function main() {
             );
           }
         }
-
       }
 
       // The open-with-history shape: a page plus an olderCursor, so the paging
@@ -271,6 +270,36 @@ async function main() {
       );
       if (scrolled.errors.length > 0) failures.push(`page errors while paging: ${scrolled.errors.join("; ")}`);
       if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
+
+      // The READ-ONLY transcript pane runs the SAME scroll coordinator (#2963:
+      // it lands on the latest row on open, follows a prepend without stranding
+      // the reader, and never auto-loads an older page just because it opened),
+      // but the guard only ever rendered the live Session. This pass renders
+      // the read-only Transcript and holds it to the same open contract: the
+      // paging row mounted, no older page fetched on open, and the landing
+      // held at the true bottom across the settle.
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&readonly=1`, BOOT);
+      await waitForFonts(send);
+      const readOnlyOpened = JSON.parse(
+        await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
+      );
+      if (readOnlyOpened.errors.length > 0)
+        failures.push(`page errors on the read-only paged open: ${readOnlyOpened.errors.join("; ")}`);
+      if (!readOnlyOpened.pagingRow)
+        failures.push("the read-only paged pass opened without the paging row mounted (no olderCursor?)");
+      if (readOnlyOpened.listCalls !== 0) {
+        failures.push(
+          `opening the read-only transcript pane with older history auto-loaded ${readOnlyOpened.listCalls} older ` +
+            "page(s); the automatic paging trigger must wait until the reader approaches the top of history",
+        );
+      }
+      if (Math.abs(readOnlyOpened.bottomGap) > BOTTOM_TOLERANCE_PX) {
+        failures.push(
+          `the read-only transcript pane opened ${readOnlyOpened.bottomGap}px off the true bottom after opening a ` +
+            `session with older history (scrollTop ${readOnlyOpened.scrollTop}, scrollHeight ${readOnlyOpened.scrollHeight}, ` +
+            `clientHeight ${readOnlyOpened.clientHeight}) - the landing did not hold across the settle`,
+        );
+      }
     } finally {
       await clearViewportOverride(send);
       page.close();
@@ -282,7 +311,8 @@ async function main() {
           `(${initial.turns} turns); pill appeared on a native scroll away; jump settled at the true bottom ` +
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
-          `a session opened with older history stayed at the bottom without auto-loading a page`,
+          `a session opened with older history stayed at the bottom without auto-loading a page; ` +
+          `the read-only transcript pane did the same`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);
