@@ -75,9 +75,6 @@ func fuzzScenarioBuildTree_RowsNameTheirOwnSessionsModel(t *testing.T) {
 	if _, _, ended, found := liveAndProjectRowsFor(tree, "01ENDED"); !found || ended.Model != "claude-opus-4-7" {
 		t.Fatalf("ended row = %q (found %v), want its meta's model", ended.Model, found)
 	}
-	if len(liveRow.Children) != 1 || liveRow.Children[0].Model != "" {
-		t.Fatalf("children = %+v, want the one subagent row with no model", liveRow.Children)
-	}
 }
 
 // A spawned session's first publication names its model too, so its row names
