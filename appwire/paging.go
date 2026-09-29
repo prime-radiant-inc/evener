@@ -36,10 +36,7 @@ func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
 		return InvalidParams("cursor or before is required for thread/turns/list")
 	}
 	// A cursor that is present must be one.
-	if params.Cursor != "" && strings.TrimSpace(params.Cursor) == "" {
-		return InvalidParams("cursor or before is required for thread/turns/list")
-	}
-	if isLegacyNumericCursor(params.Cursor) {
+	if (params.Cursor != "" && strings.TrimSpace(params.Cursor) == "") || isLegacyNumericCursor(params.Cursor) {
 		return InvalidParams("cursor must be an opaque item cursor")
 	}
 	_, err := NormalizeTranscriptItemLimit(params.ItemLimit)
