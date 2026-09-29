@@ -53,7 +53,12 @@ export class SessionControls {
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
 		> | null,
 		private canMutate: () => boolean,
-	) {}
+		// The catalog the screen already knows, from its last binding: the
+		// model's name needs no read to show.
+		catalog: ModelListResponse | null = null,
+	) {
+		this.state = { ...this.state, catalog };
+	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -98,19 +103,29 @@ export class SessionControls {
 	setVisionModel(visionModel: string) {
 		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
 	}
+	/** Reads the model catalog. The catalog it has stays until the new one
+	 * lands, so a model's name never falls back to its id mid-read; a failed
+	 * read clears it, so the picker offers no stale choices. A read the
+	 * binding moved on from still ends the load, so the next one reads again
+	 * rather than waiting on it forever. */
 	async loadModels() {
 		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
-		this.publish({ catalog: null, loadingModels: true, modelError: null });
+		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({ catalog, loadingModels: false });
+			if (this.disposed) return;
+			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
 		} catch (error) {
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({
-				loadingModels: false,
-				modelError: error instanceof Error ? error.message : "Could not load models.",
-			});
+			if (this.disposed) return;
+			this.publish(
+				this.isCurrent()
+					? {
+							catalog: null,
+							loadingModels: false,
+							modelError: error instanceof Error ? error.message : "Could not load models.",
+						}
+					: { loadingModels: false },
+			);
 		}
 	}
 	changeModel(provider: string, model: string): Promise<boolean> {
