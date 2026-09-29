@@ -180,4 +180,18 @@ describe("long model lists", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "" } });
     expect(screen.getAllByRole("switch")).toHaveLength(2);
   });
+
+  test("keeps the field while only whitespace is typed, even below the cap", () => {
+    credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(60) }], availableProviders: [] });
+    const h = handlers();
+    const view = render(<InstanceSheet name="work" {...h} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "   " } });
+    act(() => {
+      credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(2) }], availableProviders: [] });
+    });
+    view.rerender(<InstanceSheet name="work" {...h} />);
+    // Whitespace trims to no filter, so nothing is hidden, and the field stays to clear it.
+    expect(screen.getByRole("searchbox", { name: "Search models" })).toBeTruthy();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+  });
 });

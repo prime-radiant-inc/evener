@@ -1723,6 +1723,25 @@ it("clears the model search when a notice opens a different provider", async () 
 	expect(control(tree, "model-00").props.value).toBe(true);
 });
 
+it("keeps the model search while only whitespace is typed, even below the cap", async () => {
+	const fake = providersHub([withManyModels(60)]);
+	fake.on("evener/instance/refreshModels", () => ({
+		instances: [withManyModels(2)],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("   "));
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	// Whitespace trims to no filter, so nothing is hidden, and the field stays to clear it.
+	expect(hasControl(tree, "Search models")).toBe(true);
+	act(() => control(tree, "Search models").props.onChangeText(""));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+});
+
 it("turns a model on or off through the hub", async () => {
 	const fake = providersHub([withModels()]);
 	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({

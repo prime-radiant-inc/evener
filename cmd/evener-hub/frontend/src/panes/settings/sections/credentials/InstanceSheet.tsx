@@ -872,7 +872,7 @@ export function InstanceSheet({
                 </Button>
               </div>
               <div className={CLASS.actionRows}>
-                {(models.length > MODEL_LIST_CAP || modelQuery !== "") && (
+                {(models.length > MODEL_LIST_CAP || modelSearch !== "") && (
                   <FormRow label="Search models" htmlFor={`${ids}-model-search`}>
                     <Input
                       id={`${ids}-model-search`}
