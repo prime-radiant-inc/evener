@@ -22,7 +22,21 @@ import { isInformationalWarning } from "./warnings";
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 
 export type ProjectedEntry =
-  | { kind: "item"; id: string; turnId: string; sourceIndex: number; item: ItemModel; isMessage: boolean }
+  | {
+      kind: "item";
+      id: string;
+      /**
+       * The stable key a renderer keys this row by, when it differs from the
+       * source item's id (see displayKeyFor): a streaming reply keeps one key
+       * from its first streamed frame through the recording of its round. A
+       * hand-built entry may leave it off; read it through entryDisplayKey.
+       */
+      displayKey?: string;
+      turnId: string;
+      sourceIndex: number;
+      item: ItemModel;
+      isMessage: boolean;
+    }
   | {
       /**
        * A content-free placeholder for a reasoning item that is the turn's
@@ -196,10 +210,38 @@ function toolSummary(item: ItemModel): string {
   return item.description?.trim() || ACTION_SUMMARY_UNAVAILABLE;
 }
 
-function itemEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedEntry {
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id.
+// Both carry the round's id, so the round's first reply takes a round display
+// key that the stream and the recorded item share, and a renderer that keys rows
+// by it reconciles the reply instead of remounting it. Only the first takes it
+// (a round can record two replies); a call-bearing communicate preview takes
+// none (its message records with no round id). Everything else keys by its id.
+function displayKeyFor(item: ItemModel, keyedRounds: Set<string>): string | undefined {
+  if (item.type !== "agentMessage" || !item.roundId || item.callId) return undefined;
+  const key = `round:${item.roundId}:agentMessage`;
+  if (keyedRounds.has(key)) return undefined;
+  keyedRounds.add(key);
+  return key;
+}
+
+// The stable key a renderer keys an entry by: an item entry's round display key
+// when it has one, otherwise the entry's own id. A hand-built entry without a
+// displayKey keys by its id.
+export function entryDisplayKey(entry: ProjectedEntry): string {
+  return entry.kind === "item" ? (entry.displayKey ?? entry.id) : entry.id;
+}
+
+function itemEntry(
+  item: ItemModel,
+  turnId: string,
+  sourceIndex: number,
+  displayKey: string | undefined,
+): ProjectedEntry {
   return {
     kind: "item",
     id: item.id,
+    displayKey,
     turnId,
     sourceIndex,
     item,
@@ -421,6 +463,8 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
   const anchors: ProjectedAnchor[] = [];
   const eligibleDisclosureIds: string[] = [];
   const sourceIndexRank = sourceIndexRanks(model.turns);
+  // Rounds whose first reply already took the round key (see displayKeyFor).
+  const keyedRounds = new Set<string>();
   let projectedIndex = 0;
 
   for (const turn of model.turns) {
@@ -437,7 +481,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
 
       let entry: ProjectedEntry;
       if (decision === "item") {
-        entry = itemEntry(item, turn.id, itemSourceIndex);
+        entry = itemEntry(item, turn.id, itemSourceIndex, displayKeyFor(item, keyedRounds));
       } else if (decision === "thinking") {
         entry = { kind: "thinking", id: item.id, turnId: turn.id, sourceIndex: itemSourceIndex, item };
       } else if (decision === "intent") {
