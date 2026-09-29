@@ -4,7 +4,7 @@
 // runs it (node --test).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -12,11 +12,13 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, "check-podfile-lock.mjs");
-const realLock = readFileSync(path.join(here, "../../mobile-native/Podfile.lock"), "utf8");
+const realLockPath = path.join(here, "../../mobile-native/Podfile.lock");
+const realLock = readFileSync(realLockPath, "utf8");
 const scratch = mkdtempSync(path.join(tmpdir(), "check-podfile-lock-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const check = (...args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+const run = (scriptPath, ...args) => spawnSync(process.execPath, [scriptPath, ...args], { encoding: "utf8" });
+const check = (...args) => run(script, ...args);
 
 /** A copy of the real lock without the DEPENDENCIES line for `pod`. */
 function lockWithout(pod) {
@@ -71,4 +73,49 @@ test("a file with no DEPENDENCIES section exits 2", () => {
 	const run = check("--lock", file);
 	assert.equal(run.status, 2);
 	assert.match(run.stderr, /no DEPENDENCIES section/);
+});
+
+test("a lock with CRLF line endings is read, not called sectionless", () => {
+	const file = path.join(scratch, "crlf.lock");
+	writeFileSync(file, realLock.replace(/\n/g, "\r\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 0, run.stderr);
+});
+
+test("a DEPENDENCIES section at end of file with no trailing blank line is read", () => {
+	const start = realLock.indexOf("\nDEPENDENCIES:\n");
+	const file = path.join(scratch, "eof.lock");
+	writeFileSync(
+		file,
+		`${realLock.slice(0, start)}\nDEPENDENCIES:\n  - ExpoCamera (from \`../node_modules/expo-camera/ios\`)`,
+	);
+	const run = check("--lock", file);
+	assert.equal(run.status, 1, run.stderr);
+	assert.match(run.stderr, /missing: /);
+	assert.doesNotMatch(run.stderr, /no DEPENDENCIES section/);
+});
+
+test("a DEPENDENCIES line that does not parse exits 2 naming it", () => {
+	const file = path.join(scratch, "garbage.lock");
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - not a dependency line\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 2, run.stderr);
+	assert.match(run.stderr, /cannot parse/);
+});
+
+test("an unexpected autolinking shape exits 2 with one line, not a stack trace", () => {
+	// A throwaway mobile-native whose expo stub prints the wrong JSON shape, so
+	// the check reaches the autolinking parse without a real dependency tree.
+	const fake = path.join(scratch, "fake");
+	const expoBin = path.join(fake, "mobile-native/node_modules/expo/bin");
+	mkdirSync(expoBin, { recursive: true });
+	writeFileSync(path.join(fake, "mobile-native/node_modules/expo/package.json"), '{"name":"expo","version":"0.0.0"}');
+	writeFileSync(path.join(expoBin, "autolinking.js"), 'process.stdout.write(JSON.stringify({ modules: "not-an-array" }));');
+	const scriptDir = path.join(fake, "scripts/native");
+	mkdirSync(scriptDir, { recursive: true });
+	copyFileSync(script, path.join(scriptDir, "check-podfile-lock.mjs"));
+	const result = run(path.join(scriptDir, "check-podfile-lock.mjs"), "--lock", realLockPath);
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*modules/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });
