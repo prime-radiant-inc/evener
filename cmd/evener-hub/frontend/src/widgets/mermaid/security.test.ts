@@ -30,7 +30,12 @@ describe("sanitizeMermaidSvg against real mermaid fixtures", () => {
     const labels = [...raw.matchAll(/<span class="[^"]*Label[^"]*"[^>]*>(.*?)<\/span>/g)]
       .map((m) => (m[1] ?? "").replace(/<[^>]+>/g, "").trim())
       .filter((label) => label.length > 0);
-    const textLabels = [...raw.matchAll(/<text[^>]*>([^<]+)</g)].map((m) => m[1] ?? "");
+    // sequence actors, gantt section titles, and gitgraph branch labels wrap
+    // their text in a nested <tspan>, so match the whole <text> element and
+    // strip the nested tags the same way the span labels above are recovered.
+    const textLabels = [...raw.matchAll(/<text[^>]*>(.*?)<\/text>/g)]
+      .map((m) => (m[1] ?? "").replace(/<[^>]+>/g, ""))
+      .filter((label) => label.length > 0);
     for (const label of [...labels, ...textLabels]) {
       expect(clean).toContain(label);
     }
