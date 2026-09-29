@@ -212,17 +212,22 @@ var (
 	toolWireCreatedAt       = regexp.MustCompile(`"created_at": "[^"]+"`)
 )
 
+// toolWireRepoRelocated rewrites the repository's paths, commit and session
+// in text: a result, or a call's arguments (adopt names a path).
+func toolWireRepoRelocated(repo *wtRepo, text string) string {
+	out := toolWireWorktreeProject.ReplaceAllString(text, "/worktrees/evener/")
+	out = strings.ReplaceAll(out, repo.stateDir, toolWireStateDir)
+	out = strings.ReplaceAll(out, repo.mainRoot, toolWireCwd)
+	out = strings.ReplaceAll(out, repo.head, toolWireHead)
+	out = strings.ReplaceAll(out, repo.head[:12], toolWireHead[:12])
+	return strings.ReplaceAll(out, repo.s.ID(), toolWireRepoSession)
+}
+
 // withFixedRepo records a manage_worktree result with the repository's
 // paths, commit, session and clock fixed.
 func withFixedRepo(repo *wtRepo) func(tool.ExecResult) tool.ExecResult {
 	return func(res tool.ExecResult) tool.ExecResult {
-		out := toolWireWorktreeProject.ReplaceAllString(res.Output, "/worktrees/evener/")
-		out = strings.ReplaceAll(out, repo.stateDir, toolWireStateDir)
-		out = strings.ReplaceAll(out, repo.mainRoot, toolWireCwd)
-		out = strings.ReplaceAll(out, repo.head, toolWireHead)
-		out = strings.ReplaceAll(out, repo.head[:12], toolWireHead[:12])
-		out = strings.ReplaceAll(out, repo.s.ID(), toolWireRepoSession)
-		out = toolWireAge.ReplaceAllString(out, `"age_seconds": 1`)
+		out := toolWireAge.ReplaceAllString(toolWireRepoRelocated(repo, res.Output), `"age_seconds": 1`)
 		res.Output = toolWireCreatedAt.ReplaceAllString(out,
 			`"created_at": "`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
 		return res
@@ -256,6 +261,9 @@ func TestToolCallWireFixtures(t *testing.T) {
 	t.Parallel()
 	dir, s := toolWireWorkspace(t)
 	repo := newWorktreeRepo(t)
+	// A worktree git made itself under the managed root, with no evener
+	// record of it, for manage_worktree adopt.
+	lane := repo.addUnmanagedWorktreeFixture(t, "lane", "lane")
 
 	webFetch, err := json.Marshal(map[string]any{
 		"answer":       "The release notes list three fixes to the tree settle pass.",
@@ -397,7 +405,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_worktree_list", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
-			note: "The repository's managed worktrees.",
+			note: "The repository's managed worktrees, and the lane git made without evener under unmanaged.",
 			args: map[string]any{"operation": "list"},
 		},
 		{
@@ -427,8 +435,13 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_worktree_prune", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
-			note: "A prune with nothing left to prune.",
+			note: "A prune with nothing it may remove: the removed worktree is still in its grace period, and the lane has no evener record.",
 			args: map[string]any{"operation": "prune"},
+		},
+		{
+			id: "call_worktree_adopt", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),
+			note: "A worktree git made under the managed root without evener, adopted as a managed one.",
+			args: map[string]any{"operation": "adopt", "path": lane},
 		},
 		{
 			id: "call_web_fetch", tool: "web_fetch",
@@ -519,21 +532,23 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Note:  "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
 		Cwd:   toolWireCwd,
 		Notes: notes,
-		Items: toolWireRelocated(t, items, dir),
+		Items: toolWireRelocated(t, items, func(text string) string {
+			return toolWireRepoRelocated(repo, strings.ReplaceAll(text, dir, toolWireCwd))
+		}),
 	}, "the AppWire package and mobile-native tests that read it")
 }
 
-// toolWireRelocated rewrites the temp workspace's path, wherever it appears
-// in the items (a shell command's cd, glob's paths, a skill's source), to
-// toolWireCwd.
-func toolWireRelocated(t *testing.T, items []appwire.ThreadItem, dir string) []appwire.ThreadItem {
+// toolWireRelocated rewrites every machine-specific spelling, wherever it
+// appears in the items (a shell command's cd, glob's paths, a skill's source,
+// an adopted worktree's path), through relocate.
+func toolWireRelocated(t *testing.T, items []appwire.ThreadItem, relocate func(string) string) []appwire.ThreadItem {
 	t.Helper()
 	encoded, err := json.Marshal(items)
 	if err != nil {
 		t.Fatalf("encode items: %v", err)
 	}
 	var relocated []appwire.ThreadItem
-	if err := json.Unmarshal([]byte(strings.ReplaceAll(string(encoded), dir, toolWireCwd)), &relocated); err != nil {
+	if err := json.Unmarshal([]byte(relocate(string(encoded))), &relocated); err != nil {
 		t.Fatalf("decode items: %v", err)
 	}
 	return relocated

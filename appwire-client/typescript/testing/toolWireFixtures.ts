@@ -54,6 +54,7 @@ export type ToolWireCall =
   | "call_worktree_exit_again"
   | "call_worktree_remove"
   | "call_worktree_prune"
+  | "call_worktree_adopt"
   | "call_web_fetch"
   | "call_web_search"
   | "call_use_skill"
