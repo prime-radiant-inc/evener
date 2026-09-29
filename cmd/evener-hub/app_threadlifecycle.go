@@ -146,7 +146,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
-		thread = applyHubForkCapability(cfg, thread)
+		thread = applyHubCapabilities(cfg, thread)
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
@@ -180,7 +180,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
-	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
+	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
@@ -574,7 +574,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				// The response was projected while this resume still held the
 				// recovery fence. Re-project so it reports the fork authority a
 				// read issued after the clear reports.
-				response.Thread = applyHubForkCapability(cfg, response.Thread)
+				response.Thread = applyHubCapabilities(cfg, response.Thread)
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()
@@ -783,7 +783,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
 			annotateThreadProjects([]appwire.Thread{read.Thread})
-			read.Thread = applyHubForkCapability(cfg, read.Thread)
+			read.Thread = applyHubCapabilities(cfg, read.Thread)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
 		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
@@ -1015,7 +1015,7 @@ func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, source
 		return appwire.ThreadResumeResponse{}, err
 	}
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
-	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
+	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 

@@ -113,6 +113,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"Interrupt":    "no daemon is running to interrupt",
 		"ForkFromTurn": "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
 		"StopSubagent": "a session with no daemon running runs no subagents to stop",
+		"PageBefore":   "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
 	}
 	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), pastDiffer, nil)
 
