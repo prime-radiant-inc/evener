@@ -362,8 +362,8 @@ function Board({
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
 	const hubNotices = useMemo(
-		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
-		[snapshot.auth, sources, snapshot.plugins, loadedRows],
+		() => notices({ hubNotices: snapshot.notices, sources: sources ?? [] }),
+		[snapshot.notices, sources],
 	);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
@@ -2000,12 +2000,9 @@ function SummaryLine({
 			}}
 		>
 			{entries.map((band, index) => (
+				// Each count carries the separator after it, so the line wraps
+				// after a dot and no wrapped line starts with one.
 				<View key={band} style={{ flexDirection: "row", alignItems: "center" }}>
-					{index > 0 ? (
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
-							{" · "}
-						</Text>
-					) : null}
 					<Pressable
 						accessibilityRole="button"
 						onPress={() => {
@@ -2035,6 +2032,11 @@ function SummaryLine({
 							{summaryText(band, summary[band])}
 						</Text>
 					</Pressable>
+					{index < entries.length - 1 ? (
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
+							{" · "}
+						</Text>
+					) : null}
 				</View>
 			))}
 		</View>

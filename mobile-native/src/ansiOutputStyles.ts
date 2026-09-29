@@ -1,4 +1,9 @@
-import type { AnsiColor, AnsiLine, AnsiRun } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import {
+	type AnsiColor,
+	type AnsiLine,
+	type AnsiRun,
+	parseAnsiLines,
+} from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 
 export interface NativeAnsiTextStyle {
 	color?: string;
@@ -72,10 +77,36 @@ export function ansiRunTextStyle(run: AnsiRun, dark: boolean): NativeAnsiTextSty
 // A terminal's tab stops: every 8 columns.
 const TAB_STOP = 8;
 
-/** The line with each tab expanded to spaces up to the next tab stop, as a
+// Text with each tab expanded to spaces up to the next tab stop, starting at
+// column; the column after it too. Tab stops count code points, one column
+// each, which is how the phone draws Menlo: no character there takes two
+// columns.
+function expandTabsFrom(text: string, column: number): { text: string; column: number } {
+	let expanded = "";
+	let at = column;
+	for (const char of text) {
+		if (char === "\t") {
+			const spaces = TAB_STOP - (at % TAB_STOP);
+			expanded += " ".repeat(spaces);
+			at += spaces;
+		} else {
+			expanded += char;
+			at += 1;
+		}
+	}
+	return { text: expanded, column: at };
+}
+
+/** A line with each tab expanded to spaces up to the next tab stop, as a
  * terminal sets it. A native Text draws a tab with no width ("tree.go\t32"
- * read "tree.go32"), and the column carries across the line's runs, so a tab
- * after colored text still lands on the stop. */
+ * read "tree.go32"). */
+export function expandTabs(line: string): string {
+	return line.includes("\t") ? expandTabsFrom(line, 0).text : line;
+}
+
+/** A parsed output line with its tabs expanded (expandTabs). The column
+ * carries across the line's runs, so a tab after colored text still lands on
+ * the stop. */
 export function expandLineTabs(line: AnsiLine): AnsiLine {
 	let column = 0;
 	return line.map((run) => {
@@ -83,17 +114,15 @@ export function expandLineTabs(line: AnsiLine): AnsiLine {
 			column += [...run.text].length;
 			return run;
 		}
-		let text = "";
-		for (const char of run.text) {
-			if (char === "\t") {
-				const spaces = TAB_STOP - (column % TAB_STOP);
-				text += " ".repeat(spaces);
-				column += spaces;
-			} else {
-				text += char;
-				column += 1;
-			}
-		}
-		return { ...run, text };
+		const expanded = expandTabsFrom(run.text, column);
+		column = expanded.column;
+		return { ...run, text: expanded.text };
 	});
+}
+
+/** Output text as the lines a native Text can draw: parsed for ANSI styling,
+ * each tab expanded to its stop (expandLineTabs). Every output view parses
+ * through here, so none draws a tab with no width. */
+export function parseOutputLines(text: string): AnsiLine[] {
+	return parseAnsiLines(text).map(expandLineTabs);
 }

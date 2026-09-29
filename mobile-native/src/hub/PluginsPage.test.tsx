@@ -31,8 +31,8 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
-import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
-import { Group, GroupFooter } from "../sheet/Grouped";
+import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { Button, Group, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 
 const harness = vi.hoisted(() => ({
@@ -3472,4 +3472,47 @@ it("points an empty marketplace list at the action its own segment has (audit L6
 	await choose(tree, "Browse");
 	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one on Marketplaces to browse its plugins.");
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" })).toHaveLength(0);
+});
+
+it("offers Install and Open as a catalog row's own mini button, as the prototype does, not the whole row (audit M13)", async () => {
+	const hub = pageHub([entry("tool", { marketplace: "acme" })]);
+	hub.on("evener/marketplace/browse", () => ({
+		name: "acme",
+		plugins: [
+			{ name: "tool", description: "A tool" },
+			{ name: "gadget", description: "A gadget" },
+		],
+	}));
+	const { tree } = await mountPage(hub);
+	await choose(tree, "Browse");
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+	});
+	await act(async () => {});
+	const minis = tree.root.findAll((node) => node.type === Button && node.props.mini === true);
+	expect(minis.map((node) => [node.props.label, node.props.accessibilityLabel])).toEqual([
+		["Open", "Open tool from acme"],
+		["Install", "Install gadget from acme"],
+	]);
+	// The row itself is one plain reading beside its button: the button is the
+	// row's only target.
+	const row = tree.root.find((node) => node.type === Row && node.props.label === "gadget");
+	const elements = row.findAll(
+		(node) => typeof node.type === "string" && (node.props.accessible === true || String(node.type) === "Pressable"),
+	);
+	expect(elements.map((node) => [String(node.type), node.props.accessibilityLabel])).toEqual([
+		["View", "gadget, A gadget"],
+		["Pressable", "Install gadget from acme"],
+	]);
+	hub.on("evener/plugin/install", () => ({
+		plugins: [entry("tool", { marketplace: "acme" }), entry("gadget", { marketplace: "acme" })],
+	}));
+	await act(async () => {
+		pressable(tree, "Install gadget from acme")?.props.onPress();
+	});
+	await act(async () => {});
+	expect(hub.calls.at(-1)).toMatchObject({
+		method: "evener/plugin/install",
+		params: { plugin: "gadget", marketplace: "acme" },
+	});
 });

@@ -473,6 +473,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
+export { composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -548,6 +549,7 @@ export {
 export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
 export {
   applyPatchSummary,
+  askUserSummary,
   BINARY_PAYLOAD_HEADER,
   editFileSummary,
   fallbackToolSummary,
@@ -569,6 +571,7 @@ export {
   toolFamily,
   toolStepProgress,
   toolStepSummary,
+  toolStepWords,
   useSkillSummary,
   webFetchByteCount,
   webFetchSummary,

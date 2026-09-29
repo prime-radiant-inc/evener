@@ -18,6 +18,7 @@ import type {
 	ArchiveParams,
 	ArchiveResponse,
 	AuthListResponse,
+	NoticesListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
 	NavigationJobSummary,
@@ -958,6 +959,10 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
 	// Finished, a session replaying the recorded wire corpora.
 	toolFamilies?: boolean;
+	// The provider instance each model id runs on (demoSetup.ts's catalog),
+	// which the fleet's rows don't say: a sign-in notice counts the live
+	// sessions on its provider's models. None by default.
+	modelProviders?: Readonly<Record<string, string>>;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -970,6 +975,9 @@ interface FleetAnswers {
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
+	/** evener/notices/list (S11), derived as cmd/evener-hub/app_notices.go
+	 * derives it. */
+	answerNoticesList(): NoticesListResponse;
 }
 
 export interface DemoFleet extends FleetAnswers {
@@ -1027,6 +1035,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	let offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
+	const modelProviders = options.modelProviders ?? {};
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
@@ -1035,7 +1044,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// Every resource's revision is one ahead of the navigation sequence: both
 	// start there and each change advances them together.
 	let sequence = 0;
-	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders);
 
 	// Moves the fleet to `changed` at the next sequence and revision, and
 	// returns the evener/navigation/invalidated payload for the targets the
@@ -1047,7 +1056,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		sessionsList = changed;
 		sequence += 1;
 		const revision = sequence + 1;
-		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock, modelProviders);
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
@@ -1129,6 +1138,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
+		answerNoticesList: () => answers.answerNoticesList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		step,
 		setSessionState: (ref, state) => {
@@ -1178,6 +1188,7 @@ function fleetAnswers(
 	startupMs: number,
 	offlineHost: boolean,
 	clock: () => number,
+	modelProviders: Readonly<Record<string, string>>,
 ): FleetAnswers {
 	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
@@ -1494,5 +1505,33 @@ function fleetAnswers(
 		};
 	}
 
-	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList };
+	// The hub's notices: each expired sign-in with the live top-level sessions
+	// whose model runs on that provider instance, then each offline host with
+	// its sessions that were live when last reached. No demo plugin is broken.
+	function answerNoticesList(): NoticesListResponse {
+		const counted = (affected: number) => (affected > 0 ? { affectedSessions: affected } : {});
+		const signIns = answerAuthList()
+			.providers.filter((status) => status.needsLogin)
+			.map((status) => ({
+				id: `signInRequired:${status.provider}`,
+				kind: "signInRequired",
+				subject: status.provider,
+				// A session with no model of its own runs the default, which is
+				// lunaroute's (demoSessions.ts DEFAULT_MODEL), never an expired one.
+				...counted(
+					liveRaw.filter((raw) => raw.model !== undefined && modelProviders[raw.model] === status.provider).length,
+				),
+			}));
+		const hosts = sources
+			.filter((source) => !source.online)
+			.map((source) => ({
+				id: `hostOffline:${source.id}`,
+				kind: "hostOffline",
+				subject: source.id,
+				...counted(liveSessions.filter((row) => row.host_id === source.id).length),
+			}));
+		return { notices: [...signIns, ...hosts] };
+	}
+
+	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList, answerNoticesList };
 }

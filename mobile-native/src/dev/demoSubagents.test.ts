@@ -74,7 +74,7 @@ describe("the demo fleet's subagents", () => {
 		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
 		expect(rows).toHaveLength(55);
 		expect(tallySubagents(rows)).toEqual({ total: 55, failed: 2, running: 32, done: 21 });
-		const settle = rows.find((row) => row.id === "d-g-settle");
+		const settle = rows.find((row) => row.id === "g-settle");
 		expect(subagentWhy(settle as NonNullable<typeof settle>, NOW)).toEqual({
 			word: "Failed",
 			text: "go test exited 1 (3 times)",
@@ -83,10 +83,20 @@ describe("the demo fleet's subagents", () => {
 			branch: "fix-settle-race",
 			tokens: "1.2M tokens",
 		});
-		expect(rows.find((row) => row.id === "d-g-settle-1")?.parentTitle).toBe("Fix race in tree settle");
-		expect(subagentWhy(rows.find((row) => row.id === "d-g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
+		expect(rows.find((row) => row.id === "g-settle-1")?.parentTitle).toBe("Fix race in tree settle");
+		expect(subagentWhy(rows.find((row) => row.id === "g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
 			text: "Running go test ./agent/...",
 		});
+	});
+
+	// A transcript's subagent row finds its outcome in this tree by the id the
+	// session's roster gives it (demoSessions.ts delegatesOf), as on a hub,
+	// where both name the one delegate (audit G13).
+	it("names each subagent by its roster id, and a finished one's report", () => {
+		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
+		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
+		const done = rows.find((row) => row.id === "g-done-0");
+		expect(subagentWhy(done as NonNullable<typeof done>, NOW)).toEqual({ text: "Tests pass." });
 	});
 
 	it("reads data.js's token labels", () => {

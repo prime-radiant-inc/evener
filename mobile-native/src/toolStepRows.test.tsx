@@ -7,11 +7,11 @@
 import { toolWireModel } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, textOf } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
 import { stepEvidence } from "./session/evidence";
-import { hideAnswerMessages, runSummary, runSummaryText, sessionRows, stepTarget } from "./session/transcriptRows";
+import { answerTo, hideAnswerMessages, runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -46,10 +46,15 @@ function rowsAt(level: Level): TimelineRow[] {
 const runsAt = (level: Level) => rowsAt(level).filter((row): row is Run => row.kind === "run");
 
 // What a run's expanded steps say, one line per step.
+// Each Text's own words, its nested runs (a Menlo target) joined as drawn.
 function stepText(run: Run): string {
-	return renderedText(
-		render(<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub" sessionRef="ref-tools" />),
+	const tree = render(
+		<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub" sessionRef="ref-tools" />,
 	);
+	return tree.root
+		.findAll((node) => String(node.type) === "Text")
+		.map(textOf)
+		.join("\n");
 }
 
 describe("a step with no intent", () => {
@@ -91,11 +96,9 @@ describe("a call and its result, served as two items", () => {
 
 	it.each(["intent", "tools", "full"] as const)("keeps the call's arguments on every step, at %s", (level) => {
 		for (const each of steps(level)) expect(each.detail.arguments, each.label).toBeDefined();
-		expect(stepTarget("read_file", step(level, "read_file").detail.arguments)).toBe("agent/tree.go");
-		// The command as the call sent it; only the summary drops the session's cd.
-		expect(stepTarget("shell", step(level, "shell").detail.arguments)).toBe(
-			"cd /home/jesse/git/evener && cat agent/tree_order.go",
-		);
+		expect(step(level, "read_file").detail.words?.target).toBe("agent/tree.go");
+		// The session's own cd is left out of the command.
+		expect(step(level, "shell").detail.words?.target).toBe("cat agent/tree_order.go");
 	});
 
 	// The result's half: its output, which the call never carries.
@@ -108,6 +111,24 @@ describe("a call and its result, served as two items", () => {
 		expect(stepEvidence(step(level, "edit_file")).map((evidence) => evidence.kind)).toEqual(["diff"]);
 		expect(stepEvidence(step(level, "write_file"))).toEqual([{ kind: "wrote", path: "agent/tree_order.go" }]);
 		expect(stepEvidence(step(level, "apply_patch")).map((evidence) => evidence.kind)).toEqual(["diff"]);
+	});
+});
+
+// agent/testdata/toolwire records a real ask_user call and your answer after
+// it: the question is a row of its own, which reads the answer you gave, and
+// your composed "[answers]" message stays out of the transcript.
+describe("a question put to you, with the answer you gave", () => {
+	it.each(["intent", "tools", "full"] as const)("reads as its own row with your answer, at %s", (level) => {
+		const rows = rowsAt(level);
+		const asked = rows.find((row) => row.kind === "activity" && row.label === "ask_user");
+		expect(asked).toBeDefined();
+		expect(
+			runsAt(level)
+				.flatMap((run) => run.steps)
+				.some((step) => step.label === "ask_user"),
+		).toBe(false);
+		expect(answerTo(toolWireModel(), asked?.id ?? "")).toBe('"Ship tonight"');
+		expect(rows.some((row) => row.kind === "user" && row.text.startsWith("[answers]"))).toBe(false);
 	});
 });
 

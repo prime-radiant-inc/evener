@@ -66,7 +66,8 @@ test("concealed runs preserve their layout but override all visible opacity", ()
 test("expands tabs to the next stop of 8, counting columns across runs", () => {
 	const [line] = parseAnsiLines("\u001b[32mok\u001b[0m\tgo\ttest\t");
 	expect(expandLineTabs(line ?? []).map((run) => run.text)).toEqual(["ok", "      go      test    "]);
-	// Code points, not UTF-16 units: an emoji takes one column.
+	// One column per code point, as the phone draws Menlo: an emoji takes one
+	// column there, so its tab reaches the stop at 8.
 	expect(expandLineTabs(parseAnsiLines("😀\tx")[0] ?? []).map((run) => run.text)).toEqual(["😀       x"]);
 	const plain = parseAnsiLines("no tabs")[0] ?? [];
 	expect(expandLineTabs(plain)[0]).toBe(plain[0]);

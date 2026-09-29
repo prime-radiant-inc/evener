@@ -58,8 +58,7 @@ export function detectSessionAlerts(
 	return { alerts, resolved, states };
 }
 
-// A broken plugin never alerts: the Board checks plugins only while it is on
-// screen, where the notice row already shows it (ruling 5).
+// A broken plugin never alerts: the Board's notice row shows it (ruling 5).
 const ALERTING_NOTICES: ReadonlySet<Notice["kind"]> = new Set(["signIn", "host"]);
 
 export function detectNoticeAlerts(

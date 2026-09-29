@@ -58,6 +58,21 @@ describe("tabs in output", () => {
 	});
 });
 
+// Go source is tab-indented, so a diff drawn with zero-width tabs loses its
+// indentation. The +/- column counts as column 0, as a terminal's diff does.
+describe("tabs in a diff", () => {
+	it("expands the recorded edit's and patch's tabs to the next stop", () => {
+		for (const call of ["call_edit_file", "call_apply_patch"] as const) {
+			const item = toolWireStep(call);
+			const edited = step(item.toolName ?? "", { arguments: item.argumentsJSON, output: item.output });
+			const tree = render(<StepEvidence step={edited} evidence={stepEvidence(edited)} hubId="hub-1" />);
+			const lines = texts(tree.root).map(textOf);
+			expect(lines).toContain(call === "call_edit_file" ? "+       drain()" : "+       log()");
+			expect(lines.join("\n")).not.toContain("\t");
+		}
+	});
+});
+
 describe("a command's output", () => {
 	const output = Array.from({ length: 41 }, (_, n) => `line ${n + 1}`).join("\n");
 	const shell = step("shell", { arguments: '{"command":"go test"}', description: "Run the tests", output });
