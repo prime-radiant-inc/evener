@@ -1,6 +1,6 @@
-import { usePreventRemove } from "@react-navigation/native";
+import { useFocusEffect, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { inactivePromptDependent, LaunchSettings } from "@evener/appwire-client";
@@ -16,6 +16,9 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { destructiveButton } from "./haptics";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
+
+/** A change made elsewhere while you edit: the choice is yours to discard. */
+const CHANGED_ELSEWHERE = "Launch settings changed elsewhere. Discard your changes to see them.";
 export function LaunchSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state } = useConnection();
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
@@ -69,6 +72,14 @@ function LaunchDefaults({
 	useEffect(() => {
 		void model.setConnection(client);
 	}, [model, client]);
+	// The page keeps itself current (principle 2): a read that failed is read
+	// again each time the page comes back into view. An unsaved edit stays;
+	// the store never reads over one.
+	useFocusEffect(
+		useCallback(() => {
+			if (model.getSnapshot().error) void model.refresh();
+		}, [model]),
+	);
 	usePreventRemove(state.dirty || state.saving, ({ data }) => {
 		if (state.saving) return;
 		Alert.alert("Discard launch changes?", "Your unsaved changes will be lost.", [
@@ -109,31 +120,26 @@ function LaunchDefaults({
 					>
 						Save defaults
 					</Action>
-					<Action
-						disabled={!client || state.loading || state.saving}
-						onPress={() => {
-							const reload = () => {
-								setNotice(null);
-								void model.refresh(true);
-							};
-							if (state.dirty)
-								Alert.alert("Reload launch defaults?", "This discards your unsaved changes.", [
-									{ text: "Cancel", style: "cancel" },
-									destructiveButton("Reload", () => reload()),
-								]);
-							else reload();
-						}}
-					>
-						Reload
-					</Action>
+					{state.changedElsewhere ? (
+						<Action
+							disabled={!client || state.loading || state.saving}
+							onPress={() =>
+								Alert.alert("Discard your changes?", "You'll see the launch defaults as they are now.", [
+									{ text: "Keep editing", style: "cancel" },
+									destructiveButton("Discard", () => {
+										setNotice(null);
+										void model.refresh(true);
+									}),
+								])
+							}
+						>
+							Discard changes
+						</Action>
+					) : null}
 				</View>
 				{state.loading && <ActivityIndicator accessibilityLabel="Loading launch defaults" />}
 				{state.saving && <ActivityIndicator accessibilityLabel="Saving launch defaults" />}
-				<ErrorMessage
-					message={
-						state.error ?? (state.changedElsewhere ? "Launch settings changed elsewhere. Reload before saving." : null)
-					}
-				/>
+				<ErrorMessage message={state.changedElsewhere ? CHANGED_ELSEWHERE : state.error} />
 				<ErrorMessage message={state.resolveError} />
 				{notice && <Copy>{notice}</Copy>}
 				{state.resolved?.diagnostics?.map((d) => (
