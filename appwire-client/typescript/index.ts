@@ -659,6 +659,7 @@ export {
   readTranscriptSummary,
   type TranscriptEnvelope,
   type TranscriptStep,
+  turns,
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
@@ -689,3 +690,4 @@ export {
   watchNextFireLabel,
   watchTitle,
 } from "./watchText";
+export { type WorktreeStep, worktreeMessage, worktreeSummary } from "./worktreeSteps";

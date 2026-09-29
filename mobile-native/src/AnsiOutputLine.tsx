@@ -3,6 +3,8 @@ import type { AnsiLine } from "../../cmd/evener-hub/frontend/src/widgets/codeblo
 import { ansiRunTextStyle } from "./ansiOutputStyles";
 import { useColors } from "./ui";
 
+/** One output line, drawn as parsed: its tabs already expanded where it was
+ * parsed (expandLineTabs), since a native Text draws a tab with no width. */
 export function AnsiOutputLine({ line }: { line: AnsiLine }) {
 	const colors = useColors();
 	const dark = useColorScheme() === "dark";

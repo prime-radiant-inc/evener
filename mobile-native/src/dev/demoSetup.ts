@@ -214,6 +214,8 @@ const SETUP_METHODS = [
 	"evener/instance/setModelDisabled",
 	"evener/instance/refreshModels",
 	"evener/auth/list",
+	"evener/auth/device/start",
+	"evener/auth/device/poll",
 	"evener/marketplace/list",
 	"evener/marketplace/browse",
 	"evener/plugin/preview",
@@ -337,6 +339,11 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		instances: PROVIDERS.map((provider, index) => instanceEntry(provider, index, providerModels(provider))),
 		availableProviders: [],
 	});
+	const deviceFlows = new Set<string>();
+	const requireCodex = (name: string) => {
+		if (!PROVIDERS.some((provider) => provider.id === name && provider.auth === "oauth-openai-codex"))
+			throw new Error(`OAuth is not supported for instance "${name}"`);
+	};
 	// app_instances.go's refusal for a name it doesn't have.
 	const requireInstance = (name: string) => {
 		if (!PROVIDERS.some((provider) => provider.id === name)) throw new Error(`instance "${name}" not found`);
@@ -368,6 +375,25 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
 		"evener/update/check": demoUpdateCheck,
+		// app_auth.go's DeviceStart and DevicePoll, for a Codex provider only
+		// (requiresCodex). The demo's code never gets authorized: a flow it
+		// started stays pending, and one it didn't is expired.
+		"evener/auth/device/start": ({ provider }) => {
+			requireCodex(provider);
+			const flowId = `demo-flow-${deviceFlows.size + 1}`;
+			deviceFlows.add(flowId);
+			return {
+				provider,
+				flowId,
+				userCode: "WDJB-MJHT",
+				verificationUrl: "https://example.com/device",
+				intervalSeconds: 5,
+			};
+		},
+		"evener/auth/device/poll": ({ provider, flowId }) => {
+			requireCodex(provider);
+			return { state: deviceFlows.has(flowId) ? "pending" : "expired" };
+		},
 		"evener/settings/transcriptDisplay/get": () => structuredClone(transcriptDisplay),
 		// hubcore's TranscriptDisplayStore.Patch: a patch must name the layout's
 		// current revision (transcriptDisplayConflict otherwise), keeps the

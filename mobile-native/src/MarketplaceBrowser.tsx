@@ -20,6 +20,7 @@ import {
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
 import {
+	Button,
 	FormError,
 	Group,
 	GroupedPage,
@@ -184,7 +185,12 @@ export function MarketplaceBrowser({
 			/>
 			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
-				<GroupFooter>No marketplaces on this hub.</GroupFooter>
+				// Add marketplace is on the Marketplaces segment only.
+				<GroupFooter>
+					{segment === "marketplaces"
+						? "No marketplaces on this hub. Add one to browse its plugins."
+						: "No marketplaces on this hub. Add one on Marketplaces to browse its plugins."}
+				</GroupFooter>
 			) : null}
 			{rows.length > 0 ? (
 				<Group>
@@ -310,8 +316,6 @@ export function MarketplaceDetail({
 	/** The marketplace left the hub's list, removed here or elsewhere. */
 	onGone(): void;
 }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
 	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
 	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
@@ -544,20 +548,19 @@ export function MarketplaceDetail({
 										key={item.name}
 										label={item.name}
 										sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
-										value={
-											<Text
-												allowFontScaling={allowFontScaling}
-												style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
-											>
-												{existing ? "Installed · Open" : "Install"}
-											</Text>
+										// The prototype's mini button: the row's own control.
+										accessory={
+											<Button
+												mini
+												label={existing ? "Open" : "Install"}
+												accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
+												disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
+												onPress={() => {
+													if (existing) onOpenPlugin(target);
+													else install(target);
+												}}
+											/>
 										}
-										accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
-										disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
-										onPress={() => {
-											if (existing) onOpenPlugin(target);
-											else install(target);
-										}}
 									/>
 								);
 							})}

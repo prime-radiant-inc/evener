@@ -4,13 +4,14 @@
 // and the phone's step lines read these.
 
 import type { ItemModel } from "./model";
-import { clip, parseArgs, parseJSONObject, str } from "./toolCallText";
-import { lastLine, outputTails } from "./toolEvidence";
+import { clip, parseArgs, str } from "./toolCallText";
+import { lastLine, outputTails, toolJSONResult } from "./toolEvidence";
 
 /** The parts of a transcript step its words read. */
 export type TranscriptStep = Pick<ItemModel, "argumentsJSON" | "output">;
 
-function turns(n: number): string {
+/** "1 turn", "3 turns". */
+export function turns(n: number): string {
   return `${n} ${n === 1 ? "turn" : "turns"}`;
 }
 
@@ -38,12 +39,13 @@ function num(obj: Record<string, unknown>, key: string): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-// readTranscriptEnvelope normalizes whichever of the three shapes came back. The outline
-// envelope is flat and the markdown/jsonl ones nest their counts under `meta`,
-// so both spellings are read; absence stays absence (never defaulted to 0,
-// which would claim a count the tool never reported).
+// The result, whichever of the three shapes came back, read from the tool's
+// own JSON before any intervention the registry appended after it. The
+// outline envelope is flat and the markdown/jsonl ones nest their counts
+// under `meta`, so both spellings are read; absence stays absence (never
+// defaulted to 0, which would claim a count the tool never reported).
 export function readTranscriptEnvelope(item: TranscriptStep): TranscriptEnvelope | undefined {
-  const parsed = parseJSONObject(item.output);
+  const parsed = toolJSONResult(item.output);
   if (!parsed) return undefined;
   const meta = typeof parsed.meta === "object" && parsed.meta !== null ? (parsed.meta as Record<string, unknown>) : {};
   const expansion =
@@ -60,8 +62,6 @@ export function readTranscriptEnvelope(item: TranscriptStep): TranscriptEnvelope
   };
 }
 
-// What was read, in the reader's terms: a job's output log, an API-log record,
-// or a session conversation - and whose.
 // resolvedRef is the ref this call actually read: the caller's own argument
 // first, the envelope's echo of it as the fallback (a hydrated item whose args
 // were dropped still has the envelope).
@@ -77,6 +77,8 @@ function isJobRead(item: TranscriptStep): boolean {
   return resolvedRef(item).startsWith("job:");
 }
 
+// What was read, in the reader's terms: a job's output log, an API-log record,
+// or a session conversation - and whose.
 function target(item: TranscriptStep): string {
   const args = parseArgs(item.argumentsJSON);
   const ref = resolvedRef(item);
