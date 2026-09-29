@@ -133,9 +133,11 @@ export interface ActivityMember {
 	turnId?: string;
 }
 
-// Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
-// notices, "warning" for loop detection / turn limit / provider failure, and
-// "system" for environment / prelude scaffold that is purely informational.
+// Tone of a steering/lifecycle notice row. "info" for every daemon steer
+// (a loop-detected or provider-failure steer included: the failure it answers
+// shows as the turn's own error), "warning" for the loop_detection, turn_limit
+// and error system events (WARNING_EVENT_KINDS), and "system" for every other
+// system event.
 export type NoticeTone = "info" | "warning" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -1079,9 +1081,7 @@ export function projectConversation(
 // TurnFailure item carries the failure's message as its text (both fall back
 // to "The turn failed." when the failure has none).
 function echoesTurnError(it: ItemModel, error: NonNullable<Turn["error"]>): boolean {
-	return (
-		it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim()
-	);
+	return it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim();
 }
 
 function failureItem(

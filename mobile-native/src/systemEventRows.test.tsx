@@ -128,9 +128,7 @@ describe("a failed turn (G5)", () => {
 	// the same turn is news of its own.
 	it.each(LEVELS)("keeps a distinct earlier error in a failed turn, at %s", (level) => {
 		const { rows } = rowsAt(level, [systemEventWireFailedTurnWithOtherError()], false);
-		const errors = rows.filter(
-			(row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error"),
-		);
+		const errors = rows.filter((row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error"));
 		expect(errors.map((row) => row.id)).toEqual(["notice_error_1", "failure:turn_2"]);
 		const other = errors[0];
 		if (other?.kind !== "notice") throw new Error("not a notice row");
