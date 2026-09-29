@@ -38,15 +38,17 @@ const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, lat
  * restarts on apply. */
 function hub(check: UpdateCheckResponse | Error) {
 	const calls: string[] = [];
+	const script = { failChecks: false };
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
 			if (method === "evener/update/apply") return { restarting: true };
 			if (check instanceof Error) throw check;
+			if (script.failChecks) throw new Error("the hub is still starting");
 			return check;
 		}) as never,
 	};
-	return { client, calls };
+	return { client, calls, script };
 }
 
 let updates: PhoneHubUpdates;
@@ -85,7 +87,7 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		act(() => {
 			find(label)?.props.onPress();
 		});
-	return { tree, root, sheet, find, press, calls: fake.calls, readiness, live };
+	return { tree, root, sheet, find, press, calls: fake.calls, script: fake.script, readiness, live };
 }
 
 const ROWS = [
@@ -220,4 +222,20 @@ it("opens Display inside the sheet, valued with this phone's appearance", async 
 	expect(find("Display, System")).not.toBeNull();
 	press("Display, System");
 	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
+});
+
+it("says the update couldn't be confirmed when the hub's first answer after the restart fails", async () => {
+	const { tree, press, readiness, script } = await mount({ check: WAITING });
+	press("Update hub");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	script.failChecks = true;
+	await act(async () => {
+		readiness.set(false);
+		readiness.set(true);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(renderedText(tree)).toContain("Couldn't confirm the update. Check the hub's version.");
+	expect(renderedText(tree)).not.toContain("The hub restarted without the update.");
 });

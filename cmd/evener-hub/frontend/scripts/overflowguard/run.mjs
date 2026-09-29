@@ -58,9 +58,11 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
-// Pane widths that bracket the composer card's 399px container threshold (the
-// three-verb wrap, promptcard.module.css): the container is the pane minus its
-// footer padding. Swept only by the verb-cluster check.
+// Pane widths that bracket the composer card's phone-width container
+// threshold - COMPOSER_PHONE_MAX_WIDTH, 399, exported by
+// src/panes/session/composer/narrowComposer.ts, where the narrow layout
+// relocates the verbs into the session menu: the container is the pane
+// minus its footer padding. Swept only by the verb-cluster check.
 const VERB_WRAP_WIDTHS = [399, 400, 420, 480, 600, 699];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
@@ -136,7 +138,13 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
 
     if (lite) {
       const measurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
-      return { ...measurement, viewport: { ...viewport, mobile: realizedLayout.mobile } };
+      // The relocated-verb probe opens the real session menu, and the menu's
+      // open lands on the next animation frame (measured live; the harness's
+      // measureMenuVerbs awaits it) - so it is awaited here, on the lite
+      // pass the verb-cluster sweep runs, not folded into the synchronous
+      // window.measure() the full pass shares with every other check.
+      const menuVerbs = await evaluate(send, "window.measureMenuVerbs()\n");
+      return { ...measurement, menuVerbs, viewport: { ...viewport, mobile: realizedLayout.mobile } };
     }
 
     const exceptionSafety = await evaluate(
@@ -644,7 +652,8 @@ function assertFieldsets(detail, label) {
 
 // measureVerbCluster reads the harness's compose-controls measurement (the
 // verb cluster's geometry plus each control's containment) for one width and
-// one fixture (steer advertised or not) off a lite measurement.
+// one fixture (steer advertised or not) off a lite measurement, plus the
+// awaited menu-verb probe (measureMenuVerbs) the lite path runs.
 async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
   const result = await measureAt(
     cdpEndpoint,
@@ -652,36 +661,55 @@ async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
     width,
     { lite: true },
   );
-  return result.currentWork;
+  return { ...result.currentWork, menuVerbs: result.menuVerbs };
 }
 
 function verbClusterWrapped(cluster) {
   return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
 }
 
-// assertVerbCluster: the wrap rule itself, plus the containment the main pass
-// asserts for the no-steer fixture. At a card container of 399px or less a
-// three-verb cluster sits below the status row; two verbs stay beside it
-// there, and three stay beside it above. The threshold is the container's,
-// measured by the harness, and the verb count is the fixture's own
-// (expectedVerbs, from its capabilities). Every expected control is present,
-// inside the card and the pane, no two overlap, and the current-work strip
-// and the card share the pane without horizontal overflow.
+// assertVerbCluster: the narrow verb layout, plus the containment the main pass
+// asserts for the no-steer fixture. The row NEVER wraps: at the phone-width
+// boundary or below the narrow layout holds Send alone beside the status row
+// and relocates Stop and Steer into the session menu (Jesse's 2026-09-28
+// ruling, which replaced issue #1339's provisional wrap rule); above that
+// boundary the verbs sit in the row beside the status row and the menu
+// carries none. The narrow verdict is the harness's own gate (narrowComposer,
+// reported in the payload), so the runner never re-derives the boundary; the
+// verb count is the fixture's own (expectedVerbs, from its capabilities
+// and the container width). Every expected in-row control is present, inside
+// the card and the pane, no two overlap, and the current-work strip and the
+// card share the pane without horizontal overflow.
 function assertVerbCluster(work, steer) {
   const cluster = work.verbCluster;
   if (!Number.isFinite(cluster.containerWidth)) {
     return [`card container width unmeasured (${cluster.containerWidth})`];
   }
   const failures = [];
+  const narrow = cluster.narrowComposer;
   if (cluster.controls !== cluster.expectedVerbs) {
-    failures.push(`expected ${cluster.expectedVerbs} verbs, got ${cluster.controls}`);
+    failures.push(`expected ${cluster.expectedVerbs} in-row verbs, got ${cluster.controls}`);
   }
-  const expectWrapped = steer && cluster.containerWidth <= 399;
-  if (verbClusterWrapped(cluster) !== expectWrapped) {
+  if (verbClusterWrapped(cluster)) {
     failures.push(
-      `expected the verbs ${expectWrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px), ` +
-        `got top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+      `the verb cluster wrapped below the status row (top=${cluster.top} against status bottom=${cluster.statusRowBottom}); ` +
+        `the narrow layout relocates verbs into the session menu instead of wrapping`,
     );
+  }
+  if (!work.menuVerbs.open) {
+    failures.push("the session menu could not be opened for the relocated-verb probe");
+  } else {
+    const expectSteerInMenu = narrow && steer;
+    if (work.menuVerbs.stop !== narrow) {
+      failures.push(
+        `menu Stop ${work.menuVerbs.stop ? "present" : "absent"}, expected ${narrow ? "present" : "absent"}`,
+      );
+    }
+    if (work.menuVerbs.steer !== expectSteerInMenu) {
+      failures.push(
+        `menu Steer ${work.menuVerbs.steer ? "present" : "absent"}, expected ${narrow && steer ? "present" : "absent"}`,
+      );
+    }
   }
   if (!work.controlsFound || !work.controlsContained || !work.controlsDoNotOverlap || !work.sharedPaneWithoutOverflow) {
     failures.push(
@@ -1485,8 +1513,10 @@ async function main() {
     // capability (Stop + Send, the cluster the status row's narrow-pane budget
     // was measured against) and with it (Stop + Send + Steer, every busy
     // session on a harness that can steer). Every swept width plus the widths
-    // that bracket the card's 399px threshold, where the three verbs take
-    // their own line (promptcard.module.css).
+    // that bracket the card's phone-width threshold (COMPOSER_PHONE_MAX_WIDTH,
+    // 399, from narrowComposer.ts), where the narrow layout
+    // relocates the verbs into the session menu instead of drawing them in
+    // the row (Jesse's 2026-09-28 ruling, replacing the old wrap).
     for (const steer of [false, true]) {
       for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
         const label = `${width}px${steer ? " steer" : ""} verbs`;
@@ -1498,7 +1528,9 @@ async function main() {
           console.log(`${label} ... FAIL - ${failures.join("; ")}`);
         } else {
           console.log(
-            `${label} ... PASS - ${cluster.controls} verbs ${verbClusterWrapped(cluster) ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
+            `${label} ... PASS - ${cluster.controls} verbs beside the status row, ` +
+              `menu ${work.menuVerbs.stop || work.menuVerbs.steer ? "carries the relocated verbs" : "carries none"} ` +
+              `(card container ${cluster.containerWidth}px)`,
           );
         }
       }

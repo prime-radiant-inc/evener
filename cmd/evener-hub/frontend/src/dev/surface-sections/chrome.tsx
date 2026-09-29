@@ -1,4 +1,4 @@
-// The session chrome surface: StatusRow / GoalControl / TasksPanel /
+// The session chrome surface: StatusRow / TasksPanel /
 // ActivityPanel, all real components that take a plain ThreadModel prop -
 // no store seeding needed, just a fixture model built through hydrateThread
 // (the same real hydration function the wire read path uses) so every
@@ -14,7 +14,6 @@
 import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { ActivityPanel } from "../../panes/session/chrome/ActivityPanel";
-import { GoalControl } from "../../panes/session/chrome/GoalControl";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
 import { initActivitySummary } from "../../stores/activitySummary";
@@ -77,18 +76,14 @@ export default function ChromeSurfaceSection() {
     <section>
       <h2>Session chrome</h2>
       <p className={styles.note}>
-        StatusRow / GoalControl / TasksPanel / ActivityPanel, fed a fixture ThreadModel built through the real
-        hydrateThread(). The two panel triggers open a real Sheet; their body fetches fail honestly with no live
-        connection behind this gallery.
+        StatusRow / TasksPanel / ActivityPanel, fed a fixture ThreadModel built through the real hydrateThread(). The
+        two panel triggers open a real Sheet; their body fetches fail honestly with no live connection behind this
+        gallery.
       </p>
       <ThemeFlip>
         <div className={styles.row}>
           <p className={styles.rowLabel}>status</p>
           <StatusRow sessionRef={ref} model={model} now={Date.now()} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>goal</p>
-          <GoalControl sessionRef={ref} model={model} />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>tasks</p>
