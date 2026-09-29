@@ -3086,9 +3086,9 @@ describe("ConversationStore", () => {
 			expect(store.getState().trimmedAbove).toBe(false);
 		});
 
-		// A daemon's status frame names no pageBefore (the hub stamps the frames
-		// it relays, and the service keeps that); the store takes the hub's
-		// answer from reads alone, so such a frame leaves trimming on.
+		// A status frame that names no pageBefore (one straight from a daemon;
+		// the hub stamps the frames it relays) leaves the last answer, so
+		// trimming stays on.
 		it("keeps trimming after a status frame that doesn't name pageBefore", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
