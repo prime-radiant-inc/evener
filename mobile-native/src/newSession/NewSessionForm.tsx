@@ -113,17 +113,15 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		const outcome = await store.getState().submit();
 		// A removed hub's start has no one left to tell.
 		if (creationForgotten(store)) return;
-		// The form in front now: this one, or a sheet reopened while the start was on its way.
+		// The form in front now: this one, or a sheet reopened while the start
+		// was on its way, whether or not the hub is reachable from it.
 		const front = fronts.get(store);
-		const inFront =
-			!!front &&
-			front.navigation.isFocused() &&
-			front.latest.current.ready &&
-			front.latest.current.client === submittedClient;
+		const inFront = !!front && front.navigation.isFocused();
 		if (outcome.status !== "created") {
-			// A form in front shows the store's error itself; else an alert says it.
+			// A form in front shows the store's error itself; else an alert says
+			// it. With no error there is nothing to say: nothing was started.
 			const { error, unconfirmedCreation } = store.getState();
-			if (inFront || (outcome.status === "blocked" && !error)) return;
+			if (inFront || !error) return;
 			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: unconfirmedCreation });
 			return;
 		}
@@ -132,7 +130,9 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		if (!front || !inFront) {
+		// Only a form in front, on the connection the start went out on, can
+		// open the session.
+		if (!front || !inFront || !front.latest.current.ready || front.latest.current.client !== submittedClient) {
 			// The session exists but this sheet can no longer open it: say so
 			// where the person is, so it isn't started twice (#3048).
 			offerAlert({

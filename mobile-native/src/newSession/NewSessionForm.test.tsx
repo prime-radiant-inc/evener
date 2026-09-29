@@ -68,6 +68,8 @@ interface Options {
 	refuseStart?: Error;
 	/** model/list fails. */
 	refuseModels?: boolean;
+	/** evener/plugin/preview waits for the test's releaseStart too. */
+	holdPreview?: boolean;
 	/** thread/start waits for the test's releaseStart. */
 	holdStart?: boolean;
 	/** The form shows the hub's own creation store (creations.ts), as the
@@ -105,6 +107,7 @@ async function mount(options: Options = {}) {
 			}
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
 			if (forwarded === "evener/plugin/preview") {
+				if (options.holdPreview) await held;
 				if (options.plugins instanceof Error) throw options.plugins;
 				return options.plugins ?? { plugins: [] };
 			}
@@ -204,7 +207,16 @@ async function mount(options: Options = {}) {
 		const next = sheetNavigation();
 		const reopened = render(form(next.navigation));
 		await settle();
-		return { ...next, tree: reopened, text: () => renderedText(reopened) };
+		/** The connection drops, or comes back, under the reopened sheet. */
+		const setReopenedReady = async (ready: boolean) => {
+			context = { ...context, ready };
+			store.getState().bind(ready ? createNewSessionService(client as never) : null);
+			await act(async () => {
+				reopened.update(form(next.navigation));
+			});
+			await settle();
+		};
+		return { ...next, tree: reopened, text: () => renderedText(reopened), setReady: setReopenedReady };
 	};
 	const row = (label: string) =>
 		tree.root.findAll(
@@ -800,6 +812,34 @@ it("raises nothing for a start whose hub was removed while it was on its way (#3
 	form.dispose();
 	// The hub is removed: its store goes, unbound, so the start comes back obsolete.
 	await act(async () => forgetCreationForHub("hub-1"));
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+});
+
+it("leaves a failure to a sheet reopened while the hub is away, which shows it itself (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	const reopened = await form.reopen();
+	await reopened.setReady(false);
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(reopened.text()).toContain("Creation could not be confirmed.");
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	act(() => reopened.tree.unmount());
+});
+
+it("raises nothing for a start the connection ended before the hub got it (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["superpowers"] } },
+		holdPreview: true,
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// The connection drops while the plugin check is still out: nothing was sent.
+	await act(async () => form.store.getState().bind(null));
+	expect(form.store.getState().error).toBeNull();
 	await act(async () => form.releaseStart());
 	await settle();
 	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
