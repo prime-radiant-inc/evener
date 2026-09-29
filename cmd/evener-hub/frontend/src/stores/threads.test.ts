@@ -12701,6 +12701,102 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     void sendA;
   });
 
+  // Round-7 Medium: the ordering guard must ask "does the ref have non-canceled
+  // durable work", not "is the ref retained". A canceled row leaves only on
+  // Retry or the thread going away, so it keeps the retention pin forever, and
+  // a guard reading that pin would refuse the fallback for a ref with nothing
+  // left to deliver - re-breaking the whole feature.
+  test("a canceled queued row does not block the send fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-canceled-fallback";
+    // Seed the canceled row on its own adapter, so the store's runtime never
+    // arms or dispatches it. cancelUnattempted is the Stop's own cancellation
+    // write (forceStop/shutdown's, and the one interruptAndCancel makes in the
+    // interrupt's transaction).
+    const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await seeder.enqueueIntent(queueIntent("queued"));
+    await seeder.cancelUnattempted("ref_a");
+    seeder.close();
+
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrating reconciles the store's view: the ref is retained (a canceled
+    // row) but has no undelivered work.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    await threadsStore.getState().refreshThread("ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    expect((await storage.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+
+    // Storage wedges; the send must still reach the daemon.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-7 Medium: the fallback re-runs the dispatcher's own admission, so a
+  // fenced ref must fail closed rather than reach the daemon directly. A
+  // restart-blocked thread is the fence this drives most directly:
+  // currentDispatchClient refuses it (threads.ts's restartRequired clause and
+  // the restart obligation).
+  test("a send on a restart-blocked ref fails closed instead of falling back", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-restart-fenced";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        status: { type: "restartRequired" },
+        evener: { ref: params.ref ?? "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "blocked");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      // The fenced ref must not reach the daemon.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The fallback discards the RPC response. What projects the turn, then? The
   // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
   // has NO turn/started case; the only case that builds turns and items is

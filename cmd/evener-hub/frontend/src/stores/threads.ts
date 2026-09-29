@@ -742,6 +742,15 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+// Refs whose outbox holds at least one non-canceled row: work the ref's FIFO
+// could still deliver. Deliberately NOT pinnedMutationRefs - that is a
+// retention pin, and a canceled row (which leaves only on an explicit Retry or
+// the thread going away) keeps a ref pinned with nothing left to deliver. The
+// fallback's ordering guard reads this set instead, so a Stop's canceled queued
+// row cannot refuse a later send. Maintained from the records the pin refreshes
+// already read (refreshMutationPins / refreshMutationPinAfterRemoval) and on a
+// commit whose row is not born-canceled.
+const undeliveredMutationRefs = new Set<string>();
 // Per-ref count of durable enqueues whose write is still in flight (from the
 // click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
 // serve this: a background pin refresh clears a ref's arm when the outbox reads
@@ -913,16 +922,22 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
       runtime.storage.listOptimistic(targetRef),
     ]);
     if (!isCurrentMutationRuntime(runtime)) return;
+    const hasUndeliveredWork = outbox.some((record) => record.state !== "canceled");
     if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
+      if (hasUndeliveredWork) undeliveredMutationRefs.add(targetRef);
+      else undeliveredMutationRefs.delete(targetRef);
       continue;
     }
     if (optimistic.length > 0) {
       pinnedMutationRefs.add(targetRef);
+      // An optimistic row is accepted (settled), never undelivered work.
+      undeliveredMutationRefs.delete(targetRef);
       dispatchableMutationRefs.delete(targetRef);
       continue;
     }
     pinnedMutationRefs.delete(targetRef);
+    undeliveredMutationRefs.delete(targetRef);
     dispatchableMutationRefs.delete(targetRef);
     dropUnpinnedModel(targetRef);
   }
@@ -945,6 +960,8 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
     runtime.storage.listOptimistic(targetRef),
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
+  if (outbox.some((record) => record.state !== "canceled")) undeliveredMutationRefs.add(targetRef);
+  else undeliveredMutationRefs.delete(targetRef);
   if (outbox.length > 0 || optimistic.length > 0) {
     pinnedMutationRefs.add(targetRef);
     return;
@@ -2299,6 +2316,9 @@ async function enqueueMutationIntent(
     const record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
     releaseInflightDurableEnqueue(ref);
     pinnedMutationRefs.add(ref);
+    // A committed row is undelivered work unless the stop barrier committed it
+    // born-canceled.
+    if (record.state !== "canceled") undeliveredMutationRefs.add(ref);
     notifyMutationPersistence([ref], { record });
     return record;
   } catch (error) {
@@ -2342,22 +2362,23 @@ async function enqueueMutationIntent(
     // ordering guard is not the dispatcher's arm but the two checks below.
     //
     // A fallback send must not jump an earlier durable send for the ref, and
-    // two in-memory facts cover what this tab can see. pinnedMutationRefs is a
-    // committed row: this ref holds outbox or optimistic state, so an earlier
-    // send is undelivered. And inflightDurableEnqueues counts durable enqueues
-    // whose write has not settled yet - the CONCURRENT case a committed row
-    // cannot show: this click's own was just released, so a nonzero count is
-    // another enqueue for this ref still in flight, one that has not committed
-    // (so not pinned) and whose dispatch arm a background refresh can clear.
-    // dispatchableMutationRefs cannot serve this: a refresh legitimately clears
-    // a ref's arm when the outbox reads empty, which it does while another
-    // enqueue's write is still uncommitted. The precise answer - whether the
-    // ref's nextDispatchable head is this send - lives in storage, which is
-    // unavailable here; these two are what the in-memory state proves, and the
-    // fallback refuses on either rather than reorder.
+    // two in-memory facts cover what this tab can see. undeliveredMutationRefs
+    // is the ref's outbox holding a NON-CANCELED row - undelivered work. (Not
+    // pinnedMutationRefs: that is a retention pin, and a canceled row keeps a
+    // ref pinned with nothing left to deliver, so reading it would refuse the
+    // fallback for a ref whose only row a Stop already canceled.) And
+    // inflightDurableEnqueues counts durable enqueues whose write has not
+    // settled yet - the CONCURRENT case a committed row cannot show: this
+    // click's own was just released, so a nonzero count is another enqueue for
+    // this ref still in flight, one that has not committed (so not undelivered
+    // work yet) and whose dispatch arm a background refresh can clear. The
+    // precise answer - whether the ref's nextDispatchable head is this send -
+    // lives in storage, which is unavailable here; these two are what the
+    // in-memory state proves, and the fallback refuses on either rather than
+    // reorder.
     const dispatchClient = currentDispatchClient(ref, intent.method, false);
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
-    if (dispatchClient === null || pinnedMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
+    if (dispatchClient === null || undeliveredMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
       disarmOwnedMutationArm(ref, armAddedByThisClick);
       throw error;
     }
@@ -2459,7 +2480,7 @@ async function enqueueMutation(
   attachments?: InputAttachment[],
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<void> {
-  await enqueueMutationIntent(
+  await enqueueCommittedMutation(
     {
       targetRef: ref,
       threadId: threadsStore.getState().threads.get(ref)?.threadId,
@@ -4453,7 +4474,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async clearThread(ref) {
     const runtime = requireMutationRuntime();
     await runtime.start;
-    await enqueueMutationIntent(clearMutationIntent(ref));
+    await enqueueCommittedMutation(clearMutationIntent(ref));
     // A clear is fenced by the model's instance id, so it can dispatch while
     // an older resync read is in flight. Its response is the newer cut and
     // retires that read in applyClearResponse.
@@ -4689,6 +4710,7 @@ export function resetThreadsStoreForTests(): void {
   retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
   inflightDurableEnqueues.clear();
+  undeliveredMutationRefs.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
