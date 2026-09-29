@@ -235,10 +235,14 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	targets := make([]hubcore.DeletionTarget, 0, len(entries))
 	stateDirs := make(map[string]string, len(entries))
 	for _, entry := range entries {
-		targets = append(targets, hubcore.DeletionTarget{
+		target := hubcore.DeletionTarget{
 			Ref:      localAppRef(entry.ID),
 			ThreadID: entry.ID,
-		})
+		}
+		if owner, ok := stateDirProjectID(entry.StateDir); ok && owner != project.ID {
+			target.StateProjectID = owner
+		}
+		targets = append(targets, target)
 		stateDirs[entry.ID] = entry.StateDir
 	}
 	ownedTargets, skipped, releaseOwnership := s.acquireProjectDeletionCandidates(ctx, targets, stateDirs)
@@ -454,7 +458,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			release()
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: live, Err: ownershipErr}
 		}
-		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
+		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
 		if stateDir == "" {
 			release()
 			return nil, &projectDeletionOwnershipError{
@@ -576,7 +580,7 @@ func (s *WebServer) cleanupProjectDeletion(
 ) projectDeletionCleanupResult {
 	result := projectDeletionCleanupResult{}
 	for _, target := range record.Targets {
-		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
+		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
 		deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(stateDir, target.ThreadID)
 		result.DecisionErrors = append(result.DecisionErrors, decisionErrors...)
 		if !deleted {
@@ -724,7 +728,13 @@ func sessionMetaFilePresent(stateDir, sessionID string) bool {
 	return !os.IsNotExist(err)
 }
 
-func (s *WebServer) projectDeletionStateDir(projectID, threadID string, stateDirs map[string]string) string {
+// projectDeletionStateDir locates a target's state directory: the caller's
+// live index entry when it has one, else the project directory the target was
+// recorded under (stateProjectID), else the deleted project's own.
+func (s *WebServer) projectDeletionStateDir(stateProjectID, projectID, threadID string, stateDirs map[string]string) string {
+	if stateProjectID != "" {
+		projectID = stateProjectID
+	}
 	if stateDir := stateDirs[threadID]; stateDir != "" {
 		return stateDir
 	}

@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -161,4 +162,36 @@ func TestProjectDeleteScrubsDecisionsOfReachedSubagent(t *testing.T) {
 	assertProjectDeleteDecisionAbsent(t, f.dbPath, "session", f.roamingChild)
 	assertArchiveDecisionPresent(t, f.archive, "session", f.childB, true)
 	assertProjectDeleteDecisionPresent(t, f.dbPath, "session", f.childB, true)
+}
+
+// A delete interrupted after fencing must resume against the state directory
+// each target lives in, including a reached subagent that lives in another
+// project's directory.
+func TestProjectDeleteResumeFindsReachedSubagentInAnotherProjectDirectory(t *testing.T) {
+	f := newReachFixture(t)
+	oldRemove := removeProjectSessionFile
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == f.roamingChild+".future-artifact" {
+			return errors.New("interrupted cleanup")
+		}
+		return oldRemove(path)
+	}
+	f.deleteProjectA(t)
+	if !f.metaExists(f.stateB, f.roamingChild) {
+		t.Fatal("fixture: interrupted cleanup should have retained the subagent")
+	}
+	removeProjectSessionFile = oldRemove
+
+	restored := hubcore.NewPastIndex(filepath.Join(f.root, "projects", "*"))
+	if _, err := restored.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewWebServer(hubcore.WebConfig{HubStateRoot: f.root, StateDir: f.root, Past: restored, Roster: hubcore.NewRosterWithEntries()})
+	if f.metaExists(f.stateB, f.roamingChild) {
+		t.Fatal("resume did not finish deleting the subagent from its own project's directory")
+	}
+	if !f.metaExists(f.stateB, f.rootB) {
+		t.Fatal("resume deleted another project's root")
+	}
 }
