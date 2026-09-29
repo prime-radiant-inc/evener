@@ -209,6 +209,7 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   for (const name of ["read_transcript", "read_session_transcript"]) expect(toolFamily(name)).toBe("transcript");
   expect(toolFamily("find_session_transcripts")).toBe("sessions");
   expect(toolFamily("manage_worktree")).toBe("worktree");
+  expect(toolFamily("ask_user")).toBe("ask");
   for (const name of ["job_status", "job_read_output", "job_list", "job_stop", "job_frobnicate"])
     expect(toolFamily(name)).toBe("jobs");
   expect(toolFamily("github__create_issue")).toBe("mcp");
@@ -288,6 +289,7 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
   ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
   ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
+  ["ask_user", { questions: [{ header: "Deploy", question: "Ship?", options: [] }] }, "Asking a question"],
   ["job_status", { target: "job_x" }, "Checking job_x"],
   ["job_list", {}, "Listing jobs"],
   ["job_stop", { target: "job_x" }, "Stopping job_x"],

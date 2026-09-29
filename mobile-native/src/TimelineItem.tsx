@@ -1,4 +1,4 @@
-import type { EvenerDelegateInfo } from "@evener/appwire-client";
+import type { ActivityTree, EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -20,6 +20,7 @@ import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
+import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
@@ -38,6 +39,7 @@ export function TimelineItem({
 	live = false,
 	liveRunsOpen = false,
 	delegates,
+	subagentTree,
 	openSubagent,
 	answerFor,
 	errorActionFor,
@@ -60,6 +62,9 @@ export function TimelineItem({
 	liveRunsOpen?: boolean;
 	/** The session's subagents, for a subagent row's state and activity. */
 	delegates?: readonly EvenerDelegateInfo[];
+	/** The coordinator's subagent tree, which a finished subagent's row
+	 * reads its outcome from; the screen holds it (useTranscriptSubagentTree). */
+	subagentTree?: ActivityTree | null;
 	/** Opens a subagent's own transcript. */
 	openSubagent?: (ref: string, title: string) => void;
 	/** Your answer to the question an ask_user row asked, when you gave one. */
@@ -199,7 +204,7 @@ export function TimelineItem({
 				break;
 			}
 			if (item.label === "delegate") {
-				content = <Subagent row={item} delegates={delegates} openSubagent={openSubagent} />;
+				content = <Subagent row={item} delegates={delegates} tree={subagentTree} openSubagent={openSubagent} />;
 				break;
 			}
 			if (item.label === "ask_user") {
@@ -399,15 +404,25 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 function Subagent({
 	row,
 	delegates,
+	tree,
 	openSubagent,
 }: {
 	row: Extract<TimelineRow, { kind: "activity" }>;
 	delegates: readonly EvenerDelegateInfo[] | undefined;
+	tree: ActivityTree | null | undefined;
 	openSubagent: ((ref: string, title: string) => void) | undefined;
 }) {
 	// The state's time ("failed · 6m") moves on with the minute clock.
 	const now = useMinuteClock();
-	return <SubagentRow line={subagentLine(row, delegates, now)} onOpen={openSubagent} />;
+	const line = subagentLine(row, delegates, now);
+	// A finished subagent's outcome, as the Subagents list gives it, once the
+	// tree shows it done; until then the line says what the roster knows.
+	const finished = line.state === "done" ? line.delegateId : undefined;
+	const outcome = useMemo(
+		() => (tree && finished ? subagentOutcome(tree, finished, now) : undefined),
+		[tree, finished, now],
+	);
+	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
 }
 
 function TimeMarker({ at }: { at: number }) {

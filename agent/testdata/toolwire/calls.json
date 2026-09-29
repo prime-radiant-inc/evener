@@ -1,8 +1,9 @@
 {
-  "note": "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
+  "note": "One ASSISTANT entry announcing one call per tool, the TOOL_RESULTS entry answering them, and the user's reply to the ask_user question, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
   "cwd": "/home/jesse/git/evener",
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
+    "call_ask_user": "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
     "call_edit_file": "One replacement in one file.",
     "call_find_sessions": "A search of the project's sessions for a phrase the earlier one said.",
     "call_find_sessions_catalog": "The project's recent sessions, with no query: the earlier session and the recording one (its id, update time and project fixed).",
@@ -388,6 +389,16 @@
       "type": "commandExecution",
       "id": "item_tool_1_34",
       "turnId": "turn_1",
+      "toolName": "ask_user",
+      "callId": "call_ask_user",
+      "argumentsJson": "{\"questions\":[{\"header\":\"Deploy\",\"options\":[{\"detail\":\"The fix is small and the drain test passes.\",\"label\":\"Ship tonight\",\"recommended\":true},{\"detail\":\"Let go test -race run overnight first.\",\"label\":\"Wait\"}],\"question\":\"Ship the settle fix tonight, or wait for the race run?\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_35",
+      "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
       "argumentsJson": "{\"question\":\"What changed in the settle pass?\",\"url\":\"https://example.com/release-notes\"}",
@@ -396,7 +407,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_35",
+      "id": "item_tool_1_36",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -406,7 +417,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_36",
+      "id": "item_tool_1_37",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -416,7 +427,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_37",
+      "id": "item_tool_1_38",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -426,7 +437,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_38",
+      "id": "item_tool_1_39",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -436,7 +447,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_39",
+      "id": "item_tool_1_40",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -940,6 +951,16 @@
       "type": "commandExecution",
       "id": "item_tool_result_2_34",
       "turnId": "turn_1",
+      "toolName": "ask_user",
+      "callId": "call_ask_user",
+      "output": "questions posted; answers arrive in the user's reply after your turn ends",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_35",
+      "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
       "output": "{\"answer\":\"The release notes list three fixes to the tree settle pass.\",\"content_type\":\"text/html\",\"raw_file\":\"/tmp/evener/web/release-notes.html\",\"size_bytes\":48213,\"url\":\"https://example.com/release-notes\"}",
@@ -948,7 +969,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_35",
+      "id": "item_tool_result_2_36",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -958,7 +979,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_36",
+      "id": "item_tool_result_2_37",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -968,7 +989,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_37",
+      "id": "item_tool_result_2_38",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -978,7 +999,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_38",
+      "id": "item_tool_result_2_39",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -988,13 +1009,22 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_39",
+      "id": "item_tool_result_2_40",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
       "output": "compacted",
       "status": "completed",
       "completedAt": 1790625602000
+    },
+    {
+      "type": "userMessage",
+      "id": "item_user_3",
+      "turnId": "turn_2",
+      "transcriptEntryIndex": 3,
+      "text": "[answers]\n1. [Deploy] → \"Ship tonight\"",
+      "status": "completed",
+      "startedAt": 1790625660000
     }
   ]
 }

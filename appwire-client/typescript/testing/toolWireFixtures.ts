@@ -58,6 +58,7 @@ export type ToolWireCall =
   | "call_worktree_remove"
   | "call_worktree_prune"
   | "call_worktree_adopt"
+  | "call_ask_user"
   | "call_web_fetch"
   | "call_web_search"
   | "call_use_skill"

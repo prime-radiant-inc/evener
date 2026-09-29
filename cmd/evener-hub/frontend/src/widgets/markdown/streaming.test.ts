@@ -326,6 +326,7 @@ test.each([
   ["empty ATX heading", "**open\r\n#\r"],
   ["bare list marker", "**open\r\n-\r"],
   ["bare ordered marker", "**open\r\n1.\r"],
+  ["quoted thematic break", "> **open\r\n> ---\r"],
 ])("does not let a CRLF %s kill emphasis closing differently than LF", (_name, crlf) => {
   const lf = crlf.replaceAll("\r", "");
   expect(closeOpenMarkdown(crlf).slice(crlf.length)).toBe(closeOpenMarkdown(lf).slice(lf.length));

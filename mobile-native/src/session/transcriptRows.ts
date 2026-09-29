@@ -378,6 +378,8 @@ function partText(group: Group): string {
 			return n === 1 ? "searched sessions" : `searched sessions ${n} times`;
 		case "worktree":
 			return `managed worktrees ${times}`;
+		case "ask":
+			return n === 1 ? "asked a question" : `asked ${n} questions`;
 		case "jobs":
 			return `managed jobs ${times}`;
 		case "mcp":

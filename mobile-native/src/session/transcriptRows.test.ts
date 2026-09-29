@@ -474,6 +474,16 @@ describe("a run's transcript reads and session searches", () => {
 	});
 });
 
+// An ask_user call takes a row of its own (QuestionHistory), so it only
+// reaches a run's line when a caller hands one over directly.
+describe("a run's questions", () => {
+	it("says how many questions a run asked", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "ask_user")])).toEqual(["asked a question"]);
+		expect(texts([step("a", "ask_user"), step("b", "ask_user")])).toEqual(["asked 2 questions"]);
+	});
+});
+
 describe("a run's job steps", () => {
 	it("says how often a run managed jobs", () => {
 		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);

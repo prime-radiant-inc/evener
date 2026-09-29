@@ -557,6 +557,7 @@ export {
 } from "./toolEvidence";
 export {
   applyPatchSummary,
+  askUserSummary,
   BINARY_PAYLOAD_HEADER,
   editFileSummary,
   fallbackToolSummary,

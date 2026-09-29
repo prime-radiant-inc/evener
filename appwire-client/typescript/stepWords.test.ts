@@ -41,6 +41,8 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_worktree_remove: "Removed worktree settle-fix",
   call_worktree_prune: "Pruned worktrees · 0 removed, 2 skipped",
   call_worktree_adopt: "Adopted worktree lane",
+  // The web's ask_user descriptor's line, the question's header.
+  call_ask_user: "Asked: [Deploy]",
   // The web's job rows' lines.
   call_job_status: "Checked job_fixture · running",
   call_job_list: "Listed jobs",

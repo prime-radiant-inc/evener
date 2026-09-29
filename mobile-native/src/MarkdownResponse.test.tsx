@@ -3,6 +3,7 @@ import * as Clipboard from "expo-clipboard";
 import { DisplayProvider } from "./display/displayContext";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { MermaidDiagram } from "./MermaidDiagram";
 import { render } from "./renderNative.testkit";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -24,9 +25,10 @@ function markdownStyle(markdown: string) {
 
 // MermaidDiagram is a React.memo component, so the test renderer reports its
 // inner render function as the node type - a string lookup cannot find it.
-// Match the function's own name, the same way the renderer names it.
+// Match that function by identity, so a rename cannot quietly empty the finder.
+const MERMAID_INNER = (MermaidDiagram as unknown as { type: unknown }).type;
 function diagrams(tree: ReturnType<typeof render>) {
-	return tree.root.findAll((node) => (node.type as { name?: string })?.name === "MermaidDiagram");
+	return tree.root.findAll((node) => node.type === MERMAID_INNER);
 }
 
 it("picks light code colors in light mode", () => {
