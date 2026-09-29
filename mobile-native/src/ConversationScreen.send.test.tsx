@@ -3866,6 +3866,30 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
+	it("tells its screen the coordinator's thread it reads now, for the transcript's finished rows (#3326 review)", async () => {
+		// The screen holds the same tree for its transcript's finished subagent
+		// rows, and a tree asked for under the route's old thread is refused.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		const reported: string[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onTreeThread={(threadId) => void reported.push(threadId)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("thread-restarted");
+		act(() => panel.unmount());
+	});
+
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
 		coordinatorHub.stop = () => {
 			throw new WireError("method not found", -32601);

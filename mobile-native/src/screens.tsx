@@ -917,6 +917,7 @@ export function ConversationScreen({
 	// times how long ago it ended, which is no Working time, so a session still
 	// winding down times its turn instead.
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const [coordinatorThread, setCoordinatorThread] = useState<string | null>(null);
 	const runMs = useCallback(
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
@@ -1251,9 +1252,15 @@ export function ConversationScreen({
 	// A finished subagent's row reads its outcome from the coordinator's tree,
 	// which the screen holds while the transcript shows one.
 	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
+	// On a subagent's screen, under the coordinator's thread as its panel reads
+	// it now: a coordinator that restarted runs under a new thread, and a tree
+	// asked for under the old one is refused.
 	const subagentTreeTarget = useMemo(
-		() => (showsFinishedSubagent && coordinator ? { ref: coordinator.ref, threadId: coordinator.threadId } : null),
-		[showsFinishedSubagent, coordinator],
+		() =>
+			showsFinishedSubagent && coordinator
+				? { ref: coordinator.ref, threadId: (subagentOf && coordinatorThread) || coordinator.threadId }
+				: null,
+		[showsFinishedSubagent, coordinator, subagentOf, coordinatorThread],
 	);
 	const subagentTree = useTranscriptSubagentTree(
 		route.params.hubId,
@@ -3041,6 +3048,7 @@ export function ConversationScreen({
 								barShown={subagentBar}
 								showToast={showSubagentToast}
 								onRow={setSubagentRow}
+								onTreeThread={setCoordinatorThread}
 								navigation={navigation as never}
 							/>
 						) : null}
