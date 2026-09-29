@@ -10,6 +10,15 @@
 // confirm leaves the dialog open with the confirm button re-enabled; only
 // success closes it. Slash-command actions (goal/aside/compact/clear) are
 // deliberately NOT here - the command palette owns those.
+//
+// Turn verbs (Stop/Steer) are the one composer-owned exception: Jesse's
+// 2026-09-28 design ruling on the #1339 phone-width verb wrap moves them
+// into THIS menu below the composer's phone-width boundary, where they used
+// to wrap below the status row. Only the composer's chrome mount passes
+// them (SessionChrome gates them to its composer placement), so rail rows
+// and menu-only mounts never see them. They lead the menu in their own
+// group - a turn running away on a phone is the most time-critical thing
+// this menu can act on.
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
@@ -43,6 +52,21 @@ export interface SessionMenuActions {
   onDelete(): Promise<void>;
 }
 
+/** One relocated turn verb. The menu owns the item's id and label ("Stop" /
+ * "Steer", the same words the row buttons carry when wide); the caller owns
+ * what a press does and whether it is pressable right now. */
+export interface SessionMenuTurnVerb {
+  onSelect(): void;
+  disabled?: boolean;
+}
+
+/** The turn verbs offered in their own leading group. Absent on every mount
+ * but the composer's chrome (see the header comment). */
+export interface SessionMenuTurnVerbs {
+  stop?: SessionMenuTurnVerb;
+  steer?: SessionMenuTurnVerb;
+}
+
 export interface SessionMenuProps {
   sessionRef: string;
   title: string;
@@ -58,6 +82,9 @@ export interface SessionMenuProps {
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
+  /** Composer-only turn verbs (see the header comment). Rail/sidebar and
+   * menu-only callers omit them. */
+  turnVerbs?: SessionMenuTurnVerbs;
   actions: SessionMenuActions;
   triggerTabIndex?: number; // -1 inside rail rows (roving tabindex contract)
 }
@@ -85,6 +112,7 @@ export function SessionMenu({
   taskLabel,
   activityLabel,
   onOpenVerbosity,
+  turnVerbs,
   actions,
   triggerTabIndex,
 }: SessionMenuProps) {
@@ -178,7 +206,31 @@ export function SessionMenu({
   if (deleteEligible) {
     destructiveItems.push({ id: "delete", label: "Delete…", onSelect: () => setDeleteOpen(true) });
   }
+  // The turn verbs' own group, leading the menu (the header comment says
+  // why). Rendered only when the caller offered one; its separator goes with
+  // it so the menu's item count stays what non-composer callers see.
+  const turnItems: MenuEntry[] = [];
+  if (turnVerbs?.stop) {
+    turnItems.push({
+      id: "turn-stop",
+      label: "Stop",
+      disabled: turnVerbs.stop.disabled,
+      onSelect: turnVerbs.stop.onSelect,
+    });
+  }
+  if (turnVerbs?.steer) {
+    turnItems.push({
+      id: "turn-steer",
+      label: "Steer",
+      disabled: turnVerbs.steer.disabled,
+      onSelect: turnVerbs.steer.onSelect,
+    });
+  }
+  if (turnItems.length > 0) {
+    turnItems.push({ kind: "separator", id: "sep-turn" });
+  }
   const items: MenuEntry[] = [
+    ...turnItems,
     ...paneItems,
     { kind: "separator", id: "sep-organize" },
     ...organizeItems,

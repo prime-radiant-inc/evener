@@ -18,6 +18,7 @@
     "@react-navigation/native-stack": "^7.18.10",
     "anser": "2.3.5",
     "expo": "~57.0.20",
+    "expo-application": "~57.0.3",
     "expo-build-properties": "~57.0.17",
     "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.2",

@@ -14,3 +14,10 @@ export function hubStatusLine(ready: boolean, connection: string | null, check: 
 	if (check?.applicable) parts.push(check.updateAvailable ? "Update available" : "up to date");
 	return parts.join(" · ");
 }
+
+/** This app's version for About (spec 12): "0.1.0 (5)", the version with its
+ * build. With one missing it shows the other, and with both, "Unknown". */
+export function appVersionText(version: string | null, build: string | null): string {
+	if (version && build) return `${version} (${build})`;
+	return version || build || "Unknown";
+}

@@ -42,6 +42,7 @@
     "itemFailure.ts",
     "jobOutput.ts",
     "hubOverview.ts",
+    "hubUpdate.ts",
     "model.ts",
     "chunkview.ts",
     "bootGeneration.ts",

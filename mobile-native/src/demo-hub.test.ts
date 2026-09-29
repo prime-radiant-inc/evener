@@ -443,6 +443,9 @@ describe("native demonstration hub's redesign fleet", () => {
 				source: "paradise-park",
 			});
 			expect(started.thread.evener.ref).toBe("paradise-park:created-1");
+			// A real hub names a remote session's source by its host
+			// (remote_hub_refs.go's fromRemoteThread), matching the ref.
+			expect(started.thread.source).toBe("paradise-park");
 			expect(started.thread.cwd).toBe("/Users/jesse/git/evener");
 			const local = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
 			expect(local.thread.evener.ref).toBe("demo:created-2");
