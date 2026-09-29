@@ -1832,6 +1832,83 @@ test("a delayed subframe commit resolves through its parent frame, not the curre
   assert.equal(socket.listenerCount("message"), 0);
 });
 
+// The boot check must not read attribution while the current navigation's
+// commit is still pending: a load event from the old document can resolve the
+// wait first, and reading the verdict then would fall the final navigation's
+// own failure back to the previous attempt. The loop waits, bounded, for the
+// commit before the check runs.
+test("a pending commit is awaited before the final verdict is read", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // The wait resolves on a stale load from the old document, and the
+          // final navigation's own request dies - all before it commits.
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-pending", loaderId: `loader-${navigations}` },
+            }),
+          });
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-pending", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+          // The commit lands only on a later task.
+          setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Page.frameNavigated",
+                params: { frame: { id: `top-${navigations}`, loaderId: `loader-${navigations}` } },
+              }),
+            });
+          }, 0);
+          return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+        }
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Page.frameNavigated",
+            params: { frame: { id: `top-${navigations}`, loaderId: `loader-${navigations}` } },
+          }),
+        });
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
 // Redirects re-emit requestWillBeSent under the SAME requestId and the same
 // loaderId, possibly during a LATER attempt's window; first-writer-wins keeps
 // the request owned by the document that started it.

@@ -332,6 +332,11 @@ export const BOOT_RETRY_LIMIT = 2;
 // time to settle before the burst is asked for again.
 export const BOOT_RETRY_DELAY_MS = 250;
 
+// How long the loop holds a boot check for a navigation whose load resolved
+// before its Page.frameNavigated commit (a delayed load from the old document).
+// Bounded so a navigation that never commits cannot stall the guard.
+export const COMMIT_SETTLE_MS = 1000;
+
 /**
  * layoutguard's half of the boot seam, exported so the wire tests can call it
  * against a stub document. It runs in the page via toString(), so it must not
@@ -522,6 +527,10 @@ export async function navigateTo(
   const navigationAttempts = new Map();
   const loaderAttempts = new Map();
   const frameAttempts = new Map();
+  // Waiters parked on the next top-frame commit. A navigation's load event can
+  // resolve before its commit (a delayed load from the old document), so the
+  // loop holds the next boot check until THIS navigation's commit is recorded.
+  const commitWaiters = [];
   const failures = [];
   // The last navigation whose main frame has COMMITTED (Page.frameNavigated).
   // It advances only at that commit - never at the counter increment - so in
@@ -593,6 +602,7 @@ export async function navigateTo(
         if (!parentId) {
           currentLoaderId = loaderId;
           currentAttempt = attempt;
+          for (const settle of commitWaiters.splice(0)) settle();
         }
       } else if (!parentId) {
         // A top document that reported no loaderId has no identity to bind; the
@@ -601,6 +611,7 @@ export async function navigateTo(
         currentLoaderId = null;
         currentAttempt = attempts;
         if (frameId) frameAttempts.set(frameId, attempts);
+        for (const settle of commitWaiters.splice(0)) settle();
       }
       return;
     }
@@ -653,14 +664,25 @@ export async function navigateTo(
     await withTimeout(send("Network.enable"), 30000, "Network.enable");
     for (;;) {
       attempts++;
+      let expectedLoaderId = null;
       // The commit that names this navigation's document is observed by the
       // shared listener above, at Page.frameNavigated - not by anything the
       // load event can stand in for. The navigate response registers which
       // attempt owns this navigation's loaderId, so the commit binds to THIS
       // attempt even if the load event resolved early off stale input.
       await navigateToOnce(page, url, (navigatedLoaderId) => {
+        expectedLoaderId = navigatedLoaderId;
         if (navigatedLoaderId) navigationAttempts.set(navigatedLoaderId, attempts);
       });
+      // A load event from the previous document can resolve the wait before
+      // THIS navigation commits. Hold the boot check until the commit lands
+      // (bounded), so no check reads attribution for a document not yet named.
+      if (expectedLoaderId && !loaderAttempts.has(expectedLoaderId)) {
+        const settled = new Promise((resolve) => commitWaiters.push(resolve));
+        if (!loaderAttempts.has(expectedLoaderId)) {
+          await withTimeout(settled, COMMIT_SETTLE_MS, "waitForCommit").catch(() => {});
+        }
+      }
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
         const budget =
