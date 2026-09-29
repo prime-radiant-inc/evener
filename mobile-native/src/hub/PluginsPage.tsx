@@ -450,7 +450,9 @@ function Plugins({
 	}, [selected, marketplaces]);
 	const catalog = selected ? catalogs.get(selected.marketplace) : undefined;
 	const description =
-		catalog?.status === "loaded" ? catalog.plugins.find((item) => item.name === selected?.plugin)?.description : undefined;
+		catalog?.status === "loaded"
+			? catalog.plugins.find((item) => item.name === selected?.plugin)?.description
+			: undefined;
 	// The browser's first list read is a passive effect. Bind this screen-owned
 	// store before child effects run so that first read is not mistaken for a
 	// reconnect and issued twice by the lifecycle's wanted-list recovery.
