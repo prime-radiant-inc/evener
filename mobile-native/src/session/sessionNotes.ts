@@ -137,11 +137,12 @@ export class NotesController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private draftTimer: ReturnType<typeof setTimeout> | null = null;
 	private draftValue: string | undefined;
-	/** The notes this controller sent successfully, newest last. A hub value
-	 * among them is this controller's own echo (even a late, out-of-order
-	 * broadcast from a chained save), not a third writer. Bounded so a long
-	 * session cannot grow it without limit. */
-	private sentNotes: string[] = [];
+	/** The notes this flush's save chain has sent, newest last. A hub value
+	 * among them is this chain's own echo (even a late, out-of-order broadcast),
+	 * not a third writer. Scoped to the chain, so a remote write that restores
+	 * an older value is not mistaken for one; bounded so a chain cannot grow it
+	 * without limit (RoboRev #2769 round 5). */
+	private chainSent: string[] = [];
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
 
@@ -160,8 +161,15 @@ export class NotesController {
 	/** The hub's note changed (evener/notes/updated). Follow it, unless there
 	 * is text here the hub hasn't confirmed: that stays yours. */
 	sync(): void {
-		if (this.state.phase !== "clean" && this.state.phase !== "saved") return;
 		const hub = this.options.savedNote();
+		// The hub caught up to text you're still editing: it needs no draft and
+		// nothing to send, so read clean rather than leaving one behind.
+		if (this.state.phase === "editing" && hub === this.state.text) {
+			this.clearDraft();
+			this.publish({ text: hub, phase: "clean" });
+			return;
+		}
+		if (this.state.phase !== "clean" && this.state.phase !== "saved") return;
 		// A note this controller didn't save itself makes "Saved" stale, so
 		// adopting it reads clean.
 		if (hub !== this.state.text) this.publish({ text: hub, phase: "clean" });
@@ -243,6 +251,8 @@ export class NotesController {
 	 * still sitting there unsent (RoboRev #2769). Stops the moment a save
 	 * itself fails, rather than retrying in a tight loop. */
 	private async saveUntilClean(): Promise<SaveOutcome> {
+		// A new chain: only echoes of its own saves are suppressed (RoboRev #2769).
+		this.chainSent = [];
 		let outcome = await this.save();
 		// save() itself tells "typed on during the save" apart from "settled"
 		// by the phase it publishes (see below); unsaved() can't: savedNote()
@@ -314,10 +324,10 @@ export class NotesController {
 				expectedInstanceId: instanceId,
 				note: text,
 			});
-			// Remember every note we send: an echo of any of them arriving
-			// mid-flight (even a late one from an earlier chained save) is ours.
-			this.sentNotes.push(response.note);
-			if (this.sentNotes.length > 8) this.sentNotes.shift();
+			// Remember every note this chain sends: an echo of any of them arriving
+			// mid-flight (even a late one from an earlier save in the chain) is ours.
+			this.chainSent.push(response.note);
+			if (this.chainSent.length > 8) this.chainSent.shift();
 			if (this.state.text === text) {
 				this.clearDraft();
 				const hub = this.options.savedNote();
@@ -325,7 +335,7 @@ export class NotesController {
 				// in flight: showing our text as Saved would hide their newer note
 				// and our next edit would overwrite it, so adopt theirs as clean
 				// (RoboRev #2769).
-				if (hub !== startedHubNote && hub !== response.note && !this.sentNotes.includes(hub))
+				if (hub !== startedHubNote && hub !== response.note && !this.chainSent.includes(hub))
 					this.publish({ text: hub, phase: "clean" });
 				else this.publish({ text: response.note, phase: "saved" });
 			} else {

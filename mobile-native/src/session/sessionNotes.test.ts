@@ -276,6 +276,34 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
+	it("adopts a remote write that restores a value an earlier save already sent (RoboRev #2769 round 5)", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("ok");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		notes.edit("new text");
+		const saving = notes.flush();
+		// Another device writes "ok" again while our newer save is in flight: it
+		// is a third writer's note, not this save chain's own echo.
+		hub.setSaved("ok");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "ok", phase: "clean" });
+	});
+
+	it("forgets a written draft when the hub catches up to the editing text on a sync (RoboRev #2769 round 5)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		// The debounce fires while the hub is still on "A", so the draft lands.
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(true);
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
 	it("forgets the draft for newer text the hub already holds when an in-flight save settles (RoboRev #2769)", async () => {
 		const hub = harness();
 		hub.setSaved("A");
