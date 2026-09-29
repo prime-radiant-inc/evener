@@ -20,6 +20,9 @@ export interface SheetController {
 export interface SheetOptions {
 	/** Unsaved input: closing asks "Keep editing" or "Discard". */
 	dirty?: boolean;
+	/** Its write is in flight: closing waits, without asking, as a disabled
+	 * Cancel does, unless the write finishes the sheet itself. */
+	busy?: boolean;
 	/** The question that alert asks, such as "Discard this comment?". */
 	discardTitle?: string;
 	/** Runs once when the sheet goes away, however it closed. */
@@ -28,6 +31,7 @@ export interface SheetOptions {
 
 export function useSheet({
 	dirty = false,
+	busy = false,
 	discardTitle = DISCARD_TITLE,
 	onClosed,
 }: SheetOptions = {}): SheetController {
@@ -35,8 +39,9 @@ export function useSheet({
 	const finishing = useRef(false);
 	// A refused swipe down (native-stack's onNativeDismissCancelled), Cancel and
 	// Android's back all arrive here while `dirty` holds the route.
-	usePreventRemove(dirty, ({ data }) => {
+	usePreventRemove(dirty || busy, ({ data }) => {
 		const leave = () => navigation.dispatch(data.action);
+		if (busy && !finishing.current) return;
 		if (sheetLeave(dirty, finishing.current) === "leave") {
 			// Consumed: a bypass is good for the one removal it was set for, not
 			// every later dismissal of this same mounted sheet.

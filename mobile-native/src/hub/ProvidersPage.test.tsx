@@ -1329,7 +1329,12 @@ async function openWork(tree: ReactTestRenderer) {
 }
 
 const choose = (text: string) =>
-	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === text)?.onPress?.());
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === text)
+			?.onPress?.(),
+	);
 
 it("asks before Cancel or a swipe throws away an edited provider (spec 6)", async () => {
 	alertRequests.length = 0;
@@ -1376,4 +1381,53 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 	press(tree, (label) => label === "Cancel");
 	choose("Discard");
 	expect(hasControl(tree, "API key")).toBe(false);
+});
+
+it("asks before Done throws away a pasted key", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Done");
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	choose("Discard");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
+it("holds a swipe down while a pasted key is being saved, without asking", async () => {
+	alertRequests.length = 0;
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save key");
+	await act(async () => {});
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests).toHaveLength(0);
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+});
+
+it("closes the editor without asking once its save lands", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(alertRequests).toHaveLength(0);
 });

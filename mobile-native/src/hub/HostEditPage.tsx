@@ -73,14 +73,14 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	// What the page opened with: typed back to it, there is nothing to lose.
 	const [original] = useState(() => fieldsFrom(row));
 	const dirty = HOST_ENTRY_FIELD_ORDER.some((field) => fields[field] !== original[field]);
-	// Cancel, a swipe and Back ask before an edit goes (spec 6); a save that
-	// lands leaves without asking.
-	const sheet = useSheet({ dirty });
 	// The pair of the row the form opened on: the edit speaks for what the
 	// person saw, so a host changed since then refuses instead of being
 	// overwritten.
 	const [opened] = useState(() => ({ generation: row.generation, incarnationId: row.incarnationId }));
 	const [saving, setSaving] = useState(false);
+	// Cancel, a swipe and Back ask before an edit goes (spec 6), and wait out
+	// a save in flight; a save that lands leaves without asking.
+	const sheet = useSheet({ dirty, busy: saving });
 	// Two taps land before the header re-renders disabled; one update goes.
 	const inFlight = useRef(false);
 	const [error, setError] = useState<{ field: EditableHostField | null; message: string } | null>(null);

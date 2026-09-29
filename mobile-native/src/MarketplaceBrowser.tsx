@@ -29,7 +29,7 @@ import {
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
-import { confirmDiscard } from "./sheet/confirmDiscard";
+import { guardLeave } from "./sheet/confirmDiscard";
 import { Spinner } from "./sheet/Spinner";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
@@ -635,11 +635,7 @@ export function AddMarketplace({
 	}
 	// Cancel and a swipe down wait out an add in flight, and ask before a
 	// typed source or name goes (spec 6).
-	const leave = () => {
-		if (busy) return;
-		if (source.trim() || name.trim()) confirmDiscard(onClose);
-		else onClose();
-	};
+	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || name.trim()) }, onClose);
 	const add = whenReady(canUseConnection, () => {
 		void submit();
 	});

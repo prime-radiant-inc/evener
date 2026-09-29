@@ -168,7 +168,12 @@ it("adds a provider in a grouped form: a base picker, field rows, Save and Cance
 	pressLabel(tree, "Cancel");
 	expect(onCancel).not.toHaveBeenCalled();
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Discard")?.onPress?.());
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Discard")
+			?.onPress?.(),
+	);
 	expect(onCancel).toHaveBeenCalledOnce();
 });
 

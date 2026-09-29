@@ -37,7 +37,7 @@ import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
-import { confirmDiscard } from "../sheet/confirmDiscard";
+import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
@@ -293,6 +293,10 @@ function Providers({
 		});
 		setKey("");
 	}
+	// A pasted key or credential JSON: leaving it waits out its save, and asks
+	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
+	const leaveKey = (leave: () => void) =>
+		guardLeave({ busy: surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
 	function close() {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -495,8 +499,7 @@ function Providers({
 					// A swipe down asks before an edit or a pasted key goes (spec 6),
 					// and waits out a save in flight, as each Cancel does.
 					if (configuration && editorLeave.current) editorLeave.current(close);
-					else if (editingCredential && key.trim()) confirmDiscard(close);
-					else close();
+					else leaveKey(close);
 				}}
 			>
 				{/* The native modal covers the page's status line, so each sheet in it
@@ -534,7 +537,7 @@ function Providers({
 						accessory={<SheetStatus />}
 					/>
 				) : (
-					<Sheet title={instance?.name ?? ""} done={{ onPress: close }} accessory={<SheetStatus />}>
+					<Sheet title={instance?.name ?? ""} done={{ onPress: () => leaveKey(close) }} accessory={<SheetStatus />}>
 						<GroupedPage>
 							{instance ? (
 								<>
@@ -587,13 +590,10 @@ function Providers({
 													tone="accent"
 													disabled={surface.busy}
 													onPress={() => {
-														const clear = () => {
+														leaveKey(() => {
 															setEditingCredential(null);
 															setKey("");
-														};
-														// A pasted key asks before it goes (spec 6).
-														if (key.trim()) confirmDiscard(clear);
-														else clear();
+														});
 													}}
 												/>
 											</Group>

@@ -9,3 +9,12 @@ export function confirmDiscard(discard: () => void, title = DISCARD_TITLE): void
 	const alert = discardAlert(title, discard);
 	Alert.alert(alert.title, undefined, alert.buttons);
 }
+
+/** Runs `leave` if the input may go now: never while its write is in flight
+ * (`busy`, as a disabled Cancel does), after asking when there is input to
+ * lose (`dirty`), and otherwise at once. */
+export function guardLeave({ busy, dirty }: { busy: boolean; dirty: boolean }, leave: () => void): void {
+	if (busy) return;
+	if (dirty) confirmDiscard(leave);
+	else leave();
+}

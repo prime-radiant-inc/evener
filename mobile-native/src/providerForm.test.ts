@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createProviderParams, editProviderParams } from "./providerForm";
+import { createProviderParams, draftChanged, editProviderParams, type ProviderDraft } from "./providerForm";
 
 const providers = [
 	{
@@ -101,4 +101,19 @@ it("does not treat environment variable names as template keys", () => {
 			providers.map((provider) => ({ ...provider, vars: undefined })),
 		).vars,
 	).toBeUndefined();
+});
+
+const blank: ProviderDraft = { name: "", base: "", baseUrl: "", vars: {}, apiKeyEnv: "", credentialHeader: "" };
+
+it("sees a changed field as a change, field by field", () => {
+	expect(draftChanged(blank, blank)).toBe(false);
+	expect(draftChanged(blank, { ...blank, name: "work" })).toBe(true);
+	expect(draftChanged(blank, { ...blank, base: "gateway" })).toBe(true);
+	expect(draftChanged(blank, { ...blank, credentialHeader: "Bearer $KEY" })).toBe(true);
+	expect(draftChanged(blank, { ...blank, vars: { REGION: "eu" } })).toBe(true);
+});
+
+it("counts a variable typed and cleared again as no change", () => {
+	expect(draftChanged(blank, { ...blank, vars: { REGION: "" } })).toBe(false);
+	expect(draftChanged({ ...blank, vars: { REGION: "eu" } }, { ...blank, vars: { REGION: "eu", TENANT: "" } })).toBe(false);
 });

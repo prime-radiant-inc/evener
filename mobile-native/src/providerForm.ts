@@ -45,3 +45,21 @@ export function editProviderParams(
 	if (instance.endpointFingerprint) params.expectedEndpointFingerprint = instance.endpointFingerprint;
 	return params;
 }
+
+/** Whether a draft differs from the one the editor opened with, field by
+ * field. A variable typed and cleared again counts as unset, as the create
+ * request treats it. */
+export function draftChanged(opened: ProviderDraft, draft: ProviderDraft): boolean {
+	const setVars = (vars: Record<string, string>) =>
+		Object.entries(vars)
+			.filter(([, value]) => value !== "")
+			.sort(([a], [b]) => a.localeCompare(b));
+	return (
+		opened.name !== draft.name ||
+		opened.base !== draft.base ||
+		opened.baseUrl !== draft.baseUrl ||
+		opened.apiKeyEnv !== draft.apiKeyEnv ||
+		opened.credentialHeader !== draft.credentialHeader ||
+		JSON.stringify(setVars(opened.vars)) !== JSON.stringify(setVars(draft.vars))
+	);
+}

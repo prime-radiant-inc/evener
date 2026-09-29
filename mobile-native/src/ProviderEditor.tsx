@@ -7,7 +7,7 @@ import {
 	type ProviderDescriptor,
 } from "@evener/appwire-client";
 import type { LiveReadiness } from "./connectionDisplay";
-import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
+import { createProviderParams, draftChanged, editProviderParams, type ProviderDraft } from "./providerForm";
 import type { TextInput } from "react-native";
 import {
 	FormError,
@@ -21,7 +21,7 @@ import {
 	useErrorInView,
 	useFormError,
 } from "./sheet/Grouped";
-import { confirmDiscard } from "./sheet/confirmDiscard";
+import { guardLeave } from "./sheet/confirmDiscard";
 import { Sheet } from "./sheet/Sheet";
 
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
@@ -104,15 +104,10 @@ export function ProviderEditor({
 	const busy = disabled || saving;
 	// Leaving waits out a save in flight, and asks before an edit goes (spec
 	// 6); an editor still as it opened leaves at once.
-	const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
-	const guardLeave: LeaveGuard = (leave) => {
-		if (saving) return;
-		if (dirty) confirmDiscard(leave);
-		else leave();
-	};
+	const leaveEditor: LeaveGuard = (leave) => guardLeave({ busy: saving, dirty: draftChanged(opened, draft) }, leave);
 	useEffect(() => {
 		if (!leaveGuard) return;
-		leaveGuard.current = guardLeave;
+		leaveGuard.current = leaveEditor;
 		return () => {
 			leaveGuard.current = null;
 		};
@@ -197,7 +192,7 @@ export function ProviderEditor({
 	return (
 		<Sheet
 			title={instance ? `Edit ${instance.name}` : "Add provider"}
-			onCancel={() => guardLeave(onCancel)}
+			onCancel={() => leaveEditor(onCancel)}
 			cancelDisabled={saving}
 			done={{
 				label: saving ? "Saving…" : "Save",

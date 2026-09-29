@@ -348,7 +348,12 @@ it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async (
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
 	expect(page.navigation.dispatch).not.toHaveBeenCalled();
-	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Discard")?.onPress?.());
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Discard")
+			?.onPress?.(),
+	);
 	expect(page.navigation.dispatch).toHaveBeenCalledWith(leave);
 	page.dispose();
 });
@@ -370,5 +375,19 @@ it("leaves without asking once its save lands", async () => {
 	// The save's own leaving passes the guard untouched.
 	if (guard.prevented) act(() => guard.onPrevent?.({ data: { action: leave } }));
 	expect(alertRequests).toHaveLength(0);
+	page.dispose();
+});
+
+it("holds Back and a swipe while its save is in flight, without asking", async () => {
+	alertRequests.length = 0;
+	const fleet = scriptedFleet([attic]);
+	const page = await mount(fleet, "attic");
+	page.type("User", "root");
+	fleet.client.request = (() => new Promise(() => {})) as never;
+	await act(async () => page.header("headerRight").props.onPress());
+	expect(guard.prevented).toBe(true);
+	act(() => guard.onPrevent?.({ data: { action: leave } }));
+	expect(alertRequests).toHaveLength(0);
+	expect(page.navigation.dispatch).not.toHaveBeenCalled();
 	page.dispose();
 });
