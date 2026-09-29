@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 const delegateFinishReasonLimit = 512
@@ -17,14 +17,7 @@ const delegateFinishReasonLimit = 512
 // bytes, cutting at a rune boundary so the journal and the wire never carry
 // half a character.
 func cutFinishText(text string) string {
-	if len(text) <= delegateFinishReasonLimit {
-		return text
-	}
-	cut := delegateFinishReasonLimit
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut]
+	return runetrim.Cut(text, delegateFinishReasonLimit)
 }
 
 // boundedFinishText is a finish's reason or error as recorded: trimmed, then

@@ -203,6 +203,19 @@ it("lists failed, then running, then a folded done, with chips that count the sa
 	expect(tree.root.find((node) => node.props.accessibilityLabel === "2 failed, 32 running, 21 done")).toBeDefined();
 });
 
+// Spec 9 draws the filter chips as one row, as the Board's and the Session's
+// chip rows are: with 55 subagents they overflow a phone's width, so they
+// scroll sideways in the shared strip, which fades at its trailing edge,
+// instead of wrapping "Done" onto a row of its own (audit N10).
+it("keeps its filter chips on one row that scrolls sideways", async () => {
+	const tree = await mount();
+	const strip = tree.root.findByProps({ testID: "subagent-filters" });
+	const row = strip.findByType("ScrollView" as never);
+	expect(row.props.horizontal).toBe(true);
+	for (const label of ["All, 55", "Failed, 2", "Running, 32", "Done, 21"])
+		expect(row.find((node) => node.props.accessibilityLabel === label)).toBeDefined();
+});
+
 it("filters to a chip's state, and offers no chip for a state with no subagents", async () => {
 	const tree = await mount();
 	playedHaptics.length = 0;

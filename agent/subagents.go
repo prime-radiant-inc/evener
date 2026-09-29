@@ -2293,7 +2293,7 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		}
 	}
 	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
-		firstLine, _, _ := strings.Cut(inputs.runErr.Error(), "\n")
+		firstLine, _, _ := strings.Cut(strings.TrimSpace(inputs.runErr.Error()), "\n")
 		finish.errorText = boundedFinishText(firstLine)
 	}
 	metadata.Outcome = finish.outcome

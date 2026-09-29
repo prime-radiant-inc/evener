@@ -18,6 +18,7 @@ import {
 } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
 import {
+  NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -1581,4 +1582,27 @@ test("an archived list rejects children nested deeper than the navigation depth 
     row = completeSession({ ref: `local:level-${depth}`, children: [row] });
   }
   expect(() => decodeArchivedListSessions([row])).toThrow("navigation protocol: invalid archived list");
+});
+
+test("an archived list decodes a full page and rejects one row more than the section limit", () => {
+  const page = (rows: number) =>
+    Array.from({ length: rows }, (_, index) => completeSession({ ref: `local:row-${index}` }));
+  expect(decodeArchivedListSessions(page(NAVIGATION_SECTION_LIMIT))).toHaveLength(NAVIGATION_SECTION_LIMIT);
+  expect(() => decodeArchivedListSessions(page(NAVIGATION_SECTION_LIMIT + 1))).toThrow(
+    "navigation protocol: invalid archived list",
+  );
+});
+
+test("an archived list rejects more nested nodes than a navigation session may hold", () => {
+  // Two shallow rows keep the row and depth bounds satisfied; only the total
+  // node count overflows.
+  const fanOut = (prefix: string, count: number) =>
+    completeSession({
+      ref: `local:${prefix}`,
+      children: Array.from({ length: count }, (_, index) => completeSession({ ref: `local:${prefix}-${index}` })),
+    });
+  expect(decodeArchivedListSessions([fanOut("a", 999), fanOut("b", 999)])).toHaveLength(2);
+  expect(() => decodeArchivedListSessions([fanOut("a", 1000), fanOut("b", 1000)])).toThrow(
+    "navigation protocol: invalid archived list",
+  );
 });

@@ -500,18 +500,24 @@ describe("native demonstration hub's redesign fleet", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
-			const began = Date.now();
+			// Only the hub's hold timer runs on fake time; socket I/O stays real.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 			const order: string[] = [];
 			const starting = client
 				.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" })
 				.then((started) => (order.push("start"), started));
 			// Every other method answers while the start is still held.
 			await client.request("evener/projects/recent", {}).then(() => order.push("recent"));
+			vi.advanceTimersByTime(299);
+			// A reply the hub sent before this round trip would have arrived ahead of it.
+			await client.request("evener/projects/recent", {});
+			expect(order).toEqual(["recent"]);
+			vi.advanceTimersByTime(1);
 			const started = await starting;
 			expect(order).toEqual(["recent", "start"]);
-			expect(Date.now() - began).toBeGreaterThanOrEqual(300);
 			expect(started.thread.evener.ref).toBe("demo:created-1");
 		} finally {
+			vi.useRealTimers();
 			client.close();
 			await hub.close();
 		}
