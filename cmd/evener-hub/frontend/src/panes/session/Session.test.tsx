@@ -255,39 +255,12 @@ const CONTAINER_HEIGHT = 500;
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
 let mutationStorage: MutationOutboxIndexedDB;
 
-// jsdom has no IntersectionObserver either, and LoadOlderRow's automatic paging
-// sentinel needs one. This stub reports the observed element as visible
-// immediately, which is what a real browser does for a sentinel sitting at the
-// top of a short transcript - so a pane rendered here pages exactly as it would
-// there. LoadOlderRow's own suite drives a scriptable version for the
-// enter/leave/blocked cases; this one only has to make the pane's own wiring
-// reachable.
-class StubIntersectionObserver {
-  static instances: StubIntersectionObserver[] = [];
-  static autoTrigger = true;
-  readonly observed: Element[] = [];
-  constructor(private readonly callback: IntersectionObserverCallback) {
-    StubIntersectionObserver.instances.push(this);
-  }
-  observe(target: Element): void {
-    this.observed.push(target);
-    if (StubIntersectionObserver.autoTrigger) this.enter();
-  }
-  unobserve(): void {}
-  disconnect(): void {}
-  enter(): void {
-    this.callback(
-      this.observed.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
-      this as unknown as IntersectionObserver,
-    );
-  }
-}
-
-function latestStubIntersectionObserver(): StubIntersectionObserver {
-  const observer = StubIntersectionObserver.instances.at(-1);
-  if (!observer) throw new Error("no IntersectionObserver was constructed");
-  return observer;
-}
+// jsdom computes no layout, so the transcript's scroll port reads as
+// zero-tall (scrollHeight === clientHeight === 0) - exactly the "too short to
+// fill the port" shape LoadOlderRow's geometry check fills. A pane rendered
+// here therefore pages on its own, the way a real browser's short first page
+// does. LoadOlderRow's own suite drives the geometry and the resize re-check
+// explicitly.
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -306,9 +279,6 @@ beforeEach(() => {
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
   localStorage.clear();
-  StubIntersectionObserver.instances = [];
-  StubIntersectionObserver.autoTrigger = true;
-  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
 });
@@ -532,10 +502,9 @@ test("omits the old live Detail toolbar while transcript and older-history conte
   );
 
   expect(await screen.findByText("hello")).toBeTruthy();
-  // Idle paging is silent now (no "Older turns" banner); the row and its
-  // automatic-fetch sentinel are what must remain reachable.
+  // Idle paging is silent now (no "Older turns" banner); the row is what must
+  // remain reachable.
   expect(screen.getByTestId("load-older-row")).toBeTruthy();
-  expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
   act(() => {
     transcriptDisplayStore.setState({ viewport: "desktop" });
@@ -1859,7 +1828,6 @@ test("older turns load with no click at all once the paging sentinel is in view"
 });
 
 test("folds a result-only partial turn with its older call and earlier fragment", async () => {
-  StubIntersectionObserver.autoTrigger = false;
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -1920,12 +1888,9 @@ test("folds a result-only partial turn with its older call and earlier fragment"
     </ClientProvider>,
   );
 
-  const sentinel = await screen.findByTestId("load-older-sentinel");
-  expect(latestStubIntersectionObserver().observed).toContain(sentinel);
-  expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
-  await act(async () => {
-    latestStubIntersectionObserver().enter();
-  });
+  // The older page loads on its own: jsdom's zero-height port is exactly the
+  // "too short to fill" shape the row's geometry check fills, so the fragment
+  // arrives and folds into the turn it belongs to.
   expect(await screen.findByText("earlier fragment")).toBeTruthy();
   expect(screen.getAllByText("earlier fragment")).toHaveLength(1);
   const foldedTool = threadsStore

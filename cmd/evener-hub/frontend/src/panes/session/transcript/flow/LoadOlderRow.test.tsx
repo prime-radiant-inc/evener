@@ -2,19 +2,17 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { LoadOlderRow } from "./LoadOlderRow";
 
-// jsdom implements no IntersectionObserver at all (same gap DockHost.test.tsx
-// covers for ResizeObserver, and stubbed the same way). This stub records every
-// observed element and exposes a trigger so a test can say "the sentinel came
-// into view" explicitly, rather than depending on layout jsdom never performs.
-class StubIntersectionObserver {
-  static instances: StubIntersectionObserver[] = [];
+// jsdom implements no ResizeObserver at all (the same gap the row's earlier
+// IntersectionObserver sentinel needed stubbed). This stub records every
+// observed element and exposes a trigger, so a test can say "the port's
+// geometry changed" explicitly rather than depending on layout jsdom never
+// performs.
+class StubResizeObserver {
+  static instances: StubResizeObserver[] = [];
   observed: Element[] = [];
   disconnected = false;
-  constructor(
-    private readonly callback: IntersectionObserverCallback,
-    readonly options?: IntersectionObserverInit,
-  ) {
-    StubIntersectionObserver.instances.push(this);
+  constructor(private readonly callback: ResizeObserverCallback) {
+    StubResizeObserver.instances.push(this);
   }
   observe(el: Element): void {
     this.observed.push(el);
@@ -23,31 +21,39 @@ class StubIntersectionObserver {
   disconnect(): void {
     this.disconnected = true;
   }
-  /** Fires the callback as if every observed element became visible. */
-  enter(): void {
+  /** Fires the callback as if every observed element changed size. */
+  resize(): void {
     this.callback(
-      this.observed.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
-      this as unknown as IntersectionObserver,
-    );
-  }
-  /** Fires the callback with a non-intersecting entry (scrolled away). */
-  leave(): void {
-    this.callback(
-      this.observed.map((target) => ({ target, isIntersecting: false }) as IntersectionObserverEntry),
-      this as unknown as IntersectionObserver,
+      this.observed.map((target) => ({ target }) as ResizeObserverEntry),
+      this as unknown as ResizeObserver,
     );
   }
 }
 
-function latestObserver(): StubIntersectionObserver {
-  const last = StubIntersectionObserver.instances[StubIntersectionObserver.instances.length - 1];
-  if (!last) throw new Error("no IntersectionObserver was constructed");
+function latestObserver(): StubResizeObserver {
+  const last = StubResizeObserver.instances[StubResizeObserver.instances.length - 1];
+  if (!last) throw new Error("no ResizeObserver was constructed");
   return last;
 }
 
+// A stand-in for the transcript's scroll port and its content. jsdom computes
+// no layout, so the geometry the row reads is defined outright; `set` changes
+// it the way a pane resize or a settling virtualizer would.
+function scrollPort(scrollHeight: number, clientHeight: number) {
+  const el = document.createElement("div");
+  const content = document.createElement("div");
+  el.appendChild(content);
+  const set = (nextScrollHeight: number, nextClientHeight: number) => {
+    Object.defineProperty(el, "scrollHeight", { value: nextScrollHeight, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: nextClientHeight, configurable: true });
+  };
+  set(scrollHeight, clientHeight);
+  return { el, set };
+}
+
 beforeEach(() => {
-  StubIntersectionObserver.instances = [];
-  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
+  StubResizeObserver.instances = [];
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
 });
 
 afterEach(() => {
@@ -55,55 +61,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("observes its own sentinel with a prefetch margin, so paging starts before the reader hits the top", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
+test("watches the transcript's scroll port and its content, not a sentinel of its own", () => {
+  const port = scrollPort(5000, 500);
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />);
 
   const observer = latestObserver();
-  expect(observer.observed).toEqual([screen.getByTestId("load-older-sentinel")]);
-  // A margin, not a bare 0 threshold: the fetch is in flight by the time the
-  // reader arrives rather than starting when they get there.
-  expect(observer.options?.rootMargin).toMatch(/\d+px/);
+  expect(observer.observed).toEqual([port.el, port.el.firstElementChild]);
 });
 
-test("the sentinel coming into view loads older turns with no click at all", () => {
+test("loads older turns when the port is not full", () => {
+  const port = scrollPort(300, 500);
   const onLoad = vi.fn();
-  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} />);
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
 
-  latestObserver().enter();
+  latestObserver().resize();
 
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
-test("a non-intersecting observation loads nothing", () => {
+// The reported bug: the row renders into FlowOverlay's non-scrolling top slot,
+// so a sentinel of its own was inside the viewport at every scroll position
+// and loaded a page on every open, however far the reader was from the top of
+// history.
+test("does not load while the transcript already overflows its port", () => {
+  const port = scrollPort(5000, 500);
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+
+  expect(onLoad).not.toHaveBeenCalled();
+});
+
+// A transcript that overflows at mount can later fit: the pane grows, or the
+// virtualizer's estimates settle to shorter real rows. Nothing else fires then
+// - there is no scroll event to drive the near-top trigger - so the re-check
+// is what keeps the older history reachable.
+test("re-checks on a later geometry change and loads once the port is no longer full", () => {
+  const port = scrollPort(5000, 500);
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+  expect(onLoad).not.toHaveBeenCalled();
+
+  port.set(300, 500);
+  latestObserver().resize();
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
+test("with no scroll element accessor it observes nothing and never auto-loads", () => {
   const onLoad = vi.fn();
   render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} />);
 
-  latestObserver().leave();
-
+  expect(StubResizeObserver.instances).toHaveLength(0);
   expect(onLoad).not.toHaveBeenCalled();
-});
-
-// The sentinel is always in view (see scrollMetrics.shouldAutoLoadOlder), so
-// left unguarded the observer loads an older page on every open.
-test("does not auto-load while the caller says the page already fills its scroll port", () => {
-  const onLoad = vi.fn();
-  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} canAutoLoad={() => false} />);
-
-  latestObserver().enter();
-
-  expect(onLoad).not.toHaveBeenCalled();
-});
-
-// A first page too short to scroll at all produces no scroll events, so the
-// near-top scroll trigger cannot see it; the sentinel is the only thing that
-// fills it, and it must still do so.
-test("auto-loads when the caller says the page does not fill its scroll port", () => {
-  const onLoad = vi.fn();
-  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} canAutoLoad={() => true} />);
-
-  latestObserver().enter();
-
-  expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
 test("there is no 'load more' button to press - paging is automatic", () => {
@@ -123,10 +136,9 @@ test("idle with more history to fetch, it shows no banner at all", () => {
 
 test("a failed fetch surfaces inline, announced, with a Retry - never silently", () => {
   render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't load older turns: network error" />);
-
   const alert = screen.getByRole("alert");
   expect(alert.textContent).toMatch(/couldn't load older turns/i);
-  expect(alert.textContent).toMatch(/network error/);
+  expect(alert.textContent).toMatch(/network error/i);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
@@ -136,7 +148,6 @@ test("a failed fetch surfaces inline, announced, with a Retry - never silently",
 // here would talk over that.
 test("the row shows the caller's own sentence verbatim, adding no label of its own", () => {
   render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't start this session: fork/exec evener" />);
-
   expect(screen.getByRole("alert").textContent).toBe("Couldn't start this session: fork/exec evener");
 });
 
@@ -149,34 +160,43 @@ test("Retry calls onLoad", () => {
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
-// Without this the still-visible sentinel would re-fire against a failing
+// Without this the still-too-short port would re-fire against a failing
 // endpoint on every observation - an automatic retry loop nobody asked for.
-test("while an error is showing, the sentinel stops auto-loading", () => {
+test("while an error is showing, the geometry check stops auto-loading", () => {
+  const port = scrollPort(300, 500);
   const onLoad = vi.fn();
-  const { rerender } = render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} />);
-  latestObserver().enter();
+  const { rerender } = render(
+    <LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />,
+  );
+  latestObserver().resize();
   expect(onLoad).toHaveBeenCalledTimes(1);
 
-  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" />);
-  latestObserver().enter();
+  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" scrollElement={() => port.el} />);
+  latestObserver().resize();
 
   expect(onLoad).toHaveBeenCalledTimes(1); // still just the first, pre-failure call
 });
 
 test("clearing the error re-arms the automatic trigger", () => {
+  const port = scrollPort(300, 500);
   const onLoad = vi.fn();
-  const { rerender } = render(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" />);
-  latestObserver().enter();
+  const { rerender } = render(
+    <LoadOlderRow onLoad={onLoad} loading={false} error="network error" scrollElement={() => port.el} />,
+  );
+  latestObserver().resize();
   expect(onLoad).not.toHaveBeenCalled();
 
-  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error={null} />);
-  latestObserver().enter();
+  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+  latestObserver().resize();
 
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
 test("the observer is torn down on unmount", () => {
-  const { unmount } = render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
+  const port = scrollPort(300, 500);
+  const { unmount } = render(
+    <LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />,
+  );
   const observer = latestObserver();
   expect(observer.disconnected).toBe(false);
 
@@ -185,10 +205,19 @@ test("the observer is torn down on unmount", () => {
   expect(observer.disconnected).toBe(true);
 });
 
-test("renders (without observing) in an environment that has no IntersectionObserver", () => {
+test("renders (without observing) in an environment that has no ResizeObserver", () => {
   vi.unstubAllGlobals();
-  vi.stubGlobal("IntersectionObserver", undefined);
+  vi.stubGlobal("ResizeObserver", undefined);
 
-  expect(() => render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />)).not.toThrow();
+  expect(() =>
+    render(
+      <LoadOlderRow
+        onLoad={() => {}}
+        loading={false}
+        error={null}
+        scrollElement={() => document.createElement("div")}
+      />,
+    ),
+  ).not.toThrow();
   expect(screen.getByTestId("load-older-row")).toBeTruthy();
 });

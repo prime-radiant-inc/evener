@@ -25,7 +25,6 @@ import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets"
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
-import { shouldAutoLoadOlder } from "../session/transcript/flow/scrollMetrics";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
@@ -143,7 +142,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
                 onLoad={loadOlderReportingError}
                 loading={loadingOlder}
                 error={olderError}
-                canAutoLoad={() => shouldAutoLoadOlder(listRef.current?.getScrollElement() ?? null)}
+                scrollElement={() => listRef.current?.getScrollElement() ?? null}
               />
             )
           }
