@@ -35,10 +35,17 @@ const TRAILING_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>\s*$/;
 // was cancelled.
 const BUFFERED_TRAILER_RE = /^exit_code=(-?\d+) duration_ms=\d+ timed_out=(true|false)$/;
 
-// The body without the final "[ERROR: …]" block the buffered environment
-// wrote, when it ends in one; an earlier block the command printed stays.
+// The buffered environment's own blocks (runBufferedShell): a timeout or a
+// cancel. An "[ERROR: …]" line the command printed is its output.
+const ENVIRONMENT_ERROR_STARTS = [
+  "[ERROR: Command timed out after ",
+  "[ERROR: Command was canceled before completion.",
+];
+
+// The body without the final block the buffered environment wrote, when it
+// ends in one.
 function withoutTrailingError(body: string): string {
-  const start = body.lastIndexOf("[ERROR: ");
+  const start = Math.max(...ENVIRONMENT_ERROR_STARTS.map((marker) => body.lastIndexOf(marker)));
   if (start === -1 || !body.trimEnd().endsWith("]")) return body;
   return body.slice(0, start);
 }
@@ -56,11 +63,18 @@ export interface ShellOutput {
   windowed?: boolean;
 }
 
-// Where the tail starts: the output without an intervention the registry
-// appended after a blank line, when what comes before it ends in a footer.
-function footerSearches(output: string): string[] {
-  const cut = output.lastIndexOf("\n\n");
-  return cut === -1 ? [output] : [output, output.slice(0, cut)];
+/** Where a tool's own output may end: the whole output, then the output cut
+ * at each blank line from the last to the first. The registry appends an
+ * intervention after a blank line (agent/internal/tool/breaker.go's
+ * appendIntervention), and the intervention may hold blank lines of its own,
+ * so a reader takes the first of these that reads as the tool's tail. */
+export function outputTails(output: string): string[] {
+  const tails = [output];
+  for (let cut = output.lastIndexOf("\n\n"); cut !== -1; cut = output.lastIndexOf("\n\n", cut - 1)) {
+    tails.push(output.slice(0, cut));
+    if (cut === 0) break;
+  }
+  return tails;
 }
 
 function withoutTrailingNewlines(text: string): string {
@@ -112,7 +126,7 @@ function readBuffered(text: string): ShellOutput | undefined {
  * bracket or an "exit_code=" line the command printed itself stays output. */
 export function shellOutput(output: string): ShellOutput {
   const text = output.replace(/\r\n/g, "\n");
-  for (const search of footerSearches(text)) {
+  for (const search of outputTails(text)) {
     const read = readBracketed(search) ?? readBuffered(search);
     if (read) return read;
   }
@@ -128,6 +142,8 @@ export function webFetchResult(output: string): { text?: string; url?: string; b
   const text = str(record, "answer") ?? str(record, "content");
   const url = str(record, "url");
   const bytes = typeof record.size_bytes === "number" ? record.size_bytes : undefined;
+  // JSON with none of these isn't web_fetch's result.
+  if (text === undefined && url === undefined && bytes === undefined) return undefined;
   return {
     ...(text === undefined ? {} : { text }),
     ...(url ? { url } : {}),
@@ -142,7 +158,7 @@ const SKILL_CONTEXT_RE = /^\s*<skill-context>\s*([\s\S]*?)\s*<\/skill-context>\s
  * any other output. */
 export function skillContext(output: string): { name: string; description?: string; instructions: string } | undefined {
   // An intervention the registry appended after a blank line is not the skill.
-  const body = footerSearches(output)
+  const body = outputTails(output)
     .map((search) => SKILL_CONTEXT_RE.exec(search)?.[1])
     .find((found) => found !== undefined);
   if (body === undefined) return undefined;

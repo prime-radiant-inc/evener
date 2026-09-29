@@ -10,7 +10,7 @@
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
-import { webFetchResult } from "./toolEvidence";
+import { outputTails, webFetchResult } from "./toolEvidence";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -104,8 +104,14 @@ const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries(?: \(|$)/;
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
-  const trimmed = output.trimEnd();
-  const stated = LIST_DIR_COUNT_RE.exec(trimmed.slice(trimmed.lastIndexOf("\n") + 1))?.[1];
+  // The footer is the last line of the tool's own output, which may be
+  // followed by an intervention the registry appended.
+  const stated = outputTails(output)
+    .map((tail) => {
+      const trimmed = tail.trimEnd();
+      return LIST_DIR_COUNT_RE.exec(trimmed.slice(trimmed.lastIndexOf("\n") + 1))?.[1];
+    })
+    .find((count) => count !== undefined);
   if (stated === undefined) {
     const n = lineCount(output);
     return `${n} ${n === 1 ? "entry" : "entries"}`;

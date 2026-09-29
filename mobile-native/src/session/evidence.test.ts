@@ -102,6 +102,13 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	it("says a directly backgrounded command is still running, with no timeout", () => {
+		expect(stepEvidence({ label: "shell", detail: { output: "started\n[running in background as job_x]" } })).toEqual([
+			{ kind: "output", text: "started", lines: 1 },
+			{ kind: "note", text: "Still running in the background" },
+		]);
+	});
+
 	it("says a command exited nonzero, when that is all it printed", () => {
 		expect(real("call_shell_failed")).toEqual([{ kind: "exit", code: 1 }]);
 	});

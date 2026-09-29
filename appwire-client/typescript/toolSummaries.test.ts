@@ -157,6 +157,13 @@ test("says the count list_dir states, one entry or many", () => {
   // output without the footer, which counts its lines.
   expect(listed("2 entries.md\t9\n")).toBe("Listed a · 1 entry");
   expect(listed("b.go\t3\nc.go\t4\n2 entries.md\t9")).toBe("Listed a · 3 entries");
+  // The registry's repetition nudge, appended after a blank line, is not the
+  // listing's last line.
+  expect(
+    listed(
+      "b.go\t3\nc.go\t4\nd.go\t5\n\n3 entries\n\nYou have now made this same call and received the identical result 2 times in a row.",
+    ),
+  ).toBe("Listed a · 3 entries");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });

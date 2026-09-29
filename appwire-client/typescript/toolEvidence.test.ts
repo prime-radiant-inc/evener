@@ -59,6 +59,28 @@ test("reads a footer's windowed output and a runtime-limit stop as what they are
   });
 });
 
+test("keeps an [ERROR: …] line the command printed at its end", () => {
+  expect(shellOutput("app out\n[ERROR: real application error]\nexit_code=1 duration_ms=5 timed_out=false\n")).toEqual({
+    text: "app out\n[ERROR: real application error]",
+    exitCode: 1,
+  });
+  // The environment's own cancel block is its own.
+  expect(
+    shellOutput(
+      "part\n[ERROR: Command was canceled before completion. Partial output is shown above.]\nexit_code=-1 duration_ms=5 timed_out=false\n",
+    ),
+  ).toEqual({ text: "part", exitCode: -1 });
+});
+
+test("leaves out an appended intervention that holds blank lines of its own", () => {
+  const nudged = "ok\n[exit 0]\n\nYou keep making this call.\n\nChange your approach.";
+  expect(shellOutput(nudged)).toEqual({ text: "ok", exitCode: 0 });
+});
+
+test("reads a directly backgrounded command as still running, not timed out", () => {
+  expect(shellOutput("started\n[running in background as job_x]")).toEqual({ text: "started", stillRunning: true });
+});
+
 test("reads the buffered environment's trailer and its timeout error", () => {
   expect(shellOutput("built\nexit_code=2 duration_ms=40 timed_out=false\n")).toEqual({ text: "built", exitCode: 2 });
   expect(
@@ -83,6 +105,8 @@ test("reads a fetched page's answer, where it came from and its size", () => {
     webFetchResult(JSON.stringify({ fallback: "raw", content: "# Notes", url: "https://x.test", size_bytes: 7 })),
   ).toEqual({ text: "# Notes", url: "https://x.test", bytes: 7 });
   expect(webFetchResult("not json")).toBeUndefined();
+  // JSON that isn't web_fetch's result.
+  expect(webFetchResult('{"foo":1}')).toBeUndefined();
 });
 
 test("reads the skill an activation loaded", () => {
