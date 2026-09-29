@@ -43,3 +43,21 @@ func TestListDirBudget_BoundsWalkAtPage(t *testing.T) {
 		t.Fatalf("second page did not return f01: err=%t output=%q", res.IsError, res.Output)
 	}
 }
+
+// A directory too large to scan fully cannot be continued by offset, so its
+// footer must say so rather than advertise a meaningless next page.
+func TestListDirBudget_IncompleteFooterHasNoOffset(t *testing.T) {
+	out := formatDirListing(listDirResult{
+		Entries:    []execenv.DirEntry{{Name: "a"}},
+		Total:      1,
+		Returned:   1,
+		Partial:    true,
+		Incomplete: true,
+	})
+	if !strings.Contains(out, "too large to list fully") {
+		t.Fatalf("incomplete footer should say the directory is too large:\n%s", out)
+	}
+	if strings.Contains(out, "offset=") {
+		t.Fatalf("incomplete footer must not offer an offset continuation:\n%s", out)
+	}
+}

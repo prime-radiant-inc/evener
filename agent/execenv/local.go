@@ -1943,13 +1943,24 @@ var maxListDirScanEntries = 200_000
 // entries (limit < 0 returns them all), reporting whether the directory held
 // more than the returned prefix. It reads through the listReadDirChunk seam so
 // tests can drive the chunk loop.
-func listDirReadPrefix(ctx context.Context, dir string, limit, scanCap int) ([]os.DirEntry, bool, error) {
+func listDirReadPrefix(ctx context.Context, dir string, limit, scanCap int) (dirPrefixResult, error) {
 	f, err := listOpenDir(dir)
 	if err != nil {
-		return nil, false, err
+		return dirPrefixResult{}, err
 	}
 	defer func() { _ = f.Close() }()
 	return readDirPrefix(ctx, f, listReadDirChunk, limit, scanCap, nil)
+}
+
+// dirPrefixResult is what a chunked directory read yielded: the smallest
+// entries it kept (sorted), whether the directory held entries beyond them
+// (more), and whether the scan budget stopped the read before the directory
+// ended (incomplete), in which case the kept prefix is sorted only among the
+// entries scanned and cannot be continued by offset.
+type dirPrefixResult struct {
+	entries    []os.DirEntry
+	more       bool
+	incomplete bool
 }
 
 // readDirPrefix streams a directory's entries in chunks and returns the
@@ -1964,7 +1975,7 @@ func listDirReadPrefix(ctx context.Context, dir string, limit, scanCap int) ([]o
 // unbounded scan. ctx is observed between chunks, so a cancelled walk stops
 // mid-listing. It is shared by the path-based and fd-based walks so they cannot
 // drift apart.
-func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit, scanCap int, keep func(os.DirEntry) bool) ([]os.DirEntry, bool, error) {
+func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit, scanCap int, keep func(os.DirEntry) bool) (dirPrefixResult, error) {
 	var kept dirNameHeap
 	dropped := false
 	scanned := 0
@@ -1983,10 +1994,10 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, false, err
+			return dirPrefixResult{}, err
 		}
 		if scanCap >= 0 && scanned >= scanCap {
-			return sortedPrefix(), true, nil
+			return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
 		}
 		batch, rerr := read(f, listDirChunk)
 		for _, ent := range batch {
@@ -2013,10 +2024,10 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 			break
 		}
 		if rerr != nil {
-			return nil, false, rerr
+			return dirPrefixResult{}, rerr
 		}
 	}
-	return sortedPrefix(), dropped, nil
+	return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
 }
 
 // dirNameHeap is a max-heap of directory entries ordered by name, used to keep
@@ -2071,10 +2082,11 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 		// Stream the directory in chunks, keeping only the smallest entries the
 		// page can still use, so a one-entry page never materializes a whole huge
 		// directory yet still returns the true sorted prefix.
-		ents, more, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries(), budget.scanBudget())
+		res, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries(), budget.scanBudget())
 		if err != nil {
 			return err
 		}
+		ents := res.entries
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
 			if err := ctx.Err(); err != nil {
@@ -2110,8 +2122,11 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 				}
 			}
 		}
-		if more {
+		if res.more || res.incomplete {
 			budget.truncated = true
+		}
+		if res.incomplete {
+			budget.incomplete = true
 		}
 		return nil
 	}

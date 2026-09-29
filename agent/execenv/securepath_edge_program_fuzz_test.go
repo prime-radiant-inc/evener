@@ -184,7 +184,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if err := writeAllFd(-1, []byte("data")); err == nil {
 		t.Fatal("writeAllFd invalid fd unexpectedly succeeded")
 	}
-	if _, _, err := readDirEntriesPrefix(context.Background(), -1, -1, -1, nil); err == nil {
+	if _, err := readDirEntriesPrefix(context.Background(), -1, -1, -1, nil); err == nil {
 		t.Fatal("readDirEntriesPrefix invalid fd unexpectedly succeeded")
 	}
 	if _, err := openat2Retry(-1, "never", &unix.OpenHow{Flags: unix.O_RDONLY}); err == nil {

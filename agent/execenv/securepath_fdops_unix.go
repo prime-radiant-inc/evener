@@ -515,12 +515,13 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 	// can still use, so a one-entry page never materializes a whole huge
 	// directory yet still returns the true sorted prefix. Masked entries are
 	// dropped before selection so they cannot evict a visible entry from the page.
-	ents, more, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries(), budget.scanBudget(), func(ent os.DirEntry) bool {
+	res, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries(), budget.scanBudget(), func(ent os.DirEntry) bool {
 		return !s.underMasked(filepath.Join(baseAbs, ent.Name()))
 	})
 	if err != nil {
 		return err
 	}
+	ents := res.entries
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
 		if err := ctx.Err(); err != nil {
@@ -568,8 +569,11 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 			}
 		}
 	}
-	if more {
+	if res.more || res.incomplete {
 		budget.truncated = true
+	}
+	if res.incomplete {
+		budget.incomplete = true
 	}
 	return nil
 }
@@ -640,10 +644,10 @@ func writeAllFd(fd int, data []byte) error {
 // path-based walk share one chunked-selection loop. keep, when non-nil, drops
 // entries the caller will not return (masked names) before they can consume a
 // prefix slot.
-func readDirEntriesPrefix(ctx context.Context, dirFd, limit, scanCap int, keep func(os.DirEntry) bool) ([]os.DirEntry, bool, error) {
+func readDirEntriesPrefix(ctx context.Context, dirFd, limit, scanCap int, keep func(os.DirEntry) bool) (dirPrefixResult, error) {
 	dup, err := secureDupDirFd(dirFd)
 	if err != nil {
-		return nil, false, err
+		return dirPrefixResult{}, err
 	}
 	f := os.NewFile(uintptr(dup), "")
 	defer func() { _ = f.Close() }()

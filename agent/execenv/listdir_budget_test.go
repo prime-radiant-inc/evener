@@ -87,9 +87,11 @@ func TestListDirectoryBudget_CancelsWalk(t *testing.T) {
 	}
 }
 
-// An unbounded budget is exactly ListDirectory: the empty budget must not change
-// the entries or their order for callers that want the whole subtree.
-func TestListDirectoryBudget_UnboundedMatchesListDirectory(t *testing.T) {
+// The unbounded listing must return the whole subtree in sorted DFS order with
+// sizes populated, asserted against an independently constructed expectation
+// (not against the delegating ListDirectoryBudget call, which would be true by
+// construction).
+func TestListDirectory_WholeSubtreeOrderAndSizes(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
@@ -105,12 +107,23 @@ func TestListDirectoryBudget_UnboundedMatchesListDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDirectory: %v", err)
 	}
+	want := []DirEntry{
+		{Name: "f00", Size: 1},
+		{Name: "f01", Size: 1},
+		{Name: "f02", Size: 1},
+		{Name: "sub", IsDir: true},
+		{Name: "sub/nested", Size: 1},
+	}
+	if !reflect.DeepEqual(full, want) {
+		t.Fatalf("ListDirectory = %+v, want the sorted DFS listing %+v", full, want)
+	}
+
 	got, err := env.ListDirectoryBudget(context.Background(), "", 2, &ListDirBudget{})
 	if err != nil {
 		t.Fatalf("ListDirectoryBudget: %v", err)
 	}
-	if !reflect.DeepEqual(full, got) {
-		t.Fatalf("unbounded budget diverged from ListDirectory:\nfull=%+v\ngot =%+v", full, got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListDirectoryBudget = %+v, want %+v", got, want)
 	}
 }
 

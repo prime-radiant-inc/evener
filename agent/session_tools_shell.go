@@ -44,6 +44,10 @@ type listDirResult struct {
 	// directory was fully enumerated: Total is then only a floor, not the true
 	// count, and the footer must not claim a total the walk never computed.
 	Partial bool
+	// Incomplete marks a page whose directory was too large to scan fully, so the
+	// entries are sorted only among those scanned and the page cannot be
+	// continued by offset — the footer must not point at one.
+	Incomplete bool
 }
 
 // dirEntrySize over-estimates an entry's rendered line length (name, an optional
@@ -80,6 +84,12 @@ func formatDirListing(r listDirResult) string {
 		b.WriteString("\n\n")
 	}
 	switch {
+	case r.Incomplete:
+		if r.Returned > 0 {
+			fmt.Fprintf(&b, "%d entries — the directory is too large to list fully in one pass; narrow the path or reduce depth", r.Returned)
+		} else {
+			fmt.Fprintf(&b, "0 entries — the directory is too large to list fully in one pass; narrow the path")
+		}
 	case r.Partial:
 		if r.Returned > 0 {
 			fmt.Fprintf(&b, "%d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Offset, r.Offset+r.Returned)
@@ -147,10 +157,13 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 // its budget before exhausting the subtree: the entries it holds are a prefix of
 // the full listing rather than all of it, so the page is marked Partial and
 // always Truncated, and its footer never claims a total the walk did not count.
-func paginateDirEntriesBudgeted(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
+// incomplete marks a directory too large to scan fully, whose page cannot be
+// continued by offset.
+func paginateDirEntriesBudgeted(path string, entries []execenv.DirEntry, offset, limit int, incomplete bool) listDirResult {
 	r := paginateDirEntries(path, entries, offset, limit)
 	r.Partial = true
 	r.Truncated = true
+	r.Incomplete = incomplete
 	return r
 }
 
@@ -223,6 +236,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			var entries []execenv.DirEntry
 			partial := false
+			incomplete := false
 			if dl, ok := env.(execenv.DirBudgeter); ok {
 				budget := execenv.NewListDirBudget(offset + effectiveLimit + 1)
 				var err error
@@ -231,6 +245,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return nil, err
 				}
 				partial = budget.Truncated()
+				incomplete = budget.Incomplete()
 			} else {
 				var err error
 				entries, err = env.ListDirectory(path, depth)
@@ -239,7 +254,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				}
 			}
 			if partial {
-				return formatDirListing(paginateDirEntriesBudgeted(path, entries, offset, limit)), nil
+				return formatDirListing(paginateDirEntriesBudgeted(path, entries, offset, limit, incomplete)), nil
 			}
 			return formatDirListing(paginateDirEntries(path, entries, offset, limit)), nil
 		},

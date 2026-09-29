@@ -221,6 +221,7 @@ type ListDirBudget struct {
 	listings    int
 	entries     int
 	truncated   bool
+	incomplete  bool
 }
 
 // NewListDirBudget constructs a budget for one list_dir call. maxEntries is the
@@ -242,6 +243,13 @@ func NewListDirBudget(maxEntries int) *ListDirBudget {
 // exhausting the subtree. The entries it returned are then a prefix of the full
 // listing, with more beyond, so their count is a floor rather than a total.
 func (b *ListDirBudget) Truncated() bool { return b.truncated }
+
+// Incomplete reports whether the walk hit its per-directory scan budget before
+// a directory ended, so that directory's returned prefix is sorted only among
+// the entries it managed to scan rather than the whole directory. It is a
+// stronger condition than Truncated: the page cannot be continued by offset
+// because entries past the scan were never considered.
+func (b *ListDirBudget) Incomplete() bool { return b.incomplete }
 
 // chargeListing records one directory the walk is about to read, reporting
 // false once the listing budget is spent. A non-positive cap is unlimited, so
