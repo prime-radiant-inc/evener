@@ -223,6 +223,18 @@ export const HOST_ENTRY_FIELD_TEXT: Readonly<Record<EditableHostField, { label: 
   roots: { label: "Roots", help: "Optional directories on the host to serve. One per line." },
 };
 
+/** What each optional field means while it's empty, as the hub's ssh dial
+ * treats it (sshconn/runner.go): a placeholder, where the address, the one
+ * required field, has none. */
+export const HOST_ENTRY_FIELD_WHEN_EMPTY: Readonly<Partial<Record<EditableHostField, string>>> = {
+  user: "From the address or SSH config",
+  keyPath: "From your SSH config",
+  evenerPath: "evener on PATH",
+  configPath: "The default hub.toml",
+  addr: "The default address",
+  roots: "No project roots",
+};
+
 // rootsFromText parses a host's roots field: one root per line, trimmed, with
 // blank lines dropped — so a stray blank line is not an empty root the hub
 // refuses (hostreg's ErrEmptyRoot). The field is plain text rather than a

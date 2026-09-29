@@ -7,6 +7,7 @@ import {
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
   type HostMutationPair,
   hostChangedSinceOpened,
@@ -226,6 +227,19 @@ describe("the roots field", () => {
 describe("the editable host fields", () => {
   test("list every mutable HostEntry field under its wire spelling, in the dialog's order", () => {
     expect(HOST_ENTRY_FIELD_ORDER).toEqual(["address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]);
+  });
+
+  test("say what each optional field means while it's empty, as the hub's ssh dial treats it", () => {
+    // sshconn/runner.go: no user is added to the address, no -i without a key
+    // path, `evener` when no path is set, and no --config or --addr flags.
+    expect(HOST_ENTRY_FIELD_WHEN_EMPTY).toEqual({
+      user: "From the address or SSH config",
+      keyPath: "From your SSH config",
+      evenerPath: "evener on PATH",
+      configPath: "The default hub.toml",
+      addr: "The default address",
+      roots: "No project roots",
+    });
   });
 
   test("name each field and say what it takes, as the web's Edit dialog does", () => {

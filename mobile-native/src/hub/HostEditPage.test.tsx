@@ -136,12 +136,12 @@ it("says once that only the SSH address is required, and what each empty field m
 	expect(text).toContain("SSH destination, e.g. host.example or user@host.example.");
 	expect(text).toContain("Only the SSH address is required.");
 	expect(text).not.toMatch(/\bOptional\b/);
-	expect(page.field("User").props.placeholder).toBe("From the address");
-	expect(page.field("Key path").props.placeholder).toBe("The default key");
+	expect(page.field("User").props.placeholder).toBe("From the address or SSH config");
+	expect(page.field("Key path").props.placeholder).toBe("From your SSH config");
 	expect(page.field("Evener path").props.placeholder).toBe("evener on PATH");
 	expect(page.field("Hub config path").props.placeholder).toBe("The default hub.toml");
 	expect(page.field("Hub address").props.placeholder).toBe("The default address");
-	expect(page.field("Roots").props.placeholder).toBe("One per line");
+	expect(page.field("Roots").props.placeholder).toBe("No project roots");
 	page.dispose();
 });
 

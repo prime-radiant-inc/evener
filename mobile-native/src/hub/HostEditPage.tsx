@@ -11,6 +11,7 @@ import {
 	HOST_CHANGED_MESSAGE,
 	HOST_ENTRY_FIELD_ORDER,
 	HOST_ENTRY_FIELD_TEXT,
+	HOST_ENTRY_FIELD_WHEN_EMPTY,
 	type HostEntry,
 	type HostRow,
 	hostChangedSinceOpened,
@@ -31,17 +32,6 @@ import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
 type Props = NativeStackScreenProps<HubRoutes, "HostEdit">;
-
-// What each optional field means while it's empty, in place of the shared
-// "Optional…" help lines: the page says once that only the address is needed.
-const WHEN_EMPTY: Record<Exclude<EditableHostField, "address">, string> = {
-	user: "From the address",
-	keyPath: "The default key",
-	evenerPath: "evener on PATH",
-	configPath: "The default hub.toml",
-	addr: "The default address",
-	roots: "One per line",
-};
 type Fields = Record<EditableHostField, string>;
 
 export function HostEditPage(props: Props) {
@@ -178,6 +168,9 @@ function Field({
 	onChange(text: string): void;
 }) {
 	const { label, help } = HOST_ENTRY_FIELD_TEXT[field];
+	// An optional field says in its placeholder what empty means; the one
+	// required field says what it takes beneath it.
+	const whenEmpty = HOST_ENTRY_FIELD_WHEN_EMPTY[field];
 	return (
 		<>
 			<Group label={label}>
@@ -187,10 +180,10 @@ function Field({
 					onChangeText={onChange}
 					multiline={field === "roots"}
 					disabled={disabled}
-					placeholder={field === "address" ? undefined : WHEN_EMPTY[field]}
+					placeholder={whenEmpty}
 				/>
 			</Group>
-			{field === "address" ? <GroupFooter>{help}</GroupFooter> : null}
+			{whenEmpty ? null : <GroupFooter>{help}</GroupFooter>}
 			{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 		</>
 	);
