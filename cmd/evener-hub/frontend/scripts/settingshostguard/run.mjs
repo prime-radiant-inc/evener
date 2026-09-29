@@ -328,6 +328,44 @@ class Driver {
     }
   }
 
+  // waitClickableBox polls an expression until it returns a clickable box
+  // ({x, y}) rather than null, throwing on timeout with the settings text the
+  // page showed. It is the enabled-aware sibling of waitPage: the caller's
+  // expression yields null while the control is absent OR disabled, so the poll
+  // waits for it to become enabled instead of failing on a single check.
+  async waitClickableBox(exprSource, { timeoutMs = 15000, label } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const box = await evaluate(this.send, exprSource).catch(() => null);
+      if (box !== null && box !== undefined) return box;
+      if (Date.now() > deadline) {
+        const text = await evaluate(this.send, SETTINGS_TEXT_EXPR).catch(() => "<unreadable>");
+        throw new Error(`${label ?? exprSource} did not become clickable within ${timeoutMs}ms; settings text was:\n${text}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  // dispatchClick sends the mouse press/release a real click uses at box's
+  // center, so React's onClick fires.
+  async dispatchClick(box) {
+    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: box.x,
+      y: box.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: box.x,
+      y: box.y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+
   // settingsText is the visible text of the settings content region.
   settingsText() {
     return evaluate(this.send, SETTINGS_TEXT_EXPR);
@@ -395,41 +433,27 @@ class Driver {
 
   // clickSettingsButton clicks the first visible, enabled button in the
   // settings content whose accessible text (textContent or aria-label) is
-  // exactly `text`.
+  // exactly `text`. It polls until such a button exists AND is enabled, like the
+  // other waitPage probes: a pane loads asynchronously behind the remote host,
+  // so a control that is still disabled (or not yet mounted) when the pane first
+  // paints must be waited for, not rejected on a single check.
   async clickSettingsButton(text) {
-    const boxes = await evaluate(
-      this.send,
+    const box = await this.waitClickableBox(
       `(() => {
         const root = document.querySelector("[data-testid='settings-content']");
-        if (root === null) return [];
-        const matches = [...root.querySelectorAll("button")].filter((b) => {
-          const label = (b.getAttribute("aria-label") ?? "").trim() || b.textContent.trim();
-          return label === ${JSON.stringify(text)};
+        if (root === null) return null;
+        const b = [...root.querySelectorAll("button")].find((btn) => {
+          const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
+          return label === ${JSON.stringify(text)} && !btn.disabled;
         });
-        return matches.map((b) => {
-          b.scrollIntoView({ block: "center" });
-          const r = b.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.disabled };
-        });
+        if (b === undefined) return null;
+        b.scrollIntoView({ block: "center" });
+        const r = b.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
       })()`,
+      { label: `button ${JSON.stringify(text)} (present and enabled)` },
     );
-    check(boxes && boxes.length > 0, `no button labeled ${JSON.stringify(text)} in the settings content`);
-    check(!boxes[0].disabled, `button ${JSON.stringify(text)} is disabled`);
-    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: boxes[0].x, y: boxes[0].y });
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: boxes[0].x,
-      y: boxes[0].y,
-      button: "left",
-      clickCount: 1,
-    });
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: boxes[0].x,
-      y: boxes[0].y,
-      button: "left",
-      clickCount: 1,
-    });
+    await this.dispatchClick(box);
   }
 
   // clickSettingsSegment activates a segmented-control option (settings-content's
@@ -439,42 +463,22 @@ class Driver {
   // matching the prefix is what the product itself renders. It uses the same
   // mouse-event path as clickSettingsButton so React's onClick fires.
   async clickSettingsSegment(labelPrefix) {
-    const boxes = await evaluate(
-      this.send,
+    const box = await this.waitClickableBox(
       `(() => {
         const root = document.querySelector("[data-testid='settings-content']");
-        if (root === null) return [];
-        const matches = [...root.querySelectorAll("button[role='radio']")].filter((b) => {
-          const label = (b.getAttribute("aria-label") ?? "").trim() || b.textContent.trim();
-          return label.startsWith(${JSON.stringify(labelPrefix)});
+        if (root === null) return null;
+        const b = [...root.querySelectorAll("button[role='radio']")].find((btn) => {
+          const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
+          return label.startsWith(${JSON.stringify(labelPrefix)}) && !btn.disabled;
         });
-        return matches.map((b) => {
-          b.scrollIntoView({ block: "center" });
-          const r = b.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.disabled };
-        });
+        if (b === undefined) return null;
+        b.scrollIntoView({ block: "center" });
+        const r = b.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
       })()`,
+      { label: `segmented-control option ${JSON.stringify(labelPrefix)} (present and enabled)` },
     );
-    check(
-      boxes && boxes.length > 0,
-      `no segmented-control option labeled ${JSON.stringify(labelPrefix)} in the settings content`,
-    );
-    check(!boxes[0].disabled, `segmented-control option ${JSON.stringify(labelPrefix)} is disabled`);
-    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: boxes[0].x, y: boxes[0].y });
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: boxes[0].x,
-      y: boxes[0].y,
-      button: "left",
-      clickCount: 1,
-    });
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: boxes[0].x,
-      y: boxes[0].y,
-      button: "left",
-      clickCount: 1,
-    });
+    await this.dispatchClick(box);
   }
 
   // buttonEnabled reports whether the settings button with this accessible
@@ -964,8 +968,16 @@ async function runPanes(driver) {
       driver.failures.push({ section, message });
       driver.panes.push({ section, ok: false, probe: "", evidence: {}, error: message });
       await driver.screenshot(`pane-${section}-failure`);
-      throw error;
+      // Record and CONTINUE: a first failure must not abort the tour, because
+      // every later pane would then never run and result.json would hide its
+      // regressions. The whole tour's evidence is captured; the run still fails
+      // below, so a red run stays red.
     }
+  }
+  if (driver.failures.length > 0) {
+    throw new Error(
+      `${driver.failures.length} of ${PANES.length} panes failed: ${driver.failures.map((f) => f.section).join(", ")}`,
+    );
   }
 }
 

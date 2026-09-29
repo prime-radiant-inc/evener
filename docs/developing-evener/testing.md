@@ -430,16 +430,18 @@ and the UI's writes go through: the host's `AGENTS.md` via Save, the in-repo
 pane's own **Trust**, and a credential push from the `credentials` pane's own
 button.
 
-Eight of the nine are held to a value seeded only on the host: the pane must
+All nine are held to a value seeded only on the host: the pane must
 render the HOST's value and must not render this hub's. `credentials`,
 `agents-md`, `launch-evener`, `project`, `plugins`, `skills` and `mcp` read a
 seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose text
 the pane shows as a preview, and the check then drives the pane's own **Trust**
 action and requires the host to report the file trusted — so that pane proves the
-read AND exercises a host-side write. `plugins-manager` asserts structure — the
-pane rendered, with no load error, carrying the selected host — because its
-catalog is a set of marketplaces CLONED under the host rather than a file, so a
-file seed cannot produce a listing. That is the honest limit of this check.
+read AND exercises a host-side write. `plugins-manager` is held to a seeded
+value too: the driver writes the host's own `known_marketplaces.json` (a file
+the store reads, whose directory source is referenced in place), then requires
+the host's seeded marketplace to be listed and the controller's default
+marketplace names to be absent. The seed and the read are pinned without a host
+by `TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore`.
 
 The `credentials` pane also carries the credential-push action, and the check
 drives it end to end. The controller's own store is seeded first, through the
@@ -448,8 +450,8 @@ name matches one of the disposable host's own provider instances — so the host
 locked conditional set classifies the pushed key `added` rather than skipping it
 as "no matching instance on the host". The driver then presses **Push
 credentials to <host>**, waits for the `Push report for <host>` region, and
-requires it to name the seeded instance with action `added` (anything but
-`added`/`updated` — including a `failed` row, a skip, or an unrecognized value —
+requires it to name the seeded instance with action `added` or `updated`
+(anything else — including a `failed` row, a skip, or an unrecognized value —
 fails the run and prints what it saw), and requires the failure alert to be
 absent. Because a report the browser rendered is not proof that a write landed,
 the load-bearing assertion is the Go owner's: it reads the DISPOSABLE host's own
