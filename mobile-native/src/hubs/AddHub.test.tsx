@@ -226,6 +226,21 @@ it("finishes when the hub is saved though a newer choice of hub kept it from bei
 	expect(onConnected).toHaveBeenCalledTimes(1);
 });
 
+it("can't connect without a name, and saves the name trimmed", async () => {
+	mocks.saveHub.mockResolvedValue(true);
+	const { tree } = mount("paste");
+	type(tree, "Pairing link", LINK);
+	act(() => {
+		field(tree, "Pairing link").props.onSubmitEditing();
+	});
+	type(tree, "Name", "   ");
+	expect(button(tree, "Connect").props.disabled).toBe(true);
+	type(tree, "Name", "  Magic Kingdom ");
+	expect(button(tree, "Connect").props.disabled).toBe(false);
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledWith(expect.objectContaining({ name: "Magic Kingdom" }));
+});
+
 it("trims a typed token the way it trims the address", async () => {
 	mocks.saveHub.mockResolvedValue(true);
 	const { tree } = mount("address");

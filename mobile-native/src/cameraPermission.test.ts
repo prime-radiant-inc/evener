@@ -23,11 +23,14 @@ it("asks for the camera with one sentence that covers scanning and photos, and n
 	expect(config.ios.infoPlist.NSMicrophoneUsageDescription).toBeUndefined();
 }, 60_000);
 
-it("leaves out expo-camera's ZXing scanner, which the pairing code doesn't need and which crashed launch", () => {
-	// Its precompiled framework links a dynamic ExpoCamera that the app never
-	// embeds (ExpoCamera builds static), so dyld stopped the app at launch.
-	// QR codes, all pairing uses, scan natively without it.
+it("builds expo-camera's QR scanner from source, alongside the camera it plugs into", () => {
+	// The scanner is ExpoCameraBarcodeScanning: without it the camera reports
+	// no codes at all (expo-camera's BarcodeScanner returns early with no
+	// provider). Its precompiled framework links a dynamic ExpoCamera, but
+	// buildFromSource (package.json) builds ExpoCamera static, and dyld stopped
+	// the app at launch. Built from source, both link the same way.
 	const lock = readFileSync(join(__dirname, "..", "Podfile.lock"), "utf8");
-	expect(lock).toContain("ExpoCamera (");
-	expect(lock).not.toContain("ExpoCameraBarcodeScanning");
+	const pods = lock.slice(lock.indexOf("EXTERNAL SOURCES:"), lock.indexOf("SPEC CHECKSUMS:"));
+	expect(pods).toMatch(/ExpoCamera:\n {4}:path: "..\/node_modules\/expo-camera\/ios"/);
+	expect(pods).toMatch(/ExpoCameraBarcodeScanning:\n {4}:path: "..\/node_modules\/expo-camera\/ios"/);
 });

@@ -34,14 +34,14 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 	}
 
 	async function connect() {
-		if (!review || saving) return;
+		if (!review || saving || !review.name.trim()) return;
 		setSaving(true);
 		setRefused(false);
 		try {
 			// saveHub resolves false when a newer choice of hub superseded
 			// selecting this one; the hub is saved either way.
 			await saveHub({
-				name: review.name,
+				name: review.name.trim(),
 				origin: review.target.origin,
 				token: review.target.token,
 			});
@@ -74,7 +74,7 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 					<Row
 						label={saving ? "Connecting…" : "Connect"}
 						tone="accent"
-						disabled={saving}
+						disabled={saving || !review.name.trim()}
 						onPress={() => void connect()}
 					/>
 				</Group>
