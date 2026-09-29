@@ -1402,6 +1402,12 @@ function NavigationRail({
               loadMoreArchivedList(catalog, location.project_key as string),
             );
           else if (list.error === null) consumeReveal();
+          // A failed first page has no cursor to page from, and the count
+          // effect skips it (the count has not moved). Ask once per reveal.
+          else
+            requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:retry`, () =>
+              refreshArchivedList(catalog, location.project_key as string),
+            );
         }
       }
       return;
