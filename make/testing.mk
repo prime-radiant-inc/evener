@@ -160,11 +160,13 @@ TEST_SCOPE ?= all
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-# run-module-tests.sh's own contract — including that every test stream gets a
-# private HOME and TMPDIR — is currently unpinned: the shell suite that once
-# proved it faked `go` and `mktemp` on PATH, which docs/developing-evener/testing.md's
-# rule against faking the toolchain in a test bans outright, and was deleted.
-# The port that would pin this contract honestly is tracked as issue #293.
+# run-module-tests.sh's own contract — module selection, the explicit
+# WAVE1/WAVE2 overrides, the private per-stream HOME and TMPDIR, caller flags
+# reaching `go test`, failure propagation, cleanup, and the zero-test refusal —
+# is pinned by gatemodulerunner_test.go, which drives the real script against
+# tiny local modules with the installed toolchain. An earlier shell suite that
+# faked `go` and `mktemp` on PATH was deleted, because
+# docs/developing-evener/testing.md bans faking the toolchain in a test.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
@@ -256,7 +258,11 @@ vet:
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
-##   per-test ceiling.
+##   per-test ceiling. While the budget file's metric marker is absent (the
+##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
+##   wall time), the Go-package ratio check is suspended to a warning; the
+##   frontend ("web") row and the per-test ceiling keep their unchanged metrics
+##   and stay enforced.
 ## trigger: Local/on-demand; not required CI — deliberately not part of make
 ##   merge-approval-gate, since measuring durations means a second full test
 ##   run. CHECK=1 enforces the ratios; bare invocation only measures and
@@ -265,12 +271,14 @@ vet:
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: A broken measurement — go list or go test exiting nonzero, or a
 ##   go list package with no terminal event in the stream — is nonzero in every
-##   mode, and --bless refuses it. A bless writes every package it measured and
-##   preserves the rest of the file, so a narrowed run refreshes part of the
-##   file instead of deleting the entries it did not measure. Under CHECK=1 in a
-##   CI-shaped environment a package over 1.5x its budget or any per-test
-##   ceiling breach is nonzero too; a missing or empty budget file always
-##   exits zero.
+##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
+##   measured and preserves the rest of the file instead of deleting entries it
+##   did not measure; a full rebaseline also drops entries go list no longer
+##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
+##   its budget is nonzero once the budget file carries the wall-time metric
+##   marker; while the marker is absent those ratios are warnings. The "web" row
+##   and any per-test ceiling breach are metric-independent and nonzero
+##   regardless, and a missing or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
