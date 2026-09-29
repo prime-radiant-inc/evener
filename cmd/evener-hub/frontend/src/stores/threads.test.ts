@@ -12919,6 +12919,60 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // A manual retry can wire a replacement that is itself still connecting. A
+  // healthy destination exists, so the fallback must wait for it to become
+  // ready rather than surface.
+  test("a fallback send waits out a wired-but-connecting replacement client", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-connecting";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const replacement = new FakeClient("connecting");
+    fake.on("turn/start", () => {
+      fake.close();
+      connectionStore.getState().connect(replacement);
+      throw new Error("AppwireClient: socket closed");
+    });
+    replacement.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "replaced while storage is wedged");
+      // Reach the fallback; its first RPC dies with a connecting replacement
+      // wired, so the send now waits for that replacement to be ready.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The replacement connects: the retry goes out under the same id.
+      replacement.emitStateChange("ready");
+      await send;
+      const failedCalls = fake.calls.filter((call) => call.method === "turn/start");
+      const retriedCalls = replacement.calls.filter((call) => call.method === "turn/start");
+      expect(retriedCalls).toHaveLength(1);
+      const firstId = (failedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      const retriedId = (retriedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      expect(firstId).toBeTruthy();
+      expect(retriedId).toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
   // The fallback is not the ref's durable FIFO head. The dispatcher sends only
   // nextDispatchable (the ref's head) and re-checks its admission before every
   // attempt; the fallback must re-earn that admission and must not jump an
