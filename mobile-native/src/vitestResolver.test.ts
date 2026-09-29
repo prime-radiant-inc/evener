@@ -49,8 +49,12 @@ function reactPackageDir(): string {
 describe("vitest.config.mts pins the shared sources' React to this app", () => {
 	it("aliases react to the copy the suite's own imports resolve to", async () => {
 		const target = (await aliasMap()).react;
-		expect(target, "vitest.config.mts aliases react").toBeTruthy();
-		expect(existsSync(target)).toBe(true);
+		// Halt here rather than fall through: an expect that records a failure
+		// does not throw, so an unaliased react would reach realpathSync and
+		// surface as ERR_INVALID_ARG_TYPE instead of this message.
+		if (!target || !existsSync(target)) {
+			throw new Error(`vitest.config.mts does not alias react to a real path (got ${target})`);
+		}
 		expect(realpathSync(target)).toBe(realpathSync(reactPackageDir()));
 	});
 });
