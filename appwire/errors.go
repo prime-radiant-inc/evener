@@ -3,6 +3,7 @@ package appwire
 import (
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 const (
@@ -705,15 +706,53 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 // NotAccepted marks the refusal as a request that wasn't carried out and isn't
 // to be retried as it is, since it would be refused the same way.
 // clientMutationID names the refused mutation, or is empty when the request
-// carried none. The code, message and evenerErrorInfo stay; data of another
-// shape gives way to the standard ErrorData, so the outcome is always readable.
+// carried none. The code and message stay, and so does the data: the standard
+// ErrorData, or a struct that embeds it (HostFieldErrorData,
+// LifecycleErrorData and the like), is marked where it stands, keeping its
+// evenerErrorInfo and every field of its own. Data of any other shape, or
+// none, gives way to a bare ErrorData, so the outcome is always readable.
 func (e WireError) NotAccepted(clientMutationID string) WireError {
-	data, _ := e.Data.(ErrorData)
-	data.ClientMutationID = clientMutationID
-	data.MutationOutcome = MutationOutcomeNotAccepted
-	data.RetryDisposition = RetryDispositionNone
-	e.Data = data
+	mark := func(data *ErrorData) {
+		data.ClientMutationID = clientMutationID
+		data.MutationOutcome = MutationOutcomeNotAccepted
+		data.RetryDisposition = RetryDispositionNone
+	}
+	e.Data = withErrorData(e.Data, mark)
 	return e
+}
+
+var errorDataType = reflect.TypeFor[ErrorData]()
+
+// withErrorData returns a copy of data with change applied to its ErrorData:
+// data itself when it is one, or the ErrorData a struct embeds. The error
+// data types embed ErrorData by value, and Data holds them by value, so
+// reaching the embedded one means copying the struct into something settable;
+// reflection does that for every such type without each one opting in. Data of
+// any other shape is replaced by a fresh ErrorData with change applied.
+func withErrorData(data any, change func(*ErrorData)) any {
+	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
+		copied := reflect.New(value.Type()).Elem()
+		copied.Set(value)
+		if target, ok := errorDataIn(copied); ok {
+			change(target)
+			return copied.Interface()
+		}
+	}
+	var fresh ErrorData
+	change(&fresh)
+	return fresh
+}
+
+// errorDataIn is the ErrorData a settable struct value is, or embeds directly.
+func errorDataIn(value reflect.Value) (*ErrorData, bool) {
+	if value.Type() == errorDataType {
+		return value.Addr().Interface().(*ErrorData), true
+	}
+	field, ok := value.Type().FieldByName("ErrorData")
+	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
+		return nil, false
+	}
+	return value.Field(field.Index[0]).Addr().Interface().(*ErrorData), true
 }
 
 func MutationUnknown(clientMutationID, message string) WireError {
