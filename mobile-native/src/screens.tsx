@@ -878,6 +878,9 @@ export function ConversationScreen({
 	);
 	// The room the transcript keeps at its end for what floats over it.
 	const transcriptEnd = transcriptEndRoomAt(useTextScale());
+	// How tall the bottom bar stands over the transcript's end: the
+	// transcript runs under its glass and keeps this much more room at its end.
+	const [barHeight, setBarHeight] = useState(0);
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
@@ -2578,12 +2581,13 @@ export function ConversationScreen({
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: transcriptEnd,
+								paddingBottom: barHeight + transcriptEnd,
 							}}
 							// Dragging the transcript lowers the keyboard: following the finger
 							// as in Messages on iOS, and at the drag's start on Android, which
 							// has no interactive dismissal.
 							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+							scrollIndicatorInsets={{ bottom: barHeight }}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
@@ -2770,11 +2774,17 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
+							above={barHeight}
 						/>
 					</View>
-					{/* The bottom bar (spec 8.1): the tray or a dock and the composer, and
-					    the transcript keeps a fifth of the screen however much it holds. */}
-					<BarFrame testID="session-bottom-bar" style={{ flexShrink: 1, maxHeight: "80%", paddingTop: 8 }}>
+					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
+					    over the transcript's end so the transcript runs under its glass.
+					    The transcript keeps a fifth of the screen however much it holds. */}
+					<BarFrame
+						testID="session-bottom-bar"
+						style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "80%", paddingTop: 8 }}
+						onLayout={(event) => setBarHeight(event.nativeEvent.layout.height)}
+					>
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}

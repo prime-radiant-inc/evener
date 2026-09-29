@@ -35,9 +35,21 @@ export function transcriptEndRoomAt(scale: number): number {
 	return Math.max(60, Math.round(60 * scale));
 }
 
-export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
+export function FloatingStack({
+	toast,
+	next,
+	pill,
+	above = 0,
+}: {
+	toast: ReactNode;
+	next: ReactNode;
+	pill: ReactNode;
+	/** How tall the bar under the transcript's end stands; the stack floats
+	 * 10pt above it. */
+	above?: number;
+}) {
 	return (
-		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}>
+		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: above + 10, gap: 8 }}>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
 					{toast}

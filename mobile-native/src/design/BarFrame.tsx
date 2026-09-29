@@ -10,7 +10,7 @@
 // Transparency is on.
 import { GlassView, isGlassEffectAPIAvailable } from "expo-glass-effect";
 import type { ReactNode } from "react";
-import { type StyleProp, View, type ViewStyle } from "react-native";
+import { type LayoutChangeEvent, type StyleProp, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useReduceTransparency } from "../accessibilitySettings";
 import { useColors } from "../ui";
@@ -32,12 +32,15 @@ export function BarFrame({
 	children,
 	style,
 	testID,
+	onLayout,
 }: {
 	children: ReactNode;
 	/** A screen's own layout for the bar (its cap, its top padding). The
 	 * home indicator's room, the hairline and the fill are the frame's. */
 	style?: StyleProp<ViewStyle>;
 	testID?: string;
+	/** How tall the bar stands, for a screen whose content runs under it. */
+	onLayout?: (event: LayoutChangeEvent) => void;
 }) {
 	const { palette } = useColors();
 	const { bottom } = useSafeAreaInsets();
@@ -58,11 +61,11 @@ export function BarFrame({
 	return glass ? (
 		// The glass follows the window's appearance, which the app's own light or
 		// dark choice sets (Appearance.setColorScheme), as its colors do.
-		<GlassView testID={testID} glassEffectStyle="regular" style={frame}>
+		<GlassView testID={testID} glassEffectStyle="regular" style={frame} onLayout={onLayout}>
 			{children}
 		</GlassView>
 	) : (
-		<View testID={testID} style={frame}>
+		<View testID={testID} style={frame} onLayout={onLayout}>
 			{children}
 		</View>
 	);

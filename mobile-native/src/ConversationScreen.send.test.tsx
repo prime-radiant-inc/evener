@@ -1915,6 +1915,27 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
 	});
 
+	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
+		const { tree } = await mount(thread("ref-bar-over", "active"));
+		expect(flatStyle(bar(tree))).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
+	});
+
+	it("keeps the transcript's end clear of the bar: the bar's height plus the 60pt end room", async () => {
+		const { tree } = await mount(thread("ref-bar-end", "active"));
+		const list = () =>
+			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+		act(() => bar(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 180 } } }));
+		expect(list().props.contentContainerStyle.paddingBottom).toBe(180 + 60);
+		// The scroll indicator stops at the bar too.
+		expect(list().props.scrollIndicatorInsets).toMatchObject({ bottom: 180 });
+		// Next, a toast and "↓ new" float 10pt above the bar.
+		expect(
+			flatStyle(tree.root.findByType(FloatingStack).findAll((node) => String(node.type) === "View")[0]),
+		).toMatchObject({
+			bottom: 180 + 10,
+		});
+	});
+
 	it("holds a question dock too", async () => {
 		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
 		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
