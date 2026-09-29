@@ -5,7 +5,7 @@
 import { buildPathRows, childrenPrefix, friendlyErrorMessage } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useState } from "react";
-import { Alert } from "react-native";
+import { Alert, Platform } from "react-native";
 import { useStore } from "zustand";
 import { createNewSessionService } from "../../../mobile/src/services/newSession";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
@@ -87,14 +87,17 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 						}}
 					/>
 				) : null}
-				<Row
-					key="new"
-					label="New folder"
-					icon="folder.badge.plus"
-					tone="accent"
-					disabled={!ready || !client}
-					onPress={() => Alert.prompt("New folder", `In ${dir || "your home folder"}`, (name) => void create(name))}
-				/>
+				{/* Alert.prompt is iOS-only, so New folder stays off other platforms. */}
+				{Platform.OS === "ios" ? (
+					<Row
+						key="new"
+						label="New folder"
+						icon="folder.badge.plus"
+						tone="accent"
+						disabled={!ready || !client}
+						onPress={() => Alert.prompt("New folder", `In ${dir || "your home folder"}`, (name) => void create(name))}
+					/>
+				) : null}
 			</Group>
 			{createError ? <GroupFooter tone="danger">{createError}</GroupFooter> : null}
 		</GroupedPage>

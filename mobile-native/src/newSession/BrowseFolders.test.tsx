@@ -1,5 +1,6 @@
 import { WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { Platform } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
@@ -158,4 +159,17 @@ it("says a folder it couldn't open on the host, and offers only what the page ca
 	await settle();
 	expect(page.text()).toContain("Couldn't open this folder on paradise-park. Go up a folder or choose another.");
 	expect(page.text()).not.toMatch(/Try again|enter the path/);
+});
+
+it("offers New folder only on iOS, where Alert.prompt exists", async () => {
+	const os = Platform.OS;
+	(Platform as { OS: string }).OS = "android";
+	try {
+		const page = mount("/Users/jesse/git");
+		await settle();
+		expect(pressable(page.tree, "New folder")).toBeUndefined();
+		expect(pressable(page.tree, "Use this folder")).toBeDefined();
+	} finally {
+		(Platform as { OS: string }).OS = os;
+	}
 });
