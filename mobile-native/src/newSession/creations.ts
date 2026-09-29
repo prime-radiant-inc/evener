@@ -17,11 +17,9 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { nativeDrafts } from "../nativeDrafts";
 import { createNewSessionStore } from "../newSession";
 import type { NewSessionStore } from "./newSessionContext";
+import { retireCreation } from "./retiredCreations";
 
 const stores = new Map<string, NewSessionStore>();
-/** Stores whose hub was removed: a start of theirs that lands has nothing to
- * say, since the hub is gone. */
-const forgotten = new WeakSet<NewSessionStore>();
 const services = new WeakMap<ConversationClientLike, NewSessionService>();
 
 /** The hub's creation store, made on first use and kept until the hub is
@@ -49,12 +47,7 @@ export function creationService(client: ConversationClientLike): NewSessionServi
 export function forgetCreationForHub(hubId: string): void {
 	const store = stores.get(hubId);
 	if (!store) return;
-	forgotten.add(store);
+	retireCreation(store);
 	store.getState().bind(null);
 	stores.delete(hubId);
-}
-
-/** Whether this store's hub was removed. */
-export function creationForgotten(store: NewSessionStore): boolean {
-	return forgotten.has(store);
 }

@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { creationForgotten, creationService, creationStore, forgetCreationForHub } from "./creations";
+import { creationService, creationStore, forgetCreationForHub } from "./creations";
+import { creationRetired } from "./retiredCreations";
 
 vi.mock("../nativeDrafts", () => ({
 	nativeDrafts: () => ({ creation: { read: () => null, write: () => {}, clear: () => {} } }),
@@ -30,8 +31,8 @@ it("forgets a removed hub's store, unbound, and leaves the others", async () => 
 	const start = removed.getState().submit();
 	forgetCreationForHub("hub-a");
 	expect(await start).toEqual({ status: "obsolete" });
-	expect(creationForgotten(removed)).toBe(true);
-	expect(creationForgotten(kept)).toBe(false);
+	expect(creationRetired(removed)).toBe(true);
+	expect(creationRetired(kept)).toBe(false);
 	expect(creationStore("hub-a")).not.toBe(removed);
 	expect(creationStore("hub-b")).toBe(kept);
 	forgetCreationForHub("hub-a");
