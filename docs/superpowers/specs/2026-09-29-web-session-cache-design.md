@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29
 **Branch:** `web-session-cache`
-**Status:** design (revision 3, after two adversarial review rounds) → review → implementation
+**Status:** design (under review on PR #3406) → implementation
 **Parent specs:** `2026-09-25-transcript-read-model-design.md` (v6 read model),
 `2026-09-01-atomic-transcript-item-paging-design.md`
 
@@ -267,17 +267,27 @@ Three events invalidate rather than write:
   no history, so it would never match the write gates. The cache deletes the
   ref's record in the same step, or a cleared session's next reload paints
   pre-clear content from the shell.
-- **Session delete** (the UI's shared `deleteSession` action): the record is
-  deleted on the action's success path (`result.deleted`). Without this the
-  deletion fence below is the only cleanup, and it never fires for a
-  session no tab reads again. The flush skips refs closed by deletion, so
-  closing a deleted session's pane cannot re-persist it.
+- **Session delete** (the UI's shared `deleteSession` action): the record
+  is deleted on the action's success path (`result.deleted`) and the
+  ref's pending debounce timer is cancelled with it — the same
+  local-tab protection the clear has, per ref. The flush skips refs
+  closed by deletion, so closing a deleted session's pane cannot
+  re-persist it. A sibling tab's already-scheduled or in-flight write
+  for that ref can still land after the delete; that residual is
+  accepted rather than closed with a durable per-ref tombstone, and the
+  reasoning is stated: a tombstone table is unbounded machinery (it
+  needs its own lifetime policy) to close a two-tab race whose worst
+  case is already bounded by the 14-day TTL, and any sibling tab
+  holding the session open learns of the deletion through the fence on
+  its next read, which deletes the record again. The clear-all epoch
+  remains the durable remedy when gone-now is the requirement.
 - **The deletion fence** (`markThreadDeletedIfFenced` setting `deletedRefs`):
   deletes the ref's record. This is the out-of-band cleanup — a session
   deleted on another machine, or by a project delete — and it only runs when
   a tab actually reads the deleted ref. Out-of-band deletions that are never
-  re-opened keep their records until the cap evicts them or the user clears
-  everything; that residual is stated here rather than papered over.
+  re-opened keep their records until the cap evicts them, the 14-day
+  expiry removes them, or the user clears everything; that residual is
+  stated here rather than papered over.
 
 ### Scroll-back: the deepest held cursor
 
@@ -320,30 +330,34 @@ the stale-snapshot retry already uses), not a merge.** The pages are
 dropped, the response's cursor is taken, and the user re-pages if they want
 the older content back — the honest alternative to rendering a transcript
 with a silent hole in it. A response carrying `changes` merges as usual.
-The predicate is exact, and it anchors on the verified watermark, not on
-the newest item the shell happens to hold. The record's items all sit at
-entry ordinals below its `history.length` (they came from a completed
-window read and its pages); items a live notification merged after a
-failed read sit at or above it and establish nothing. The anchor is
-therefore the newest held item whose position is below the held
-`history.length`. The rule: it applies only when the read's disposition
-is `merge` (the existing rules already answer replace and discard), the
-anchored set is non-empty (an empty record takes the ordinary cold
-merge), and the fresh window's first item position is strictly greater
-than the anchored item's position — `comparePositions` on
-`ThreadItemPosition`, so only a window that starts above everything the
-record verified replaces. The watermark is stable by construction:
-`history.length` is written only by a read response's identity
-(`readIdentity`), a `history/updated` merge returns `{ ...held, turns }`
-and never touches it, and the page path's own disposition guards against
-"a page pushed forward" — so no notification can move the anchor. One
-cost is accepted and stated: a window that begins exactly at the verified
-boundary's successor replaces too, because the position model has no
-predecessor function to distinguish one-item adjacency from a one-item
-hole — the cached pages re-fetch rather than risk a hole, a bounded loss
-of one window's worth of growth. The check lives at a seam the design
-already owns; no reducer or protocol change is involved.
-
+The predicate is exact, and its anchor is captured, not derived. The
+shell's lineage state records, at shell-build time, the newest item
+position in the record (`threadModelFromCache`'s input — pure record
+data, fixed before any live merge can touch the model). The rule: it
+applies only when the read's disposition is `merge` (the existing rules
+already answer replace and discard), the record held at least one item
+(an empty record takes the ordinary cold merge), and the fresh window's
+first item position is strictly greater than that captured position —
+`comparePositions` on `ThreadItemPosition`, position against position.
+An earlier draft keyed the anchor on "the newest held item below
+`history.length`"; that was dimensionally wrong — `SnapshotIdentity.length`
+is the transcript's covered byte count (the index's own Window doc:
+"the transcript bytes it covered"), not an entry ordinal, so comparing
+a position ordinal against it degenerates to the newest held item,
+which is exactly what a post-failure live fold can push past a real
+hole. The captured position cannot move: it is read from the record
+before the shell publishes, a `history/updated` merge only adds items
+to the model (it never rewrites the lineage state), and
+`history.length` itself is written only by a read response's identity
+(`readIdentity`) — a merge returns `{ ...held, turns }` without
+touching it. One
+cost is accepted and stated: a window that begins exactly at the
+captured position's successor replaces too, because the position model
+has no predecessor function to distinguish one-item adjacency from a
+one-item hole — the cached pages re-fetch rather than risk a hole, a
+bounded loss of one window's worth of growth. The check lives at a
+seam the design already owns; no reducer or protocol change is
+involved.
 ### Eviction, cap, and cross-tab
 
 - One IndexedDB database per hub origin (browsers scope IndexedDB to the
@@ -369,10 +383,17 @@ already owns; no reducer or protocol change is involved.
   bytes; IndexedDB's structural overhead rides above it and is bounded,
   finally, by the browser quota and the clear action.
 - Records expire `SESSION_CACHE_TTL_DAYS = 14` after their last write
-  (`savedAt`), enforced by the same enumeration — at every adapter open
-  and inside every write transaction — so out-of-band-deleted content
-  cannot outlive the cache by more than that bound even with no cap
-  pressure. The cap bounds volume; the TTL bounds lifetime.
+  (`savedAt`). An expired record is dead everywhere: the load seam reads
+  it as a miss (never serving it), and the same enumeration that
+  enforces the cap removes it — at every adapter open and inside every
+  write transaction. The guarantee is therefore stated as it is: an
+  expired record is never served and does not survive any storage
+  access; between accesses its bytes may sit on disk in a long-lived
+  tab until the next open, write, or read touches the store. The cap
+  bounds volume; the TTL bounds lifetime. No in-app sweep timer is
+  added for the between-accesses window — it would be a timer whose
+  only job is to hasten a deletion the next storage access performs
+  anyway.
 - The cap is enforced atomically per write: the enumeration of the `meta`
   store's rows, the insert, and any evictions run in one read-write
   IndexedDB transaction, which the database serializes across tabs, so no
@@ -487,7 +508,8 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
 2. Cache miss and bounded open: an absent ref returns nothing; a stalled or
    failed open (timeout, blocked, VersionError) returns nothing and never
    throws; the diagnostic seam records the open failure; a lookup still
-   resolves as a miss at its own 250 ms deadline.
+   resolves as a miss at its own 250 ms deadline; a record past
+   `SESSION_CACHE_TTL_DAYS` reads as a miss.
 3. Cap and expiry: writing past `SESSION_CACHE_MAX_BYTES` evicts the
    least-recently-saved record; the enumeration reads the `meta` store's
    rows without touching record bodies, and enumeration, insert, and
@@ -514,16 +536,16 @@ Store integration (`stores/threads.test.ts` additions and a new
    pages below survive, and the deepest cursor is kept (this also pins the
    existing reducer rule in the reload scenario; it lands green as a
    characterization of 792c379eca). A window beginning exactly at the
-   verified boundary's successor replaces instead — the accepted abut
+   captured position's successor replaces instead — the accepted abut
    cost — dropping the pages, and the scenario asserts that outcome too.
 7. Reload replay, live, growth past a window: the fresh window starts
-   entirely above the record's verified items; the reconcile applies as a
+   entirely above the record's captured position; the reconcile applies as a
    replacement; the pages are dropped, the response's cursor is taken, and
    the rendered transcript has no gap. The same scenario with a failed
    first read and a live `history/updated` folded onto the shell before
-   the retry succeeds: the notification-merged items do not anchor
-   contiguity, the retry replaces, and no hole persists — the watermark
-   anchor's own case.
+   the retry succeeds: the folded items cannot move the captured anchor,
+   the retry replaces, and no hole persists — the captured-anchor rule's
+   own case.
 8. Stale identity: the server rejects the held snapshot
    (`TranscriptItemCursorStale`); the store retries without it and history
    is fully replaced; the cached record's turns do not survive the
@@ -554,8 +576,11 @@ Store integration (`stores/threads.test.ts` additions and a new
     release during the lookup (publishes nothing), a lookup that lost its
     own deadline race resolving late (publishes nothing, arms nothing),
     and hydration still completing within the 250 ms bound.
-14. Deletion and clearing: a `deleteSession` success removes the record;
-    the deletion fence removes the record on a fenced read; the release
+14. Deletion and clearing: a `deleteSession` success removes the record
+    and cancels the ref's pending debounce timer; a sibling tab's
+    in-flight write landing after the delete is the stated TTL-bounded
+    residual, and the fence re-deletes it on that tab's next read; the
+    deletion fence removes the record on a fenced read; the release
     flush skips a ref closed by deletion; the settings clear empties the
     adapter in the specified order (in-memory epoch and timer
     cancellation before the awaited transaction) — a write scheduled under
