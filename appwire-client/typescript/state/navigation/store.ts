@@ -44,6 +44,7 @@ import {
   type NavigationInvalidationWaiter,
   NavigationRevalidator,
 } from "./revalidator";
+import { selectProjectSummaries } from "./selectors";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
@@ -648,7 +649,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     const pinSections = (pinCatalog?.data as NavigationPinSectionCatalog | null)?.pin_sections ?? [];
     // Hydrate only visible/default-expanded projects. A small explicit worker
     // pool prevents a large catalog from monopolising the browser connection.
-    const projects = selectSummaries();
+    const projects = selectProjectSummaries(store.getState());
     const pending = projects
       .filter((p) => {
         const expanded = store.getState().expanded;
@@ -690,14 +691,6 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, worker));
-  }
-  function selectSummaries(): Array<{ key: string; default_expanded?: boolean }> {
-    const out: Array<{ key: string; default_expanded?: boolean }> = [];
-    for (const r of store.getState().resources.values()) {
-      const d = r.data as { projects?: Array<{ key: string; default_expanded?: boolean }> } | null;
-      if (r.key.kind === "catalog" && d?.projects) out.push(...d.projects);
-    }
-    return out;
   }
   function init(client: NavigationClient, initialize?: InitializeResponse | NavigationCapability | null): () => void {
     if (activeClient === client && initialize === undefined) return () => {};
