@@ -48,9 +48,10 @@ Options:
                (for example an older one from git show)
   -h, --help   show this help
 
-To fix a failure, regenerate the lock with the locked dependency procedure
-in docs/design/mobile/ios-build-distribution.md (pod install without
---deployment), and commit only the Podfile.lock change.`;
+To fix a failure, regenerate the lock as "Regenerating the pod lock" in
+docs/design/mobile/ios-build-distribution.md says: from mobile-native,
+prebuild, copy Podfile.lock into ios/, run pod install without
+--deployment, copy ios/Podfile.lock back, and commit only Podfile.lock.`;
 
 // Companion pods: Expo registers these beside a module's main pod, from the
 // same directory, when the module's spm.config.json "autolinkWhen" condition
@@ -219,6 +220,6 @@ for (const { pod, packageName } of unknown)
 // An unknown companion explains its own extra line; regenerating would not.
 if (unknown.length === 0)
 	console.error(
-		"Regenerate the lock with the locked dependency procedure in docs/design/mobile/ios-build-distribution.md (pod install without --deployment) and commit only Podfile.lock.",
+		'Regenerate the lock as "Regenerating the pod lock" in docs/design/mobile/ios-build-distribution.md says: prebuild, copy Podfile.lock into ios/, pod install without --deployment, copy ios/Podfile.lock back, and commit only Podfile.lock.',
 	);
 process.exit(1);
