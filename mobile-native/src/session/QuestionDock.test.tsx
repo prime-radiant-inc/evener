@@ -8,7 +8,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
 import type { QuestionSelections } from "../questionAnswers";
-import { pressable, render, renderedText, renderHook } from "../renderNative.testkit";
+import { dockBody, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
@@ -223,6 +223,30 @@ describe("the question dock (spec 8.4)", () => {
 		expect(pressable(tree, "Drop them, Recommended")?.props.accessibilityState).toMatchObject({ disabled: true });
 		act(() => send?.props.onPress());
 		expect(onSend).not.toHaveBeenCalled();
+	});
+});
+
+describe("a question taller than the room the screen gives the dock", () => {
+	it("scrolls the question and its options, while the header and the answer controls stay put", () => {
+		const { tree } = mount(two);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
+		expect(scrolled).toContain("Flags?");
+		expect(scrolled).toContain("Why flags");
+		expect(scrolled).toContain("About drop them");
+		expect(scrolled).not.toContain("Question 1 of 2");
+		expect(body.holds("Keep them")).toBe(true);
+		for (const label of ["Fold", "Other answer…", "Next question"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("starts the next question at its top, wherever the last one was scrolled to", () => {
+		const { tree } = mount(two);
+		const scroller = () => tree.root.findAll((node) => String(node.type) === "ScrollView")[0];
+		const first = scroller();
+		press(tree, "Next question");
+		expect(renderedText(tree)).toContain("Tests?");
+		// A new scroller, so no offset carries over from the question before.
+		expect(scroller()).not.toBe(first);
 	});
 });
 

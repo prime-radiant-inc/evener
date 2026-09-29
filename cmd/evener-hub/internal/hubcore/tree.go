@@ -1125,14 +1125,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// modelFor resolves the model a session's rows name (S17): a live
 	// session's current model from its daemon's probe, which follows a model
 	// switch and outranks the meta the past index may still hold, then the
-	// model its daemon started on (an entry no probe has reached yet), and an
-	// ended one's from its meta, so every row of one session agrees.
+	// model its daemon started on (an entry no probe has reached yet), and
+	// then the meta's — for an ended session, or a live entry whose daemon has
+	// reported neither model — so every row of one session agrees.
 	modelFor := func(id string) string {
 		if entry, live := liveMap[id]; live {
 			if entry.CurrentModel != "" {
 				return entry.CurrentModel
 			}
-			return entry.Model // the model its daemon started on
+			if entry.Model != "" {
+				return entry.Model // the model its daemon started on
+			}
 		}
 		return metaMap[id].Model
 	}

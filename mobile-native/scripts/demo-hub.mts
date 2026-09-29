@@ -203,7 +203,7 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: startedAt })
+			? createDemoSessions({ now: startedAt, long: fleetOptions.long })
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
@@ -829,10 +829,38 @@ function secondsFrom(name: string): number | undefined {
 	return seconds;
 }
 
+const USAGE = `Usage: npx tsx scripts/demo-hub.mts [--help]
+
+A scripted hub for native UI checks: no Evener daemon, no LLM. Add it in the
+app as a hub at http://127.0.0.1:<port> with no token. Configured by
+environment variables:
+
+  EVENER_DEMO_PORT=<port>            listen here (default 9196)
+  EVENER_DEMO_MARKDOWN=<file>        the playground's reply text
+  EVENER_DEMO_FLEET=1                serve the redesign's fleet of sessions
+  EVENER_DEMO_FLEET_OFFLINE_HOST=1   with the fleet: paradise-park offline
+  EVENER_DEMO_FLEET_EMPTY=1          with the fleet: nothing live
+  EVENER_DEMO_FLEET_ASK_AFTER=<s>    with the fleet: s-gateway asks after s seconds
+  EVENER_DEMO_FLEET_PLAN_REVISED=1   with the fleet: serve the plan's revision
+  EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
+                                     and messages, many steps and notifications,
+                                     so screenshots exercise real-sized content
+  EVENER_DEMO_COMMANDS=1             with the fleet: read commands from stdin
+                                     (${COMMANDS})
+  EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
+  EVENER_DEMO_PROTOCOL=<version>     the handshake's protocol version
+`;
+
 if (
 	process.argv[1] &&
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+	if (process.argv.includes("--help") || process.argv.includes("-h")) {
+		// Exit only once the help has drained: into a pipe, stdout is
+		// asynchronous, and exiting at once can cut it short.
+		await new Promise((resolve) => process.stdout.write(USAGE, resolve));
+		process.exit(0);
+	}
 	const hub = await createDemoHub(
 		Number(process.env.EVENER_DEMO_PORT ?? 9196),
 		process.env.EVENER_DEMO_MARKDOWN
@@ -844,6 +872,7 @@ if (
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: secondsFrom("EVENER_DEMO_FLEET_ASK_AFTER"),
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
+					long: process.env.EVENER_DEMO_LONG === "1",
 				}
 			: undefined,
 		{
