@@ -6,6 +6,7 @@ import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
 import { Composer, ModelChip } from "./Composer";
+import { ComposerFocus } from "./composerFocus";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
 
@@ -50,6 +51,21 @@ function fields(tree: ReactTestRenderer): ReactTestInstance[] {
 }
 
 describe("Composer", () => {
+	it("reports its field's focus, and lets go of it when it leaves the screen", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ focus });
+		const [field] = fields(tree);
+		act(() => field?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => field?.props.onBlur());
+		expect(focus.getSnapshot()).toBe(false);
+		act(() => field?.props.onFocus());
+		// A composer unmounted while focused (a dock takes its place) reports
+		// no blur of its own.
+		act(() => tree.unmount());
+		expect(focus.getSnapshot()).toBe(false);
+	});
+
 	it("shows the placeholder in a 17/24 field", () => {
 		const { tree } = composer();
 		const [field] = fields(tree);
@@ -163,6 +179,17 @@ describe("Composer", () => {
 		expect(props.onChangeText).toHaveBeenCalledWith("shorter");
 		act(() => pressable(tree, "Done")?.props.onPress());
 		expect(renderedText(tree)).not.toContain("Done");
+	});
+
+	// The full-screen editor's own field takes the keyboard, so what folds
+	// while you type in the composer comes back behind it.
+	it("lets go of the composer's focus when the full-screen editor opens", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7", focus });
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => pressable(tree, "Expand editor")?.props.onPress());
+		expect(focus.getSnapshot()).toBe(false);
 	});
 
 	it("offers the editor when long lines wrap past six lines", () => {

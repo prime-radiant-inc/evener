@@ -147,6 +147,7 @@ import {
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
+import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
@@ -477,6 +478,10 @@ export function ConversationScreen({
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
+	// The composer field's focus, for what steps aside while you type in it
+	// (useComposerTyping); the find bar's or a sheet's field raising the
+	// keyboard isn't typing in it.
+	const [composerFocus] = useState(() => new ComposerFocus());
 	// Puts the caret at `caret` in the composer and focuses it, on the next
 	// frame so the field has the text the caret is placed in.
 	const focusComposerAt = useCallback((caret: number) => {
@@ -2498,11 +2503,6 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Whether a keyboard up would be the composer's (useComposerTyping). The
-	// find bar's own field raises it with the composer still mounted, so find
-	// open means it isn't. (The header keeps the find bar in place, whatever
-	// hides the chips.)
-	const composerKeyboard = composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
@@ -2533,7 +2533,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				composerKeyboard={composerKeyboard}
+				composerFocus={composerFocus}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
@@ -2888,7 +2888,7 @@ export function ConversationScreen({
 								) : undefined
 							}
 							hidden={headerHiding.hidden}
-							composerKeyboard={composerKeyboard}
+							composerFocus={composerFocus}
 							onChip={openChip}
 							notes={
 								notesPreview ? (
@@ -2917,7 +2917,7 @@ export function ConversationScreen({
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
-							composerKeyboard={composerKeyboard}
+							composerFocus={composerFocus}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
@@ -3001,7 +3001,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerKeyboard}
+									composerFocus={composerFocus}
 								/>
 							) : null}
 						</View>
@@ -3044,6 +3044,7 @@ export function ConversationScreen({
 									document.edit(text);
 								}}
 								inputRef={composerInput}
+								focus={composerFocus}
 								placeholder={composerPlaceholder(onlineAction, answering)}
 								// Under an open dock, whose own button reads "Send answer",
 								// this Send says it sends what you typed.
