@@ -101,7 +101,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if cfg.PinSections == nil {
 			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
+		session, err := resolveUnpinSession(ctx, cfg.PinSections, resolve, params.SessionRef)
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, err
 		}
@@ -132,6 +132,19 @@ func resolvePinSession(ctx context.Context, resolve topLevelSessionResolver, req
 		return pinSession{}, appwire.InvalidParams(field + " must name a real top-level session")
 	}
 	return session, nil
+}
+
+// resolveUnpinSession names the assignment an unpin removes. Any assignment the
+// store holds can be removed, so a user can clear a stale pin on a subagent; a
+// ref with no assignment resolves as a pin write would, keeping its refusals.
+func resolveUnpinSession(ctx context.Context, pins *hubcore.PinSectionStore, resolve topLevelSessionResolver, requested string) (pinSession, error) {
+	key := hubcore.SessionPinIdentity(strings.TrimSpace(requested))
+	if assignments, err := pins.Assignments(); err == nil {
+		if _, held := assignments[key]; held {
+			return pinSession{source: key.Source, sessionID: key.ID}, nil
+		}
+	}
+	return resolvePinSession(ctx, resolve, requested, "sessionRef")
 }
 
 // commitNavigationChange returns the navigation receipt for a hub-owned
@@ -229,12 +242,9 @@ func (s *WebServer) resolveLocalTopLevelSession(requested string) (pinSession, e
 	if hubcore.RunningSubagentIDs(live)[id] {
 		return pinSession{}, refused
 	}
-	known := false
-	if s.cfg.Past != nil {
-		_, known = s.cfg.Past.Lookup(id)
-	}
-	if known {
-		if !s.cfg.Past.RootIndex().TopLevel(id) {
+	local := s.localSessionIndex()
+	if local.known(id) {
+		if !local.roots.TopLevel(id) {
 			return pinSession{}, refused
 		}
 	} else if !slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool { return entry.SessionID != "" && entry.SessionID == id }) {
