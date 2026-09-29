@@ -4,14 +4,32 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
+
+// TestHermeticRunEnvReachesSpawnedEvener pins that the harness hides the
+// operator's personal skills from every run: main sets EVENER_NO_USER_SKILLS,
+// and the environment the CLI probe hands a spawned evener (fixtureEnv) carries
+// it, as an in-process live session already inherits it (#3227).
+func TestHermeticRunEnvReachesSpawnedEvener(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	hermeticRunEnv()
+	if got := envvars.EVENERNoUserSkills.Getenv(); got != "1" {
+		t.Fatalf("%s = %q, want 1", envvars.EVENERNoUserSkills.Name, got)
+	}
+	want := envvars.EVENERNoUserSkills.Assignment("1")
+	if !slices.Contains(fixtureEnv(t.TempDir()), want) {
+		t.Fatalf("fixtureEnv does not carry %q", want)
+	}
+}
 
 // TestLastBytesNeverSplitsARune: lastBytes cuts at a byte offset, which can
 // land inside a multi-byte UTF-8 rune. It must back off to a rune boundary
