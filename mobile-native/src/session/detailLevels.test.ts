@@ -1,6 +1,7 @@
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import {
 	configForLevel,
 	currentLevel,
@@ -11,14 +12,6 @@ import {
 	levelToast,
 } from "./detailLevels";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const hub = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { systemEvents: true });
 
 describe("the levels (spec 8.2; ruling 8)", () => {
