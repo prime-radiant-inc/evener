@@ -44,14 +44,16 @@ var ErrLoginRequired = errors.New("openai login required")
 
 // refreshLocks serializes refresh-and-persist for a single auth record so
 // concurrent ResolveRuntimeCredentials callers cannot each redeem the same
-// rotating refresh token or overwrite a newer record (#2370). It is keyed by
-// the record's path rather than held on a Service because one process can hold
-// several Services for the same credential (each Codex scope lazily builds its
-// own; see llm/providers/tokenauth), and the path is the resource load,
-// refresh and save all touch. Entries are never removed: the number of
-// distinct auth records one process resolves is small and fixed by its
-// configuration.
-var refreshLocks sync.Map // record path -> *sync.Mutex
+// rotating refresh token or overwrite a newer record (#2370). Each value is a
+// capacity-1 channel used as a lock so acquisition can wait on the caller's
+// context (a canceled caller returns instead of blocking behind a slow
+// refresh). It is keyed by the record's path rather than held on a Service
+// because one process can hold several Services for the same credential (each
+// Codex scope lazily builds its own; see llm/providers/tokenauth), and the
+// path is the resource load, refresh and save all touch. Entries are never
+// removed: the number of distinct auth records one process resolves is small
+// and fixed by its configuration.
+var refreshLocks sync.Map // record path -> chan struct{} (capacity 1)
 
 // AuthStatus is a read-only snapshot of an instance's authentication state, as
 // returned by Service.Status, Service.Login, and Service.LoginWithDevice.
@@ -496,15 +498,23 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 
 // refreshExpiredRecord redeems the stored refresh token and persists the
 // result, holding the record's refreshLocks entry so only one caller for a
-// given record can redeem a rotating refresh token at a time (#2370). It
-// re-reads the record after taking the lock, so a caller that arrives after
-// another refresh has landed reuses the newer record instead of redeeming the
-// token that just rotated out from under it.
+// given record can redeem a rotating refresh token at a time (#2370). Waiting
+// for the lock honors ctx, so a canceled caller returns promptly instead of
+// blocking behind another refresh. It re-reads the record after taking the
+// lock, so a caller that arrives after another refresh has landed reuses the
+// newer record instead of redeeming the token that just rotated out from under
+// it.
 func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceName string) (RuntimeCredentials, error) {
-	lockAny, _ := refreshLocks.LoadOrStore(AuthFilePath(stateDir, instanceName), &sync.Mutex{})
-	lock := lockAny.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	semAny, _ := refreshLocks.LoadOrStore(AuthFilePath(stateDir, instanceName), make(chan struct{}, 1))
+	sem := semAny.(chan struct{})
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		// A caller that is canceled while another refresh holds the record
+		// returns promptly rather than blocking behind that refresh.
+		return RuntimeCredentials{}, ctx.Err()
+	}
 
 	// Re-read under the lock: a concurrent caller may already have refreshed
 	// this record, whose access token is now fresh. Reuse it (and its rotated
@@ -519,6 +529,12 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 			Source:      AuthSourceOAuth,
 			Expiry:      current.Expiry,
 		}, nil
+	}
+	// The pre-lock guard checked the record loaded before the lock; the record
+	// may have been rewritten since, so re-check the re-read record before
+	// redeeming an empty or whitespace refresh token.
+	if strings.TrimSpace(current.RefreshToken) == "" {
+		return RuntimeCredentials{}, loginRequiredError(errors.New("stored auth cannot be refreshed"))
 	}
 
 	tokens, err := s.refreshToken(ctx, s.client, s.config(), RefreshTokenRequest{
