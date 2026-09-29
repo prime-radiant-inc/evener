@@ -456,9 +456,28 @@ describe("a run in the transcript", () => {
 	});
 
 	it("never folds while it is live", () => {
-		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live />);
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live liveRunsOpen />);
 		expect(header(tree.root)).toBeUndefined();
 		expect(renderedText(tree)).toContain("agent/session.go");
+	});
+
+	// Nothing collapses on its own (Jesse's ruling on S7): a run held open
+	// while live stays open once the next run starts or the turn ends.
+	it("stays open after it stops being live, until you fold it", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" liveRunsOpen />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(renderedText(tree)).toContain("agent/session.go");
+		act(() => header(tree.root).props.onPress());
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+	});
+
+	// At Intent the tray shows the live step, so the run's line is enough.
+	it("doesn't open while live where the tray shows the live step", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" live />);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
 	});
 });
 

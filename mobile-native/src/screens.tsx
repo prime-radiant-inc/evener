@@ -2517,6 +2517,7 @@ export function ConversationScreen({
 						forkDisabled={!connected || !focused || snapshot.status !== "open"}
 						quote={quote}
 						live={item.id === liveRun}
+						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
 						openSubagent={openSubagent}
 						answerFor={answerFor}

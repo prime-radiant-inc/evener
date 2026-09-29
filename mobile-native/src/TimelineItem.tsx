@@ -1,12 +1,12 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
-import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
+import { setDisclosureOpen, toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
 import type { ErrorAction } from "./session/errorAction";
@@ -35,6 +35,7 @@ export function TimelineItem({
 	forkDisabled = false,
 	quote,
 	live = false,
+	liveRunsOpen = false,
 	delegates,
 	openSubagent,
 	answerFor,
@@ -54,6 +55,9 @@ export function TimelineItem({
 	quote?: (text: string) => void;
 	/** This row is the live run: the last run of the turn in progress. */
 	live?: boolean;
+	/** The live run shows its steps, at the levels that show tool calls. At
+	 * Intent the tray shows the live step, so the run keeps to its line. */
+	liveRunsOpen?: boolean;
 	/** The session's subagents, for a subagent row's state and activity. */
 	delegates?: readonly EvenerDelegateInfo[];
 	/** Opens a subagent's own transcript. */
@@ -71,6 +75,12 @@ export function TimelineItem({
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
+	// Nothing collapses on its own: a run held open while it is live stays
+	// open once it finishes, until the reader folds it.
+	const heldOpen = item.kind === "run" && live && liveRunsOpen;
+	useEffect(() => {
+		if (heldOpen && !expanded) setDisclosureOpen(disclosureId, true);
+	}, [heldOpen, expanded, disclosureId]);
 	const colors = useColors();
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.
@@ -239,7 +249,7 @@ export function TimelineItem({
 			content = (
 				<RunRow
 					run={item}
-					live={live}
+					live={heldOpen}
 					expanded={expanded}
 					onToggle={toggle}
 					hubId={hubId}

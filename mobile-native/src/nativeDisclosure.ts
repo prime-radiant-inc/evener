@@ -14,3 +14,4 @@ export function useDisclosureOpen(id: string, fallback: boolean): boolean {
 }
 
 export const toggleDisclosure = nativeDisclosureStore.toggle;
+export const setDisclosureOpen = nativeDisclosureStore.setOpen;
