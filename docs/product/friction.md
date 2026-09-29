@@ -460,14 +460,23 @@ unavailable until the child storage problem is fixed.
 operational error. `delegate_resource_bootstrap_test.go` tests parent failure
 while leaving the child resumable, including EACCES/EIO scenarios.
 
-**Discuss.** Isolate an idle child's recoverable problem and retain a deferred
-repair owner while allowing independent parent work. Distinguish an idle child
-from a required active dependency or missing authoritative scratch; do not retire
-the child or erase its obligations to make restore succeed.
+**Decision.** Restore the parent and healthy delegates while the affected idle
+child remains temporarily unavailable. Preserve that child's identity, files,
+history and unfinished obligations, and tell the parent agent which delegate is
+unavailable and why. The system owns recovery and retries recoverable failures;
+independent parent work can continue. When a step needs the unavailable child's
+result, the parent agent can wait, investigate or choose an alternative within
+the user's task. Temporary unavailability does not mean the child is finished,
+deleted or forgotten. Distinguish an idle child from an active process that may
+still change the workspace, and preserve required authoritative scratch.
+Implementation remains pending.
 
 **Acceptance.** Make one idle child's storage unreadable. The parent opens and
-works, other children remain usable, and the affected child resumes with its
-original state after storage heals.
+can continue independent work, other children remain usable, and the parent
+agent receives the affected child's status and reason. Its identity, data and
+unfinished obligations remain intact. After storage heals, the child becomes
+available with its original state without requiring the user to repair the
+parent chat. An unavailable dependency is never reported as completed.
 
 ### R05 Goal blocking after transient failure
 
