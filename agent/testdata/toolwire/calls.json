@@ -23,7 +23,7 @@
     "call_read_transcript_outline": "The same transcript read as an outline, whose envelope is flat.",
     "call_shell": "A command run from the session's own directory, prefixed with cd to it: the output ends with its exit code.",
     "call_shell_failed": "A command that exited 1: still a result, not an error, with [exit 1] at its end.",
-    "call_shell_timeout": "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
+    "call_shell_timeout": "A command still running when its foreground wait timed out (this call's wait is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
     "call_shell_windowed": "A long output, windowed: a digest of its head and tail, then [exit 0 · output windowed — read more with read_transcript(...)] (its job id fixed, its state left off).",
     "call_task_list_add": "Three tasks added to an empty list. Its state is the whole list, each task's store-minted times fixed.",
     "call_task_list_done": "The first task done with a note; the daemon starts the next one itself, so the state shows task 2 in progress though the call never named it.",

@@ -42,6 +42,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -86,6 +87,35 @@ type toolWireCall struct {
 	// before it, by call id and as each tool returned them, for an argument
 	// only a run can know (an id a tool minted). Nil uses args.
 	argsFrom func(earlier map[string]tool.ExecResult) map[string]any
+	// foregroundWaitMS is how long a shell call waits in the foreground
+	// before its command becomes a job; zero keeps the session's
+	// toolWireForegroundWaitMS.
+	foregroundWaitMS int
+}
+
+// toolWireForegroundWaitMS is every recorded shell call's foreground wait
+// unless the call names its own: the session's ceiling (MaxCommandTimeoutMS),
+// so a command that finishes in milliseconds on an idle machine still
+// finishes in the foreground on a loaded one. A call that must become a job
+// names a short wait of its own instead of sharing one with every command.
+const toolWireForegroundWaitMS = 600_000
+
+// execute runs the call on the session, with its own foreground wait when it
+// names one.
+func (c toolWireCall) execute(session *Session, env execenv.ExecutionEnvironment, args json.RawMessage) tool.ExecResult {
+	if c.foregroundWaitMS > 0 {
+		setToolWireForegroundWait(session, c.foregroundWaitMS)
+		defer setToolWireForegroundWait(session, toolWireForegroundWaitMS)
+	}
+	return session.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: c.id, Name: c.tool, Arguments: args})
+}
+
+// setToolWireForegroundWait sets the wait the shell tool reads live from the
+// session's config (toolDeps.cmdTimeouts).
+func setToolWireForegroundWait(session *Session, ms int) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.cfg.DefaultCommandTimeoutMS = ms
 }
 
 // arguments is the call's arguments, given the results of the calls before
@@ -137,11 +167,11 @@ func toolWireWorkspace(t *testing.T) (string, *Session) {
 		turnCount:  1,
 		updated:    wireFixtureStart.Add(-24 * time.Hour),
 	}, "The settle race comes from the drain running after settle reads the tree.")
-	// A short command timeout, so a long command's foreground wait ends inside
-	// the test (call_shell_timeout); every other command finishes well within it.
+	// Every shell call's foreground wait is the ceiling; only a call that
+	// names its own wait (call_shell_timeout) waits less.
 	s := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth:        1,
-		DefaultCommandTimeoutMS: 2000,
+		DefaultCommandTimeoutMS: toolWireForegroundWaitMS,
 		AgentsDocPath:           filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		StateDir:                stateDir,
 	}))
@@ -447,9 +477,10 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_shell_timeout", tool: "shell",
-			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
-			args:      map[string]any{"command": "printf 'started\\n'; sleep 600"},
-			normalize: withFixedJob,
+			note:             "A command still running when its foreground wait timed out (this call's wait is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
+			args:             map[string]any{"command": "printf 'started\\n'; sleep 600"},
+			foregroundWaitMS: 2000,
+			normalize:        withFixedJob,
 		},
 		{
 			id: "call_job_status", tool: "job_status",
@@ -654,7 +685,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 				// the one the call before it left.
 				session, env = repo.s, repo.s.currentEnv()
 			}
-			res := session.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args})
+			res := call.execute(session, env, args)
 			earlier[call.id] = res
 			// The result as a session records it, less its duration, which
 			// differs every run.
@@ -735,5 +766,22 @@ func TestToolWireCallArgumentsFromEarlierResults(t *testing.T) {
 	got := built.arguments(map[string]tool.ExecResult{"call_a": {Output: "job_123"}})
 	if len(got) != 1 || got["target"] != "job_123" {
 		t.Fatalf("built arguments = %v, want the earlier result's output as target", got)
+	}
+}
+
+// A recorded shell command slower than call_shell_timeout's foreground wait
+// still finishes in the foreground: that wait belongs to that call alone. A
+// command that ran past it under load became a job, and its result carried the
+// job's raw 1 KiB tail in place of the digest (#3357).
+func TestToolWireShellCallsFinishPastTheTimeoutCallsWait(t *testing.T) {
+	t.Parallel()
+	_, s := toolWireWorkspace(t)
+	args, err := json.Marshal(map[string]any{"command": "sleep 3; echo settled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: "call_slow", Name: "shell", Arguments: args})
+	if !strings.HasPrefix(res.Output, "settled\n[exit 0]") {
+		t.Fatalf("a 3s command became a job, or failed: %q", res.Output)
 	}
 }
