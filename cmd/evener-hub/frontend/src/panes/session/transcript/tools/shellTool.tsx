@@ -19,33 +19,26 @@
 // heuristic looks only inside the FINAL bracketed segment (never the command's
 // own stdout/stderr body) to keep false positives unlikely.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { parseArgs, str, trailingBracketFooter } from "@evener/appwire-client";
+import {
+  type ItemModel,
+  parseArgs,
+  shellCommand,
+  shellSummary,
+  stripRedundantCd,
+  trailingBracketFooter,
+} from "@evener/appwire-client";
 import { useRef } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
-import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
+import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 
 const TAIL_MAX_CHARS = 8000;
 
-function shellCommand(args: Record<string, unknown>): string {
-  return str(args, "command") ?? str(args, "cmd") ?? "";
-}
-
-// stripRedundantCd removes the literal "cd <cwd> && " prefix models
-// habitually prepend even though the daemon already runs every command in
-// the session cwd. Literal match only — a cd anywhere else is information
-// and stays. Display-only: argumentsJSON is never modified.
-export function stripRedundantCd(command: string, cwd: string | undefined): string {
-  if (cwd === undefined || cwd === "") return command;
-  const prefix = `cd ${cwd} && `;
-  if (!command.startsWith(prefix)) return command;
-  const rest = command.slice(prefix.length);
-  return rest === "" ? command : rest;
-}
+// shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
+// toolSummaries.
 
 // A second, differently-shaped trailer for the "buffered" execution
 // environment fallback (used when the env doesn't support streaming,
@@ -204,10 +197,7 @@ registerToolRenderer({
   // captured output itself (agent/session_tools_shell.go) — and when the
   // output carries no trailer of either shape, the body synthesizes the typed
   // code's line instead (see ShellBodyContent's exitFooter).
-  summary(item: ItemModel, ctx?: ToolSummaryContext) {
-    const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
-    return `Ran ${command}`;
-  },
+  summary: shellSummary,
   body: ShellBody,
   failed: nonzeroExit,
   // The row summary IS the raw one-line command; the expanded body renders

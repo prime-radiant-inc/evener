@@ -199,7 +199,7 @@ test("falls back to the default descriptor (raw output body) for an unregistered
       live={false}
     />,
   );
-  expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
+  expect(screen.getByText("Used tci unregistered")).toBeTruthy(); // the tool in words, never its raw name
   // At activity level the body auto-expands (expandByDefault=true).
   const body = screen.getByTestId("tool-call-body");
   const blocks = body.querySelectorAll("pre > code");
