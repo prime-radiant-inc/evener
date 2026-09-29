@@ -5,6 +5,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useLayoutEffect, useState } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
+import { destructiveButton } from "../haptics";
 import { HubEditor } from "../HubEditor";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row } from "../sheet/Grouped";
 import type { HubRoutes } from "./hubSheetContext";
@@ -45,7 +46,7 @@ export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<Hub
 	function confirmRemove(id: string, label: string) {
 		Alert.alert(`Remove ${label}?`, "The saved hub, its token and its drafts are removed from this phone.", [
 			{ text: "Cancel", style: "cancel" },
-			{ text: "Remove", style: "destructive", onPress: () => void remove(id) },
+			destructiveButton("Remove", () => remove(id)),
 		]);
 	}
 

@@ -10,6 +10,7 @@ import { NavigationActions } from "./navigationActions";
 import { SessionDeletionEditor } from "./SessionDeletionEditor";
 import type { Routes } from "./screens";
 import { readSessionDeletion } from "./sessionDeletionNavigation";
+import { destructiveButton } from "./haptics";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -120,16 +121,7 @@ export function SessionDeletionScreen({ route, navigation }: NativeStackScreenPr
 		Alert.alert(
 			`Delete ${observed.title || title}?`,
 			"This permanently removes this session’s saved history from the hub. Other sessions and your local unsent draft are kept.",
-			[
-				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Delete saved session",
-					style: "destructive",
-					onPress: () => {
-						void remove(expected);
-					},
-				},
-			],
+			[{ text: "Cancel", style: "cancel" }, destructiveButton("Delete saved session", () => remove(expected))],
 		);
 	}
 	const checkpoint = action?.recovery;
