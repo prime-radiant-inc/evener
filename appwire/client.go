@@ -54,7 +54,16 @@ type Client struct {
 
 type pendingRequest struct {
 	id ID
-	ch chan Message
+	ch chan pendingResult
+}
+
+// pendingResult is one delivery to a waiting request: the response or error
+// frame to hand back plus whether the client synthesized it because its read
+// loop is gone. The flag is what lets request wrap a synthesized failure as a
+// TransportFailureError without putting local provenance on the wire type.
+type pendingResult struct {
+	msg   Message
+	local bool
 }
 
 func NewClient(transport Transport) *Client {
@@ -133,7 +142,7 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 				if c.orderedFrames != nil {
 					c.orderedFrames(msg, nil)
 				}
-				pending.ch <- msg
+				pending.ch <- pendingResult{msg: msg}
 			}
 		}
 	}()
@@ -319,7 +328,7 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	if observe := requestIDObserverFrom(ctx); observe != nil {
 		observe(id)
 	}
-	ch := make(chan Message, 1)
+	ch := make(chan pendingResult, 1)
 
 	c.pendingMu.Lock()
 	c.pending[id.String()] = pendingRequest{id: id, ch: ch}
@@ -351,9 +360,9 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	}
 	c.releaseSendSlot()
 
-	var msg Message
+	var res pendingResult
 	select {
-	case msg = <-ch:
+	case res = <-ch:
 	case <-ctx.Done():
 		c.removePending(id)
 		return ctx.Err()
@@ -362,16 +371,26 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		// before the exit still wins; otherwise synthesize the same error frame
 		// failPending would have delivered, so callers see one failure shape.
 		select {
-		case msg = <-ch:
+		case res = <-ch:
 		default:
 			c.removePending(id)
-			msg = ErrorMessage(id, InternalError(c.closedError().Error()))
+			res = pendingResult{
+				msg:   ErrorMessage(id, InternalError(c.closedError().Error())),
+				local: true,
+			}
 		}
 	}
 
+	msg := res.msg
 	if msg.Error != nil {
 		wire := msg.Error.Error
 		wire.Message = fmt.Sprintf("appwire %s: %s", method, wire.Message)
+		if res.local {
+			// The client made this failure; the peer never answered. Wrap it so
+			// adapters can tell a lost response from an InternalError that
+			// arrived intact (see TransportFailureError).
+			return TransportFailureError{WireError: wire}
+		}
 		return wire
 	}
 	if msg.Response == nil {
@@ -439,7 +458,10 @@ func (c *Client) failPending(err error) {
 	defer c.pendingMu.Unlock()
 	for id, pending := range c.pending {
 		delete(c.pending, id)
-		pending.ch <- ErrorMessage(pending.id, InternalError(err.Error()))
+		pending.ch <- pendingResult{
+			msg:   ErrorMessage(pending.id, InternalError(err.Error())),
+			local: true,
+		}
 	}
 }
 
