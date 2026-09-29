@@ -878,10 +878,10 @@ function Board({
 	// whose results replace the sections, so leaving search mounts them
 	// afresh and both layouts always arrive, even for a project already
 	// unfolded; the section's offset from before search could be stale.
-	const revealProject = (projectKey: string) => {
+	const revealProject = (projectKey: string): boolean => {
 		const { view } = projectSections.projects;
 		const project = view.projects.find((candidate) => candidate.key === projectKey);
-		if (!project) return;
+		if (!project) return false;
 		const target = projectRevealTarget({
 			project,
 			pages: view.pages.get(projectKey),
@@ -891,6 +891,7 @@ function Board({
 		for (const fold of target.unfold) setFolded(fold, false);
 		reveal.current = { sectionTop: null, row: null };
 		setRevealKey(target.scrollTo);
+		return true;
 	};
 	const finishReveal = () => {
 		const pending = reveal.current;
@@ -898,12 +899,17 @@ function Board({
 		reveal.current = null;
 		setRevealKey(null);
 		const top = pending.sectionTop + pending.row.y;
-		scrollBoardTo(Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height)));
+		// A row taller than the viewport leaves no room to sit it a third of
+		// the way down: scroll to its top instead of past it.
+		const inset = 0.3 * Math.max(0, viewport.current.height - pending.row.height);
+		scrollBoardTo(Math.max(0, top - inset));
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
+		// A stale catalog can lose the project between the result's render and
+		// the tap: leave search only once the reveal has somewhere to land.
+		if (!revealProject(project.key)) return;
 		rememberSearch();
 		leaveSearch();
-		revealProject(project.key);
 	};
 	/** A project's change: through the journal, or held when it can't go now
 	 * (holdsChange), asked at the press since the journal may have moved
