@@ -438,7 +438,19 @@ export function ConversationScreen({
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	// The store trims the 500-row cap only while the reader follows the end.
-	const follow = useLiveEndFollow((following) => store.getState().setFollowingLiveEnd(following));
+	// It hears a reader leave the end at once, and a return (the "↓ new" pill,
+	// a drag or a coast to the end) only once the list is there: trimming the
+	// top while the list still travels would move what it passes.
+	const returningToEnd = useRef(false);
+	const follow = useLiveEndFollow((following) => {
+		returningToEnd.current = following;
+		if (!following) store.getState().setFollowingLiveEnd(false);
+	});
+	function settleAtEnd(end: boolean) {
+		if (!end || !returningToEnd.current) return;
+		returningToEnd.current = false;
+		store.getState().setFollowingLiveEnd(true);
+	}
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
@@ -2633,6 +2645,7 @@ export function ConversationScreen({
 								const end = atEnd(event.nativeEvent);
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
+								settleAtEnd(end && follow.state.current.touch === "none");
 								if (captureSuppressed.current) return;
 								// Older history loads as you near the top (spec 8.2) once you
 								// move the list. With no finger on it, and the app neither
@@ -2684,6 +2697,7 @@ export function ConversationScreen({
 							// under the finger.
 							onScrollEndDrag={(event) => {
 								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+								settleAtEnd(atEnd(event.nativeEvent));
 								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
@@ -2694,6 +2708,7 @@ export function ConversationScreen({
 							}}
 							onMomentumScrollEnd={(event) => {
 								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+								settleAtEnd(atEnd(event.nativeEvent));
 								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);

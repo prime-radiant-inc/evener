@@ -1312,6 +1312,39 @@ describe("following the live end (spec 8.2)", () => {
 		expect(pill(tree)).toBeUndefined();
 	});
 
+	// Tapping "↓ new" follows again, but the cap trims the top only once the
+	// list reaches the end: trimming while it still travels would move what it
+	// passes.
+	it("trims past the cap only once the pill's scroll reaches the end", async () => {
+		const served = working("ref-follow-trim");
+		const turns = (served as unknown as { turns: { items: unknown[] }[] }).turns;
+		turns[0].items = Array.from({ length: 510 }, (_, i) => ({
+			id: `u-${i}`,
+			turnId: "turn_1",
+			type: "userMessage",
+			status: "completed",
+			text: `message ${i}`,
+			transcriptKey: `turn_1:${i}:0`,
+			position: { entry: i, item: 0 },
+		}));
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, pageBefore: true };
+		const { tree, hub } = await mount(served);
+		const rows = () => (list(tree).props.data as unknown[]).length;
+		drag(tree, 100);
+		// A reply lands below while you read above: nothing is trimmed, so the
+		// session's rows past the cap are all there.
+		stream(hub, served, "s-trim");
+		const grown = rows();
+		const tap = pill(tree);
+		if (!tap) throw new Error("no new-below pill");
+		act(() => tap.props.onPress());
+		// The pill scrolls toward the end; nothing is trimmed on the way.
+		expect(rows()).toBe(grown);
+		scrollTo(tree, END);
+		expect(rows()).toBeLessThan(grown);
+	});
+
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
 		const { tree, hub } = await mount(served);

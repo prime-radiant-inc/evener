@@ -3097,6 +3097,34 @@ describe("ConversationStore", () => {
 			expect(store.getState().conversation?.items).toHaveLength(500);
 		});
 
+		// Back at the end while an older page is in flight: the trim drops the
+		// rows the page was asked from above, so the page is dropped too, or
+		// merged it would leave those rows a hole nothing pages back.
+		it("drops a page in flight when the return to the end trims", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 700) });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: "cursor-2", hasEarlierItems: true };
+			await store.getState().loadOlder(service);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-0");
+
+			let deliver!: (page: unknown) => void;
+			service.olderItems = new Promise((resolve) => {
+				deliver = resolve;
+			}) as never;
+			const inFlight = store.getState().loadOlder(service);
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().loadingOlder).toBe(false);
+			expect(store.getState().trimmedAbove).toBe(true);
+			deliver({ turnsPage: { data: [], nextCursor: "cursor-3" }, nextCursor: "cursor-3" });
+			expect(await inFlight).toEqual({ status: "ignored" });
+			expect(store.getState().olderCursor).toBe("cursor-2");
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-200");
+		});
+
 		// A read of another instance replaces the window, and the rows it
 		// trimmed with it.
 		it("forgets a trim when a read replaces the instance", async () => {
@@ -3112,15 +3140,18 @@ describe("ConversationStore", () => {
 			expect(store.getState().trimmedAbove).toBe(false);
 		});
 
-		// With a cursor held, the page keeps that cursor's fence, and stale
-		// means the thread was reset since the read: re-read it, as for any
-		// stale cursor.
-		it("re-reads a thread whose page above the trimmed rows comes back stale with a cursor held", async () => {
+		// The hub answers stale only for a boundary the transcript doesn't hold:
+		// the thread was reset or rewritten since the read. Re-read it, as for
+		// any stale cursor, with or without a cursor held.
+		it.each([
+			["with a cursor", "cursor-1"],
+			["without one", null],
+		] as const)("re-reads a thread whose page above the trimmed rows comes back stale %s", async (_held, cursor) => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
 			const store = createConversationStore();
 			await store.getState().openProjected(service, createFakeSink(), "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
+			store.setState({ olderCursor: cursor });
 			store.getState().setFollowingLiveEnd(false);
 			const reads = service.readProjectionCalls.length;
 			service.olderItems = Promise.reject(
@@ -3130,55 +3161,21 @@ describe("ConversationStore", () => {
 			expect(service.readProjectionCalls).toHaveLength(reads + 1);
 		});
 
-		// The page before the oldest row kept is stale when that row is the
-		// transcript's first: there is nothing older, and nothing to re-read.
-		it("takes a stale page above the trimmed rows as nothing older", async () => {
+		// The hub answers the page before the transcript's first item with an
+		// empty, exhausted page: nothing is older, so the trim is spent.
+		it("stops paging when the page above the trimmed rows is empty and exhausted", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
 			const store = createConversationStore();
 			await store.getState().openProjected(service, createFakeSink(), "ref-1");
 			store.getState().setFollowingLiveEnd(false);
 			const reads = service.readProjectionCalls.length;
-			service.olderItems = Promise.reject(
-				new WireError("stale transcript cursor", -32020, { evenerErrorInfo: "transcriptItemCursorStale" }),
-			) as never;
+			service.olderItems = { turnsPage: { data: [] }, hasEarlierItems: false };
 			await store.getState().loadOlder(service);
 			expect(service.readProjectionCalls).toHaveLength(reads);
 			expect(store.getState().trimmedAbove).toBe(false);
 			expect(store.getState().olderCursor).toBeNull();
-			expect(store.getState().error).toBeNull();
-			expect(store.getState().loadingOlder).toBe(false);
-		});
-
-		// A before page carries no fence from the phone: the hub mints its
-		// cursor under the thread's current identity. A thread reset since the
-		// phone's read answers from another incarnation, and the phone throws
-		// the page away rather than weave it into rows from the old one.
-		it("discards a trimmed-rows page from a thread that was reset", async () => {
-			const service = new FakeConversationService();
-			service.openConv = makeConversation({ items: positionedRows(0, 600) }, true);
-			const store = createConversationStore();
-			await store.getState().open(service, "ref-1");
-			store.getState().setFollowingLiveEnd(false);
-			const before = store.getState().conversation?.items.map((row) => row.id);
-			service.olderItems = {
-				turnsPage: {
-					...turnsPage([
-						wireTurnFragment(
-							"t-old",
-							positionedRows(0, 100).map((row) => ({
-								...userMessageItem(row.id, row.text),
-								position: row.position,
-							})),
-						),
-					]),
-					bootGeneration: "1",
-					epoch: 1,
-					snapshot: { incarnation: "inc-2", length: 100 },
-				},
-			};
-			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
-			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(before);
+			expect(await store.getState().loadOlder(service)).toEqual({ status: "ignored" });
 		});
 
 		it("enforces a 500-item retained cap at the store level", async () => {
