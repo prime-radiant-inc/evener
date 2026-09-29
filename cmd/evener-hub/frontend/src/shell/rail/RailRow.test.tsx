@@ -787,6 +787,42 @@ describe("watch row", () => {
   });
 });
 
+// The subagent tally chip on a live root's summary line (roots-only navigation
+// design, D1/D6): running and failed counts in words, absent when there is
+// nothing to say and on any row that is not live.
+describe("subagent tally on the summary line", () => {
+  test("a live root with running subagents shows the count", () => {
+    renderRow({ subagents: { running: 3, failed: 0, done: 2 } });
+    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("3 running");
+  });
+
+  test("names running and failed together", () => {
+    renderRow({ subagents: { running: 2, failed: 1, done: 0 } });
+    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("2 running, 1 failed");
+  });
+
+  test("shows failed alone", () => {
+    renderRow({ subagents: { running: 0, failed: 1, done: 0 } });
+    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("1 failed");
+  });
+
+  test("a zero tally hides the chip", () => {
+    renderRow({ subagents: { running: 0, failed: 0, done: 4 } });
+    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
+  });
+
+  test("a past root shows no chip", () => {
+    renderRow({ live: false, state: "ended", subagents: { running: 2, failed: 0, done: 0 } });
+    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
+  });
+
+  test("keeps its place before the gloss on a signal row", () => {
+    renderRow({ state: "active", branch: "main", subagents: { running: 1, failed: 0, done: 0 } });
+    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("1 running ·");
+    expect(screen.getByTestId("rail-row-activity").textContent).toContain("main");
+  });
+});
+
 // The count on the session's summary line. It is its own element beside the
 // gloss (never text inside it) so it keeps neutral ink: the gloss is tinted by
 // the row's signal family, and a watch is not a call for a human, a failure, or
