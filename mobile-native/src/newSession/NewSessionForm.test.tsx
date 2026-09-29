@@ -426,6 +426,23 @@ it("opens nothing when the form lost focus while the start was on its way", asyn
 	form.dispose();
 });
 
+it("says Session started when the sheet was swiped away while the start was on its way", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	// The sheet is gone: its screens unmount, and react-navigation answers
+	// isFocused() false for a screen whose route left the stack
+	// (useNavigationCache's isFocused asks each parent in turn).
+	form.focus.focused = false;
+	form.dispose();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.parent.dispatch).not.toHaveBeenCalled();
+	expect(form.memory.history()).toHaveLength(1);
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "started", ref: expect.any(String), title: expect.any(String), why: null },
+	]);
+});
+
 it("opens nothing when another connection took over while the start was on its way", async () => {
 	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
 	await act(async () => void form.header("headerRight").props.onPress());
