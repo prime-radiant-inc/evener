@@ -17,6 +17,7 @@ import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName } from "./sessionFacts";
+import { haptic } from "../haptics";
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -198,7 +199,10 @@ function Effort({
 							accessibilityLabel={effortName(level)}
 							accessibilityState={{ selected, disabled }}
 							disabled={disabled}
-							onPress={() => choose(level)}
+							onPress={() => {
+								if (!selected) haptic("selection");
+								choose(level);
+							}}
 							style={[
 								{
 									flex: 1,

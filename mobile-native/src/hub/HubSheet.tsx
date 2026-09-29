@@ -12,6 +12,7 @@ import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
+import { useHubUpdates } from "./hubUpdates";
 
 const HubStack = createNativeStackNavigator<HubRoutes>();
 
@@ -23,15 +24,18 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	const close = useCallback(() => navigation.goBack(), [navigation]);
 	const leave = useCallback(() => navigation.navigate("Hubs"), [navigation]);
 	useClosesOnHubChange(hubId, close, leave);
+	const ready = isReady(state);
+	const updates = useHubUpdates(renderClient, ready);
 	const value = useMemo<HubSheetContextValue>(
 		() => ({
 			hubId,
 			hubName: activeProfile?.name ?? "",
 			client: renderClient,
-			ready: isReady(state),
+			ready,
 			canUseConnection,
+			updates,
 		}),
-		[hubId, activeProfile?.name, renderClient, state, canUseConnection],
+		[hubId, activeProfile?.name, renderClient, ready, canUseConnection, updates],
 	);
 	if (!activeProfile) return null;
 	return (

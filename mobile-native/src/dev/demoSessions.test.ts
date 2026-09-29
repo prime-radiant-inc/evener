@@ -195,7 +195,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 10: a working session whose one queued message offers Steer now", () => {
 		const { model } = open("s-tasklist");
 		expect(model.status.type).toBe("active");
-		const queued = ghosts(model, [], null, []);
+		const queued = ghosts(model, [], null, [], true);
 		expect(queued).toHaveLength(1);
 		expect(queued[0]).toMatchObject({ state: "queued", buttons: ["steerNow"] });
 	});
@@ -203,7 +203,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("queues enough on one working session to open the Queue sheet from 'N more queued'", () => {
 		const { model } = open("s-stumble");
 		expect(model.status.type).toBe("active");
-		expect(shownGhosts(ghosts(model, [], null, [])).moreQueued).toBeGreaterThan(0);
+		expect(shownGhosts(ghosts(model, [], null, [], true)).moreQueued).toBeGreaterThan(0);
 	});
 
 	it("frame 11: the last turn failed on a sign-in error", () => {

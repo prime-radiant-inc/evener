@@ -196,6 +196,14 @@ export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
+export type {
+  HubUpdateController,
+  HubUpdatePorts,
+  HubUpdateState,
+  HubUpdateStateStore,
+  UpdateChannel,
+} from "./hubUpdate";
+export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,
