@@ -2563,6 +2563,12 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
+	// A canceled loop no longer owns the host, and standing down needs no gate:
+	// acquire it only when there is still work, so a canceled loop never leaves
+	// the host briefly held by an owner that is already gone.
+	if ctx.Err() != nil {
+		return
+	}
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the
