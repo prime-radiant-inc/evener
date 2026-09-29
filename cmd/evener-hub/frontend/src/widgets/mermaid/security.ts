@@ -1,32 +1,12 @@
 import DOMPurify from "dompurify";
+import { MERMAID_FORBID_TAGS } from "./forbidTags";
 
-// Resource-bearing and navigational tags are forbidden at BOTH layers
-// (mermaid's own sanitize via dompurifyConfig, and this post-render pass):
-// mermaid at securityLevel "strict" strips handlers/scripts/javascript: but
-// passes benign markup through labels, and the render-time network fetch
-// (mermaid's temporary render DOM) can only be stopped at the mermaid layer.
-// Verified in real Chrome against mermaid 11.17.2 and 12.0.0; see the spec's
-// Security section.
-//
-// This list is the one source for the native mermaid page too: the native
-// generator (mobile-native/scripts/build-mermaid-page.mts) imports it directly
-// and interpolates it into that page's bundle, so the two never drift.
-export const MERMAID_FORBID_TAGS = [
-  "a",
-  "img",
-  // SVG <image href> is a resource-fetch channel with no backstop in the
-  // guard's instrumentation; no mermaid diagram type emits it.
-  "image",
-  "video",
-  "audio",
-  "iframe",
-  "object",
-  "embed",
-  "source",
-  "track",
-  "form",
-  "input",
-] as const;
+// The forbid list lives in its zero-import leaf module (forbidTags.ts) so the
+// native page generator (mobile-native/scripts/build-mermaid-page.mts) can
+// import it without pulling in this file's dompurify/mermaid dependencies -
+// the generator runs from mobile-native's own install, where those are absent.
+// Re-exported here so existing importers of security.ts keep working.
+export { MERMAID_FORBID_TAGS } from "./forbidTags";
 
 // Mermaid emits flowchart/class/state/ER labels as XHTML inside
 // <foreignObject>; an svg-only profile strips every label (round-1 review

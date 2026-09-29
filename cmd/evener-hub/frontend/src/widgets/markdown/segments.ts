@@ -19,6 +19,7 @@
 // deliberately differ where noted there).
 import type { Token } from "marked";
 import { markdownLexer } from "./lexer";
+import { closeOpenMarkdown } from "./streaming";
 
 export type MarkdownSegment = { kind: "markdown"; tokens: Token[] } | { kind: "mermaid"; text: string };
 
@@ -116,4 +117,88 @@ export function splitMarkdownSegments(closedSource: string, realSource: string |
     }
   }
   return segments;
+}
+
+export interface LiveSegmentsCache {
+  headSource: string;
+  headSegments: MarkdownSegment[];
+}
+
+// A top-level fence line (up to three leading spaces) and its info string.
+// Mirrors marked's CommonMark fence rules: a backtick fence whose info contains
+// a backtick is not a fence at all.
+const ANY_FENCE_OPENER = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const BARE_FENCE_CLOSER = /^ {0,3}(`{3,}|~{3,})$/;
+
+// The end offset of the last top-level CLOSED mermaid fence in the raw stream,
+// or 0 when none has closed. The prefix up to this offset is the consumer's
+// frozen head: it ends just past a terminated fence line, so it needs neither
+// the tail's live auto-close nor the demote rule. Scanned line by line (not
+// token by token): a fence's trailing newline is tokenized differently
+// depending on what follows it, which would make the same head boundary
+// alternate between 38 and 37 and defeat the cache. The scan tracks ALL top
+// fences, so a mermaid-looking line inside a non-mermaid fence is code, not an
+// opener. Blockquoted/indented fences never reach here (they do not split), the
+// same shapes splitMarkdownSegments ignores.
+function lastClosedMermaidFenceEnd(source: string): number {
+  const lines = source.split("\n");
+  let offset = 0;
+  let open: { char: string; length: number; mermaid: boolean } | null = null;
+  let end = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (open === null) {
+      const opener = ANY_FENCE_OPENER.exec(line);
+      if (opener !== null) {
+        const run = opener[1] ?? "";
+        const info = opener[2] ?? "";
+        if (!(run.startsWith("`") && info.includes("`"))) {
+          open = {
+            char: run.charAt(0),
+            length: run.length,
+            mermaid: info.trim().split(/\s+/)[0]?.toLowerCase() === "mermaid",
+          };
+        }
+      }
+    } else {
+      const closer = BARE_FENCE_CLOSER.exec(line.replace(/[ \t\r]+$/, ""));
+      if (closer !== null && (closer[1] ?? "").charAt(0) === open.char && (closer[1] ?? "").length >= open.length) {
+        if (open.mermaid) end = offset + line.length + (index < lines.length - 1 ? 1 : 0);
+        open = null;
+      }
+    }
+    offset += line.length + (index < lines.length - 1 ? 1 : 0);
+  }
+  return end;
+}
+
+// Live segmentation with the frozen head cached on its exact text. The head
+// (the source through the last CLOSED mermaid fence) is segmented once and
+// served by object identity on every later render, so MarkdownSlice's per-slice
+// memo actually hits while a long tail streams; only the tail is re-segmented
+// each render, with closeOpenMarkdown and the demote rule applied within the
+// tail (an open mermaid fence at the tail demotes, exactly as the whole-source
+// path did). A changed head is a cache miss and re-segments, never stale - the
+// same discipline as the windowed path's head cache. With no closed fence the
+// head is empty and the whole source is the tail: identical to splitMarkdownSegments.
+export function splitLiveMarkdownSegments(
+  realSource: string,
+  cache: { current: LiveSegmentsCache | null },
+): MarkdownSegment[] {
+  const headEnd = lastClosedMermaidFenceEnd(realSource);
+  const headSource = realSource.slice(0, headEnd);
+  const tailSource = realSource.slice(headEnd);
+
+  let headSegments: MarkdownSegment[];
+  const cached = cache.current;
+  if (cached !== null && cached.headSource === headSource) {
+    headSegments = cached.headSegments;
+  } else {
+    headSegments = headSource === "" ? [] : splitMarkdownSegments(headSource, null);
+    cache.current = { headSource, headSegments };
+  }
+
+  const tailSegments = tailSource === "" ? [] : splitMarkdownSegments(closeOpenMarkdown(tailSource), tailSource);
+  if (headSegments.length === 0) return tailSegments;
+  return [...headSegments, ...tailSegments];
 }

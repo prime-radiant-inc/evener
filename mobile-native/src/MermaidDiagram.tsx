@@ -202,6 +202,11 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, same discipline as MarkdownResponse
 	useEffect(() => {
+		// A new source (or a theme flip) gets a fresh render: drop any earlier
+		// failure so the WebView returns, and re-seed the placeholder from the
+		// cache for THIS source instead of the previous row's measured height.
+		setFailed(false);
+		setHeight(heightCache.get(source) ?? null);
 		renderPosts.post({ type: "render", source, theme: mermaidTheme(colors), mode: "fit" });
 	}, [colors.palette, source]);
 

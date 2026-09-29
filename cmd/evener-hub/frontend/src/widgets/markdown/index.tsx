@@ -6,7 +6,12 @@ import { requireClass } from "../internal/requireClass";
 import { MermaidDiagram } from "../mermaid";
 import { markdownLexer } from "./lexer";
 import styles from "./markdown.module.css";
-import { messageMayContainMermaid, splitMarkdownSegments } from "./segments";
+import {
+  type LiveSegmentsCache,
+  messageMayContainMermaid,
+  splitLiveMarkdownSegments,
+  splitMarkdownSegments,
+} from "./segments";
 import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
@@ -424,16 +429,24 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
     return headHtml + tailHtml;
   }, [source, live, segmented]);
 
-  // Segmented path (a mermaid fence is present). Live mode closes the stream's
-  // open constructs first, then demotes a still-open mermaid fence back to
-  // markdown (segments.ts). Cost per live render is one close+lex of the whole
-  // message - the same full-parse fallback today's windowed throttle already
-  // takes whenever a fence sits in the tail window, so no new throttle tier is
-  // added. The hook is called unconditionally so hook order is stable as a
-  // source grows into (or out of) a fence; the settled single-root `html` is
-  // empty on this branch and vice versa.
+  // Segmented path (a mermaid fence is present). Live mode caches the segmentation
+  // of the frozen head (the source through the last CLOSED mermaid fence, keyed on
+  // its exact text) and re-segments only the tail per render, with the stream's
+  // open constructs closed and a still-open mermaid fence demoted within the tail
+  // (segments.ts). So a long stream no longer pays a whole-message lex+close on
+  // every token; the head's slice arrays keep identity and their MarkdownSlice memo
+  // hits. Settled renders (live=false) segment the source directly, unchanged. The
+  // hook is called unconditionally so hook order is stable as a source grows into
+  // (or out of) a fence; the settled single-root `html` is empty on this branch and
+  // vice versa.
+  const liveSegmentCacheRef = useRef<LiveSegmentsCache | null>(null);
   const segments = useMemo(
-    () => (segmented ? splitMarkdownSegments(live ? closeOpenMarkdown(source) : source, live ? source : null) : null),
+    () =>
+      segmented
+        ? live
+          ? splitLiveMarkdownSegments(source, liveSegmentCacheRef)
+          : splitMarkdownSegments(source, null)
+        : null,
     [source, live, segmented],
   );
 

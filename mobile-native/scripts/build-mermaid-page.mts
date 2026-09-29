@@ -9,11 +9,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-// The one source for the forbid list: the web frontend's security module owns
+// The one source for the forbid list: the web frontend's forbidTags leaf owns
 // it, and this generator substitutes it into the native page bundle so the two
-// frontends cannot drift. Imported as TS (this script runs under tsx), while
-// the emitted page stays a plain inlined bundle.
-import { MERMAID_FORBID_TAGS } from "../../cmd/evener-hub/frontend/src/widgets/mermaid/security";
+// frontends cannot drift. The leaf has no imports, so this resolves under the
+// native job's own install (no frontend node_modules needed); imported as TS
+// (this script runs under tsx), while the emitted page stays a plain inlined
+// bundle.
+import { MERMAID_FORBID_TAGS } from "../../cmd/evener-hub/frontend/src/widgets/mermaid/forbidTags";
 
 const nativeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GENERATED_FILE = path.join(nativeRoot, "src", "generated", "mermaidPage.ts");

@@ -368,3 +368,20 @@ it("does not open the viewer from the error fallback", () => {
 	expect(tree.root.findAllByProps({ testID: "mermaid-open" })).toHaveLength(0);
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
 });
+
+it("clears the error fallback when the source changes to a valid diagram", () => {
+	// An invalid source settles into the error fallback...
+	const tree = render(<MermaidDiagram source={"graph TD; A[unclosed"} />);
+	act(() => {
+		tree.root.findByType("WebView" as never).props.onMessage({
+			nativeEvent: { data: JSON.stringify({ type: "error", message: "Parse error" }) },
+		});
+	});
+	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(0);
+	// ...and an edit to a valid source must bring the diagram back, not keep the
+	// fallback for the lifetime of the mounted row.
+	act(() => {
+		tree.update(<MermaidDiagram source={"graph TD; A-->B"} />);
+	});
+	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
+});

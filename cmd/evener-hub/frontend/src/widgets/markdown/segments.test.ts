@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { LiveSegmentsCache } from "./segments";
 import { messageMayContainMermaid, splitMarkdownSegments } from "./segments";
 
 const MERMAID = "```mermaid\ngraph TD; A-->B\n```\n";
@@ -60,6 +61,35 @@ describe("splitMarkdownSegments", () => {
     const closed = `${real}\n\`\`\``;
     const segments = splitMarkdownSegments(closed, real);
     expect(segments.map((s) => s.kind)).toEqual(["mermaid", "markdown"]);
+  });
+});
+
+describe("splitLiveMarkdownSegments", () => {
+  it("serves the frozen head's segments by identity as the tail streams", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    const head = `intro\n\n${MERMAID}`;
+    const first = splitLiveMarkdownSegments(head, cache);
+    const second = splitLiveMarkdownSegments(`${head}\nfirst tail token`, cache);
+    const third = splitLiveMarkdownSegments(`${head}\nfirst tail token plus more`, cache);
+
+    // A wholesale recompute would hand back fresh segment arrays every render;
+    // the frozen head must keep object identity so MarkdownSlice's memo hits.
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+    expect(third[0]).toBe(first[0]);
+    expect(third[1]).toBe(first[1]);
+
+    expect(third.map((s) => s.kind)).toEqual(["markdown", "mermaid", "markdown"]);
+    expect(JSON.stringify(third[2])).toContain("plus more");
+  });
+
+  it("demotes an open mermaid fence in the tail", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    const real = `intro\n\n${MERMAID}\ntail prose\n\n\`\`\`mermaid\ngraph TD; A-->`;
+    const segments = splitLiveMarkdownSegments(real, cache);
+    expect(segments.map((s) => s.kind)).toEqual(["markdown", "mermaid", "markdown", "markdown"]);
   });
 });
 
