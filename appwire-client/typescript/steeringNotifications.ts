@@ -208,13 +208,14 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   if (packet) return delegatePacketNotification(block, attrs, delegateId, packet);
   const quiet = parseQuietWatchdog(body);
   if (quiet) {
+    const name = decodeNotificationEntities(attrs.name ?? "").trim();
     return {
       type: "delegate",
       title: "Delegate quiet",
       tone: "neutral",
-      secondary: decodeNotificationEntities(attrs.name ?? "").trim() || delegateId || "",
+      secondary: name || delegateId || "",
       delegateId,
-      name: decodeNotificationEntities(attrs.name ?? "").trim() || undefined,
+      name: name || undefined,
       quiet,
       excerpt: "",
       prose: body,
@@ -249,9 +250,20 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   };
 }
 
+// delegatestore.OutcomeStatus (agent/internal/delegatestore/record.go) in
+// the outcome words. An outcome this client doesn't know claims none.
+const DELEGATE_OUTCOMES = new Map<string, NotificationOutcome>([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["exhausted", "failed"],
+  ["cancelled", "stopped"],
+  ["stopped", "stopped"],
+]);
+
 interface TerminalPacket {
-  // The settled outcome: metadata's completed|failed|cancelled|exhausted, or
-  // the one the packet kind implies when metadata carries none.
+  // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
+  // the packet kind implies when metadata carries none (a parent's bare stop
+  // packet, a run that left no packet).
   outcome: string;
   message: string;
   reason: string;
@@ -296,7 +308,7 @@ function delegatePacketNotification(
     title: `Delegate ${packet.outcome}`,
     tone,
     secondary: [label, tone === "error" || tone === "warning" ? packet.reason : ""].filter(Boolean).join(" · "),
-    outcome: packet.outcome === "completed" ? "completed" : packet.outcome === "cancelled" ? "stopped" : "failed",
+    outcome: DELEGATE_OUTCOMES.get(packet.outcome),
     delegateId,
     name: name || undefined,
     description: packet.description || undefined,

@@ -1235,6 +1235,36 @@ test("a subagent the user stopped parses as stopped", () => {
   });
 });
 
+test("a parent's bare stop packet carries no outcome of its own, so it reads as the terminal error it is", () => {
+  const [n] = wireNotifications("delegate-stopped-by-parent");
+  expect(n).toMatchObject({
+    type: "delegate",
+    outcome: "failed",
+    name: "Tail the hub log",
+    message: "stopped by parent",
+  });
+});
+
+// The settled outcome is delegatestore.OutcomeStatus
+// (agent/internal/delegatestore/record.go): every value maps to one of the
+// three outcome words, and a value this client doesn't know claims none.
+test.each([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["exhausted", "failed"],
+  ["cancelled", "stopped"],
+  ["stopped", "stopped"],
+  ["timed_out_someday", undefined],
+  ["constructor", undefined],
+])("a packet whose metadata outcome is %s reads as %s", (outcome, expected) => {
+  const frame = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "terminal_error",
+    message: "x",
+    metadata: { outcome },
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))[0]?.outcome).toBe(expected);
+});
+
 test("the quiet watchdog parses how long the subagent has been quiet", () => {
   const [n] = wireNotifications("delegate-quiet");
   expect(n).toMatchObject({

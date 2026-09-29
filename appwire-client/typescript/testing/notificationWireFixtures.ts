@@ -32,6 +32,7 @@ export type NotificationWireCase =
   | "delegate-reported"
   | "delegate-failed-unnamed"
   | "delegate-stopped"
+  | "delegate-stopped-by-parent"
   | "delegate-quiet"
   | "job-shell-completed"
   | "job-shell-failed"

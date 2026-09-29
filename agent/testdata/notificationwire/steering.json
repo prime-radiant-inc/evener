@@ -33,11 +33,22 @@
     }
   },
   {
+    "case": "delegate-stopped-by-parent",
+    "note": "The bare packet a parent's stop settles when the run left none: kind terminal_error, no metadata, so the frame carries no outcome.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_3",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_4\" name=\"Tail the hub log\"\u003e{\"kind\":\"terminal_error\",\"message\":\"stopped by parent\"}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
     "case": "delegate-quiet",
     "note": "The quiet watchdog: a plain-text body with no packet and no name attribute.",
     "item": {
       "type": "steering",
-      "id": "item_steering_3",
+      "id": "item_steering_4",
       "turnId": "turn_1",
       "text": "\u003cdelegate-notification delegate_id=\"dlg_1\"\u003equiet for 10m; last activity: 2026-09-28T20:01:00Z\u003c/delegate-notification\u003e",
       "status": "completed"
@@ -48,7 +59,7 @@
     "note": "A background shell job that exited 0, with its complete output as the excerpt.",
     "item": {
       "type": "steering",
-      "id": "item_steering_4",
+      "id": "item_steering_5",
       "turnId": "turn_1",
       "text": "\u003cjob-notification job_id=\"job_7\" event=\"completed\" job_type=\"shell\" description=\"\" status=\"completed\" reason=\"\" intent=\"Run the agent tests\" output_bytes=\"41\" exit_code=\"0\" transcript_ref=\"job:job_7\"\u003e\nJob job_7 completed. Complete output below.\nexcerpt:\nok  \tprimeradiant.com/evener/agent\t12.3s\n\u003c/job-notification\u003e",
       "status": "completed",
@@ -60,7 +71,7 @@
     "note": "A background shell job whose command exited 1.",
     "item": {
       "type": "steering",
-      "id": "item_steering_5",
+      "id": "item_steering_6",
       "turnId": "turn_1",
       "text": "\u003cjob-notification job_id=\"job_8\" event=\"command_exited_nonzero\" job_type=\"shell\" description=\"Race detector pass\" status=\"command_exited_nonzero\" reason=\"exit_nonzero\" intent=\"Run the tree tests under -race\" output_bytes=\"96\" exit_code=\"1\" transcript_ref=\"job:job_8\"\u003e\nJob job_8 command_exited_nonzero. Complete output below.\nexcerpt:\n--- FAIL: TestTreeSettle (0.02s)\n    tree_test.go:88: drain ran before settle\nFAIL\n\u003c/job-notification\u003e",
       "status": "completed",
@@ -72,7 +83,7 @@
     "note": "Two notifications delivered in one steering turn, joined the way formatJobNotificationReminder joins them.",
     "item": {
       "type": "steering",
-      "id": "item_steering_6",
+      "id": "item_steering_7",
       "turnId": "turn_1",
       "text": "\u003cjob-notification job_id=\"job_9\" event=\"stopped\" job_type=\"shell\" description=\"\" status=\"stopped\" reason=\"stopped_by_parent\" intent=\"Tail the hub log\" output_bytes=\"0\" transcript_ref=\"job:job_9\"\u003e\nJob job_9 stopped. Output is available through read_transcript(transcript_ref=\"job:job_9\") if needed.\n\u003c/job-notification\u003e\n\u003cjob-notification job_id=\"\" event=\"watch\" job_type=\"watch\" description=\"\" status=\"watch\" reason=\"\" intent=\"\" output_bytes=\"0\" watch_id=\"watch_3\"\u003e\nTimer fired after 300s.\nNote: Check whether CI finished.\n\u003c/job-notification\u003e",
       "status": "completed",

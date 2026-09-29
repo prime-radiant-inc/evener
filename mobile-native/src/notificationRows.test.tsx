@@ -151,6 +151,12 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("Stopped by the user.");
 	});
 
+	it("reads a parent's bare stop as the terminal error its frame reports", () => {
+		const { tree } = show("delegate-stopped-by-parent");
+		expect(textNode(tree, "Tail the hub log failed")?.props.style).toMatchObject({ color: DANGER_INK });
+		expect(renderedText(tree)).toContain("stopped by parent");
+	});
+
 	it("says how long a quiet subagent has been quiet", () => {
 		const { tree } = show("delegate-quiet");
 		expect(renderedText(tree)).toContain("Fix race in tree settle quiet · 10m");

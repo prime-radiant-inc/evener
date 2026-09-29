@@ -58,8 +58,12 @@ var notificationWireStart = time.Date(2026, 9, 28, 20, 0, 0, 0, time.UTC)
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {
 	t.Helper()
-	finish := stableDelegateFinishFromRun(inputs)
-	content, err := delegateNotificationContent(delegateDeliveryPlan{delegateID: delegateID, name: name, packet: *finish.packet})
+	return notificationWireBarePacketFrame(t, delegateID, name, *stableDelegateFinishFromRun(inputs).packet)
+}
+
+func notificationWireBarePacketFrame(t *testing.T, delegateID, name string, packet delegatestore.TerminalPacket) string {
+	t.Helper()
+	content, err := delegateNotificationContent(delegateDeliveryPlan{delegateID: delegateID, name: name, packet: packet})
 	if err != nil {
 		t.Fatalf("delegate frame %s: %v", delegateID, err)
 	}
@@ -165,6 +169,11 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 				startedAt:     stoppedStart,
 				endedAt:       stoppedEnd,
 			}),
+		},
+		{
+			name: "delegate-stopped-by-parent",
+			note: "The bare packet a parent's stop settles when the run left none: kind terminal_error, no metadata, so the frame carries no outcome.",
+			text: notificationWireBarePacketFrame(t, "dlg_4", "Tail the hub log", delegateStoppedTerminalPacket()),
 		},
 		{
 			name: "delegate-quiet",
