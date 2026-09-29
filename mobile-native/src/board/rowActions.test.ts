@@ -9,6 +9,7 @@ import {
 	archiveSession,
 	archiveTarget,
 	archivingSessionId,
+	journalOutcome,
 	pinSession,
 	type RowActionContext,
 	renameSession,
@@ -69,9 +70,29 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			{ ...online, organizationReady: false },
 			["pin", "stop", "shutDown", "rename"],
 		],
-		["a finished one offline", row({ state: "awaiting" }), "finished", { ...online, connected: false }, ["markRead"]],
-		["a seen one offline", row({ state: "idle" }), "idle", { ...online, connected: false }, ["markUnread"]],
-		["a working one offline", row(), "working", { ...online, connected: false }, []],
+		// Offline, the actions stay and are held (phase 6 ruling 18), whatever
+		// the journal says, since a held change reaches it only on replay.
+		[
+			"a finished one offline",
+			row({ state: "awaiting" }),
+			"finished",
+			{ ...online, connected: false },
+			["pin", "markRead", "shutDown", "archive"],
+		],
+		[
+			"a seen one offline",
+			row({ state: "idle" }),
+			"idle",
+			{ ...online, connected: false },
+			["pin", "markUnread", "shutDown", "archive"],
+		],
+		[
+			"a working one offline, the journal not ready",
+			row({ rename: true }),
+			"working",
+			{ ...online, connected: false, organizationReady: false },
+			["pin", "stop", "shutDown", "archive", "rename"],
+		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});
@@ -107,7 +128,13 @@ describe("swipes (spec 7.3)", () => {
 			{ ...online, archived: true },
 			{ leading: "unarchive", trailing: ["pin", "more"] },
 		],
-		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
+		[
+			"a working row offline",
+			row(),
+			"working",
+			{ ...online, connected: false },
+			{ leading: "archive", trailing: ["stop", "pin", "more"] },
+		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});
@@ -182,6 +209,18 @@ describe("archiving (rulings 16 and 20)", () => {
 		const covered = organization({ current: false });
 		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
 		expect([...busy.hub.writes, ...covered.hub.writes]).toEqual([]);
+	});
+
+	it("tells a change the journal took from one it never took (a held change replays only the latter)", async () => {
+		const archive = (actions: NavigationActions) => () => actions.archive({ kind: "session", id: SESSION_ID }, true);
+		const taken = organization();
+		expect(await journalOutcome(taken.actions, archive(taken.actions))).toBe("confirmed");
+		const refused = organization({ accept: false });
+		expect(await journalOutcome(refused.actions, archive(refused.actions))).toBe("unconfirmed");
+		// Off screen, the journal's run() returns without starting the change.
+		const covered = organization({ current: false });
+		expect(await journalOutcome(covered.actions, archive(covered.actions))).toBe("notTaken");
+		expect(covered.hub.writes).toEqual([]);
 	});
 
 	it("pins select mode's sessions through the same journal", async () => {
