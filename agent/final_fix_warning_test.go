@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,41 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	// high verbosity; the Web UI renders it as a quiet one-liner there).
 	if warnings[0].Code != events.WarningCodeContextBudget {
 		t.Fatalf("output-reduction warning code = %q, want %q", warnings[0].Code, events.WarningCodeContextBudget)
+	}
+}
+
+// A clamp that holds round after round is one fact, not one per round: a
+// long conversation clamps every round, and a notice each time floods the
+// transcript. The session warns when the clamp first applies, again when its
+// requested or admitted allocation (or the model) changes, and again when a
+// clamp returns after an unclamped round.
+func TestSessionOutputReductionWarnsOnlyWhenTheClampChanges(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	profile := testOpenAICompatProfile("budget-warning", "warning-model", 0)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	clamp := func(requested, admitted int) llm.TokenBudget {
+		return llm.TokenBudget{LimitedOutput: true, RequestedOutput: requested, AdmittedOutput: admitted}
+	}
+	sess.warnOutputReduction(profile, clamp(131_072, 20_000))
+	sess.warnOutputReduction(profile, clamp(131_072, 20_000))
+	sess.warnOutputReduction(profile, clamp(131_072, 18_000))
+	sess.warnOutputReduction(profile, clamp(131_072, 18_000))
+	sess.warnOutputReduction(profile, llm.TokenBudget{})
+	sess.warnOutputReduction(profile, clamp(131_072, 18_000))
+	sess.Close()
+	warnings := warningEvents(<-eventsDone)
+	var admitted []string
+	for _, warning := range warnings {
+		admitted = append(admitted, warning.Message[strings.Index(warning.Message, "admitted="):])
+	}
+	want := []string{"admitted=20000", "admitted=18000", "admitted=18000"}
+	if !slices.Equal(admitted, want) {
+		t.Fatalf("warned %v, want %v: once per clamp, again when it changes or returns", admitted, want)
 	}
 }
 
