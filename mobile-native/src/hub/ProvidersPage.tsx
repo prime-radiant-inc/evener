@@ -838,7 +838,7 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
-			{models.length > MODEL_LIST_CAP ? (
+			{models.length > MODEL_LIST_CAP || modelQuery !== "" ? (
 				<View style={{ marginHorizontal: space.margin }}>
 					<SearchField label="Search models" value={modelSearch} onChangeText={setModelSearch} />
 				</View>

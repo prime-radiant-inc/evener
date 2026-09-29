@@ -307,6 +307,7 @@ export function InstanceSheet({
     setInitial(seeded);
     setDraft(seeded);
     setFormError(null);
+    setModelSearch("");
     seededIdentity.current = draftIdentity(inst);
     seededFingerprint.current = inst.endpointFingerprint;
   }
@@ -317,6 +318,7 @@ export function InstanceSheet({
       setInitial(null);
       setDraft(null);
       setFormError(null);
+      setModelSearch("");
       return;
     }
     seed(instance);
@@ -870,7 +872,7 @@ export function InstanceSheet({
                 </Button>
               </div>
               <div className={CLASS.actionRows}>
-                {models.length > MODEL_LIST_CAP && (
+                {(models.length > MODEL_LIST_CAP || modelQuery !== "") && (
                   <FormRow label="Search models" htmlFor={`${ids}-model-search`}>
                     <Input
                       id={`${ids}-model-search`}

@@ -1693,6 +1693,24 @@ it("leaves a short model list uncapped, with no search field", async () => {
 	expect(hasControl(tree, "Search models")).toBe(false);
 });
 
+it("keeps the model search clearable when a refresh drops the list below the cap", async () => {
+	const fake = providersHub([withManyModels(60)]);
+	fake.on("evener/instance/refreshModels", () => ({
+		instances: [withManyModels(2)],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	// The filter is still active, so the field stays to clear it rather than hiding the rows.
+	act(() => control(tree, "Search models").props.onChangeText(""));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+});
+
 it("turns a model on or off through the hub", async () => {
 	const fake = providersHub([withModels()]);
 	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({

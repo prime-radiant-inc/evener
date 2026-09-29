@@ -1,6 +1,6 @@
 import type { InstanceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
@@ -147,6 +147,34 @@ describe("long model lists", () => {
     credentialsStore.setState({ instances: [entry()], availableProviders: [] });
     render(<InstanceSheet name="work" {...handlers()} />);
     expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+  });
+
+  test("clears the search when a different instance opens", () => {
+    credentialsStore.setState({
+      instances: [{ ...entry(), models: manyModels(60) }, { ...entry(), name: "other", models: manyModels(2) }],
+      availableProviders: [],
+    });
+    const h = handlers();
+    const view = render(<InstanceSheet name="work" {...h} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "zzz" } });
+    view.rerender(<InstanceSheet name="other" {...h} />);
+    // The seed cleared the query, so no stale filter hides the short instance's rows.
+    expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+  });
+
+  test("keeps the search clearable when a refresh drops the list below the cap", () => {
+    credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(60) }], availableProviders: [] });
+    const h = handlers();
+    const view = render(<InstanceSheet name="work" {...h} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "zzz" } });
+    act(() => {
+      credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(2) }], availableProviders: [] });
+    });
+    view.rerender(<InstanceSheet name="work" {...h} />);
+    // The filter is still active, so the field stays to clear it rather than hiding the rows.
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "" } });
     expect(screen.getAllByRole("switch")).toHaveLength(2);
   });
 });
