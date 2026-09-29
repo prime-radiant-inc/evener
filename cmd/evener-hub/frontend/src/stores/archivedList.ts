@@ -1,8 +1,10 @@
 // archivedList.ts — one project's archived sessions, read a page at a time
 // from evener/archived/list. Archived rows are not part of navigation: the
-// list has no revisions or invalidations, so this store refetches when a fold
-// opens, on an explicit refresh, and after an action that can change the
-// project's archived rows (archive, unarchive, pin, delete).
+// list has no revisions or invalidations, so it is refetched when the rail
+// sees the navigation archived count move to a total the list does not hold,
+// and after an action that can change the project's archived rows (archive,
+// unarchive, pin, delete). A replaced or recovered connection drops every
+// list, so none outlives the connection that served it.
 //
 // Lists are keyed by catalog and project key, because one project key can
 // exist in two catalogs.
@@ -12,7 +14,7 @@ import { errorText } from "@evener/appwire-client";
 import { decodeArchivedListSessions } from "@evener/appwire-client/state/navigation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectedClientPort } from "./connection";
+import { connectedClientPort, onConnectionReplacedOrRecovered } from "./connection";
 
 export type ArchivedListCatalog = "projects" | "archived_projects" | "test_runs";
 
@@ -22,6 +24,8 @@ export interface ArchivedList {
   nextCursor?: string;
   /** Every archived session of the project, loaded or not. */
   total: number;
+  /** Whether a page has arrived. Until one does, total is unknown. */
+  loaded: boolean;
   loading: boolean;
   /** Non-null when the most recent request failed. Loaded rows are kept. */
   error: string | null;
@@ -45,7 +49,15 @@ const { requireClient } = connectedClientPort("archivedList");
 // newer one has overtaken (a load-more answered after a refresh) is dropped.
 const generations = new Map<string, number>();
 
-const emptyList: ArchivedList = { rows: [], total: 0, loading: false, error: null };
+const emptyList: ArchivedList = { rows: [], total: 0, loaded: false, loading: false, error: null };
+
+// A new connection may serve another hub's rows, or rows that changed while
+// this one was away. Every list is dropped, and each list's generation moves
+// on so an answer the old connection still owes lands nowhere.
+onConnectionReplacedOrRecovered(() => {
+  for (const [key, generation] of generations) generations.set(key, generation + 1);
+  archivedListStore.setState({ lists: {} });
+});
 
 function patch(key: string, change: (list: ArchivedList) => Partial<ArchivedList>): void {
   archivedListStore.setState((state) => {
@@ -68,6 +80,7 @@ async function fetchPage(catalog: ArchivedListCatalog, projectKey: string, curso
       rows: cursor ? [...list.rows, ...rows] : rows,
       nextCursor: response.nextCursor,
       total: response.total,
+      loaded: true,
       loading: false,
     }));
   } catch (err) {
@@ -104,6 +117,10 @@ export async function refreshLoadedArchivedLists(): Promise<void> {
 
 export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string): ArchivedList | undefined {
   return useStore(archivedListStore, (state) => state.lists[archivedListKey(catalog, projectKey)]);
+}
+
+export function useArchivedLists(): Record<string, ArchivedList> {
+  return useStore(archivedListStore, (state) => state.lists);
 }
 
 // Test-only.
