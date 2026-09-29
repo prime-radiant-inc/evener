@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption, MCPServerSpec } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -79,7 +80,7 @@ export function LaunchResourceEditor({
 	}
 	const rows = resourceRows(items);
 	return (
-		<Modal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
+		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<Action onPress={close}>Cancel</Action>
@@ -177,7 +178,7 @@ export function LaunchResourceEditor({
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
 

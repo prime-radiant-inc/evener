@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Modal, Platform, Pressable, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Platform, Pressable, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AppwireClient,
@@ -66,7 +67,7 @@ export function CreationPlugins({
 	return (
 		<>
 			<Action disabled={disabled || !cwd} onPress={() => setOpen(true)} tone="quiet">{`Plugins · ${summary}`}</Action>
-			<Modal
+			<HoldingModal
 				visible={open}
 				animationType="slide"
 				presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
@@ -199,7 +200,7 @@ export function CreationPlugins({
 						}}
 					/>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }

@@ -1,6 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, AppState, Linking, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, Linking, Platform, ScrollView, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ProviderSignIn } from "./providerSignIn";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -50,7 +51,7 @@ export function ProviderSignInSheet({
 		}
 	}
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<View style={styles.fill}>
@@ -168,6 +169,6 @@ export function ProviderSignInSheet({
 					)}
 				</ScrollView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

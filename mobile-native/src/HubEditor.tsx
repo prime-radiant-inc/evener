@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, ScrollView, Switch, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, Switch, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { HubProfile, HubUpdate } from "./connection";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -37,7 +38,7 @@ export function HubEditor({
 		}
 	}
 	return (
-		<Modal
+		<HoldingModal
 			animationType="slide"
 			presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
 			onRequestClose={() => {
@@ -105,6 +106,6 @@ export function HubEditor({
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

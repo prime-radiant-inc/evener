@@ -1,4 +1,5 @@
-import { Modal, Pressable, ScrollView, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, Copy, styles, useColors } from "./ui";
 
@@ -21,7 +22,7 @@ export function SessionMenu({
 }) {
 	const colors = useColors();
 	return (
-		<Modal transparent onRequestClose={close}>
+		<HoldingModal transparent onRequestClose={close}>
 			<View style={[styles.fill, { justifyContent: "flex-end" }]}>
 				<Pressable
 					accessibilityRole="button"
@@ -60,6 +61,6 @@ export function SessionMenu({
 					</ScrollView>
 				</SafeAreaView>
 			</View>
-		</Modal>
+		</HoldingModal>
 	);
 }

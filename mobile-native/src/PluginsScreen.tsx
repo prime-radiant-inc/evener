@@ -4,7 +4,6 @@ import {
 	ActivityIndicator,
 	Alert,
 	FlatList,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -12,6 +11,7 @@ import {
 	TextInput,
 	View,
 } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
 	AnyNotification,
@@ -537,7 +537,7 @@ function Plugins({
 				/>
 			)}
 			{entry && selected && (
-				<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
+				<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
 					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 						<View style={[styles.row, { paddingHorizontal: 16 }]}>
 							<View style={styles.fill}>
@@ -614,7 +614,7 @@ function Plugins({
 							</Action>
 						</ScrollView>
 					</SafeAreaView>
-				</Modal>
+				</HoldingModal>
 			)}
 		</SafeAreaView>
 	);

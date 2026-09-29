@@ -31,7 +31,10 @@ const harness = vi.hoisted(() => ({
 	memory: null as unknown,
 	clipboard: [] as string[],
 	appState: [] as ((state: string) => void)[],
+	focused: true,
 }));
+// What the Reader holds, whether and as what kind, and the count Back shows.
+const alerts = vi.hoisted(() => ({ holds: [] as [boolean, string][], held: 0 }));
 // The action sheets the Reader's blocks opened, newest last, with the
 // callback that picks from one; and the sheet routes' navigation.
 const menus = vi.hoisted(() => ({
@@ -81,6 +84,7 @@ vi.mock("expo-clipboard", () => ({
 vi.mock("@react-navigation/native", () => ({
 	useNavigationState: <T,>(select: (state: typeof stack.state) => T) => select(stack.state),
 	useNavigation: () => sheetNavigation,
+	useIsFocused: () => harness.focused,
 	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
 		sheetNavigation.prevented.push(prevent);
 		sheetNavigation.onPrevent = onPrevent;
@@ -98,6 +102,10 @@ vi.mock("expo-secure-store", () => ({
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
+vi.mock("../alerts/alertsContext", () => ({
+	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
+	useHeldAlertCount: () => alerts.held,
+}));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 
@@ -136,6 +144,9 @@ const threadRead = (status: string): ThreadReadResponse =>
 	}) as ThreadReadResponse;
 
 beforeEach(() => {
+	harness.focused = true;
+	alerts.holds = [];
+	alerts.held = 0;
 	flatListCalls.length = 0;
 	menus.shown = [];
 	alertRequests.length = 0;
@@ -198,6 +209,7 @@ function navigationDouble() {
 		options,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => options.push(next)),
 		navigate: vi.fn(),
+		goBack: vi.fn(),
 		pop: vi.fn(),
 		getState: () => stack.state,
 		latest: <Key extends keyof NativeStackNavigationOptions>(key: Key) =>
@@ -650,6 +662,29 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+it("holds banners while it's in front, and counts them on Back", async () => {
+	alerts.held = 1;
+	const { navigation, rerender } = await mount();
+	expect(alerts.holds.at(-1)).toEqual([true, "quiet"]);
+	const back = navigation.latest("headerLeft") as (props: never) => ReactElement;
+	const button = renderElement(back({} as never));
+	pressable(button, "Back, 1 new while you read")?.props.onPress();
+	expect(navigation.goBack).toHaveBeenCalled();
+	expect(renderedText(button)).toContain("1");
+
+	harness.focused = false;
+	await rerender();
+	expect(alerts.holds.at(-1)).toEqual([false, "quiet"]);
+});
+
+it("reads plain Back when nothing waits", async () => {
+	const { navigation } = await mount();
+	const back = navigation.latest("headerLeft") as (props: never) => ReactElement;
+	const button = renderElement(back({} as never));
+	expect(pressable(button, "Back")).toBeTruthy();
+	expect(renderedText(button)).not.toContain("0");
 });
 
 it("reads again when its session's turn ends while it's in front", async () => {

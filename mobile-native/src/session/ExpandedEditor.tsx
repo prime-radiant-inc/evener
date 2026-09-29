@@ -1,6 +1,7 @@
 // The composer's full-screen editor (spec 8.5): the same draft in a field
 // with room to read it, for a message that has outgrown six lines.
-import { Modal, Platform, TextInput, useWindowDimensions, View } from "react-native";
+import { Platform, TextInput, useWindowDimensions, View } from "react-native";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, allowFontScaling, styles, useColors } from "../ui";
 
@@ -23,7 +24,7 @@ export function ExpandedEditor({
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
 	return (
-		<Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onDone}>
+		<HoldingModal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onDone}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: palette.page }]}>
 				<View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 8 }}>
 					<Action onPress={onDone}>Done</Action>
@@ -49,6 +50,6 @@ export function ExpandedEditor({
 					}}
 				/>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

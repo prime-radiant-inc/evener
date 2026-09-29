@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, ScrollView, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -38,7 +39,7 @@ export function LaunchFallbackEditor({
 		}
 	}
 	return (
-		<Modal
+		<HoldingModal
 			visible
 			presentationStyle="pageSheet"
 			animationType="slide"
@@ -146,6 +147,6 @@ export function LaunchFallbackEditor({
 					)}
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

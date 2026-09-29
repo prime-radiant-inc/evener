@@ -5,6 +5,7 @@
 // leave. It never shows a Retry, Refresh or Reconnect: it reads
 // again on its own when it comes back to the front, when the connection
 // returns, and when the document's session ends a turn.
+import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
@@ -21,6 +22,7 @@ import {
 	type ViewToken,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { HubProfiles } from "../connection";
@@ -29,6 +31,7 @@ import type { Routes } from "../screens";
 import { compactDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
+import { BackButton } from "../session/BackButton";
 import { returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
@@ -80,6 +83,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { client } = useConnection();
 	const { document, reload } = useDocument(hubId, sessionRef, path);
 	const inFront = useScreenInFront(route.key);
+	// Banners wait while you read (spec 13.3); Back counts what waits.
+	useHoldAlerts(useIsFocused(), "quiet");
+	const held = useHeldAlertCount();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const insets = useSafeAreaInsets();
@@ -304,10 +310,17 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		];
 		navigation.setOptions({
 			title: "",
+			headerLeft: () => (
+				<BackButton
+					count={held}
+					label={held > 0 ? `Back, ${held} new while you read` : "Back"}
+					onPress={navigation.goBack}
+				/>
+			),
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});
-	}, [navigation, hasOutline, hubId, sessionRef, path, reviewRef, reviewTitle, text, titleShown, title, about]);
+	}, [navigation, held, hasOutline, hubId, sessionRef, path, reviewRef, reviewTitle, text, titleShown, title, about]);
 
 	const cellRenderer = useMemo(
 		() =>

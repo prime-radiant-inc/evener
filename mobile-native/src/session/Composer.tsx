@@ -9,6 +9,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
+import { useHoldAlerts } from "../alerts/alertsContext";
 
 /** The field grows to this many lines, then scrolls. */
 const MAX_LINES = 6;
@@ -53,6 +54,10 @@ export function Composer({
 	const lineHeight = 24 * scale;
 	const [contentHeight, setContentHeight] = useState(0);
 	const [expanded, setExpanded] = useState(false);
+	// Banners wait while you type (spec 13.3): the field focused with text in
+	// it. Sending empties it, and that lets them go.
+	const [focused, setFocused] = useState(false);
+	useHoldAlerts(focused && value.trim() !== "", "quiet");
 	// Typed line breaks count before layout has measured anything; the
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
@@ -93,6 +98,8 @@ export function Composer({
 					scrollEnabled
 					value={value}
 					onChangeText={onChangeText}
+					onFocus={() => setFocused(true)}
+					onBlur={() => setFocused(false)}
 					onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
 					editable={editable}
 					placeholder={placeholder}

@@ -34,6 +34,12 @@ describe("Back with who else needs you (spec 13.2)", () => {
 		expect(button(tree).props.accessibilityLabel).toBe("Back, 1 other needs you");
 	});
 
+	it("says what a screen names instead, when it gives a label (the Reader's held count)", () => {
+		const tree = render(<BackButton count={2} label="Back, 2 new while you read" onPress={() => {}} />);
+		expect(button(tree).props.accessibilityLabel).toBe("Back, 2 new while you read");
+		expect(textOf(tree.root.findAll((node) => String(node.type) === "Text")[0])).toBe("2");
+	});
+
 	it("is a plain Back when nobody else needs you", () => {
 		const tree = render(<BackButton count={0} onPress={() => {}} />);
 		expect(button(tree).props.accessibilityLabel).toBe("Back");

@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
 	FlatList,
 	KeyboardAvoidingView,
-	Modal,
 	Platform,
 	Pressable,
 	Text,
@@ -10,6 +9,7 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchConfigLayer, ModelDescriptor } from "@evener/appwire-client";
 import { creationModel } from "./newSession";
@@ -97,7 +97,7 @@ export function CreationComposerSettings({
 				{(levels.length > 0 || !!effort) &&
 					control(effort || "Default", `Launch reasoning: ${effort || "default"}. Change reasoning`, "reasoning")}
 			</View>
-			<Modal
+			<HoldingModal
 				visible={!!setting}
 				animationType="slide"
 				presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
@@ -174,7 +174,7 @@ export function CreationComposerSettings({
 						</View>
 					</KeyboardAvoidingView>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }

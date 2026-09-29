@@ -1,15 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
-import {
-	ActivityIndicator,
-	FlatList,
-	Image,
-	Modal,
-	Pressable,
-	ScrollView,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { AttachmentRef } from "./projectedRows";
 import { useConnection } from "./ConnectionProvider";
@@ -106,7 +98,7 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 				))}
 			</ScrollView>
 			{page !== null ? (
-				<Modal animationType="fade" presentationStyle="fullScreen" onRequestClose={() => setPage(null)}>
+				<HoldingModal animationType="fade" presentationStyle="fullScreen" onRequestClose={() => setPage(null)}>
 					<SafeAreaProvider>
 						<SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
 							<View
@@ -154,7 +146,7 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 							/>
 						</SafeAreaView>
 					</SafeAreaProvider>
-				</Modal>
+				</HoldingModal>
 			) : null}
 		</>
 	);

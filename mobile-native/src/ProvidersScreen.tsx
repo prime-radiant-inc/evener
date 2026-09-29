@@ -3,7 +3,6 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActivityIndicator,
 	Alert,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -12,6 +11,7 @@ import {
 	TextInput,
 	View,
 } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ConnectionState, InstanceEntry } from "@evener/appwire-client";
 import {
@@ -445,7 +445,7 @@ function Providers({
 					</Pressable>
 				)}
 			/>
-			<Modal
+			<HoldingModal
 				visible={!!instance || configuration === "create"}
 				animationType="slide"
 				presentationStyle="pageSheet"
@@ -716,7 +716,7 @@ function Providers({
 						</ScrollView>
 					</View>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</SafeAreaView>
 	);
 }
