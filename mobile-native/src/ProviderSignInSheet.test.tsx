@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignIn.testkit";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { Row } from "./sheet/Grouped";
+import { Action } from "./ui";
 
 // What the sheet's native edges saw, in order: the clipboard write and the
 // in-app browser opening, so a test can tell which came first.
@@ -434,8 +436,11 @@ it("keeps a stretch's bottom space unless a group or a footer follows it", async
 		...deviceFlow,
 		"evener/auth/device/poll": () => ({ state: "authorized", status: authorizedStatus }),
 	});
-	// Before the page opens: the explanation and its buttons end the sheet.
-	expect(sectionOf(tree, "Open sign-in page").paddingBottom).toBe(16);
+	const explanation =
+		"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.";
+	// Before the page opens: the explanation and the code sit over the Open
+	// and Copy group, whose own 16pt is the whole gap.
+	expect(sectionOf(tree, explanation).paddingBottom).toBe(0);
 	await press(tree, "Open sign-in page");
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(2000);
@@ -447,14 +452,14 @@ it("keeps a stretch's bottom space unless a group or a footer follows it", async
 	const waiting = await mount(deviceFlow);
 	await press(waiting.tree, "Open sign-in page");
 	expect(sectionOf(waiting.tree, "Waiting for you to finish signing in…").paddingBottom).toBe(12);
-	// A page that couldn't open: the explanation sits over the error footer,
-	// whose own top padding is the gap.
+	// A page that couldn't open: the explanation still sits over its group,
+	// and the error follows the group.
 	edges.openFails = true;
 	try {
 		const failed = await mount(deviceFlow);
 		await press(failed.tree, "Open sign-in page");
 		expect(renderedText(failed.tree)).toContain("Could not open the sign-in page.");
-		expect(sectionOf(failed.tree, "Open sign-in page").paddingBottom).toBe(0);
+		expect(sectionOf(failed.tree, explanation).paddingBottom).toBe(0);
 	} finally {
 		edges.openFails = false;
 	}
@@ -464,4 +469,13 @@ it("Cancel closes the sheet", async () => {
 	const { tree, onClose } = await mount(deviceFlow);
 	await press(tree, "Cancel");
 	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("says how long the code lasts, and offers its actions as grouped rows like the rest of the sheet (audit L5)", async () => {
+	const { tree } = await mount(deviceFlow);
+	// The hub drops a device flow after hubAuthFlowTTL (app_auth.go).
+	expect(renderedText(tree)).toContain("The code expires in 15 minutes.");
+	for (const label of ["Open sign-in page", "Copy code"])
+		expect(tree.root.findAll((node) => node.type === Row && node.props.label === label)).toHaveLength(1);
+	expect(tree.root.findAll((node) => node.type === Action)).toHaveLength(0);
 });

@@ -13,7 +13,7 @@ import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { Spinner } from "./sheet/Spinner";
-import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
 const OPEN_FAILED = "Could not open the sign-in page.";
@@ -127,56 +127,55 @@ export function ProviderSignInSheet({
 			<GroupedPage>
 				{state.phase === "idle" || state.phase === "starting" ? <Spinner label="Starting sign-in" /> : null}
 				{device && !waiting ? (
-					// A poll's error or a failed copy or open lands in a footer
-					// right under the explanation.
-					<Section followedBy={state.error || localError ? "footer" : undefined}>
-						{body(
-							"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
-						)}
-						<View
-							style={{
-								flexDirection: "row",
-								alignItems: "center",
-								justifyContent: "space-between",
-								gap: 12,
-								borderRadius: 12,
-								paddingHorizontal: 16,
-								paddingVertical: 14,
-								backgroundColor: palette.surface,
-							}}
-						>
-							<Text
-								selectable
-								allowFontScaling={allowFontScaling}
+					<>
+						<Section followedBy="group">
+							{body(
+								"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
+							)}
+							<View
 								style={{
-									color: palette.inkHi,
-									fontFamily: fonts.mono,
-									fontWeight: "600",
-									fontSize: 26 * scale,
-									letterSpacing: 2,
-									flexShrink: 1,
+									borderRadius: 12,
+									paddingHorizontal: 16,
+									paddingVertical: 14,
+									backgroundColor: palette.surface,
 								}}
 							>
-								{device.userCode}
-							</Text>
-							<Action
+								<Text
+									selectable
+									allowFontScaling={allowFontScaling}
+									style={{
+										color: palette.inkHi,
+										fontFamily: fonts.mono,
+										fontWeight: "600",
+										fontSize: 26 * scale,
+										letterSpacing: 2,
+									}}
+								>
+									{device.userCode}
+								</Text>
+							</View>
+						</Section>
+						<Group>
+							<Row
+								label="Open sign-in page"
+								tone="accent"
+								onPress={() => {
+									void openDevicePage();
+								}}
+							/>
+							<Row
+								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+								tone="accent"
 								onPress={() => {
 									setLocalError(null);
 									void copy(device.flowId, device.userCode);
 								}}
-							>
-								{copiedFlow === device.flowId ? "Code copied" : "Copy code"}
-							</Action>
-						</View>
-						<Action
-							tone="primary"
-							onPress={() => {
-								void openDevicePage();
-							}}
-						>
-							Open sign-in page
-						</Action>
-					</Section>
+							/>
+						</Group>
+						{/* The hub drops a device flow after hubAuthFlowTTL, 15 minutes
+						    (app_auth.go); the provider's code expires in about that time. */}
+						<GroupFooter>The code expires in 15 minutes.</GroupFooter>
+					</>
 				) : null}
 				{device && waiting ? (
 					<>
