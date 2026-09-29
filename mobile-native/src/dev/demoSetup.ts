@@ -4,8 +4,11 @@
 // marketplaces, models and folders that Appendix A's frames 20-24 show. Every
 // answer is typed as its method's result, so npm run check holds this fixture
 // to the wire. Dev support only: nothing in the app imports it.
+import { isDeepStrictEqual } from "node:util";
+import { WireError } from "@evener/appwire-client";
 import type {
 	AuthStatusResponse,
+	ContentLevel,
 	HostRow,
 	InstanceEntry,
 	InstanceModelEntry,
@@ -35,6 +38,8 @@ export function demoUpdateCheck(): MethodTypes["evener/update/check"]["result"] 
 		applicable: true,
 	};
 }
+// appwire/errors.go CodeConflict.
+const CODE_CONFLICT = -32013;
 const HOST = "paradise-park";
 const HOST_VERSION = "0.9.409";
 const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation timed out";
@@ -391,15 +396,19 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		},
 		"evener/settings/transcriptDisplay/get": () => structuredClone(transcriptDisplay),
 		// hubcore's TranscriptDisplayStore.Patch: a patch must name the layout's
-		// current revision, and moves it on by one.
+		// current revision (transcriptDisplayConflict otherwise), keeps the
+		// revision when it changes nothing, and moves it on by one when it does.
 		"evener/settings/transcriptDisplay/patch": ({ layout, expectedRevision, config }) => {
 			if (layout !== "desktop" && layout !== "mobile") throw new Error(`invalid transcript display layout "${layout}"`);
 			const current = transcriptDisplay[layout];
 			if (current.revision !== expectedRevision)
-				throw new Error(
+				throw new WireError(
 					`transcript display ${layout} revision conflict: expected ${expectedRevision}, current ${current.revision}`,
+					CODE_CONFLICT,
+					{ evenerErrorInfo: "conflict", layout, current: structuredClone(current) },
 				);
-			transcriptDisplay[layout] = { revision: current.revision + 1, config: structuredClone(config) };
+			if (!isDeepStrictEqual(current.config, config))
+				transcriptDisplay[layout] = { revision: current.revision + 1, config: structuredClone(config) };
 			return { layout, ...structuredClone(transcriptDisplay[layout]) };
 		},
 		"evener/instance/list": instanceList,
@@ -513,7 +522,7 @@ const SIGN_IN: Record<
 	none: { authModes: ["none"], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
 };
 
-function shippedTranscriptDisplay(level: string): TranscriptDisplayConfig {
+function shippedTranscriptDisplay(level: ContentLevel): TranscriptDisplayConfig {
 	return {
 		version: 1,
 		content: { kind: "preset", level },

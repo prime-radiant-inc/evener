@@ -91,7 +91,8 @@ it("shows a connected host's facts, its version beside the drift tag, and the dr
 	expect(page.labelled("System")?.props.accessibilityLabel).toBe("System, macOS · arm64");
 	expect(page.labelled("Sessions")?.props.accessibilityLabel).toBe("Sessions, 1 live");
 	expect(page.labelled("Project roots")?.props.accessibilityLabel).toBe("Project roots, /Users/jesse/git\n/srv/work");
-	expect(page.labelled("Defined in")?.props.accessibilityLabel).toBe("Defined in, hub.toml");
+	// Spec 12 lists no "Defined in": every host can be edited and removed.
+	expect(page.labelled("Defined in")).toBeNull();
 	const text = renderedText(page.tree);
 	expect(text).toContain(VERSION_DRIFT_FOOTER);
 	expect(text).not.toContain("Last error");
@@ -109,7 +110,6 @@ it("puts an offline host's state in the attention ink, its last error in Menlo, 
 	)[0];
 	expect(Object.assign({}, ...[status?.props.style].flat()).color).toBe(palettes.light.attentionInk);
 	expect(page.labelled("Project roots")?.props.accessibilityLabel).toBe("Project roots, None");
-	expect(page.labelled("Defined in")?.props.accessibilityLabel).toBe("Defined in, the app or web");
 	const text = renderedText(page.tree);
 	expect(text).toContain("Last error");
 	expect(text).toContain("ssh: connect refused");
@@ -230,6 +230,10 @@ it.each([
 	["a host from hub.toml", "hub.toml"],
 ])("offers Edit and Remove on %s (spec 12)", async (_name, origin) => {
 	const page = await mount(scriptedFleet([hostRow("attic", { origin })]), "attic");
+	// Edit pushes its own page, so it carries a chevron.
+	expect(
+		page.button("Edit")?.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "chevron.right"),
+	).toHaveLength(1);
 	await act(async () => page.button("Edit")?.props.onPress());
 	expect(page.navigation.navigate).toHaveBeenCalledWith("HostEdit", { hubId: "hub-1", name: "attic" });
 	expect(page.button("Remove")).not.toBeNull();
