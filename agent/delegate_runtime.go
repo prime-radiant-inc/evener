@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -1129,21 +1128,16 @@ type delegateAttentionWarning struct {
 	delegateID string
 }
 
-// maxDelegateAttentionCauseBytes bounds the cause a warning's message
-// carries, so one pathological error can't fill the transcript; the daemon
-// log keeps the whole error.
-const maxDelegateAttentionCauseBytes = 512
-
 // warnDelegateAttentionFailed reports that action failed for delegateID,
 // once per failure episode. The drive retries with backoff (up to every 5s)
 // for as long as the attention is owed, and one warning per attempt flooded
 // the transcript with the same line. It warns again when the error changes,
 // and after the episode ends (delegateAttentionWarningResolved, or
 // forgetSettledDelegateAttentionWarnings once the attention is no longer
-// owed). The message carries the error's first line, bounded, which
-// warningDataFromError alone would drop; the warning has its own code, so
-// clients show it only at their most detailed level; and the daemon log
-// gets the whole error, recoverable wherever the transcript hides it.
+// owed). The message carries the error, bounded (warningDataFromError); the
+// warning has its own code, so clients show it only at their most detailed
+// level; and the daemon log gets the whole error, recoverable wherever the
+// transcript hides it.
 func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err error) {
 	cause := err.Error()
 	key := delegateAttentionWarning{action: action, delegateID: delegateID}
@@ -1158,8 +1152,7 @@ func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err err
 		return
 	}
 	slog.Warn("delegate attention failed", "action", action, "session", s.ID(), "delegate", delegateID, "error", cause)
-	firstLine, _, _ := strings.Cut(cause, "\n")
-	data := warningDataFromError(action+": "+runetrim.Cut(firstLine, maxDelegateAttentionCauseBytes), err)
+	data := warningDataFromError(action, err)
 	data.Code = events.WarningCodeDelegateAttentionRestore
 	s.emit(events.EventWarning, data)
 }

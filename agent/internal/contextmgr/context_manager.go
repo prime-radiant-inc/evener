@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
@@ -647,9 +648,7 @@ func (cm *Manager) MaybeCompact(
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			*history = result
 			after := cm.estimateTokensFor(prof, *history)
@@ -722,9 +721,7 @@ func (cm *Manager) ForceCompact(
 			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
 		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
@@ -1964,4 +1961,19 @@ func countJSONArrayElements(s string) int {
 		return 0
 	}
 	return len(arr)
+}
+
+// summarizerFailureWarning is the warning for a failed LLM summarization. Its
+// message stays bare: the summarizer's error can carry a provider's body,
+// which can echo the conversation it was asked to summarize, and a strategy's
+// warnings reach Notification hooks (#3386). The error still classifies the
+// Title and Hint.
+func summarizerFailureWarning(err error) events.WarningData {
+	info := diagnostic.FromError(err)
+	return events.WarningData{
+		Message: "LLM summarization failed",
+		Source:  string(info.Source),
+		Title:   info.Title,
+		Hint:    info.Hint,
+	}
 }
