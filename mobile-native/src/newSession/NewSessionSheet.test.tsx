@@ -82,8 +82,9 @@ const settle = () =>
 
 async function mount(like?: SessionSeed) {
 	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom", like } };
+	const goBack = vi.fn();
 	const props = {
-		navigation: {} as NativeStackScreenProps<Routes, "NewSession">["navigation"],
+		navigation: { goBack } as unknown as NativeStackScreenProps<Routes, "NewSession">["navigation"],
 		route: route as NativeStackScreenProps<Routes, "NewSession">["route"],
 	};
 	const tree = render(<NewSessionSheet {...props} />);
@@ -95,7 +96,7 @@ async function mount(like?: SessionSeed) {
 		});
 		await settle();
 	};
-	return { tree, context, rerender };
+	return { tree, context, rerender, goBack };
 }
 
 beforeEach(() => {
@@ -243,6 +244,23 @@ it("shows a reopened sheet the start still on its way, and never starts it twice
 	await settle();
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: false, prompt: "", cwd: "" });
 	reopened.tree.unmount();
+});
+
+it("closes at once, making no store, for a hub that has been removed (#3104)", async () => {
+	harness.profiles = [];
+	const sheet = await mount();
+	expect(harness.context).toBeNull();
+	expect(sheet.goBack).toHaveBeenCalledTimes(1);
+	sheet.tree.unmount();
+});
+
+it("closes when its hub is removed while it is open (#3104)", async () => {
+	const sheet = await mount();
+	expect(sheet.goBack).not.toHaveBeenCalled();
+	harness.profiles = [];
+	await sheet.rerender();
+	expect(sheet.goBack).toHaveBeenCalledTimes(1);
+	sheet.tree.unmount();
 });
 
 it("makes no store for a hub that has been removed (#3104)", async () => {
