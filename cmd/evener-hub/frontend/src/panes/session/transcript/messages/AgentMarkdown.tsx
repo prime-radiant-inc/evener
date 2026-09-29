@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import * as paneActions from "../../../../shell/paneActions";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Markdown } from "../../../../widgets/markdown";
+import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { OpenButton } from "../../../../widgets/openbutton";
 import { browserDocPort } from "../../../doc/browserDocPort";
 import { useEntityTextEnhancement } from "../EntityText";
@@ -44,6 +45,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const portals: ReactPortal[] = [];
     const cleanups: Array<() => void> = [];
     for (const link of root.current?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? []) {
+      if (link.closest(`[${MERMAID_DIAGRAM_ATTR}]`) !== null) continue;
       const href = link.getAttribute("href") ?? "";
       const params = fileDocParams(fileLinkPath(href), sessionRef, cwd);
       if (params === undefined) continue;

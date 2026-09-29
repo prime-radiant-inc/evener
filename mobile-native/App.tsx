@@ -23,9 +23,6 @@ import { displayPreferences, followAppearanceChoice } from "./src/display/native
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
-import { HubSettingsScreen } from "./src/HubSettingsScreen";
-import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
-import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
@@ -209,26 +206,6 @@ function Navigation() {
 						name="PinAssignment"
 						component={PinAssignmentScreen}
 						options={{ title: "Pin session" }}
-					/>
-					<Stack.Screen
-						name="LaunchSettings"
-						component={LaunchSettingsScreen}
-						options={({ route }) => ({
-							title:
-								route.params.projectCwd === undefined
-									? "Launch defaults"
-									: "Project launch settings",
-						})}
-					/>
-					<Stack.Screen
-						name="KeybindingPreferences"
-						component={KeybindingPreferencesScreen}
-						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="HubSettings"
-						component={HubSettingsScreen}
-						options={{ title: "Hub settings" }}
 					/>
 					<Stack.Screen
 						name="SessionLocation"

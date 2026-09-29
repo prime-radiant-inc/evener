@@ -6,6 +6,7 @@ import { DisplayProvider } from "../display/displayContext";
 import { DISPLAY_KEY, DisplayPreferences } from "../display/displayPreferences";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
 import { render, renderedText } from "../renderNative.testkit";
+import { Group } from "../sheet/Grouped";
 import { DisplayPage } from "./DisplayPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -154,6 +155,14 @@ it("names the hub's default detail level, or Custom, and opens its page", () => 
 	expect(
 		custom.tree.root.findAllByProps({ accessibilityLabel: "Default detail level, Custom" }).length,
 	).toBeGreaterThan(0);
+});
+
+it("names the default detail level once: its row says it, with no label repeating it above (audit M12)", () => {
+	const { tree } = mount();
+	expect(tree.root.findAll((node) => node.type === Group && node.props.label === "Default detail level")).toHaveLength(
+		0,
+	);
+	expect(renderedText(tree).match(/Default detail level/g)).toHaveLength(1);
 });
 
 it("says so when the hub doesn't keep a default detail level", () => {

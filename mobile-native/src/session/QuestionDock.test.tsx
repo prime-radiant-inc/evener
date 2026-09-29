@@ -9,7 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
 import type { QuestionSelections } from "../questionAnswers";
 import { AccessibilityInfo } from "react-native";
-import { dockBody, keyboard, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
+import {
+	composerFocusedAs,
+	dockBody,
+	keyboard,
+	pressable,
+	render,
+	renderedText,
+	renderHook,
+	textOf,
+} from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
@@ -78,9 +87,10 @@ function mount(
 		ready = true,
 		folded = false,
 		error = null,
-		composerUp = false,
-	}: { ready?: boolean; folded?: boolean; error?: string | null; composerUp?: boolean } = {},
+		composerFocused = false,
+	}: { ready?: boolean; folded?: boolean; error?: string | null; composerFocused?: boolean } = {},
 ) {
+	const composerFocus = composerFocusedAs(composerFocused);
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
 	const onOtherAnswer = vi.fn();
@@ -101,7 +111,7 @@ function mount(
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
 				error={error}
-				composerUp={composerUp}
+				composerFocus={composerFocus}
 			/>
 		);
 	}
@@ -260,7 +270,7 @@ describe("a question taller than the room the screen gives the dock", () => {
 describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 	// The composer is back under the dock and the keyboard is up for it.
 	function typing() {
-		const mounted = mount(two, { composerUp: true });
+		const mounted = mount(two, { composerFocused: true });
 		act(() => keyboard.show());
 		return mounted;
 	}
@@ -318,7 +328,7 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 	});
 
 	it("says nothing about options when you unfold with the keyboard down", () => {
-		const { tree } = mount(two, { composerUp: true, folded: true });
+		const { tree } = mount(two, { composerFocused: true, folded: true });
 		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
 		announced.mockClear();
 		press(tree, "Answer 2 questions");
@@ -331,12 +341,12 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		act(() => keyboard.show());
 		expect(optionLabels(other.tree)).toEqual(["Keep them", "Drop them"]);
 		act(() => keyboard.hide());
-		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual(["Keep them", "Drop them"]);
+		expect(optionLabels(mount(two, { composerFocused: true }).tree)).toEqual(["Keep them", "Drop them"]);
 	});
 
 	it("opens already typing when the keyboard was up before the dock mounted", () => {
 		act(() => keyboard.show());
-		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual([]);
+		expect(optionLabels(mount(two, { composerFocused: true }).tree)).toEqual([]);
 	});
 
 	it("has no Show options while the options are showing", () => {

@@ -364,3 +364,53 @@ test("the stylesheet styles GFM tables: flat headers, edge borders, align select
   expect(css).toContain('th[align="center"]');
   expect(css).toContain('td[align="right"]');
 });
+
+// --- mermaid fences render as inline diagrams -------------------------------
+// A message whose source carries a closed mermaid fence splits into prose
+// slices and diagram containers (segments.ts), all under one root div that
+// carries the caller's ref. The diagram container is present synchronously
+// (MermaidDiagram's loading state) whether or not mermaid has rendered yet.
+
+test("renders a mermaid fence as a diagram container, prose as markdown", () => {
+  const { container } = render(<Markdown source={"before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter"} />);
+  expect(container.querySelectorAll("[data-mermaid-diagram]")).toHaveLength(1);
+  expect(container.textContent).toContain("before");
+  expect(container.textContent).toContain("after");
+});
+
+test("keeps an open mermaid fence a code block while live", () => {
+  const { container } = render(<Markdown live source={"before\n\n```mermaid\ngraph TD; A-->"} />);
+  expect(container.querySelector("[data-mermaid-diagram]")).toBeNull();
+  expect(container.textContent).toContain("graph TD; A-->");
+});
+
+test("resolves a link definition used on the far side of a diagram", () => {
+  const { container } = render(
+    <Markdown source={"See [the docs][d].\n\n```mermaid\ngraph TD; A-->B\n```\n\n[d]: https://example.com\n"} />,
+  );
+  const link = container.querySelector("a[href='https://example.com']");
+  expect(link).not.toBeNull();
+});
+
+test("keeps an open mermaid fence a code block when settled", () => {
+  // Settled renders must not promote a truncated trailing fence (no closer):
+  // the live path demotes it, and the settled path must agree instead of
+  // flipping to a diagram (or its error fallback) at settle.
+  const { container } = render(<Markdown source={"before\n\n```mermaid\ngraph TD; A-->"} />);
+  expect(container.querySelector("[data-mermaid-diagram]")).toBeNull();
+  expect(container.textContent).toContain("graph TD; A-->");
+});
+
+test("resolves a far-side link definition while live (use before def)", () => {
+  const { container } = render(
+    <Markdown live source={"See [the docs][d].\n\n```mermaid\ngraph TD; A-->B\n```\n\n[d]: https://example.com\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});
+
+test("resolves a far-side link definition while live (def before use)", () => {
+  const { container } = render(
+    <Markdown live source={"[d]: https://example.com\n\n```mermaid\ngraph TD; A-->B\n```\n\nSee [the docs][d].\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});

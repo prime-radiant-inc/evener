@@ -1,10 +1,9 @@
 // The Hub's first page (spec 12): the hub's status line, then one row per
-// page. A row whose page hasn't landed yet leaves the sheet for today's screen
-// (ruling 10); each later PR swaps its row for a push. MORE keeps today's
-// administration screens reachable (ruling 12), and ABOUT names this app's
-// version and offers the hub's update (ruling 22).
+// page. MORE pushes today's administration screens inside the sheet until
+// their grouped pages land (#2539), and ABOUT names this app's version and
+// offers the hub's update (ruling 22).
 import type { AuthStatusResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
-import { StackActions, useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
 import { useCallback, useSyncExternalStore } from "react";
@@ -26,8 +25,6 @@ import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 import { useInstalledPluginCount } from "./useInstalledPluginCount";
 
-type InterimScreen = "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
-
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId, hubName, client, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
@@ -36,10 +33,6 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const line = hubStatusLine(ready, useConnectionStatusText(), update.check);
-	// The root stack: the sheet's own route sits on it, so a replace there
-	// closes the sheet and opens the screen in one step.
-	const root = navigation.getParent();
-	const leaveFor = (screen: InterimScreen) => root?.dispatch(StackActions.replace(screen, { hubId }));
 	const check = update.check;
 	const updateWaiting = !!check?.applicable && check.updateAvailable && !update.restarting;
 	const confirmUpdate = () =>
@@ -147,9 +140,24 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				/>
 			</Group>
 			<Group label="More">
-				<Row icon="keyboard" label="Keyboard shortcuts" chevron onPress={() => leaveFor("KeybindingPreferences")} />
-				<Row icon="slider.horizontal.3" label="Launch defaults" chevron onPress={() => leaveFor("LaunchSettings")} />
-				<Row icon="gearshape" label="Hub settings" chevron onPress={() => leaveFor("HubSettings")} />
+				<Row
+					icon="keyboard"
+					label="Keyboard shortcuts"
+					chevron
+					onPress={() => navigation.navigate("KeybindingPreferences", { hubId })}
+				/>
+				<Row
+					icon="slider.horizontal.3"
+					label="Launch defaults"
+					chevron
+					onPress={() => navigation.navigate("LaunchSettings", { hubId })}
+				/>
+				<Row
+					icon="gearshape"
+					label="Hub settings"
+					chevron
+					onPress={() => navigation.navigate("HubSettings", { hubId })}
+				/>
 			</Group>
 			<Group label="About">
 				<Row

@@ -19,22 +19,14 @@
 // variant's proposal.
 
 import type { ItemModel, TaskRow } from "@evener/appwire-client";
-import { taskAggregateLabel } from "@evener/appwire-client";
+import { freshNotes, mutationRows, parseTaskListData, SUMMARY_MARK, taskAggregateLabel } from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
 import type { ToolRenderProps } from "../../panes/session/transcript/toolRenderers";
 import { registerToolRenderer } from "../../panes/session/transcript/toolRenderers";
-import {
-  freshNotes,
-  mutationRows,
-  type Progress,
-  parseProgress,
-  SUMMARY_MARK,
-  stateWindow,
-} from "../../panes/session/transcript/tools/taskCard";
+import { type Progress, parseProgress, stateWindow } from "../../panes/session/transcript/tools/taskCard";
 import { STATUS_TOUCH, TaskCheck } from "../../panes/session/transcript/tools/taskCheck";
 // The conservative variant renders inside today's card chrome unchanged.
 import prodCard from "../../panes/session/transcript/tools/taskcard.module.css";
-import { parseTaskState } from "../../panes/session/transcript/tools/taskData";
 import { Meter } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./taskcardmockups.module.css";
@@ -148,7 +140,7 @@ function WindowRow({
 // the note is the agent's own sentence, and this variant lets it read like
 // one. The aggregate sentence and meter sit in a footer.
 function LadderBody({ item }: ToolRenderProps) {
-  const win = stateWindow(parseTaskState(item.raw));
+  const win = stateWindow(parseTaskListData(item.raw));
   const fresh = freshNotes(item);
   return (
     <div className={C.card} data-testid="mock-taskcard-a">
@@ -184,7 +176,7 @@ function PipelineFrag({ task, kind, note }: { task: TaskRow; kind: SlotKind; not
 }
 
 function PipelineBody({ item }: ToolRenderProps) {
-  const win = stateWindow(parseTaskState(item.raw));
+  const win = stateWindow(parseTaskListData(item.raw));
   const fresh = freshNotes(item);
   return (
     <div className={C.card} data-testid="mock-taskcard-b">
@@ -227,7 +219,7 @@ function LedgerRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; note?:
 }
 
 function LedgerBody({ item }: ToolRenderProps) {
-  const win = stateWindow(parseTaskState(item.raw));
+  const win = stateWindow(parseTaskListData(item.raw));
   const fresh = freshNotes(item);
   const progress = parseProgress(item.output);
   const label = taskAggregateLabel(progress ?? { total: 0, done: 0 });
@@ -260,7 +252,7 @@ function LedgerBody({ item }: ToolRenderProps) {
 // above and the next one below, so "you are here" is the middle of a
 // sandwich rather than one flat list.
 function InsetBody({ item }: ToolRenderProps) {
-  const win = stateWindow(parseTaskState(item.raw));
+  const win = stateWindow(parseTaskListData(item.raw));
   const fresh = freshNotes(item);
   return (
     <div className={C.card} data-testid="mock-taskcard-d">
@@ -304,7 +296,7 @@ function InsetBody({ item }: ToolRenderProps) {
 // then the window rows - the ladder without its spine, letting the strip
 // carry the "where are we" load.
 function StripBody({ item }: ToolRenderProps) {
-  const state = parseTaskState(item.raw);
+  const state = parseTaskListData(item.raw);
   const win = stateWindow(state);
   const fresh = freshNotes(item);
   const progress = parseProgress(item.output);
@@ -374,7 +366,7 @@ function latestOnlySummary(item: ItemModel): string {
 // update - the auto-start - phrased as where the agent is now, with the
 // strict mark form as the fallback when nothing is in progress.
 function nowFirstSummary(item: ItemModel): string {
-  const current = stateWindow(parseTaskState(item.raw)).current;
+  const current = stateWindow(parseTaskListData(item.raw)).current;
   return current ? `Now: ${current.description}` : latestOnlySummary(item);
 }
 

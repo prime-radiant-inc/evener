@@ -78,7 +78,8 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 				</>
 			) : (
 				<>
-					<Group label="Default detail level">
+					{/* The row names the setting; a label above would say it twice. */}
+					<Group>
 						<Row
 							label="Default detail level"
 							value={levelLabel}

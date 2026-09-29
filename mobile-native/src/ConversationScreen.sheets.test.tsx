@@ -87,6 +87,7 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
 vi.mock("expo-web-browser", () => ({}));
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
@@ -945,13 +946,22 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 const slidAway = (block: ReturnType<ReturnType<typeof sessionList>["block"]>) =>
 	block.findAll((node) => String(node.type) === "Animated.View")[0]?.props.accessibilityElementsHidden;
 
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReturnType<typeof render>) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
 it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
 	const { tree } = mount(busy);
 	await flush();
 	const session = sessionList(tree);
-	expect(session.block().props.composerKeyboard).toBe(true);
 	expect(slidAway(session.block())).toBe(false);
-	act(() => keyboard.show());
+	typeInComposer(tree);
 	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
 	expect(slidAway(session.block())).toBe(false);
@@ -975,7 +985,6 @@ it("keeps the find bar in place while you type in it", async () => {
 	const session = sessionList(tree);
 	act(() => menuAction("Find in session").onPress());
 	act(() => keyboard.show());
-	expect(session.block().props.composerKeyboard).toBe(false);
 	expect(slidAway(session.block())).toBe(false);
 	expect(session.block().props.find).toBeDefined();
 	act(() => keyboard.hide());
@@ -989,7 +998,7 @@ it("stays hidden after the keyboard lowers when a downward scroll hid the chips"
 	act(() => session.list().props.onScrollBeginDrag());
 	session.scroll(40);
 	expect(slidAway(session.block())).toBe(true);
-	act(() => keyboard.show());
+	typeInComposer(tree);
 	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
 	expect(slidAway(session.block())).toBe(true);

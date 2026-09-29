@@ -1,6 +1,7 @@
 // The demo hub's answers for New session and the Hub (phase 5's Task 26):
 // every one is typed as its method's result in demoSetup.ts, so npm run check
 // holds them to the wire; these cases pin what the screenshots rely on.
+import { WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { createDemoFleet } from "./demoFleet.js";
 import { createDemoSetup } from "./demoSetup.js";
@@ -182,6 +183,61 @@ describe("plugins", () => {
 			params: { cwd: "/Users/jesse/git/evener" },
 		}) as { diagnostics?: unknown[] };
 		expect(remote.diagnostics).toBeUndefined();
+	});
+});
+
+describe("transcript display", () => {
+	it("starts from the hub's shipped defaults: Tools on desktop, Intent on the phone", () => {
+		const defaults = setup().answer("evener/settings/transcriptDisplay/get", {});
+		expect(defaults.desktop).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "tools" } } });
+		expect(defaults.mobile).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "intent" } } });
+	});
+
+	it("takes a patch at the current revision and moves that layout's revision on", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		const config = { ...mobile.config, content: { kind: "preset", level: "full" } };
+		expect(
+			demo.answer("evener/settings/transcriptDisplay/patch", { layout: "mobile", expectedRevision: 0, config }),
+		).toEqual({ layout: "mobile", revision: 1, config });
+		const after = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(after.mobile).toEqual({ revision: 1, config });
+		expect(after.desktop.revision).toBe(0);
+	});
+
+	it("refuses a patch against a revision that isn't current with the hub's conflict and the current value", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		let refusal: unknown;
+		try {
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 4,
+				config: mobile.config,
+			});
+		} catch (error) {
+			refusal = error;
+		}
+		// hubcore's transcriptDisplayConflict: CodeConflict, with the layout and
+		// its current value, which the client store reads to offer Keep mine.
+		expect(refusal).toBeInstanceOf(WireError);
+		expect(refusal).toMatchObject({
+			code: -32013,
+			message: "transcript display mobile revision conflict: expected 4, current 0",
+			data: { evenerErrorInfo: "conflict", layout: "mobile", current: mobile },
+		});
+	});
+
+	it("keeps the revision when a patch changes nothing, as the hub does", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 0,
+				config: mobile.config,
+			}),
+		).toEqual({ layout: "mobile", revision: 0, config: mobile.config });
 	});
 });
 

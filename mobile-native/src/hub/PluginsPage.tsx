@@ -26,25 +26,28 @@ import type {
 	PluginEntry,
 	PluginRefParams,
 } from "@evener/appwire-client";
-import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	createHubWriteGate,
+	createMarketplacesStore,
+	createPluginsStore,
+	HUB_WRITE_BUSY,
+	type HubWriteGate,
+	runGatedMutation,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
-import {
-	createPluginMutationGate,
-	PLUGIN_MUTATION_BUSY,
-	runGatedMutation,
-	type PluginMutationGate,
-} from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { space } from "../design/tokens";
+import { compactDuration } from "../session/format";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { SearchField } from "../sheet/SearchField";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
+import { usePublishPluginsScreen } from "./pluginsScreenSlot";
 
 type Segment = "installed" | "marketplaces" | "browse";
 
@@ -99,7 +102,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	// client would let the next one start beside it - and is held the way the
 	// credential store is (credentialStore.ts), as committed state a discarded
 	// render cannot leave behind.
-	const [gate] = useState(createPluginMutationGate);
+	const [gate] = useState(createHubWriteGate);
 	const { activeProfile, client, state, display, canUseConnection, renderClient } = useRetainedScreenConnection(
 		route.params.hubId,
 	);
@@ -132,10 +135,15 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	// updater then refused. Reading the same ref the entry lands in, in one
 	// synchronous block nothing can interleave, makes true structural.
 	const appliedRemovalGuardRef = useRef<AppliedRemovalGuard>(appliedRemovalGuard);
-	const appliedRemovalNames =
-		appliedRemovalGuard.client === client
-			? new Set(appliedRemovalGuard.publicationVersions.keys())
-			: EMPTY_APPLIED_REMOVALS;
+	// One set per guard, so a marketplace's page the Plugins page publishes it
+	// to re-renders only when the guard changes.
+	const appliedRemovalNames = useMemo(
+		() =>
+			appliedRemovalGuard.client === client
+				? new Set(appliedRemovalGuard.publicationVersions.keys())
+				: EMPTY_APPLIED_REMOVALS,
+		[appliedRemovalGuard, client],
+	);
 	const visibleMarketplaceWarning = marketplaceWarning?.client === client ? marketplaceWarning.text : null;
 	useEffect(() => {
 		// Assigned in an effect, never during render: mutating a ref mid-render
@@ -265,6 +273,11 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 		setMarketplaceWarning((current) => (current?.name === name ? null : current));
 	}, []);
 	const clearFocus = useCallback(() => navigation.setParams({ focus: undefined }), [navigation]);
+	const openMarketplace = useCallback(
+		(name: string, segment: "marketplaces" | "browse") =>
+			navigation.push("Marketplace", { hubId: route.params.hubId, name, segment }),
+		[navigation, route.params.hubId],
+	);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<GroupedPage>
@@ -294,6 +307,8 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 			onRemovedMarketplace={clearMarketplaceWarning}
 			focus={route.params.focus}
 			onFocused={clearFocus}
+			hubId={route.params.hubId}
+			onOpenMarketplace={openMarketplace}
 		/>
 	);
 }
@@ -312,11 +327,13 @@ function Plugins({
 	canUseConnection,
 	focus,
 	onFocused,
+	hubId,
+	onOpenMarketplace,
 }: {
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
 	hubName: string;
-	gate: PluginMutationGate;
+	gate: HubWriteGate;
 	appliedRemovalNames: ReadonlySet<string>;
 	marketplaceWarning: string | null;
 	onAppliedRemoval(
@@ -334,11 +351,15 @@ function Plugins({
 	onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 	canUseConnection: () => boolean;
-	/** A plugin to open once, from a notice (ruling 25). */
+	/** A plugin to open once, from a notice (ruling 25) or a marketplace's
+	 * page. */
 	focus: PluginFocus | undefined;
 	onFocused(): void;
+	hubId: string;
+	/** Pushes a marketplace's page, from the segment it was chosen on. */
+	onOpenMarketplace(name: string, segment: "marketplaces" | "browse"): void;
 }) {
-	const model = useMemo(() => createPluginsStore(client), [client]);
+	const model = useMemo(() => createPluginsStore(client, gate), [client, gate]);
 	// The hub's add answer is the one place that names what the write
 	// registered, and the store cannot be trusted to hand it over: a newer
 	// list read holds its publication. Capture the answer as it passes
@@ -371,9 +392,44 @@ function Plugins({
 			onNotification: (callback: (notification: AnyNotification) => void) => client.onNotification(callback),
 		};
 	}, [client]);
-	const marketplaces = useMemo(() => createMarketplacesStore(marketplaceStoreClient), [marketplaceStoreClient]);
+	const marketplaces = useMemo(
+		() => createMarketplacesStore(marketplaceStoreClient, gate),
+		[marketplaceStoreClient, gate],
+	);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const ready = isReady(connectionState);
+	usePublishPluginsScreen(
+		useMemo(
+			() => ({
+				hubId,
+				client,
+				hubName,
+				installed: model,
+				marketplaces,
+				gate,
+				ready,
+				canUseConnection,
+				appliedRemovalNames,
+				onAppliedRemoval,
+				onRemovedMarketplace,
+				marketplaceWarning,
+			}),
+			[
+				hubId,
+				client,
+				hubName,
+				model,
+				marketplaces,
+				gate,
+				ready,
+				canUseConnection,
+				appliedRemovalNames,
+				onAppliedRemoval,
+				onRemovedMarketplace,
+				marketplaceWarning,
+			],
+		),
+	);
 	const [panel, setPanel] = useState<Segment>("installed");
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [selected, setSelected] = useState<PluginRefParams | null>(null);
@@ -384,6 +440,19 @@ function Plugins({
 	const entry = state.plugins?.find(
 		(item) => item.plugin === selected?.plugin && item.marketplace === selected?.marketplace,
 	);
+	// The open plugin's description comes from its marketplace's catalog, read
+	// once per marketplace as the web's detail does (browseMarketplace skips a
+	// marketplace it already holds, loaded, failed or in flight).
+	const catalogs = useSyncExternalStore(marketplaces.subscribe, () => marketplaces.getState().browseCatalogs);
+	useEffect(() => {
+		if (selected && !marketplaces.getState().browseCatalogs.has(selected.marketplace))
+			void marketplaces.getState().browseMarketplace(selected.marketplace);
+	}, [selected, marketplaces]);
+	const catalog = selected ? catalogs.get(selected.marketplace) : undefined;
+	const description =
+		catalog?.status === "loaded"
+			? catalog.plugins.find((item) => item.name === selected?.plugin)?.description
+			: undefined;
 	// The browser's first list read is a passive effect. Bind this screen-owned
 	// store before child effects run so that first read is not mistaken for a
 	// reconnect and issued twice by the lifecycle's wanted-list recovery.
@@ -425,16 +494,19 @@ function Plugins({
 	useEffect(() => {
 		if (selected && state.plugins && !entry) close();
 	}, [selected, state.plugins, entry, close]);
-	// A notice's plugin opens once, when the list first mounts; the page
-	// clears the param so a remount doesn't open it again.
+	// A plugin a notice or a marketplace's page names opens once; the page
+	// clears the param so a remount doesn't open it again. It replaces any
+	// open plugin the way closing it would, so that plugin's late result
+	// never lands on this one.
 	useEffect(() => {
 		if (!focus) return;
+		close();
 		setSelected({ plugin: focus.plugin, marketplace: focus.marketplace });
 		onFocused();
-	}, [focus, onFocused]);
+	}, [focus, onFocused, close]);
 	async function act(action: () => Promise<void>, success?: () => string) {
 		const version = editorVersion.current;
-		const outcome = await runGatedMutation(gate, canUseConnection, action);
+		const outcome = await runGatedMutation(canUseConnection, action);
 		if (version !== editorVersion.current) return;
 		// A not-ready press never ran the action, so it must not retire the
 		// diagnostics an earlier outcome left either: the copy the user was
@@ -443,7 +515,7 @@ function Plugins({
 		if (outcome === "not-ready") return;
 		setActionError(null);
 		setNotice(null);
-		if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
+		if (outcome === "refused") setActionError(HUB_WRITE_BUSY);
 		else if (outcome === "failed")
 			setActionError("Could not confirm the change. Check this plugin’s status before trying again.");
 		else if (success) setNotice(success());
@@ -554,21 +626,14 @@ function Plugins({
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
-					installed={model}
 					marketplaces={marketplaces}
 					lastAddMarketplaces={lastAddMarketplaces}
 					gate={gate}
 					ready={ready}
 					canUseConnection={canUseConnection}
-					onOpenPlugin={(target) => {
-						close();
-						setSelected(target);
-					}}
-					appliedRemovalNames={appliedRemovalNames}
-					onAppliedRemoval={onAppliedRemoval}
+					onOpenMarketplace={(name) => onOpenMarketplace(name, panel)}
 					onAuthoritativeMarketplaces={onAuthoritativeMarketplaces}
 					onMarketplaceAdded={onMarketplaceAdded}
-					onRemovedMarketplace={onRemovedMarketplace}
 				/>
 			)}
 			{entry && selected && (
@@ -576,9 +641,6 @@ function Plugins({
 					<GroupedPage>
 						{/* The sheet covers the page's status line, so it carries its own. */}
 						{connectionState === "ready" ? null : <SheetStatus />}
-						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
-						) : null}
 						<Group>
 							<SwitchRow
 								label="On by default"
@@ -606,20 +668,33 @@ function Plugins({
 								onPress={remove}
 							/>
 						</Group>
+						{/* Beneath the actions that fix it. */}
+						{entry.broken ? (
+							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+						) : null}
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
 						{busy ? <Spinner label="Updating plugin" /> : null}
 						<Group label="Details">
+							{description ? <Row label="About" sub={description} /> : null}
 							<Row label="Version" value={entry.version || "Unknown version"} />
 							<Row label="Marketplace" sub={entry.marketplace} machineSub />
 							<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
 							{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
+							{/* The hub sends 0 for a time it doesn't know. */}
+							{entry.installedAt > 0 ? <Row label="Installed" value={agoText(entry.installedAt)} /> : null}
+							{entry.lastUpdated > 0 ? <Row label="Updated" value={agoText(entry.lastUpdated)} /> : null}
 						</Group>
 					</GroupedPage>
 				</ModalSheet>
 			)}
 		</GroupedPage>
 	);
+}
+
+/** How long ago a time the hub sends in Unix seconds was: "3d ago". */
+function agoText(unixSeconds: number): string {
+	return `${compactDuration(Date.now() - unixSeconds * 1000)} ago`;
 }
 
 /** The installed plugins by marketplace, in the order the hub lists them. */

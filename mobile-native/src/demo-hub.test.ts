@@ -397,6 +397,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toBeUndefined();
 			expect(handshake.features.auth).toBe(false);
+			expect(handshake.features.transcriptDisplaySettings).toBe(false);
 			await expect(
 				client.request("evener/navigation/read", {
 					representationVersion: 2,
@@ -422,6 +423,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
 			expect(handshake.features.auth).toBe(true);
+			expect(handshake.features.transcriptDisplaySettings).toBe(true);
 			const manifest = await client.request("evener/navigation/read", {
 				representationVersion: 2,
 				resource: "manifest",

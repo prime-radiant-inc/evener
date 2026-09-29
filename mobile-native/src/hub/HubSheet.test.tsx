@@ -22,10 +22,15 @@ vi.mock("./AddHubPage", () => ({ AddHubPage: () => null }));
 vi.mock("./ProvidersPage", () => ({ ProvidersPage: () => null }));
 vi.mock("./HostsPage", () => ({ HostsPage: () => null }));
 vi.mock("./PluginsPage", () => ({ PluginsPage: () => null }));
+vi.mock("./MarketplacePage", () => ({ MarketplacePage: () => null }));
 vi.mock("./DisplayPage", () => ({ DisplayPage: () => null }));
 vi.mock("./DetailLevelPage", () => ({ DetailLevelPage: () => null }));
 vi.mock("./HostDetailPage", () => ({ HostDetailPage: () => null }));
 vi.mock("./HostEditPage", () => ({ HostEditPage: () => null }));
+vi.mock("./OwnHostPage", () => ({ OwnHostPage: () => null }));
+vi.mock("../KeybindingPreferencesScreen", () => ({ KeybindingPreferencesScreen: () => null }));
+vi.mock("../LaunchSettingsScreen", () => ({ LaunchSettingsScreen: () => null }));
+vi.mock("../HubSettingsScreen", () => ({ HubSettingsScreen: () => null }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "hub-sheet-uuid" }));
 vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({}) }));
 vi.mock("@react-navigation/native-stack", () => ({
