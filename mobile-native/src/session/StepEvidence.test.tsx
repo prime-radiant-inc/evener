@@ -12,6 +12,9 @@ vi.mock("react-native", async () => ({
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../TranscriptImages", () => ({ TranscriptImages: "TranscriptImages" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+// MarkdownResponse renders a MermaidDiagram, whose WebView ships untranspiled
+// Flow source; the other suites that render it mock it the same way.
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./evidence", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./evidence")>();
