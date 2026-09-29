@@ -25,6 +25,11 @@ func TestWarningDataFromErrorCarriesItsCause(t *testing.T) {
 	if blank := warningDataFromError("restore delegate attention", errors.New("  ")); blank.Message != "restore delegate attention" {
 		t.Fatalf("blank-error message = %q", blank.Message)
 	}
+	// A lone carriage return would let the cause overwrite the label on a
+	// terminal; it reads as a space.
+	if spoof := warningDataFromError("inspect delegate attention", errors.New("disk full\rall good")); spoof.Message != "inspect delegate attention: disk full all good" {
+		t.Fatalf("carriage-return message = %q", spoof.Message)
+	}
 	long := warningDataFromError("label", errors.New(strings.Repeat("€", 400)))
 	if !utf8.ValidString(long.Message) || len(long.Message) > len("label: ")+warningCauseLimit {
 		t.Fatalf("long cause: %d bytes, valid=%v", len(long.Message), utf8.ValidString(long.Message))

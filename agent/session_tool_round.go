@@ -388,7 +388,7 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Unlock()
 	if warn {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(events.EventWarning, warningDataFromError("strategy AfterAction error", afterErr))
+			s.emit(events.EventWarning, bareWarningDataFromError("strategy AfterAction error", afterErr))
 		}); abortErr != nil {
 			return abortErr
 		}

@@ -30,16 +30,19 @@ const warningCauseLimit = 512
 // warningDataFromError is the warning for a failure: its message is the label
 // and the error's text ("<label>: <err>"), flattened to one line and bounded,
 // so a repeating warning says why on the phone, the web and in hooks (#3386).
-// The error also classifies the Title and Hint.
+// The error also classifies the Title and Hint. The label names what failed
+// and ends without a colon: the helper adds ": " before the cause.
 func warningDataFromError(label string, err error) events.WarningData {
 	data := bareWarningDataFromError(label, err)
 	if err == nil {
 		return data
 	}
-	// errors.Join separates its errors with newlines; one line reads "; ".
+	// errors.Join separates its errors with newlines; one line reads "; ". A
+	// lone carriage return, which would let the cause overwrite the label on
+	// a terminal, reads as a space.
 	var lines []string
 	for line := range strings.SplitSeq(err.Error(), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
+		if line = strings.TrimSpace(strings.ReplaceAll(line, "\r", " ")); line != "" {
 			lines = append(lines, line)
 		}
 	}
@@ -50,8 +53,10 @@ func warningDataFromError(label string, err error) events.WarningData {
 }
 
 // bareWarningDataFromError is warningDataFromError without the error's text
-// in the message: for errors whose text can echo the user's own request (a
-// provider's error body), which would otherwise reach Notification hooks.
+// in the message, for an error from a model call: a provider's error body can
+// echo the user's own request, which would otherwise reach Notification
+// hooks. Its callers are retries that recover on their own, so the text adds
+// nothing; the error still classifies the Title and Hint.
 func bareWarningDataFromError(label string, err error) events.WarningData {
 	info := diagnostic.FromError(err)
 	return events.WarningData{
