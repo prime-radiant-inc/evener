@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
+import { DiagramViewer } from "./DiagramViewer";
 import styles from "./mermaid.module.css";
 import { mermaidThemeVariables, useResolvedScheme } from "./resolveScheme";
 import { renderMermaidSvg } from "./security";
@@ -28,20 +29,19 @@ type State = { status: "loading" } | { status: "ok"; svg: string } | { status: "
 
 /** Renders one mermaid diagram inline. The source is model-authored, so the
  * render pipeline is the two-layer sanitize in security.ts; the rendered SVG
- * is non-interactive (clicks open the viewer, added in Task 7, via the
- * container - the svg itself never takes pointer events, so no anchor that
- * could survive a future sanitizer regression is ever clickable). */
-export function MermaidDiagram({
-  source,
-  onOpen,
-  renderTimeoutMs = 10000,
-}: {
-  source: string;
-  onOpen?: (svg: string, source: string) => void;
-  renderTimeoutMs?: number;
-}) {
+ * is non-interactive (the container opens the fullscreen DiagramViewer on
+ * click - the svg itself never takes pointer events, so no anchor that could
+ * survive a future sanitizer regression is ever clickable). The container is
+ * only a <button> once a diagram has rendered; while loading (or after a
+ * failed render) it stays a plain, non-focusable <div>, since there is no
+ * rendered diagram for the viewer to open. */
+export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: string; renderTimeoutMs?: number }) {
   const scheme = useResolvedScheme();
   const [state, setState] = useState<State>({ status: "loading" });
+  // The SVG snapshot the viewer is showing, set on click. Holding the svg in
+  // state (rather than threading an onOpen prop to a caller) is what makes the
+  // diagram's own container the viewer's trigger.
+  const [viewer, setViewer] = useState<{ svg: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,21 +83,22 @@ export function MermaidDiagram({
       // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via the mermaid pipeline's two DOMPurify layers, see security.ts
       <div className={CLASS.svg} dangerouslySetInnerHTML={{ __html: svg }} />
     );
-    // A diagram with a viewer to open is a real control, not a static block:
-    // render the container as a button so a keyboard user can open it too, and
-    // the click handler is on a focusable element (no a11y suppression).
-    if (onOpen !== undefined) {
-      return (
+    // A rendered diagram is a real control, not a static block: render the
+    // container as a button so a keyboard user can open the viewer too, and the
+    // click handler is on a focusable element (no a11y suppression).
+    return (
+      <>
         <button
           type="button"
           className={`${CLASS.root} ${CLASS.clickable}`}
           data-mermaid-diagram=""
-          onClick={() => onOpen(svg, source)}
+          onClick={() => setViewer({ svg })}
         >
           {body}
         </button>
-      );
-    }
+        {viewer !== null && <DiagramViewer open svg={viewer.svg} source={source} onClose={() => setViewer(null)} />}
+      </>
+    );
   } else {
     body = <div className={CLASS.svg} aria-busy="true" />;
   }

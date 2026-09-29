@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { MermaidDiagram } from "./index";
 import { installJsdomSvgShims } from "./jsdomSvgShims";
@@ -78,4 +79,21 @@ describe("MermaidDiagram", () => {
     render(<MermaidDiagram source="" />);
     await waitFor(() => expect(screen.getByText(/couldn't render this diagram/i)).toBeTruthy(), { timeout: 15000 });
   }, 20000);
+
+  // The Task 7 wiring, pinned without a real mermaid render: the render port
+  // stands in for the settled SVG (the boundary the timeout case above also
+  // swaps), so this stays fast. A rendered diagram is a focusable button and
+  // clicking it opens the internal DiagramViewer.
+  it("opens the fullscreen viewer when the rendered diagram is clicked", async () => {
+    renderPort.impl = async () => '<svg role="graphics-document document"><text>hi</text></svg>';
+    const user = userEvent.setup();
+    render(<MermaidDiagram source={"graph TD; A-->B"} />);
+    const trigger = await waitFor(() => {
+      const button = document.querySelector<HTMLButtonElement>("button[data-mermaid-diagram]");
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
 });
