@@ -2,6 +2,7 @@
 // device has it (iOS 26 and later), and Reduce Transparency is known to be off.
 import { isGlassEffectAPIAvailable } from "expo-glass-effect";
 import { useReduceTransparency } from "../accessibilitySettings";
+import type { Palette } from "./tokens";
 
 /** Whether the device has the Liquid Glass API. expo-glass-effect reads its
  * native module once per process and checks the API itself (iOS 26 betas
@@ -35,4 +36,23 @@ export function navBarGlassOptions(glass: boolean, page: string) {
 		// would draw a second one over it.
 		scrollEdgeEffects: { top: glass ? ("hidden" as const) : ("automatic" as const) },
 	};
+}
+
+/** A header row's fill: clear on the glass, the page color off it. */
+export function headerRowFill(onGlass: boolean, palette: Palette): string {
+	return onGlass ? "transparent" : palette.page;
+}
+
+/** How far from the screen's top a list keeps its content clear of a header
+ * panel (GlassHeaderPanel): the nav bar's room where the screen runs under
+ * the glass, and the panel's rows. `measured` is the panel's last height and
+ * whether it was on the glass then, where it included the bar's room, so the
+ * rows are known across a switch before the panel measures again. */
+export function reservedUnderGlass(
+	headerHeight: number,
+	measured: { height: number; onGlass: boolean },
+	onGlass: boolean,
+): number {
+	const rows = Math.max(0, measured.height - (measured.onGlass ? headerHeight : 0));
+	return (onGlass ? headerHeight : 0) + rows;
 }

@@ -6,7 +6,7 @@ import { SymbolView } from "expo-symbols";
 import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
-import { headerRowFill } from "./headerGlass";
+import { headerRowFill } from "../design/systemGlass";
 import { SymbolButton } from "./SymbolButton";
 
 export function FindBar({

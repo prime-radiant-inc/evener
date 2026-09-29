@@ -5,7 +5,7 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { Pressable, Text } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { headerRowFill } from "./headerGlass";
+import { headerRowFill } from "../design/systemGlass";
 import type { NotesBarPreview, NotesGlyph } from "./sessionNotes";
 
 const SYMBOLS: Record<NotesGlyph, SFSymbol> = {
