@@ -28,7 +28,7 @@ import type {
 	MutationStopBarrier,
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { createSecureUUID } from "@evener/appwire-client/state/mutation";
+import { acceptedRecord, carriesOptimisticInput, createSecureUUID } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
@@ -354,38 +354,13 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
 			const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
 			if (!source) return false;
-			const display = source.optimisticDisplay;
-			const retainsOptimisticDisplay =
-				projectionState === "pending" &&
-				typeof display === "object" &&
-				display !== null &&
-				Array.isArray((display as { input?: unknown }).input);
+			const retainsOptimisticDisplay = projectionState === "pending" && carriesOptimisticInput(source);
 			if (retainsOptimisticDisplay) {
-				// Built field-by-field, never spread, so a recovery-sourced receipt
-				// (source.recoveryKind/recoveryReason) and attempted evidence do not
-				// leak into the optimistic row - the oracle's settleReceipt builds
-				// its accepted record the same explicit way.
-				const accepted: MutationOptimisticRecord<A> = {
-					version: source.version,
-					clientMutationId: source.clientMutationId,
-					originClientId: source.originClientId,
-					// The enqueue-time instance rides the outbox ->
-					// optimistic transition like provenance does: dropping it
-					// would leave the accepted record identifying itself by
-					// threadId alone, exactly the pre-instance shape a
-					// replacement that retains the thread id is invisible to.
-					instanceId: source.instanceId,
-					targetRef: source.targetRef,
-					threadId: source.threadId,
-					method: source.method,
-					payload: source.payload,
-					attachments: source.attachments,
-					optimisticDisplay: source.optimisticDisplay,
-					intentSequence: source.intentSequence,
-					createdAt: source.createdAt,
-					state: "accepted",
-				};
-				this.replace(TABLES.optimistic, accepted);
+				// The package's acceptedRecord is the one whitelist both adapters
+				// build: it never spreads, so a recovery-sourced receipt
+				// (source.recoveryKind/recoveryReason) and attempted evidence do
+				// not leak into the optimistic row.
+				this.replace(TABLES.optimistic, acceptedRecord(source));
 			} else if (optimisticRecord) {
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
