@@ -9,6 +9,7 @@ import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-c
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
+import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
@@ -28,6 +29,7 @@ import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
+import { focusedSessionRef } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
@@ -159,16 +161,11 @@ function sameRouteParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// The ref of the focused pane, but ONLY when that pane IS a session pane
-// (never a session panel, a doc, settings, ...) - Mod+I's own "no-op when
-// the focused pane isn't a session" contract, and Mod+J's own "cycle from
-// the currently-focused session" starting point.
-function focusedSessionRef(): string | null {
-  const state = workspaceStore.getState();
-  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
-  if (pane?.type !== "session") return null;
-  return refParam(pane.params);
-}
+// focusedSessionRef lives in ./focusedSession now, shared with the activity
+// surfaces: the ref of the focused pane, but ONLY when that pane IS a session
+// pane (never a session panel, a doc, settings, ...) - Mod+I's own "no-op
+// when the focused pane isn't a session" contract, and Mod+J's own "cycle
+// from the currently-focused session" starting point.
 
 function routePlacementIsApplied(
   pathname: string,
@@ -915,39 +912,41 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
 
   return (
     <ClientProvider client={client}>
-      <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
-        <ConnectionBanner
-          state={connectionState}
-          delayMs={bannerDelayMs}
-          createClient={bannerCreateClient}
-          onClientReplaced={handleClientReplaced}
-        />
-        <ToastRegion />
-        <CommandPalette />
-        {/* The cheatsheet overlay and the hold-modifier hints (Phase 4a):
+      <MotionProvider>
+        <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
+          <ConnectionBanner
+            state={connectionState}
+            delayMs={bannerDelayMs}
+            createClient={bannerCreateClient}
+            onClientReplaced={handleClientReplaced}
+          />
+          <ToastRegion />
+          <CommandPalette />
+          {/* The cheatsheet overlay and the hold-modifier hints (Phase 4a):
             desktop-only, so on a touch viewport no cheatsheet action is ever
             registered and its trigger chords stay inert - RailHost's
             rail.toggle no-registration pattern - and no hold-hint listener
             is ever installed. */}
-        {!isMobile && <CheatsheetOverlay />}
-        {!isMobile && <HoldHints />}
-        <div className={styles.content}>
-          {/* Desktop: the rail sits as a flex sibling of DockHost and
+          {!isMobile && <CheatsheetOverlay />}
+          {!isMobile && <HoldHints />}
+          <div className={styles.content}>
+            {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole
               region and hosts the rail inside its tree drawer instead
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-          {!isMobile && route !== null && !singlePane && <RailHost />}
-          {route === null ? (
-            <NotFound />
-          ) : isMobile ? (
-            <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
-          ) : (
-            <DockRegion />
-          )}
+            {!isMobile && route !== null && !singlePane && <RailHost />}
+            {route === null ? (
+              <NotFound />
+            ) : isMobile ? (
+              <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
+            ) : (
+              <DockRegion />
+            )}
+          </div>
         </div>
-      </div>
+      </MotionProvider>
     </ClientProvider>
   );
 }

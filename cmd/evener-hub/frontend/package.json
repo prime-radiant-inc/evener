@@ -32,6 +32,7 @@
     "dockview-react": "^7.0.2",
     "dompurify": "^3.4.12",
     "marked": "^18.0.6",
+    "motion": "^13.4.5",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.0",
     "prosemirror-keymap": "^1.2.3",
