@@ -10,6 +10,10 @@ command line handles scripting and automation.
 **New here? [docs/getting-started.md](docs/getting-started.md) walks from
 install to your first session.**
 
+The [product guide](docs/product/README.md) describes the experience Evener aims
+to provide, maps its subsystems and recovery responsibilities, and tracks open
+friction cases for product discussion.
+
 Evener uses the LLM's native tool-calling and supports OpenAI, Anthropic,
 Google, and [other providers](docs/llm-providers.md). For how the code is
 organized, see [docs/architecture.md](docs/architecture.md). For the runtime
@@ -31,8 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
 ```
 
 The installer verifies the release archive's SHA-256 checksum and installs
-`evener`, `evener hub`, `evener tui`, `evener doctor`, and `evener migrate`
-under `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. Make sure
+`evener` under `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. The
+binary includes the `hub`, `tui`, `doctor`, and `migrate` subcommands. Make sure
 `~/.local/bin` is on your `PATH`.
 
 From a source checkout:
@@ -46,14 +50,12 @@ install under `/usr/local`, see
 [docs/getting-started.md](docs/getting-started.md#install). Verify any install
 with `evener --version`.
 
-Upgrade `evener`, `evener hub`, `evener tui`, and `evener doctor` with
-`evener upgrade`. The command follows the binary's install channel: release
-builds upgrade to the latest release, and snapshot builds upgrade to the latest
+Upgrade the application and its subcommands with `evener upgrade`. The command
+follows the binary's install channel: release builds upgrade to the latest
+release, and snapshot builds upgrade to the latest
 successful `main` build. Pass `release`, `snapshot`, or a tag such as `v1.2.3`
-to switch tracks. `evener migrate` is not updated by `evener upgrade`; rerun
-the installer, or run `make install` (or `sudo make install-system`), to refresh
-it. The TUI and web UI expose the same mechanism through their `/upgrade`
-command.
+to switch tracks. The TUI and web UI expose the same mechanism through their
+`/upgrade` command.
 
 On first use, Evener creates:
 

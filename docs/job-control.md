@@ -746,14 +746,23 @@ Rules:
 - `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the source reached terminal state. The caller never has to reconstruct the original source/condition identity.
 - `job_watch` fails synchronously with `source_not_watchable` or `target_not_watchable` for sources the caller is not allowed to observe. A concrete descendant job can be watched by forwarding the watch install to the live owning descendant while keeping the ancestor as receiver. Parent, sibling, unrelated, closed, or non-live sources are not watchable unless explicitly granted.
 - A watcher may observe the events it generates itself. A `self` source on a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`), delivering back to the same session, installs and returns `watching:true`; nothing is rejected at creation for being a potential feedback loop. The loop is bounded at runtime instead, by three mechanisms: a self-influenced frame is prefixed with a gradient notice telling the receiving turn how deep it stands in its own influence (`↳ this turn responded to your last message.`, sharpening to `↳ you're ~N exchanges deep responding to your own influence — consider disengaging.`); a send descending from too many delivered self-influenced priors is dropped as `runaway` instead of delivered; and the per-watch delivery budget below auto-clears a watch that keeps firing. Parent-source sidecars are cross-session and are not self-influenced by this rule at all.
-- Watches expire automatically when a concrete watched shell reaches terminal.
-  A stable delegate watch ends with the exact generation it bound; its terminal
-  frame is ordered before the end notice, and restart emits the established end
-  notice if that generation is no longer current. Session-level watches remain
-  active until their configured scope ends or the session closes.
+- Within a live runtime, watches expire when a concrete watched shell reaches
+  terminal. A stable delegate watch ends with the exact generation it bound; its
+  terminal frame is ordered before the end notice. Session-level watches remain
+  active until their configured scope ends or the session closes. Restore follows
+  the separate journal and restart rules below.
 - A structured terminal shell notification names `read_transcript(transcript_ref="job:<job_id>")`. Delegate attention names `delegate_id` and the child session transcript ref, never a job read. References do not widen list/status/stop/watch scope.
 - `SessionMeta.ObservedBy` is append-only, deduplicated UI metadata for hub auto-open. A worker is never recorded as observing itself; metadata failures never change or delay delivery.
-- Watch registrations, pending/coalesced frames, acknowledgements, and end notices survive restart through the existing watch journal. Restart resolves stable `dlg_...` bindings through the delegate aggregate without constructing a provider runtime.
+- The watch journal preserves registration configuration, pending/coalesced send
+  deliveries, acknowledgements, and end records. On job-manager restore, pending
+  sends are recovered, but active watch registrations end with `runtime_lost`;
+  future observation and timer ticks require a new registration. This includes
+  saved declarative repeating timers. Callback closures remain process-local.
+  A send generation that has already spoken can omit an individual restart-end
+  notice; its pending deliveries still follow the durable-send recovery path.
+  Journal durability does not imply that an active watch is rearmed. See
+  [watch intent after restart](product/friction.md#r03-watch-intent-after-restart)
+  for the open product decision about reconstructing eligible watch intent.
 - Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 - There is at most one active watch configuration per `(watcher_session_id, source identity, receiver identity, condition hash)` unless an implementation documents additive watches. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.

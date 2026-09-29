@@ -1,36 +1,44 @@
 # Evener code architecture & module layout
 
 How the Evener codebase is organized: which modules exist, what each is for, what
-may depend on what, and how to build it. This is the **canonical, living** layout
-reference — kept current as the structure evolves. (The dated migration spec under
-`docs/superpowers/specs/2026-06-01-go-monorepo-module-architecture.md` records the
-plan and the decisions behind this structure; this doc describes the result.)
+depends on what, and how to build it. This is the **canonical, living** layout
+reference. The [product subsystem map](product/subsystems.md) connects this
+structure to user journeys, state ownership, and recovery responsibilities.
 
 ## Shape
 
-Evener is a **multi-module Go monorepo** containing two published libraries, a small
-shared auth module, and one application made of three binaries that talk over two
-wire contracts.
+Evener is a **multi-module Go monorepo** with browser, shared TypeScript, and native
+clients. [go.work](../go.work) is the workspace module inventory; each module's
+`go.mod` records its declared dependencies.
 
-| Module | Path | Role | May depend on |
-| --- | --- | --- | --- |
-| `auth` | `auth/` | OpenAI OAuth: token storage + interactive login flow | (stdlib only) |
-| `llm` | `llm/` | LLM client library — providers, requests, responses, streaming | `auth` |
-| `agent` | `agent/` | Agent engine + the public persistence schema (`SessionMeta`, `Turn`, …) | `llm`, `auth` |
-| **app** (root) | `.` | the **evener application** — the three binaries + the wire contracts | `agent`, `llm`, `auth` |
+| Module | Path | Responsibility |
+| --- | --- | --- |
+| Application | [root](../go.mod) | Binaries, AppWire and HTTP contracts, hub, server, shared application services |
+| Agent | [agent/](../agent/go.mod) | Session engine, tools, jobs, delegates, persistence and schema |
+| LLM | [llm/](../llm/go.mod) | Provider registry, requests, streaming, retries and model metadata |
+| Authentication | [auth/](../auth/go.mod) | OAuth flows and token storage |
+| Environment | [envvars/](../envvars/go.mod) | Environment-variable definitions and user-directory resolution |
+| Execution support | [execsupport/](../execsupport/README.md) | Value expressions, process groups, pipe draining and shell quoting |
+| Identifiers | [identifier/](../identifier/go.mod) | Session, job, mutation and other domain identities |
+| Invariants | [invariant/](../invariant/invariant.go) | Assertions enabled in fuzz builds; no-op assertions in normal builds |
+| Fuzz tooling | [fuzz/](../fuzz/README.md) | Portable generation, oracles and regression-promotion tooling |
 
-`llm` and `agent` are **published libraries** (consumed inside and outside Prime
-Radiant); their `go.mod` files are kept clean and publishable. `auth` is its own
-module because it's OAuth machinery (a login flow + a localhost callback server)
-that the hub drives far more than `llm` consumes — keeping it separate preserves
-`llm`'s minimal surface.
+Module separation does not by itself imply application independence. Production
+`agent` code imports both AppWire and root `internal` packages, for example
+[client mutations](../agent/session_client_mutation.go) and
+[skill source recovery](../agent/session_skill_source.go). `llm` uses `auth`,
+`envvars`, `execsupport`, `identifier`, and `invariant`; `auth` uses `envvars`.
+Consult imports and `go.mod` when moving a responsibility rather than assuming
+that a module name is an enforced architectural boundary.
 
-## The three application binaries (one product, three processes)
+## Application commands and process boundaries
 
-The app is **one product**: the binaries are coupled only by **protocols**, never by
-importing each other's Go code.
+The installed application is the `evener` binary. Its entry point imports the hub,
+TUI, doctor, and migration command packages and dispatches subcommands. The hub,
+TUI, and session daemons run as separate processes and communicate over AppWire;
+sharing an executable does not merge their runtime state.
 
-| Binary | `cmd/` | Role | Talks to | via |
+| Command | `cmd/` | Role | Talks to | via |
 | --- | --- | --- | --- | --- |
 | `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
 | `evener hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
@@ -43,9 +51,9 @@ is the AppWire **server** for the TUI and the browser, an AppWire **client** to
 each `evener serve` daemon it spawns, and — on a multi-host controller — an
 AppWire **relay** that carries frames to a remote host's hub over `ssh <dest>
 evener hub attach --stdio` (`appwire.StreamTransport`). `hubapi` is the hub's
-separate HTTP surface (health, navigation, refs, attention) for the browser's REST
-baseline and the mobile client; the TUI touches it only for the best-effort
-environment health probe (`checkHubEnvironment`).
+separate HTTP surface (health, navigation, refs, attention). The TypeScript clients
+also use AppWire through the shared client package; the TUI touches hubapi only
+for the best-effort environment health probe (`checkHubEnvironment`).
 
 ```
 browser ─┐
@@ -59,65 +67,61 @@ remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── A
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the JSON-RPC wire protocol over WebSocket or stdio, hop by hop between
 browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (the hub's HTTP
-API). Each binary owns its private code under `cmd/<bin>/internal/`.
+API). Command-specific private code lives under `cmd/<command>/internal/`.
+`evener doctor` and `evener migrate` provide inspection and migration commands.
+`evener-dev` is checkout development tooling and is not installed with the product.
 
-## The placement rule — "what goes where"
+## Placing responsibilities
 
 1. **Reusable outside this repo?** → a library module (`llm/`, `agent/`, `auth/`).
-2. **A contract *between* binaries (wire / HTTP)?** → a top-level package in the app
+2. **A contract *between* processes (wire / HTTP)?** → a top-level package in the app
    module, named for what it is (`appwire/`, `hubapi/`).
-3. **Private to exactly one binary?** → that binary's `cmd/<bin>/internal/…`.
-4. **A binary entry point?** → `cmd/<bin>/main.go` (thin — wiring only).
-5. **Shared by a library *and* the app?** → the lowest module that needs it, exported
-   there; or its own small module; or (for tiny utils) **duplicated** into each
-   product's `internal/`. Libraries never reach into app code.
+3. **Private to exactly one command package?** → that command's `cmd/<command>/internal/…`.
+4. **An executable entry point?** → its `cmd/<binary>/main.go`; command packages
+   expose their own entry functions to the executable.
+5. **Shared across modules?** → a clearly named owning module or shared contract.
+   Document the dependency and update the subsystem map. Existing cross-module
+   imports are part of the implementation; changing those boundaries is an
+   architectural decision.
 
-A library must never import app code or the app's build metadata. Two consequences
-already enforced: the build version is **injected**, not imported (`openai.ClientVersion`,
-`agent.BuildVersion` — package-level settings the binaries set at startup, default
-`"dev"`); and shared parsers (`frontmatter`, `diagnostic`) are **duplicated** into
-`agent/internal/` so `agent` is self-contained.
+Build-version values such as `tokenauth.ClientVersion` and `agent.BuildVersion` are
+injected by the binaries. Process boundaries use wire contracts; package and
+module boundaries describe code dependencies within those processes.
 
 ## Building — the go.work workspace
 
-The repo is a Go workspace (`go.work`, committed). `make build` / `make build-hub` /
-`make build` / `make build-llmcall` work as before; import paths are unchanged
-(`primeradiant.com/evener/…`).
+The repo is a Go workspace (`go.work`, committed). Use `make build` for the
+application executable; [building](developing-evener/building.md) describes the
+other development targets. Import paths use `primeradiant.com/evener/…`.
 
-The unpublished sibling modules are wired with **versioned `replace … v0.0.0 => ./dir`
-directives in `go.work`** (repo-local — invisible to external `go get`). This keeps
-the committed `go.mod` files replace-free and publishable while a fresh clone builds
-out-of-the-box. (`go.work use` alone does *not* resolve an unpublished sibling once a
-module has external deps — it 404s trying to fetch it; the in-`go.work` replace is the
-fix.) Note: `./...` resolves **per-module** in a workspace, not across it — so the lint /
-vet / test gates loop over every module (`make vet` / `make test-race` / `make lint-golangci`
-iterate `. agent llm auth`); a root-only `go test ./...` silently skips the agent/llm/auth
-library suites.
+Workspace `use` entries and **versioned `replace` directives in `go.work`** resolve
+sibling modules to checkout paths, including unpublished placeholder versions.
+These replacements are local to the workspace and do not establish external
+module consumability. `./...` resolves **per-module** in a workspace, so lint,
+vet and test gates select their modules explicitly. `GO_MODULES` and
+`FUZZ_GO_MODULES` in the [Makefile](../Makefile) own those lists; the fuzz module
+has its own gate family. A root-only `go test ./...` does not run sibling module
+suites. See [testing](developing-evener/testing.md) for the selected gate's scope.
 
-## Boundaries Go enforces
+## Package boundaries
 
-- `agent` / `llm` (modules) **cannot** import the app — the engine libraries can never
-  depend on evener-app glue.
-- `cmd/<bin>/internal/…` is importable only by that binary.
-- `appwire` / `hubapi` are ordinary packages → all three binaries share them as the
-  one legitimately-shared contract tier.
-- External: `go get primeradiant.com/evener/agent` pulls `agent` + `llm` + `auth` and
-  nothing else.
+- `cmd/<command>/internal/…` is visible within that command's import subtree.
+- `appwire` / `hubapi` are ordinary packages → the application processes share them as the
+  contract tier.
+- Go's `internal` visibility follows import-path ancestry, not `go.mod` boundaries.
+  The root `internal/` tree is reachable from sibling modules under the
+  `primeradiant.com/evener` import prefix.
+- External consumption needs verification from an external module with the
+  intended versions. A successful workspace build is not that verification.
 
 ## The app module's `internal/`
 
-The root app module keeps a top-level `internal/` for code **shared across its three
-binaries** (engine / supervisor / client are one module). Most of it genuinely is shared
-— e.g. `appserver` (engine `server/` + hub + tui), `diagnostic` (engine + hub + server),
-`apptranscript`, `binresolve` (hub + tui), `credentials` (all three via `cmdutil`). For a
-single module, shared code in `internal/` is the correct Go idiom; *duplicating* it per
-binary would be worse. The "no glue drawer" goal was about **not mixing library and app
-code** — and that is fully resolved: the libraries are separate modules, so the app's
-`internal/` now holds only app code. (`appprojector` and `httpguard` are engine-`server/`-
-only and could later sink to `cmd/evener/internal/` alongside `server/`.) Relaxing the
-migration's original "zero top-level `internal/`" target is the **decided end-state**:
-per-binary duplication would be strictly worse, and the real goal — no library/app code
-mixing — is already met by the module carve.
+The root `internal/` tree contains shared application services such as
+`appserver`, `apptranscript`, `binresolve`, `credentials`, and `plugins`. Some are
+also consumed by the agent module. Follow the [subsystem map](product/subsystems.md)
+and actual import sites to find each service's owners and consumers; the directory
+alone does not establish whether a change affects just one binary or the agent
+engine as well.
 
 ## Inside the `agent` module
 
@@ -397,24 +401,10 @@ to the **owner's parent** store (where the single-hop copy lives), not the root 
 Stable delegates are never forwarded JobRecords: their `dlg_...` hierarchy and
 projection come from the root delegate journal/controller.
 
-## Current status
+## Keeping architecture current
 
-- ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
-  established; all four `go.mod` files are clean and publishable (replace-free).
-- ✅ App `internal/` holds only app-shared code (no library/app mixing) — the structural
-  goal of the migration is met.
-- ✅ The library public API is fully documented and **gated in CI**: revive's
-  `exported` rule (scoped in `.golangci.yml`)
-  fails the build if any exported package-level declaration in `llm`, `agent`,
-  `agent/events`, or `auth/openai` lacks a doc comment — running alongside
-  `evener tomlcheck` (TOML key casing) and `evener internalcheck` (no internal-type leaks).
-  `llm`/`agent`/`auth/openai` carry runnable `Example`s.
-- ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
-  only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.
-- ✅ **Whole-repo golangci-lint gate**: a curated best-practice `.golangci.yml` (errcheck,
-  govet, staticcheck, unused, ineffassign, errorlint, bodyclose, misspell, unconvert, revive,
-  gocritic, nilerr, noctx, nakedret, perfsprint, …; the gocritic value-copy checks
-  `hugeParam`/`rangeValCopy`/`rangeExprCopy` are disabled — they fight the codebase's
-  deliberate value semantics) is driven to **zero across all four modules** and gates in CI
-  beside the three custom AST checks. The `vet` / `test-race` / `lint-golangci` make targets
-  (and CI) loop over `. agent llm auth`, so the **library test suites now run in CI** too.
+Update this reference and the [subsystem map](product/subsystems.md) when module,
+process, contract, or recovery ownership changes. Keep the workspace inventory in
+`go.work`, module dependencies in `go.mod`, and gate membership in the Makefile
+consistent. Use [development gates](developing-evener/README.md) for validation;
+this guide describes structure and does not certify a particular build or release.
