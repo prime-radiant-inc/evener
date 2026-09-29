@@ -171,8 +171,11 @@ export function BoardRow({
 	// why line already states the running count ("Waiting on N subagents"), so
 	// the chip adds only the failure count then (ruling 24 never speaks one).
 	const spoken = waiting ?? reason;
-	const whyNamesRunning =
-		!waiting && item.state === "working" && (activity ? activity.runningSubagents : (tally?.running ?? 0)) > 0;
+	// Only a signal row's why line names the running count; a quiet row has no
+	// why line, so the chip must speak it. `waiting` replaces the reason with a
+	// held-change message, so it never names the count either.
+	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
+	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
 	const chipLabel = tally
 		? subagentChipText({ running: whyNamesRunning ? 0 : tally.running, failed: tally.failed })
 		: "";

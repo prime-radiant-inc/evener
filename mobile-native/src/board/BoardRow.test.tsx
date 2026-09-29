@@ -233,6 +233,12 @@ describe("a Board row (spec 7.2)", () => {
 		// line already names the running count, so the chip adds nothing here.
 		expect(pressable(running).props.accessibilityLabel).toContain("Waiting on 2 subagents");
 		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
+		// A quiet row has no why line to name the count, so the chip speaks it.
+		const quiet = mount({
+			variant: "quiet",
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 0 } }),
+		});
+		expect(pressable(quiet).props.accessibilityLabel).toContain("2 running");
 
 		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
 		const chipText = textWith(failed, "3 failed")[0];
