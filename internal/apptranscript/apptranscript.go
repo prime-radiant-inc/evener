@@ -809,6 +809,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
+								CallID: part.ToolResult.ToolCallID,
 								Text:   msg,
 								Status: appwire.TurnStatusCompleted,
 							})
@@ -826,6 +827,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
+								CallID: part.ToolResult.ToolCallID,
 								Text:   communicateRawFallbackText(rawArgs),
 								Status: appwire.TurnStatusCompleted,
 							})
