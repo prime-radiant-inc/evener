@@ -1234,6 +1234,61 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 	}
 }
 
+// TestWorktreeCreate_CorruptReservationSurfaced: a create that died between its
+// O_EXCL open and its write leaves a malformed sidecar that ListSidecars hides.
+// Once that residue is past the reconciliation grace, a retry's O_EXCL write
+// fails with EEXIST and create must name the corrupt reservation (repairable by
+// hand) instead of reporting a live create that is not happening — and must not
+// delete the file, since malformed metadata does not authorize a destructive
+// cleanup. A fresh undecodable file is deliberately NOT named (see the sibling
+// case below): it may be the winner of a live race mid-write.
+func TestWorktreeCreate_CorruptReservationSurfaced(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	corruptPath := filepath.Join(metaDir, worktree.EncodeSidecarName("x")+".json")
+	if err := os.WriteFile(corruptPath, []byte("{torn"), 0o644); err != nil {
+		t.Fatalf("seed corrupt sidecar: %v", err)
+	}
+	ageSidecar(t, metaDir, "x", worktree.ReconcileGrace+time.Minute)
+
+	_, err := r.create(t, map[string]any{"name": "x"})
+	if err == nil || !strings.Contains(err.Error(), "reserved by a corrupt sidecar") {
+		t.Fatalf("create over a corrupt reservation: err = %v, want a corrupt-reservation message", err)
+	}
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Errorf("create removed the corrupt reservation: %v", statErr)
+	}
+}
+
+// TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight: an undecodable
+// sidecar younger than the reconciliation grace is indistinguishable from the
+// winner of a live concurrent create caught between its O_EXCL open and its
+// write, so create must fall back to the "already being created" message and
+// must never advise removing that file.
+func TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	// Zero bytes, exactly what a winner's file looks like before its write.
+	if err := os.WriteFile(filepath.Join(metaDir, worktree.EncodeSidecarName("y")+".json"), nil, 0o644); err != nil {
+		t.Fatalf("seed empty sidecar: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "y"})
+	if err == nil || !strings.Contains(err.Error(), "already being created") {
+		t.Fatalf("create over a fresh undecodable reservation: err = %v, want the already-being-created message", err)
+	}
+}
+
 // TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile covers
 // step 6's MkdirAll(filepath.Dir(worktreePath)) failure branch for a
 // slash-nested name: a plain FILE occupying the exact path the worktree's
