@@ -302,7 +302,6 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if params.Cursor, err = appitempaging.MintCursor(params, localDaemonItemSnapshotIdentity(snapshot)); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		params.Before = nil
 	}
 
 	if params.Cursor == "" {
