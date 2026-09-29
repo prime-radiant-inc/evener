@@ -53,7 +53,7 @@ import {
 	type RawSubagent,
 } from "./demoFleet";
 import { demoRunStartedAt } from "./demoSubagents";
-import { recordedToolFamilies } from "./demoToolFamilies";
+import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -96,6 +96,8 @@ type Entry =
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
 	entries?: Entry[];
+	// The directory the session sits in, when it isn't its project's.
+	cwd?: string;
 	error?: TurnError;
 	model?: string;
 	effort?: string;
@@ -997,6 +999,8 @@ function askItem(
 // only when served, so the usual sessions never read agent/testdata.
 function toolFamiliesContent(): SessionContent {
 	return {
+		// The recorded shell calls cd here first, as a session's own directory.
+		cwd: recordedToolCwd(),
 		entries: [
 			{ user: "Show me one step of every tool family." },
 			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
@@ -1030,7 +1034,7 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string, l
 		createdAt: Math.floor((turn.startedAt ?? now) / 1000),
 		updatedAt,
 		status: { type: status },
-		cwd: session.workingDir,
+		cwd: content.cwd ?? session.workingDir,
 		projectPath: session.workingDir,
 		gitInfo: { branch: "main" },
 		cliVersion: "demo",

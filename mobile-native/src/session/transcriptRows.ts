@@ -10,12 +10,9 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
-	filePathOf,
 	type ItemModel,
 	mcpToolParts,
-	parseArgs,
 	parseAskUserQuestions,
-	shellCommand,
 	skillName,
 	type ThreadModel,
 	taskListChanges,
@@ -301,19 +298,6 @@ export interface RunSummary {
 	failed: number;
 }
 
-/** What a step acted on: the command for a shell step, else the file or path
- * it named. `parsed` is the arguments already decoded, for a caller that read
- * them itself. */
-export function stepTarget(
-	label: string,
-	argumentsJSON: string | undefined,
-	parsed?: Record<string, unknown>,
-): string | undefined {
-	const args = parsed ?? parseArgs(argumentsJSON);
-	if (toolFamily(label) === "shell") return shellCommand(args) || undefined;
-	return filePathOf(args);
-}
-
 /** What a step says it did: the words its row was built with (projectedRows
  * reads them once from the whole step with the package's toolStepSummary),
  * else its label. The one place a renderer reads a step's words from. */
@@ -357,7 +341,8 @@ function partOf(label: string): { key: string; family: ToolFamily; name: string 
 // What a step contributes to its part's words: the program a shell command
 // ran, the skill a skill step activated, or the server an MCP tool is on.
 function namedBy(family: ToolFamily, step: RunStep): string | undefined {
-	if (family === "shell") return programOf(stepTarget(step.label, step.detail.arguments));
+	// A shell step's target is its command, the session's own cd left out.
+	if (family === "shell") return programOf(step.detail.words?.target);
 	if (family === "skill") return skillName({ argumentsJSON: step.detail.arguments }) || undefined;
 	if (family === "mcp") return mcpToolParts(step.label)?.server;
 	return undefined;

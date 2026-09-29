@@ -525,4 +525,15 @@ describe("the demo session with every tool family", () => {
 		expect(edit?.argumentsJSON).toContain("old_string");
 		expect(edit?.output).toBe("edited agent/tree.go: 1 replacement");
 	});
+
+	// The recorded shell calls cd into the corpus's directory first; the session
+	// sits there too, so its step lines drop that cd as a real session's do.
+	it("sits in the directory the corpus was recorded in", () => {
+		expect(threadOf("s-tools", withTools).cwd).toBe("/home/jesse/git/evener");
+		const { rows } = open("s-tools", "tools", withTools);
+		const shell = runsOf(rows)
+			.flatMap((run) => run.steps)
+			.find((step) => step.label === "shell");
+		expect(shell?.detail.words?.target).toBe("cat agent/tree_order.go");
+	});
 });
