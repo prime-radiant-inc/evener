@@ -46,7 +46,7 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 		return navigationArchivedListRequest{}, err
 	}
 	if params.Limit < 0 || params.Limit > maxNavigationSectionRows {
-		return navigationArchivedListRequest{}, fmt.Errorf("limit must be between 1 and %d, or absent for %d", maxNavigationSectionRows, maxNavigationSectionRows)
+		return navigationArchivedListRequest{}, fmt.Errorf("limit must be between 0 and %d (0 or absent means %d)", maxNavigationSectionRows, maxNavigationSectionRows)
 	}
 	request := navigationArchivedListRequest{Catalog: catalog, ProjectKey: params.ProjectKey, Limit: params.Limit}
 	if params.Cursor != "" {
