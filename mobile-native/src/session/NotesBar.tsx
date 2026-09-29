@@ -5,6 +5,7 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { Pressable, Text } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useHeaderRowFill } from "./headerGlass";
 import type { NotesBarPreview, NotesGlyph } from "./sessionNotes";
 
 const SYMBOLS: Record<NotesGlyph, SFSymbol> = {
@@ -16,6 +17,7 @@ const SYMBOLS: Record<NotesGlyph, SFSymbol> = {
 export function NotesBar({ preview, onPress }: { preview: NotesBarPreview; onPress: () => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const fill = useHeaderRowFill();
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -29,7 +31,7 @@ export function NotesBar({ preview, onPress }: { preview: NotesBarPreview; onPre
 				alignItems: "center",
 				gap: 6,
 				paddingHorizontal: 16,
-				backgroundColor: palette.page,
+				backgroundColor: fill,
 				opacity: pressed ? 0.6 : 1,
 			})}
 		>

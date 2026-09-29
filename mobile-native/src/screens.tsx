@@ -354,16 +354,19 @@ export function ConversationScreen({
 	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
 	// Where the device has Liquid Glass, the nav bar is the system's glass
-	// over the transcript (spec 16.3): the screen starts under it, and what
-	// must stay clear of it starts below it.
+	// over the transcript (spec 16.3): the screen starts under it, and the
+	// header's own glass spans the bar and the rows under it.
 	const navGlass = useSystemGlass();
 	const underNavBar = navGlass ? headerHeight : 0;
 	useEffect(() => {
-		// react-native-screens draws a transparent bar clear only when its
-		// background color is itself clear.
 		navigation.setOptions({
 			headerTransparent: navGlass,
+			// react-native-screens draws a transparent bar clear only when its
+			// background color is itself clear.
 			headerStyle: { backgroundColor: navGlass ? "transparent" : colors.background },
+			// The header's glass is the bar's edge; the system's own edge
+			// effect would draw a second one over it.
+			scrollEdgeEffects: { top: navGlass ? "hidden" : "automatic" },
 		});
 	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
@@ -958,9 +961,9 @@ export function ConversationScreen({
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
-	// What the list's top keeps clear: the nav bar where the screen runs
-	// under it, and the chips block.
-	const reservedTop = underNavBar + sessionHeaderHeight;
+	// What the list's top keeps clear: the header block, which on the glass
+	// includes the nav bar's room (until it has measured, that room alone).
+	const reservedTop = Math.max(underNavBar, sessionHeaderHeight);
 	const listOffset = useRef(0);
 	const reservedHeaderHeight = useRef(0);
 	// When the block grows or shrinks (the connection bar comes or goes, or
@@ -2854,10 +2857,11 @@ export function ConversationScreen({
 						/>
 						<View
 							pointerEvents="box-none"
-							style={{ position: "absolute", top: underNavBar, left: 0, right: 0 }}
+							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
 							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
 						>
 							<SessionHeader
+								glassTop={navGlass ? headerHeight : undefined}
 								status={connectionText}
 								chips={chips}
 								find={

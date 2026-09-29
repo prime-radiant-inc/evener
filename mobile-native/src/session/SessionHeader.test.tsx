@@ -4,6 +4,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render, renderedText, renderHook } from "../renderNative.testkit";
+import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -51,6 +52,8 @@ function header(
 		hidden?: boolean;
 		onChip?: (kind: ChipKind) => void;
 		find?: ReactNode;
+		notes?: ReactNode;
+		glassTop?: number;
 	} = {},
 ) {
 	return (
@@ -58,6 +61,8 @@ function header(
 			status={over.status ?? null}
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
+			notes={over.notes}
+			glassTop={over.glassTop}
 			onChip={over.onChip ?? (() => {})}
 			find={over.find}
 		/>
@@ -68,7 +73,8 @@ const chipButtons = (tree: ReactTestRenderer) => tree.root.findAll((node) => nod
 const textNode = (tree: ReactTestRenderer, text: string) =>
 	tree.root.find((node) => node.type === ("Text" as never) && [node.props.children].flat()[0] === text);
 /** The chips row: the element whose transform hides it. */
-const chipsRow = (tree: ReactTestRenderer) => tree.root.find((node) => node.type === ("Animated.View" as never));
+const chipsRow = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.type === ("Animated.View" as never) && node.props.onLayout !== undefined);
 const translateY = (row: ReactTestInstance) => (row.props.style.transform[0].translateY as { value: number }).value;
 
 async function flushReduceMotion() {
@@ -376,4 +382,62 @@ it("never says Reconnect, Connected or Refresh", () => {
 			expect(said).not.toMatch(/Reconnect\b|Connected|Refresh/);
 		}
 	}
+});
+
+// Where the nav bar is the system's glass, one glass spans the bar and the
+// rows under it (the iOS pattern for a bar with a search field or segmented
+// control): the header starts at the screen's top, leaves the bar its room,
+// and draws its rows clear on the glass. The glass shrinks back to the bar as
+// the rows slide away, moving with them.
+describe("under the nav bar's glass (spec 16.3)", () => {
+	const glass = (tree: ReactTestRenderer) => tree.root.findAll((node) => String(node.type) === "GlassView");
+	const glassSlide = (tree: ReactTestRenderer) => {
+		const [layer] = glass(tree);
+		if (!layer?.parent) throw new Error("no glass");
+		return translateY(layer.parent);
+	};
+	const barRoom = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "nav-bar-room").props.style.height;
+	const preview = { glyph: "person" as const, text: "Your note" };
+	const measured = (tree: ReactTestRenderer) =>
+		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 48, x: 0, y: 64 } } }));
+
+	it("spans one glass from the screen's top through the rows, and draws the rows clear on it", async () => {
+		const tree = render(
+			header({ chips: [goal], notes: <NotesBar preview={preview} onPress={() => {}} />, glassTop: 64 }),
+		);
+		await flushReduceMotion();
+		expect(glass(tree)).toHaveLength(1);
+		expect(glass(tree)[0]?.props.glassEffectStyle).toBe("regular");
+		expect(barRoom(tree)).toBe(64);
+		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		expect(chipsFill).toBe("transparent");
+		const note = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Your note",
+		)[0];
+		expect(note?.props.style({ pressed: false }).backgroundColor).toBe("transparent");
+	});
+
+	it("shrinks the glass back to the bar as the rows slide away", async () => {
+		const tree = render(header({ chips: [goal], glassTop: 64 }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(glassSlide(tree)).toBe(0);
+		act(() => tree.update(header({ chips: [goal], glassTop: 64, hidden: true })));
+		expect(glassSlide(tree)).toBe(-48);
+		expect(translateY(chipsRow(tree))).toBe(-48);
+	});
+
+	it("still draws the glass behind the bar with no rows under it", () => {
+		const tree = render(header({ glassTop: 64 }));
+		expect(glass(tree)).toHaveLength(1);
+		expect(barRoom(tree)).toBe(64);
+	});
+
+	it("keeps the opaque page fill, and no glass, without it", () => {
+		const tree = render(header({ chips: [goal] }));
+		expect(glass(tree)).toEqual([]);
+		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		expect(chipsFill).toBe(paletteFor("light").page);
+	});
 });

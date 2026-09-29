@@ -1491,44 +1491,51 @@ it("forgets a session's open rows when you leave it", async () => {
 });
 
 // Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
-// system's glass over the transcript (spec 16.3): the transcript runs under
-// it, and the chips and the list's top start below it. Elsewhere, and while
-// Reduce Transparency is on, the bar is opaque and the screen starts below it.
+// system's glass over the transcript (spec 16.3), and the header's glass runs
+// on under the chips and note: the transcript runs under both, and its top
+// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
+// is opaque and the screen starts below it.
 describe("the nav bar's glass (spec 16.3)", () => {
-	// Whether the bar is transparent, and clear: react-native-screens draws a
-	// transparent bar's background only when its color is itself clear.
-	const lastTransparency = () => {
+	// The bar's options: transparent, and clear, since react-native-screens
+	// draws a transparent bar's background only when its color is itself
+	// clear; and no system edge effect where the header's own glass is drawn.
+	const lastBar = () => {
 		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
 			.map(([options]) => options)
 			.findLast((options) => "headerTransparent" in options);
 		if (options?.headerTransparent === undefined) return undefined;
 		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
 		expect(background === "transparent").toBe(options.headerTransparent);
-		return options.headerTransparent;
+		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
 	};
+	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
 	const layout = (tree: ReactTestRenderer) => ({
-		chipsTop: Object.assign(
-			{},
-			...[tree.root.findByType(SessionHeader).parent?.props.style].flat(Number.POSITIVE_INFINITY),
-		).top,
+		headerTop: Object.assign({}, ...[header(tree).parent?.props.style].flat(Number.POSITIVE_INFINITY)).top,
+		glassTop: header(tree).props.glassTop,
 		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
 		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
 			.keyboardVerticalOffset,
 	});
+	const measureHeader = (tree: ReactTestRenderer, height: number) =>
+		act(() => header(tree).parent?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
 
-	it("runs the transcript under the glass, with the chips and the list's top below the bar", async () => {
+	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
 		systemGlass.available = true;
 		const { tree } = await mount(twoTurns("ref-glass"));
 		await act(async () => {});
-		expect(lastTransparency()).toBe(true);
-		expect(layout(tree)).toEqual({ chipsTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		// Before the header has measured, the list keeps the bar's room.
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		// The header's height covers the bar's room and the rows under it.
+		measureHeader(tree, 64 + 48);
+		expect(layout(tree).listTop).toBe(16 + 64 + 48);
 	});
 
 	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
 		const { tree } = await mount(twoTurns("ref-no-glass"));
 		await act(async () => {});
-		expect(lastTransparency()).toBe(false);
-		expect(layout(tree)).toEqual({ chipsTop: 0, listTop: 16, keyboardOffset: 64 });
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
 	});
 
 	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
@@ -1536,11 +1543,11 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		systemGlass.setReduceTransparency(true);
 		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
 		await act(async () => {});
-		expect(lastTransparency()).toBe(false);
-		expect(layout(tree)).toEqual({ chipsTop: 0, listTop: 16, keyboardOffset: 64 });
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
 		act(() => systemGlass.setReduceTransparency(false));
-		expect(lastTransparency()).toBe(true);
-		expect(layout(tree)).toEqual({ chipsTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
 	});
 });
 
