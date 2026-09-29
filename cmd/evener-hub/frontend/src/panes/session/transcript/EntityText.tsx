@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { EntityRef } from "./EntityRef";
 import { segmentEntityIds } from "./entitySegments";
 
-const ENTITY_SKIP_SELECTOR = "code, pre, script, style, a, [data-entity-host]";
+const ENTITY_SKIP_SELECTOR = "code, pre, script, style, a, [data-entity-host], [data-mermaid-diagram]";
 
 /** Enhances only plain text owned by a rendered prose root. The original text
  * nodes stay in the tree as empty anchors so cleanup can restore React's DOM

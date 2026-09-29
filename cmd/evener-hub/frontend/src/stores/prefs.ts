@@ -427,8 +427,11 @@ function systemPrefersDark(): boolean {
 // --- document application: the DOM side effects the legacy mirrored
 // alongside localStorage (assets/theme.js; assets/settings-appearance.js's
 // two script-parse-time IIFEs) - see this file's own top comment for which
-// prefs get one.
+// prefs get one. Guarded on `document`: this store is hydrated at module load,
+// and a node-environment importer (no DOM) must not throw - the same
+// best-effort contract the localStorage access above keeps.
 function applyTheme(value: ThemePref): void {
+  if (typeof document === "undefined") return;
   if (value === "system") {
     // Resolves to one of the same two document states an explicit pick
     // would - light sets the attribute, dark removes it (never the
@@ -467,14 +470,17 @@ function ensureSystemSchemeListener(): void {
 }
 
 function applyPhoneDensity(value: PhoneDensityPref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.phoneDensity = value;
 }
 
 function applyFontSize(value: FontSizePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.fontSize = value;
 }
 
 function applyTranscriptMeasure(value: TranscriptMeasurePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.transcriptMeasure = value;
 }
 

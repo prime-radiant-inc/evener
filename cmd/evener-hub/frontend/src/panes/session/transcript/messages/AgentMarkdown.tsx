@@ -45,6 +45,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const portals: ReactPortal[] = [];
     const cleanups: Array<() => void> = [];
     for (const link of root.current?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? []) {
+      if (link.closest("[data-mermaid-diagram]") !== null) continue;
       const href = link.getAttribute("href") ?? "";
       const params = fileDocParams(fileLinkPath(href), sessionRef, cwd);
       if (params === undefined) continue;
