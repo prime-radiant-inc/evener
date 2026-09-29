@@ -29,17 +29,9 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 
 # Names are matched as literal paths, and unquoted (a quoted non-ASCII name
-# would never match a tree prefix and be skipped without a word).
-export GIT_LITERAL_PATHSPECS=1
-git() { command git -c core.quotePath=false "$@"; }
-
-# During a merge the index differs from HEAD by everything the other side
-# brought in, not just the conflict resolution; formatting that would rewrite
-# files this commit never edited.
-if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-	echo "pre-commit: merge in progress; not formatting (run 'npm run format' in the tree if needed)." >&2
-	exit 0
-fi
+# would never match a tree prefix and be skipped without a word). Both settings
+# are per-call flags so they do not leak into the chained hook.
+git() { command git --literal-pathspecs -c core.quotePath=false "$@"; }
 
 # formattable lists the staged added/copied/modified/renamed files under
 # $1 (an extended-regex path prefix) that Biome formats, one per line.
@@ -67,7 +59,7 @@ format_tree() {
 		return 1
 	fi
 
-	partial=$(git diff --name-only | grep -Fx -e "$files" || true)
+	partial=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 git --literal-pathspecs -c core.quotePath=false diff --name-only --)
 	if [ -n "$partial" ]; then
 		echo "pre-commit: these files have unstaged edits on top of what is staged; formatting would stage the edits too:" >&2
 		printf '%s\n' "$partial" | sed 's/^/  /' >&2
@@ -88,15 +80,23 @@ format_tree() {
 	printf '%s\n' "$files" | tr '\n' '\0' | git add --pathspec-from-file=- --pathspec-file-nul
 }
 
-native_files=$(formattable '(mobile-native|mobile)/src/')
-web_files=$(formattable '(cmd/evener-hub/frontend/src|appwire-client/typescript)/')
+# During a merge the index differs from HEAD by everything the other side
+# brought in, not just the conflict resolution; formatting that would rewrite
+# files this commit never edited.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+	echo "pre-commit: merge in progress; not formatting (run 'npm run format' in the tree if needed)." >&2
+else
+	native_files=$(formattable '(mobile-native|mobile)/src/')
+	web_files=$(formattable '(cmd/evener-hub/frontend/src|appwire-client/typescript)/')
 
-failed=0
-format_tree mobile-native "$native_files" "format --write" || failed=1
-format_tree cmd/evener-hub/frontend "$web_files" "check --write --linter-enabled=false" || failed=1
-[ "$failed" -eq 0 ] || exit 1
+	failed=0
+	format_tree mobile-native "$native_files" "format --write" || failed=1
+	format_tree cmd/evener-hub/frontend "$web_files" "check --write --linter-enabled=false" || failed=1
+	[ "$failed" -eq 0 ] || exit 1
+fi
 
+# A copy or symlink of this very hook in .git/hooks would re-exec forever.
 existing="$(git rev-parse --git-common-dir)/hooks/pre-commit"
-if [ -x "$existing" ]; then
+if [ -x "$existing" ] && [ ! "$existing" -ef "$0" ]; then
 	exec "$existing" "$@"
 fi

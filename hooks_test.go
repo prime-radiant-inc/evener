@@ -219,7 +219,8 @@ func TestPreCommitHookRefusesFilesWithUnstagedEdits(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "biome.log")
 	installStubBiome(t, repo, "mobile-native", log)
 	stageFile(t, repo, "mobile-native/src/a.ts", "staged\n")
-	writeTestFile(t, filepath.Join(repo, "mobile-native/src/a.ts"), []byte("staged\nunstaged\n"), 0o644)
+	stageFile(t, repo, "mobile-native/src/b.ts", "staged\n")
+	writeTestFile(t, filepath.Join(repo, "mobile-native", "src", "a.ts"), []byte("staged\nunstaged\n"), 0o644)
 
 	output, err := runInErr(repo, "git", "commit", "-q", "-m", "x")
 
@@ -253,6 +254,45 @@ func TestPreCommitHookChainsOntoTheInstalledHook(t *testing.T) {
 	}
 }
 
+func TestPreCommitHookDoesNotRunItselfForever(t *testing.T) {
+	repo := hookRepo(t)
+	data, err := os.ReadFile(filepath.Join("scripts", "hooks", "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(repo, ".git", "hooks", "pre-commit"), data, 0o755)
+	if err := os.Remove(filepath.Join(repo, ".git", "hooks", "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, "scripts", "hooks", "pre-commit"), filepath.Join(repo, ".git", "hooks", "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	stageFile(t, repo, "docs/readme.md", "hi\n")
+
+	runIn(t, repo, "git", "commit", "-q", "-m", "x")
+}
+
+func TestPreCommitHookChainsOntoTheInstalledHookDuringAMerge(t *testing.T) {
+	repo := hookRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	stageFile(t, repo, "docs/base.md", "base\n")
+	runIn(t, repo, "git", "commit", "-q", "-m", "base")
+	runIn(t, repo, "git", "checkout", "-q", "-b", "other")
+	stageFile(t, repo, "docs/other.md", "other\n")
+	runIn(t, repo, "git", "commit", "-q", "-m", "other")
+	runIn(t, repo, "git", "checkout", "-q", "-")
+	stageFile(t, repo, "docs/mine.md", "mine\n")
+	runIn(t, repo, "git", "commit", "-q", "-m", "mine")
+	runIn(t, repo, "git", "merge", "--no-ff", "--no-commit", "other")
+	writeTestFile(t, filepath.Join(repo, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\necho ran > "+marker+"\n"), 0o755)
+
+	runIn(t, repo, "git", "commit", "-q", "-m", "merge")
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the installed pre-commit hook did not run for the merge commit: %v", err)
+	}
+}
+
 func TestPreCommitHookFormatsWithTheRealFrontendBiome(t *testing.T) {
 	biome, err := filepath.Abs("cmd/evener-hub/frontend/node_modules/.bin/biome")
 	if err != nil {
@@ -267,12 +307,12 @@ func TestPreCommitHookFormatsWithTheRealFrontendBiome(t *testing.T) {
 	}
 	repo := hookRepo(t)
 	// Biome's vcs.useIgnoreFile needs a .gitignore in the config's own directory.
-	writeTestFile(t, filepath.Join(repo, "cmd/evener-hub/frontend/.gitignore"), []byte("node_modules/\n"), 0o644)
-	writeTestFile(t, filepath.Join(repo, "cmd/evener-hub/frontend/biome.jsonc"), frontendConfig, 0o644)
-	if err := os.MkdirAll(filepath.Join(repo, "cmd/evener-hub/frontend/node_modules/.bin"), 0o755); err != nil {
+	writeTestFile(t, filepath.Join(repo, "cmd", "evener-hub", "frontend", ".gitignore"), []byte("node_modules/\n"), 0o644)
+	writeTestFile(t, filepath.Join(repo, "cmd", "evener-hub", "frontend", "biome.jsonc"), frontendConfig, 0o644)
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "evener-hub", "frontend", "node_modules", ".bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(biome, filepath.Join(repo, "cmd/evener-hub/frontend/node_modules/.bin/biome")); err != nil {
+	if err := os.Symlink(biome, filepath.Join(repo, "cmd", "evener-hub", "frontend", "node_modules", ".bin", "biome")); err != nil {
 		t.Fatal(err)
 	}
 	stageFile(t, repo, "cmd/evener-hub/frontend/src/w.ts", "export const   x = {a:1,\n b:2}\n")
