@@ -156,31 +156,38 @@ export class HostsController {
 	 * so the edit page can put it under the field it names, or say the host
 	 * changed since it opened. */
 	async update(name: string, entry: HostEntry, expected: HostMutationPair): Promise<void> {
-		await this.commitThenRead(() => this.mutations.update({ name, entry, expected }));
+		let outcomeError: unknown;
+		try {
+			await this.mutations.update({ name, entry, expected });
+		} catch (error) {
+			if (!(error instanceof HostMutationOutcomeError)) throw error;
+			// The union's non-commit arm may still have committed (a teardown
+			// failure), so the read below runs before the arm's message surfaces.
+			outcomeError = error;
+		}
+		await this.read();
+		if (outcomeError !== undefined) throw outcomeError;
 	}
 
 	/** Removes a host (evener/host/remove), then re-reads the rows. */
 	async remove(name: string): Promise<void> {
-		await this.commitThenRead(() => this.mutations.remove(name));
-		// The hub has forgotten it: the rows drop it now, so its page leaves
-		// even when the read above fails.
-		this.publish({ rows: this.state.rows?.filter((row) => row.name !== name) ?? null });
-	}
-
-	/** Runs an edit's or removal's commit and then re-reads the rows: on
-	 * success, and on a non-commit arm of the mutation-result union
-	 * (HostMutationOutcomeError, hostMutations.ts), which may still have
-	 * committed, so its row has to appear. Any other rejection - a hub refusal
-	 * - passes through without a read, exactly as before. */
-	private async commitThenRead(commit: () => Promise<unknown>): Promise<void> {
+		let outcomeError: unknown;
 		try {
-			await commit();
+			await this.mutations.remove(name);
 		} catch (error) {
 			if (!(error instanceof HostMutationOutcomeError)) throw error;
-			await this.read();
-			throw error;
+			// The union's non-commit arm may still have committed (a teardown
+			// failure); the read below reflects it.
+			outcomeError = error;
+		}
+		if (outcomeError === undefined) {
+			// A committed removal: the rows drop it now, so its page leaves even
+			// when the read after this fails. A non-commit arm instead re-reads,
+			// so a collision that dropped nothing is not optimistically dropped.
+			this.publish({ rows: this.state.rows?.filter((row) => row.name !== name) ?? null });
 		}
 		await this.read();
+		if (outcomeError !== undefined) throw outcomeError;
 	}
 
 	dispose(): void {

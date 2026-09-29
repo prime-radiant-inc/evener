@@ -292,7 +292,9 @@ export class HostMutationOutcomeError extends Error {
 // CLIENT_UNREACHABLE_PATTERN) becomes one plain sentence; everything else - a
 // plain JS exception, a timeout, a string, anything this module doesn't
 // otherwise recognize - becomes the same generic sentence. Never returns a
-// class name or an internal method name.
+// class name or an arbitrary exception's method name; the two recognized
+// client-side families (WireError, HostMutationOutcomeError) may name the hub
+// operation their message is about, since its author wrote it for a person.
 export function friendlyErrorMessage(error: unknown): string {
   if (error instanceof WireError || error instanceof HostMutationOutcomeError) {
     const detail = error.message.trim();
