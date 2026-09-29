@@ -279,6 +279,65 @@ describe("labels, footers and tags", () => {
 	});
 });
 
+describe("a row whose label and value can't share a line", () => {
+	// The test renderer has no layout engine, so these pin the flex rules
+	// Row's comment describes.
+	const hostRow = (
+		<Row
+			icon="server.rack"
+			label="paradise-park"
+			sub="Connected · macOS · arm64 · 3 live"
+			value={<RowValue text="0.9.409" tag={{ text: "Hub runs 0.9.412", tone: "gray" }} />}
+			chevron
+			onPress={() => {}}
+		/>
+	);
+
+	it("wraps the value onto its own line rather than shrinking the label to fit", () => {
+		const tree = render(hostRow);
+		const line = merged(tree.root.findByProps({ testID: "row-line" }).props.style);
+		expect(line).toMatchObject({ flexDirection: "row", flexWrap: "wrap", alignItems: "center" });
+		const label = merged(tree.root.findByProps({ testID: "row-label" }).props.style);
+		expect(label).toMatchObject({ flexGrow: 1, flexShrink: 1 });
+		// flex: 1 would zero the label's basis, handing the line to the value.
+		expect(label.flex).toBeUndefined();
+		expect(label.flexBasis).toBeUndefined();
+	});
+
+	it("lets a value too wide for a line of its own wrap its text", () => {
+		const tree = render(hostRow);
+		expect(merged(tree.root.findByProps({ testID: "row-value" }).props.style).flexShrink).toBe(1);
+		const version = texts(tree).find((node) => node.props.children === "0.9.409");
+		expect(merged(version?.props.style).flexShrink).toBe(1);
+	});
+
+	it("keeps the second line out of the wrapping line, so a long one never pushes the value down", () => {
+		const tree = render(hostRow);
+		const line = tree.root.findByProps({ testID: "row-line" });
+		const lineText = line.findAll((node) => node.type === ("Text" as never)).map((node) => node.props.children);
+		expect(lineText).not.toContain("Connected · macOS · arm64 · 3 live");
+		expect(lineText).toContain("paradise-park");
+		expect(lineText).toContain("0.9.409");
+		expect(texts(tree).map((node) => node.props.children)).toContain("Connected · macOS · arm64 · 3 live");
+	});
+
+	it("shows a plain text or number value, and leaves no slot for one that renders nothing", () => {
+		expect(renderedText(render(<Row label="Hubs" value={1} />))).toContain("1");
+		expect(renderedText(render(<Row label="Display" value="System" />))).toContain("System");
+		for (const empty of [undefined, null, false, ""]) {
+			const tree = render(<Row label="In-app alerts" value={empty} />);
+			expect(tree.root.findAllByProps({ testID: "row-value" })).toHaveLength(0);
+		}
+	});
+
+	it("keeps the glyph and chevron outside the wrapping line", () => {
+		const tree = render(hostRow);
+		const line = tree.root.findByProps({ testID: "row-line" });
+		expect(line.findAll((node) => node.type === ("SymbolView" as never))).toHaveLength(0);
+		expect(symbols(tree)).toEqual(["server.rack", "chevron.right"]);
+	});
+});
+
 describe("a row's value with a tag", () => {
 	it("sets the value in ink-mid tabular figures beside its tag, and reads as both", () => {
 		const tree = render(<Row label="Hosts" value={<RowValue text="2" tag={{ text: "1 offline", tone: "amber" }} />} />);
