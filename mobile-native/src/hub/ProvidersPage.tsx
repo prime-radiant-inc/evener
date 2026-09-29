@@ -35,7 +35,7 @@ import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue, SwitchRow } from "../sheet/Grouped";
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
@@ -49,6 +49,7 @@ import {
 	ENDPOINT_CHANGED_WARNING,
 	FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
 	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+	MODELS_NOT_CHECKED,
 	PROVIDERS_NOT_LOADED,
 	UNCONFIRMED_CHANGE,
 	UNCONFIRMED_CREDENTIAL,
@@ -300,6 +301,20 @@ function Providers({
 					: surface.setApiKey(name, value, credentialTarget?.fingerprint),
 			{ secret: true, endpointAsserted: true },
 		);
+	}
+	// Asking the provider for its current models is a read: it runs beside a
+	// write, and its answer lands in the listing like any other.
+	const [checkingModels, setCheckingModels] = useState<string | null>(null);
+	async function checkModels(name: string) {
+		setActionError(null);
+		setCheckingModels(name);
+		try {
+			await surface.checkModels(name);
+		} catch {
+			setActionError(MODELS_NOT_CHECKED);
+		} finally {
+			setCheckingModels((current) => (current === name ? null : current));
+		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
 	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
@@ -553,7 +568,16 @@ function Providers({
 						<GroupedPage>
 							{instance ? (
 								<>
-									<ProviderFacts instance={instance} auth={auth} />
+									<ProviderFacts
+										instance={instance}
+										auth={auth}
+										togglesHeld={surface.busy || core.writesRefused || stale || !ready}
+										onToggleModel={(model, disabled) => {
+											void act(() => surface.setModelDisabled(instance.name, model, disabled));
+										}}
+										checking={checkingModels === instance.name}
+										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
+									/>
 									<Group>
 										{instance.authModes?.includes("oauth") && (
 											<Row
@@ -716,17 +740,28 @@ function Providers({
 
 /** What a provider is: its sign-in state (amber only when expired), its
  * type, how it signs in and where it points, where its credential comes
- * from, and the models it offers. */
+ * from, and the models it offers, each with a switch (as on the web), and
+ * the action that asks the provider for new ones. */
 function ProviderFacts({
 	instance,
 	auth,
+	togglesHeld,
+	onToggleModel,
+	checking,
+	onCheckModels,
 }: {
 	instance: InstanceEntry;
 	auth: ReadonlyMap<string, AuthStatusResponse> | null;
+	/** A write is in flight or configuration can't be written: the switches hold. */
+	togglesHeld: boolean;
+	onToggleModel(model: string, disabled: boolean): void;
+	/** The provider is being asked for its current models. */
+	checking: boolean;
+	onCheckModels(): void;
 }) {
 	const status = statusOf(instance, auth);
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
-	const models = (instance.models ?? []).filter((model) => !model.disabled);
+	const models = instance.models ?? [];
 	return (
 		<>
 			<Group>
@@ -763,18 +798,28 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
-			{models.length > 0 ? (
-				<Group label="Models">
-					{models.map((model) => (
-						<Row key={model.id} label={model.id} machineLabel />
-					))}
-				</Group>
-			) : (
-				<>
-					<GroupLabel>Models</GroupLabel>
-					<GroupFooter>No models listed</GroupFooter>
-				</>
-			)}
+			<Group label="Models">
+				{models.map((model) => (
+					// A model name is a name, not machine text: SF Pro (spec 16.2).
+					<SwitchRow
+						key={model.id}
+						label={model.id}
+						switchLabel={`${model.id} on`}
+						value={!model.disabled}
+						disabled={togglesHeld}
+						onChange={(on) => onToggleModel(model.id, !on)}
+					/>
+				))}
+				{/* An action the hub doesn't take on its own: it asks the provider
+				    for its current catalogue. The list itself follows the hub. */}
+				<Row
+					label={checking ? "Checking for new models…" : "Check for new models"}
+					tone="accent"
+					disabled={checking}
+					onPress={onCheckModels}
+				/>
+			</Group>
+			{models.length === 0 ? <GroupFooter>No models listed.</GroupFooter> : null}
 		</>
 	);
 }
