@@ -1,15 +1,20 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
+import { fonts } from "./design/tokens";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, textOf } from "./renderNative.testkit";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
 const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn() }));
+// A mutable Platform, so a test can read the Android font branch the way the
+// mock's mutable color scheme drives the palette.
+const platform = vi.hoisted(() => ({ OS: "ios" as "ios" | "android" }));
 // The repo's native-module seam: react-native's surface becomes inert host
 // elements, and the WebView a host string, so a test reads OUR wiring (props,
 // message handling, fallback state) rather than the native view itself.
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	Platform: platform,
 	useColorScheme: () => mode.scheme,
 }));
 vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
@@ -120,7 +125,31 @@ it("carries accessibility actions on its own accessible wrapper", () => {
 	const tree = render(<MermaidDiagram source="x" accessibilityActions={actions} onAccessibilityAction={() => {}} />);
 	const node = wrapper(tree, "Diagram");
 	expect(node.props.accessible).toBe(true);
-	expect(node.props.accessibilityActions).toBe(actions);
+	// The caller's actions ride along; the appended "open" action is the only
+	// way a screen-reader user (the tap Pressable is accessible={false}) can
+	// open the viewer.
+	expect(node.props.accessibilityActions).toEqual([...actions, { name: "open", label: "Open fullscreen" }]);
+});
+
+it("opens the viewer from the wrapper's open action and forwards the caller's actions", () => {
+	const onAction = vi.fn();
+	const actions = [{ name: "select", label: "Select text" }];
+	const tree = render(
+		<MermaidDiagram source="graph TD; A-->B" accessibilityActions={actions} onAccessibilityAction={onAction} />,
+	);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+	const node = wrapper(tree, "Diagram");
+	act(() => {
+		node.props.onAccessibilityAction({ nativeEvent: { actionName: "open" } });
+	});
+	// The "open" action opens the fullscreen viewer.
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	// A caller's own action still reaches its handler untouched.
+	act(() => {
+		node.props.onAccessibilityAction({ nativeEvent: { actionName: "select" } });
+	});
+	expect(onAction).toHaveBeenCalledTimes(1);
+	expect(onAction.mock.calls[0]?.[0].nativeEvent.actionName).toBe("select");
 });
 
 it("opens a fullscreen viewer on press, with source toggle and copy", () => {
@@ -233,6 +262,13 @@ it("re-posts the zoom render when the palette changes", () => {
 	const zoomCalls = () =>
 		postMessage.mock.calls.map((call) => JSON.parse(call[0] as string)).filter((msg) => msg.mode === "zoom");
 	expect(zoomCalls()).toHaveLength(1);
+	// The zoom render is now serialized: let its height reply settle before the
+	// palette changes, so this case pins the immediate re-post when idle.
+	act(() => {
+		tree.root
+			.findAllByType("WebView" as never)[1]
+			.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "height", value: 300 }) } });
+	});
 
 	mode.scheme = "dark";
 	act(() => {
@@ -243,6 +279,82 @@ it("re-posts the zoom render when the palette changes", () => {
 	expect(zoomCalls()).toHaveLength(2);
 	expect(zoomCalls().at(-1)?.theme.dark).toBe("true");
 	mode.scheme = "light";
+});
+
+it("queues a palette flip during an in-flight zoom render and re-posts it on the reply", () => {
+	mode.scheme = "light";
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(<MermaidDiagram source="graph TD; A-->B" onAccessibilityAction={() => {}} />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	act(() => {
+		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
+	});
+	const webviews = () => tree.root.findAllByType("WebView" as never);
+	act(() => {
+		for (const view of webviews()) {
+			view.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+		}
+	});
+	const zoomCalls = () =>
+		postMessage.mock.calls.map((call) => JSON.parse(call[0] as string)).filter((msg) => msg.mode === "zoom");
+	expect(zoomCalls()).toHaveLength(1);
+	// A palette flip while the zoom render is still outstanding must queue, not
+	// race the page's fixed element id with a second render.
+	mode.scheme = "dark";
+	act(() => {
+		tree.update(<MermaidDiagram source="graph TD; A-->B" onAccessibilityAction={() => {}} />);
+	});
+	expect(zoomCalls()).toHaveLength(1);
+	// The zoom page's height reply releases exactly one queued render.
+	act(() => {
+		webviews()[1].props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "height", value: 300 }) } });
+	});
+	expect(zoomCalls()).toHaveLength(2);
+	expect(zoomCalls().at(-1)?.theme.dark).toBe("true");
+	mode.scheme = "light";
+});
+
+it("uses the platform mono face, not a bare Menlo, for the source and fallback views", () => {
+	try {
+		platform.OS = "android";
+		const tree = render(<MermaidDiagram source="graph TD; A-->B" />);
+		// The error fallback shows the source in the platform monospace face.
+		act(() => {
+			tree.root.findByType("WebView" as never).props.onMessage({
+				nativeEvent: { data: JSON.stringify({ type: "error", message: "Parse error" }) },
+			});
+		});
+		const fallback = tree.root.findAllByType("Text" as never).find((node) => textOf(node) === "graph TD; A-->B");
+		expect(fallback?.props.style).toContainEqual(expect.objectContaining({ fontFamily: "monospace" }));
+
+		// The fullscreen source view carries the same face.
+		const viewer = render(<MermaidDiagram source="graph TD; A-->B" />);
+		act(() => {
+			viewer.root.findByProps({ testID: "mermaid-open" }).props.onPress();
+		});
+		act(() => {
+			viewer.root.findByProps({ accessibilityLabel: "Show source" }).props.onPress();
+		});
+		const sourceText = viewer.root.findAllByType("Text" as never).find((node) => textOf(node) === "graph TD; A-->B");
+		expect(sourceText?.props.style).toContainEqual(expect.objectContaining({ fontFamily: "monospace" }));
+
+		// iOS keeps the app's Mono token.
+		platform.OS = "ios";
+		const iosTree = render(<MermaidDiagram source="graph TD; A-->B" />);
+		act(() => {
+			iosTree.root.findByType("WebView" as never).props.onMessage({
+				nativeEvent: { data: JSON.stringify({ type: "error", message: "Parse error" }) },
+			});
+		});
+		const iosFallback = iosTree.root.findAllByType("Text" as never).find((node) => textOf(node) === "graph TD; A-->B");
+		expect(iosFallback?.props.style).toContainEqual(expect.objectContaining({ fontFamily: fonts.mono }));
+	} finally {
+		platform.OS = "ios";
+	}
 });
 
 it("does not open the viewer from the error fallback", () => {

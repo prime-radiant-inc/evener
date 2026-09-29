@@ -54,7 +54,9 @@ export async function buildMermaidPageHtml(): Promise<string> {
 		target: "es2020",
 		write: false,
 		minify: true,
-		legalComments: "none",
+		// "eof" keeps mermaid's and DOMPurify's MIT license headers in the shipped
+		// bundle: "none" would strip them, and the MIT terms require retaining them.
+		legalComments: "eof",
 		charset: "utf8",
 	});
 	const [output] = result.outputFiles ?? [];

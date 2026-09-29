@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import {
 	Modal,
+	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -12,6 +13,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { copyText } from "./clipboard";
+import { fonts } from "./design/tokens";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
 import { Action, styles as uiStyles, useColors } from "./ui";
 
@@ -21,7 +23,60 @@ const heightCache = new Map<string, number>();
 
 const PLACEHOLDER_HEIGHT = 120;
 
+// The VoiceOver/TalkBack rotor action that opens the fullscreen viewer. The
+// tap-to-open Pressable is accessible={false}, so this action on the diagram's
+// accessible wrapper is the only way a screen-reader user can open the viewer.
+const OPEN_ACTION: AccessibilityActionInfo = { name: "open", label: "Open fullscreen" };
+
 type PageMessage = { type: "ready" } | { type: "height"; value: number } | { type: "error"; message: string };
+
+type RenderPost = { type: "render"; source: string; theme: Record<string, string>; mode: "fit" | "zoom" };
+
+// The inline and zoom WebViews render under one fixed element id inside one
+// page, so two render messages in flight would race: a theme flip mid-render
+// could land as an id collision. This hook serializes posts for one WebView -
+// a post while one is in flight queues at most one pending message, re-posted
+// only after the page's reply. Both WebViews share it so the discipline is
+// written once.
+function useSerializedRenderPosts(webView: RefObject<WebView | null>) {
+	const pageReady = useRef(false);
+	const renderInFlight = useRef(false);
+	const renderQueued = useRef(false);
+	// The most recent request, so a queued post re-sends the latest source/theme.
+	const pending = useRef<RenderPost | null>(null);
+
+	function post(message: RenderPost) {
+		pending.current = message;
+		if (!pageReady.current) return;
+		if (renderInFlight.current) {
+			renderQueued.current = true;
+			return;
+		}
+		const view = webView.current;
+		if (!view) return;
+		renderInFlight.current = true;
+		view.postMessage(JSON.stringify(message));
+	}
+
+	// The page reports ready: a fresh page has nothing outstanding from before
+	// its listener attached, so reset the flags before the caller posts.
+	function markReady() {
+		pageReady.current = true;
+		renderInFlight.current = false;
+		renderQueued.current = false;
+	}
+
+	// A render settled: release the one change queued while it was in flight.
+	function settle() {
+		renderInFlight.current = false;
+		if (renderQueued.current && pending.current) {
+			renderQueued.current = false;
+			post(pending.current);
+		}
+	}
+
+	return { post, markReady, settle };
+}
 
 function parsePageMessage(raw: string): PageMessage | null {
 	try {
@@ -65,22 +120,25 @@ function mermaidTheme(colors: ReturnType<typeof useColors>): Record<string, stri
 function ZoomWebView({ source }: { source: string }) {
 	const colors = useColors();
 	const webView = useRef<WebView>(null);
-	const pageReady = useRef(false);
-
-	function postRender() {
-		if (!pageReady.current) return;
-		webView.current?.postMessage(JSON.stringify({ type: "render", source, theme: mermaidTheme(colors), mode: "zoom" }));
-	}
+	const renderPosts = useSerializedRenderPosts(webView);
 
 	function handleMessage(event: WebViewMessageEvent) {
 		const message = parsePageMessage(event.nativeEvent.data);
-		if (message?.type !== "ready") return;
-		pageReady.current = true;
-		postRender();
+		if (message === null) return;
+		if (message.type === "ready") {
+			renderPosts.markReady();
+			renderPosts.post({ type: "render", source, theme: mermaidTheme(colors), mode: "zoom" });
+			return;
+		}
+		// A height or error reply settles the in-flight render, releasing any
+		// change queued while it ran.
+		renderPosts.settle();
 	}
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, same discipline as the inline view
-	useEffect(postRender, [colors.palette, source]);
+	useEffect(() => {
+		renderPosts.post({ type: "render", source, theme: mermaidTheme(colors), mode: "zoom" });
+	}, [colors.palette, source]);
 
 	return (
 		<WebView
@@ -111,35 +169,15 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	const [open, setOpen] = useState(false);
 	const [showSource, setShowSource] = useState(false);
 
-	// The page renders under one fixed element id, so two render messages in
-	// flight would race. renderInFlight guards the post; renderQueued coalesces
-	// at most one change that arrived while waiting for the page's reply.
-	const pageReady = useRef(false);
-	const renderInFlight = useRef(false);
-	const renderQueued = useRef(false);
+	// The app's iOS-only Mono token; Android does not resolve "Menlo", so the
+	// source view and error fallback fall back to the platform monospace face
+	// (markdownStyle.ts's codeFontFamily is the precedent).
+	const codeFontFamily = Platform.OS === "ios" ? fonts.mono : "monospace";
 
 	// The page's bootstrap answers a render message; the source and theme cross
-	// as JSON, never string-interpolated into JS (spec: Security).
-	function postRender() {
-		if (!pageReady.current) return;
-		if (renderInFlight.current) {
-			renderQueued.current = true;
-			return;
-		}
-		const view = webView.current;
-		if (!view) return;
-		renderInFlight.current = true;
-		view.postMessage(JSON.stringify({ type: "render", source, theme: mermaidTheme(colors), mode: "fit" }));
-	}
-
-	// A render settled: release the one change queued while it was in flight.
-	function settleRender() {
-		renderInFlight.current = false;
-		if (renderQueued.current) {
-			renderQueued.current = false;
-			postRender();
-		}
-	}
+	// as JSON, never string-interpolated into JS (spec: Security). The shared
+	// hook serializes posts so a palette flip mid-render cannot race.
+	const renderPosts = useSerializedRenderPosts(webView);
 
 	function handleMessage(event: WebViewMessageEvent) {
 		const message = parsePageMessage(event.nativeEvent.data);
@@ -147,30 +185,42 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 		if (message.type === "ready") {
 			// A fresh page has nothing outstanding from before its listener
 			// attached, so reset and render the current source.
-			pageReady.current = true;
-			renderInFlight.current = false;
-			renderQueued.current = false;
-			postRender();
+			renderPosts.markReady();
+			renderPosts.post({ type: "render", source, theme: mermaidTheme(colors), mode: "fit" });
 			return;
 		}
 		if (message.type === "height") {
 			heightCache.set(source, message.value);
 			setHeight(message.value);
-			settleRender();
+			renderPosts.settle();
 			return;
 		}
 		setFailed(true);
-		settleRender();
+		renderPosts.settle();
 	}
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, same discipline as MarkdownResponse
-	useEffect(postRender, [colors.palette, source]);
+	useEffect(() => {
+		renderPosts.post({ type: "render", source, theme: mermaidTheme(colors), mode: "fit" });
+	}, [colors.palette, source]);
 
 	// Closing the viewer resets the source toggle, so a reopen starts on the
 	// diagram rather than wherever the last visit left it.
 	function close() {
 		setOpen(false);
 		setShowSource(false);
+	}
+
+	// The caller's accessibility actions must keep reaching their handler; the
+	// appended "open" action opens the viewer instead. The Pressable below is
+	// accessible={false}, so this wrapper is the element VoiceOver/TalkBack
+	// focuses, and without this action there is no way to open the viewer.
+	function handleAccessibilityAction(event: AccessibilityActionEvent) {
+		if (event.nativeEvent.actionName === OPEN_ACTION.name) {
+			setOpen(true);
+			return;
+		}
+		onAccessibilityAction?.(event);
 	}
 
 	if (failed) {
@@ -182,7 +232,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 				onAccessibilityAction={onAccessibilityAction}
 				style={[styles.fallback, { backgroundColor: colors.surface, borderColor: colors.border }]}
 			>
-				<Text style={[styles.fallbackSource, { color: colors.text }]}>{source}</Text>
+				<Text style={[styles.fallbackSource, { color: colors.text, fontFamily: codeFontFamily }]}>{source}</Text>
 				<Text style={[styles.fallbackNote, { color: colors.secondary }]}>Couldn't render this diagram.</Text>
 			</View>
 		);
@@ -199,8 +249,8 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 				<View
 					accessible={true}
 					accessibilityLabel="Diagram"
-					accessibilityActions={accessibilityActions}
-					onAccessibilityAction={onAccessibilityAction}
+					accessibilityActions={[...(accessibilityActions ?? []), OPEN_ACTION]}
+					onAccessibilityAction={handleAccessibilityAction}
 					style={{ height: height ?? PLACEHOLDER_HEIGHT }}
 				>
 					<View pointerEvents="none" style={styles.fill}>
@@ -230,7 +280,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 						</View>
 						{showSource ? (
 							<ScrollView contentContainerStyle={styles.sourceContainer}>
-								<Text style={[styles.source, { color: colors.text }]}>{source}</Text>
+								<Text style={[styles.source, { color: colors.text, fontFamily: codeFontFamily }]}>{source}</Text>
 							</ScrollView>
 						) : (
 							<ZoomWebView source={source} />
@@ -257,7 +307,6 @@ const styles = StyleSheet.create({
 	},
 	sourceContainer: { padding: 16 },
 	source: {
-		fontFamily: "Menlo",
 		fontSize: 13,
 		lineHeight: 18,
 	},
@@ -268,7 +317,6 @@ const styles = StyleSheet.create({
 		gap: 6,
 	},
 	fallbackSource: {
-		fontFamily: "Menlo",
 		fontSize: 13,
 		lineHeight: 18,
 	},

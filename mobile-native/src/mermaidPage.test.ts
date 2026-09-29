@@ -13,6 +13,13 @@ describe("MERMAID_PAGE_HTML", () => {
 		expect(MERMAID_PAGE_HTML).toContain("securityLevel");
 		expect(MERMAID_PAGE_HTML).toContain("foreignObject");
 	});
+	it("retains the bundled third-party license notices", () => {
+		// esbuild's legalComments: "eof" appends a "Bundled license information"
+		// block; "none" would strip these notices, which the MIT/MPL/Apache terms
+		// require retaining in the shipped bundle.
+		expect(MERMAID_PAGE_HTML).toContain("Bundled license information");
+		expect(MERMAID_PAGE_HTML).toContain("MIT");
+	});
 	it("is fresh (matches a rebuild)", async () => {
 		expect(await buildMermaidPageHtml()).toBe(MERMAID_PAGE_HTML);
 	});
