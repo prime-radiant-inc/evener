@@ -1,4 +1,4 @@
-import { toolStepSummary } from "@evener/appwire-client";
+import { composeStepWords, toolStepWords } from "@evener/appwire-client";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
@@ -35,10 +35,8 @@ function step(id: string, label: string, args: Record<string, unknown>, over: Pa
 		...over,
 	};
 	const { arguments: argumentsJSON, output } = built.detail;
-	return {
-		...built,
-		detail: { ...built.detail, summary: toolStepSummary({ toolName: label, argumentsJSON, output }) },
-	};
+	const words = toolStepWords({ toolName: label, argumentsJSON, output });
+	return { ...built, detail: { ...built.detail, summary: composeStepWords(words), words } };
 }
 
 const run: Run = {
@@ -107,6 +105,70 @@ describe("a run folded into one line", () => {
 	});
 });
 
+// Spec § Activity run: each step line is "intent sentence, target in Menlo,
+// and a status mark". The target is the package's words.target, whichever
+// sentence leads the line.
+describe("a step line's Menlo target", () => {
+	const menlo = (root: ReactTestInstance) =>
+		texts(root)
+			.filter((node) => node.props.style?.fontFamily === "Menlo")
+			.map(textOf);
+	const one = (detail: RunStep["detail"], label = "read_file"): Run => ({
+		kind: "run",
+		id: "run:w",
+		turnId: "t1",
+		steps: [{ kind: "activity", id: "w", label, family: "tool", state: "completed", detail }],
+	});
+	const drawn = (detail: RunStep["detail"], label?: string) =>
+		render(<RunRow run={one(detail, label)} live={false} expanded onToggle={() => {}} {...where} />);
+
+	it("sets a step's own words' target in Menlo, inside the sentence", () => {
+		const tree = drawn({
+			summary: "Read agent/tree.go · lines 1-4",
+			words: { verb: "Read", target: "agent/tree.go", detail: "lines 1-4" },
+		});
+		expect(menlo(tree.root)).toEqual(["agent/tree.go"]);
+		expect(texts(tree.root).map(textOf)).toContain("Read agent/tree.go · lines 1-4");
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Read agent/tree.go · lines 1-4, done").length,
+		).toBeGreaterThan(0);
+	});
+
+	it("keeps the text after the target, and a detail after that", () => {
+		const tree = drawn(
+			{
+				summary: 'Searched "func settle" in agent (*.go) · 2 hits',
+				words: { verb: "Searched", target: '"func settle"', after: "in agent (*.go)", detail: "2 hits" },
+			},
+			"grep",
+		);
+		expect(menlo(tree.root)).toEqual(['"func settle"']);
+		expect(texts(tree.root).map(textOf)).toContain('Searched "func settle" in agent (*.go) · 2 hits');
+	});
+
+	it("takes an intent's target from the words too", () => {
+		const tree = drawn(
+			{
+				description: "Show the new file",
+				arguments: JSON.stringify({ command: "cd /repo && cat a.go" }),
+				summary: "Ran cat a.go",
+				words: { verb: "Ran", target: "cat a.go" },
+			},
+			"shell",
+		);
+		expect(menlo(tree.root)).toEqual(["cat a.go"]);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Show the new file, cat a.go, done").length,
+		).toBeGreaterThan(0);
+	});
+
+	it("sets nothing in Menlo when the words name no target", () => {
+		const tree = drawn({ summary: "Used compact context", words: { verb: "Used compact context" } }, "compact_context");
+		expect(menlo(tree.root)).toEqual([]);
+		expect(texts(tree.root).map(textOf)).toContain("Used compact context");
+	});
+});
+
 describe("a run expanded into its steps", () => {
 	it("lists each step's intent, its Menlo target and its status mark", () => {
 		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} {...where} />);
@@ -125,12 +187,13 @@ describe("a run expanded into its steps", () => {
 			fontSize: 13,
 			lineHeight: 18,
 		});
-		// A step that reads as its words has no second, Menlo line repeating them.
+		// A step that reads as its words sets their target in Menlo inside them,
+		// with no second line repeating it.
 		expect(
 			texts(tree.root)
 				.filter((node) => node.props.style?.fontFamily === "Menlo")
 				.map(textOf),
-		).toEqual(["agent/session.go"]);
+		).toEqual(["agent/session.go", "go test ./agent/...", "go test ./agent/...", '"Turn"']);
 		const marks = tree.root.findAllByType("SymbolView" as never);
 		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([
 			["checkmark.circle.fill", INK_LOW],
@@ -148,7 +211,7 @@ describe("a run expanded into its steps", () => {
 	});
 
 	it("shows no target for a step whose arguments name none", () => {
-		const bare: Run = { ...run, steps: [step("e", "web_search", { query: "evener" })] };
+		const bare: Run = { ...run, steps: [step("e", "read_file", {})] };
 		const tree = render(<RunRow run={bare} live={false} expanded onToggle={() => {}} {...where} />);
 		expect(texts(tree.root).filter((node) => node.props.style?.fontFamily === "Menlo")).toEqual([]);
 	});

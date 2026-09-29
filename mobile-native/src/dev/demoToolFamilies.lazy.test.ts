@@ -4,6 +4,9 @@ import { expect, it, vi } from "vitest";
 import { createDemoSessions } from "./demoSessions.js";
 
 vi.mock("./demoToolFamilies.js", () => ({
+	recordedToolCwd: () => {
+		throw new Error("read the recorded corpora");
+	},
 	recordedToolFamilies: () => {
 		throw new Error("read the recorded corpora");
 	},

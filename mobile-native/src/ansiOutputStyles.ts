@@ -1,4 +1,9 @@
-import type { AnsiColor, AnsiLine, AnsiRun } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import {
+	type AnsiColor,
+	type AnsiLine,
+	type AnsiRun,
+	parseAnsiLines,
+} from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 
 export interface NativeAnsiTextStyle {
 	color?: string;
@@ -113,4 +118,11 @@ export function expandLineTabs(line: AnsiLine): AnsiLine {
 		column = expanded.column;
 		return { ...run, text: expanded.text };
 	});
+}
+
+/** Output text as the lines a native Text can draw: parsed for ANSI styling,
+ * each tab expanded to its stop (expandLineTabs). Every output view parses
+ * through here, so none draws a tab with no width. */
+export function parseOutputLines(text: string): AnsiLine[] {
+	return parseAnsiLines(text).map(expandLineTabs);
 }

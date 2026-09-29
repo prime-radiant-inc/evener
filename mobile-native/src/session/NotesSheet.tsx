@@ -23,7 +23,7 @@ import {
 	View,
 } from "react-native";
 import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
-import { typeRoles } from "../design/tokens";
+import { scaledType, typeRoles } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
 import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
@@ -409,12 +409,7 @@ function LinkRow({
 				) : null}
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{
-						fontFamily: typeRoles.machine.fontFamily,
-						fontSize: typeRoles.machine.fontSize * scale,
-						lineHeight: typeRoles.machine.lineHeight * scale,
-						color: palette.inkMid,
-					}}
+					style={{ ...scaledType(typeRoles.machine, scale), color: palette.inkMid }}
 				>
 					{wrapAfterSlashes(link.url)}
 				</Text>
