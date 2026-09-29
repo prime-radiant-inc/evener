@@ -3411,7 +3411,10 @@ it.each([
 			throw new Error("catalog unavailable");
 		},
 	],
-	["the catalog doesn't list the plugin", () => ({ name: "acme", plugins: [{ name: "other", description: "Another" }] })],
+	[
+		"the catalog doesn't list the plugin",
+		() => ({ name: "acme", plugins: [{ name: "other", description: "Another" }] }),
+	],
 ])("leaves out About when %s, and shows the rest", async (_name, browse) => {
 	const hub = pageHub([entry("tool", { marketplace: "acme" })]);
 	hub.on("evener/marketplace/browse", browse);
