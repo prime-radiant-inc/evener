@@ -712,34 +712,34 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 // evenerErrorInfo and every field of its own. Data of any other shape, or
 // none, gives way to a bare ErrorData, so the outcome is always readable.
 func (e WireError) NotAccepted(clientMutationID string) WireError {
-	mark := func(data *ErrorData) {
-		data.ClientMutationID = clientMutationID
-		data.MutationOutcome = MutationOutcomeNotAccepted
-		data.RetryDisposition = RetryDispositionNone
-	}
-	e.Data = withErrorData(e.Data, mark)
+	e.Data = markedNotAccepted(e.Data, clientMutationID)
 	return e
 }
 
 var errorDataType = reflect.TypeFor[ErrorData]()
 
-// withErrorData returns a copy of data with change applied to its ErrorData:
-// data itself when it is one, or the ErrorData a struct embeds. The error
-// data types embed ErrorData by value, and Data holds them by value, so
-// reaching the embedded one means copying the struct into something settable;
-// reflection does that for every such type without each one opting in. Data of
-// any other shape is replaced by a fresh ErrorData with change applied.
-func withErrorData(data any, change func(*ErrorData)) any {
+// markedNotAccepted is a copy of data with its ErrorData marked: data itself
+// when it is one, or the ErrorData a struct embeds. The error data types embed
+// ErrorData by value, and Data holds them by value, so reaching the embedded
+// one means copying the struct into something settable; reflection does that
+// for every such type without each one opting in, so a new wrapper can't be
+// missed. Data of any other shape gives way to a fresh ErrorData.
+func markedNotAccepted(data any, clientMutationID string) any {
+	mark := func(data *ErrorData) {
+		data.ClientMutationID = clientMutationID
+		data.MutationOutcome = MutationOutcomeNotAccepted
+		data.RetryDisposition = RetryDispositionNone
+	}
 	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
 		copied := reflect.New(value.Type()).Elem()
 		copied.Set(value)
 		if target, ok := errorDataIn(copied); ok {
-			change(target)
+			mark(target)
 			return copied.Interface()
 		}
 	}
 	var fresh ErrorData
-	change(&fresh)
+	mark(&fresh)
 	return fresh
 }
 
@@ -748,6 +748,8 @@ func errorDataIn(value reflect.Value) (*ErrorData, bool) {
 	if value.Type() == errorDataType {
 		return value.Addr().Interface().(*ErrorData), true
 	}
+	// Only an ErrorData the struct embeds itself: FieldByName also finds one
+	// promoted from a deeper embed (a longer Index), which isn't this data's.
 	field, ok := value.Type().FieldByName("ErrorData")
 	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
 		return nil, false
