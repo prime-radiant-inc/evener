@@ -231,7 +231,7 @@ test("find_session_transcripts: a settled result appends the match count parsed 
     "   root · ~15 turns · updated 2026-07-20 14:32\n\n" +
     "1 match (scope: current_project)";
   expect(d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: args, output }))).toBe(
-    'Searched sessions for "parser regression" · 1 matches',
+    'Searched sessions for "parser regression" · 1 match',
   );
 });
 
@@ -251,7 +251,7 @@ test("find_session_transcripts: a settled catalog result uses its own noun (sess
     "   root · ~5 turns · updated 2026-07-20 14:32\n\n" +
     "1 match (scope: current_project)";
   expect(d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: "{}", output }))).toBe(
-    "Listed recent sessions · 1 sessions",
+    "Listed recent sessions · 1 session",
   );
 });
 

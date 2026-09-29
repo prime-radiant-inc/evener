@@ -223,13 +223,26 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
-	it("carries a task_list call's returned task list on its detail, and only a task_list call's", () => {
-		const raw = [{ id: 1, type: "fix", description: "Fix the drain", prompt: "", status: "in_progress" }];
+	// Only what the checklist draws: a task's prompt, notes and times would ride
+	// every retained task_list row, past the row's text bound.
+	it("carries a task_list call's returned tasks on its detail, only what the checklist draws", () => {
+		const raw = [
+			{
+				id: 1,
+				type: "fix",
+				description: "Fix the drain",
+				prompt: "Make the drain finish before settle reads the tree.",
+				status: "in_progress",
+				notes: ["Seen in 3 of 20 runs."],
+				created_at: "2026-09-28T20:00:00Z",
+			},
+		];
 		const tasks = (toolName: string) =>
 			projectedRow(itemEntry(item({ type: "commandExecution", toolName, argumentsJSON: "{}", raw })));
-		expect(tasks("task_list")).toMatchObject({
-			detail: { tasks: [{ id: 1, type: "fix", description: "Fix the drain", prompt: "", status: "in_progress" }] },
-		});
+		const row = tasks("task_list");
+		expect(row?.kind === "activity" && row.detail.tasks).toEqual([
+			{ id: 1, status: "in_progress", description: "Fix the drain" },
+		]);
 		expect(tasks("shell")).not.toHaveProperty("detail.tasks");
 	});
 
