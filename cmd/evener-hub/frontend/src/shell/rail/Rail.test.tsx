@@ -2919,7 +2919,9 @@ describe("archived rows come from evener/archived/list", () => {
     );
   function installList(rows: NavigationSessionSummary[], total: number, nextCursor?: string) {
     archivedListStore.setState({
-      lists: { [archivedListKey("projects", "p")]: { rows, total, nextCursor, loading: false, error: null } },
+      lists: {
+        [archivedListKey("projects", "p")]: { rows, total, nextCursor, loaded: true, loading: false, error: null },
+      },
     });
   }
 
@@ -3131,6 +3133,56 @@ describe("archived rows come from evener/archived/list", () => {
     act(() => installState([archivedCatalog(3), project]));
     for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
     expect(seen).toHaveLength(1);
+  });
+
+  test("a project counts the navigation's archived total while its first page loads", () => {
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("projects", "p")]: { rows: [], total: 0, loaded: false, loading: true, error: null },
+      },
+    });
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(3);
+  });
+
+  test("a count that moves while the list loads refetches once the stale answer lands", async () => {
+    const client = new FakeClient("ready");
+    const stale = { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    const fresh = { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    let release: () => void = () => undefined;
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      if (seen.length > 1) return fresh;
+      return new Promise((resolve) => {
+        release = () => resolve(stale);
+      });
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    let refreshing: Promise<void> = Promise.resolve();
+    act(() => {
+      refreshing = refreshLoadedArchivedLists();
+    });
+    await waitFor(() => expect(seen).toHaveLength(1));
+    act(() => installState([archivedCatalog(3), project]));
+    await act(async () => {
+      release();
+      await refreshing;
+    });
+    await waitFor(() => expect(seen).toHaveLength(2));
+  });
+
+  test("a session in both navigation and the archived list renders once", () => {
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:old-0", title: "Old run 0" })])]);
+    installList([archivedRow(0)], 1);
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.filter((session) => session.ref === "local:old-0")).toHaveLength(1);
   });
 
   test("the archived fold's overflow row loads the list's next page", async () => {

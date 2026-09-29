@@ -818,12 +818,14 @@ function withArchivedList(project: RailProject, catalog: CatalogKind, list: Arch
   if (cached && cached.list === list) return cached.result;
   const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
   const summaryTotal = project.more_archived ?? 0;
-  const total = list ? list.total : summaryTotal;
+  const total = list?.loaded ? list.total : summaryTotal;
   const result = {
     ...project,
     catalog,
     archived_total: summaryTotal,
-    sessions: [...project.sessions, ...rows],
+    // A session unarchived moments ago can be in navigation's rows and still
+    // in the list until the list refreshes.
+    sessions: dedupeSessions([...project.sessions, ...rows]),
     more_archived: Math.max(0, total - rows.length),
   };
   archivedListProjectCache.set(project, { list, result });
@@ -1275,12 +1277,15 @@ function NavigationRail({
       if (!project.loaded || !project.catalog) continue;
       const total = project.archived_total ?? 0;
       const key = archivedListKey(project.catalog, project.key);
+      const list = archivedLists[key];
+      // A move seen while the list loads waits for the answer, which may carry
+      // the old total.
+      if (list?.loading) continue;
       const countMoved = archivedCountsSeen.current.get(key) !== total;
       archivedCountsSeen.current.set(key, total);
-      const list = archivedLists[key];
       if (!list) {
         if (total > 0) void refreshArchivedList(project.catalog, project.key);
-      } else if (countMoved && !list.loading && list.total !== total) {
+      } else if (countMoved && (!list.loaded || list.total !== total)) {
         void refreshArchivedList(project.catalog, project.key);
       }
     }

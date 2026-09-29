@@ -577,7 +577,7 @@ describe("actions refresh the loaded archived lists", () => {
     client.on("evener/project/delete", () => ({ deleted: [], skipped: [], navigation }));
     connectionStore.getState().connect(client);
     archivedListStore.setState({
-      lists: { [archivedListKey("projects", "p")]: { rows: [], total: 0, loading: false, error: null } },
+      lists: { [archivedListKey("projects", "p")]: { rows: [], total: 0, loaded: true, loading: false, error: null } },
     });
 
     await act(client);
