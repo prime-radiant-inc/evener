@@ -66,11 +66,17 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect(thread.name).toBe(session.title);
 			expect(conversation.items.length).toBeGreaterThan(0);
 			expect(thread.evener.capabilities.sharedNotes).toBe(true);
-			// As the Go encoder writes items: your message is completed, and a
-			// thought with no text yet leaves the text out (omitempty).
+			// As the hub serves items: your message is completed, and a live
+			// thought has text, since the overlay opens its stream only on a
+			// delta with text, and no startedAt, which the wire never carries
+			// for reasoning. So the tray says "Thinking… · N tokens", as it does
+			// on a real hub.
 			for (const item of thread.turns?.flatMap((turn) => turn.items ?? []) ?? []) {
 				if (item.type === "userMessage") expect(item.status).toBe("completed");
-				if (item.type === "reasoning") expect(item).not.toHaveProperty("text");
+				if (item.type === "reasoning") {
+					expect(item.text).toBeTruthy();
+					expect(item).not.toHaveProperty("startedAt");
+				}
 			}
 		}
 	});
