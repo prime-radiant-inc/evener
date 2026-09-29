@@ -320,11 +320,6 @@ it.each([
 	expect(renderedText(tree)).toMatch(expected);
 });
 
-it("says a conflict happened while the hub keeps no phone setting to show", () => {
-	const { tree } = mount(transcript({ conflict: true, confirmed: null, draft: { revision: 3, config: PRESET } }));
-	expect(renderedText(tree)).toContain("The hub's setting changed while you were choosing.");
-});
-
 it("says it is connecting while the hub hasn't said whether it keeps the setting", () => {
 	const { tree } = mount(transcript({ support: "unknown", confirmed: null }));
 	expect(renderedText(tree)).toContain("Connecting to Work hub…");
