@@ -3478,6 +3478,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         }
         const hydrated = threadsStore.getState().watchedThreads.get(ref);
         if (lifecycleActive && hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+        // Durable deletion is terminal for this watcher (see the `deletedRefs`
+        // field doc), and it is checked here - before the client/epoch branch
+        // below, exactly as ensureThread does - so a fenced rejection that
+        // coincides with a rewire returns instead of starting another read
+        // against a ref already known deleted.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
           if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
@@ -3487,9 +3493,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         }
         // Release is terminal for this watcher generation, same as above.
         if (!lifecycleActive) return;
-        // Durable deletion is terminal for this watcher too (see the
-        // `deletedRefs` field doc).
-        if (threadsStore.getState().deletedRefs.has(ref)) return;
         // Same client, same ready epoch: the watcher still owns this ref, so
         // its own lifecycle reads again. Same contract as ensureThread above.
         const owned = ownedWatchedHydrations.get(ref);
