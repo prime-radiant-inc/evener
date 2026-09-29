@@ -652,6 +652,8 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Notes: notes,
 		Items: toolWireRelocated(t, items, func(text string) string {
 			// A job's id is random, in a call's arguments as in its result.
+			// This runs once over every item, so a job keeps its number
+			// from call to call.
 			text = toolWireJobsNumbered(strings.ReplaceAll(text, dir, toolWireCwd))
 			return toolWireRepoRelocated(repo, text)
 		}),
