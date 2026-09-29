@@ -18,6 +18,7 @@ export function ModelPicker({
 	disabled,
 	choose,
 	header,
+	capabilities = false,
 }: {
 	catalog: ModelListResponse | null;
 	loading: boolean;
@@ -29,6 +30,8 @@ export function ModelPicker({
 	choose(model: ModelDescriptor): void;
 	/** Rows above the models, such as the vision model's Session model and Off. */
 	header?: ReactNode;
+	/** Each row shows what its model can do: see images, use tools (spec 11). */
+	capabilities?: boolean;
 }) {
 	const sections: ModelSection[] = catalog ? modelSections(catalog, query, visionOnly) : [];
 	return (
@@ -51,6 +54,7 @@ export function ModelPicker({
 					entry={item}
 					selected={`${item.model.provider}/${item.model.model}` === current}
 					disabled={disabled}
+					capabilities={capabilities}
 					onPress={() => choose(item.model)}
 				/>
 			)}
@@ -73,12 +77,15 @@ export function ChoiceRow({
 	disabled,
 	onPress,
 	children,
+	trailing,
 }: {
 	title: string;
 	selected: boolean;
 	disabled: boolean;
 	onPress(): void;
 	children?: ReactNode;
+	/** Glyphs between the text and the check. */
+	trailing?: ReactNode;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -110,6 +117,7 @@ export function ChoiceRow({
 				</Text>
 				{children}
 			</View>
+			{trailing}
 			{selected ? <SymbolView name="checkmark" tintColor={palette.accentInk} size={17 * scale} /> : null}
 		</Pressable>
 	);
@@ -119,15 +127,23 @@ function ModelRow({
 	entry,
 	selected,
 	disabled,
+	capabilities,
 	onPress,
 }: {
 	entry: ModelPickerEntry;
 	selected: boolean;
 	disabled: boolean;
+	capabilities: boolean;
 	onPress(): void;
 }) {
 	return (
-		<ChoiceRow title={entry.title} selected={selected} disabled={disabled} onPress={onPress}>
+		<ChoiceRow
+			title={entry.title}
+			selected={selected}
+			disabled={disabled}
+			onPress={onPress}
+			trailing={capabilities ? <Capabilities model={entry.model} /> : null}
+		>
 			{entry.detail ? <Caption>{entry.detail}</Caption> : null}
 			{entry.warnings.map((warning) => (
 				<Caption key={warning} warning>
@@ -135,6 +151,27 @@ function ModelRow({
 				</Caption>
 			))}
 		</ChoiceRow>
+	);
+}
+
+/** What a model can do, as bare glyphs in ink-mid, each named for VoiceOver. */
+function Capabilities({ model }: { model: ModelDescriptor }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<>
+			{model.supportsVision ? (
+				<SymbolView name="eye" accessibilityLabel="Sees images" tintColor={palette.inkMid} size={15 * scale} />
+			) : null}
+			{model.supportsTools ? (
+				<SymbolView
+					name="wrench.and.screwdriver"
+					accessibilityLabel="Uses tools"
+					tintColor={palette.inkMid}
+					size={15 * scale}
+				/>
+			) : null}
+		</>
 	);
 }
 

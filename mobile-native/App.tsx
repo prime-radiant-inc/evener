@@ -27,8 +27,8 @@ import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
 import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
-import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
+import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
 import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
@@ -245,8 +245,8 @@ function Navigation() {
 					/>
 					<Stack.Screen
 						name="NewSession"
-						component={NewSessionScreen}
-						options={{ title: "New session" }}
+						component={NewSessionSheet}
+						options={{ presentation: "modal", headerShown: false }}
 					/>
 					<Stack.Screen
 						name="Conversation"
