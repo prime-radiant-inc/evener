@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -114,8 +115,16 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
 			*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
+			// The fallback already worked, so this is an informational
+			// context notice, coded for clients to show only at their most
+			// detailed level, with a neutral title and hint so the
+			// classifier's fallback does not stamp it as an error.
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
+				Source:  string(diagnostic.SourceEvener),
+				Title:   "Context budget",
+				Hint:    "Evener compacted the conversation with its deterministic checkpoint instead. No action needed.",
+				Code:    events.WarningCodeContextBudget,
 			})
 		} else {
 			*history = result
