@@ -22,6 +22,7 @@ import { type ScrollView, View } from "react-native";
 import type { HostsController } from "../hosts/hostsController";
 import { Group, GroupedPage, GroupFooter, TextFieldRow } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
+import { useSheet } from "../sheet/useSheet";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -69,11 +70,19 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	const { name } = route.params;
 	const { ready } = useHubSheet();
 	const [fields, setFields] = useState(() => fieldsFrom(row));
+	// What the page opened with: typed back to it, there is nothing to lose.
+	const [original] = useState(() => fieldsFrom(row));
+	// Compared as the saved entry would carry them: trimmed, and the roots
+	// parsed line by line, so an edit that saves the same is no change.
+	const dirty = JSON.stringify(entryFrom(fields)) !== JSON.stringify(entryFrom(original));
 	// The pair of the row the form opened on: the edit speaks for what the
 	// person saw, so a host changed since then refuses instead of being
 	// overwritten.
 	const [opened] = useState(() => ({ generation: row.generation, incarnationId: row.incarnationId }));
 	const [saving, setSaving] = useState(false);
+	// Cancel, a swipe and Back ask before an edit goes (spec 6), and wait out
+	// a save in flight; a save that lands leaves without asking.
+	const sheet = useSheet({ dirty, busy: saving });
 	// Two taps land before the header re-renders disabled; one update goes.
 	const inFlight = useRef(false);
 	const [error, setError] = useState<{ field: EditableHostField | null; message: string } | null>(null);
@@ -97,7 +106,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 				// and a page already swiped away has left: going back here too
 				// would pop the page beneath.
 				const listed = hosts.getSnapshot().rows?.some((candidate) => candidate.name === name);
-				if (listed && navigation.isFocused()) navigation.goBack();
+				if (listed && navigation.isFocused()) sheet.finish();
 			} catch (refusal) {
 				const field = hostFieldError(refusal);
 				setError({
@@ -112,10 +121,10 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 		navigation.setOptions({
 			title: `Edit ${name}`,
 			// Cancel holds while Save runs: a save that lands goes back itself.
-			headerLeft: () => <HeaderButton label="Cancel" disabled={saving} onPress={() => navigation.goBack()} />,
+			headerLeft: () => <HeaderButton label="Cancel" disabled={saving} onPress={sheet.close} />,
 			headerRight: () => <HeaderButton label="Save" strong disabled={saving || !ready} onPress={() => void save()} />,
 		});
-	}, [navigation, name, hosts, fields, saving, ready, opened]);
+	}, [navigation, name, hosts, fields, saving, ready, opened, sheet]);
 	return (
 		<GroupedPage scrollRef={page}>
 			<SheetStatus />
