@@ -542,9 +542,14 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 	root.queueDelegateDeliveryCommit("delegate-send", outcome.commit)
 
 	c := root.delegateController
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	root.close(ctx, closeOptions{cleanupEnv: true})
+	// Run the close with its normal, live budget. An already-cancelled budget
+	// makes every bounded join in close give up at once, so the child's run
+	// finalization and its session namer can still be writing under the state
+	// dir after close returns; their write then races t.TempDir's RemoveAll and
+	// fails the cleanup with "directory not empty". The abort this test asserts
+	// does not depend on the budget: close releases the queued inline commit
+	// synchronously, and joins the writers here.
+	root.Close()
 	c.mu.Lock()
 	stop := c.stop
 	aggregate := c.durable[fixture.delegateID]
