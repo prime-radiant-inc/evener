@@ -5,7 +5,12 @@ import type {
   TranscriptProjection,
   TurnModel,
 } from "@evener/appwire-client";
-import { configFingerprint, projectThread, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+  configFingerprint,
+  entryDisplayKey,
+  projectThread,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
 import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
@@ -222,7 +227,7 @@ export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[
   return rows.flatMap((row, index) => {
     if (row.kind === "intentGroup") {
       return row.entries.map((entry) => ({
-        id: entry.id,
+        id: entryDisplayKey(entry),
         sourceIndex: entry.sourceIndex,
         index,
         isMessage: false,
@@ -245,7 +250,7 @@ export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[
       }
       return [
         {
-          id: entry.id,
+          id: entryDisplayKey(entry),
           sourceIndex: entry.sourceIndex,
           index,
           isMessage: entry.kind === "item" && entry.isMessage,

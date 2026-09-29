@@ -304,6 +304,54 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
+	it("forgets a scheduled draft when the hub catches up to it before the delayed save (RoboRev #3160)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		notes.blur();
+		expect(notes.getSnapshot().phase).toBe("scheduled");
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(true);
+		// The hub catches up to the same text before the ten seconds elapse;
+		// the scheduled draft must not survive to resurface or resend.
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("reads clean on flush when the hub already holds the edited text, before any blur (RoboRev #3160)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		// The hub catches up while still editing: there is nothing left to save,
+		// so the controller must not stay visibly editing.
+		hub.setSaved("B");
+		expect(notes.getSnapshot().phase).toBe("editing");
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("leaves no live save timer behind when a scheduled sync goes clean (RoboRev #3160)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		notes.blur();
+		// The hub catches up to the scheduled text before the ten seconds elapse.
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		// Typing again before the original ten seconds cancels the pending save,
+		// so the stale timer cannot flush the new text prematurely.
+		notes.edit("B and more");
+		await vi.advanceTimersByTimeAsync(SAVE_AFTER_BLUR_MS);
+		expect(hub.requests).toEqual([]);
+		expect(notes.getSnapshot()).toEqual({ text: "B and more", phase: "editing" });
+	});
+
 	it("keeps the whole chain's sent notes, so an early echo is not evicted (RoboRev #2769 round 6)", async () => {
 		let notes!: NotesController;
 		const hub = harness({

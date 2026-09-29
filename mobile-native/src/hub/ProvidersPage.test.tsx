@@ -901,7 +901,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 
 	// The resume waits: starting against the stale rows would refuse the
 	// device start and strand the flow in its error phase.
-	expect(renderedText(tree)).not.toContain("Sign-in could not be started");
+	expect(renderedText(tree)).not.toContain("couldn't start signing in");
 
 	// The listing the new connection owes lands; the gate clears and the
 	// idle exchange finally runs.
@@ -1007,10 +1007,10 @@ it("holds the re-key window back from the previous hub's recorded client", async
 	await act(async () => {});
 	await act(async () => {});
 
-	// Connecting replaces the surface: no sign-in affordance mounts and no
-	// exchange runs against the previous hub's client — the strongest form
-	// of the round-58 contract, closed one layer up.
-	expect(renderedText(tree)).toContain("Connecting to New hub…");
+	// The first-load wait replaces the surface: no sign-in affordance mounts
+	// and no exchange runs against the previous hub's client — the strongest
+	// form of the round-58 contract, closed one layer up.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(tree.root.findAll((node) => typeof node.props.onSignIn === "function")).toHaveLength(0);
 	expect(stale.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
@@ -1171,13 +1171,14 @@ it("offers no pull-to-refresh and never asks to reconnect", async () => {
 	expect(tree.root.findAll((node) => "refreshing" in node.props || "onRefresh" in node.props)).toHaveLength(0);
 });
 
-it("says Connecting before the first listing, in place of a wall", async () => {
+it("waits quietly, connected, for the first listing, in place of a wall (spec 14)", async () => {
 	const fake = new FakeClient("ready");
 	fake.on("evener/instance/list", () => new Promise(() => {}));
 	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const { tree } = mountPage();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Connecting to Work hub…");
+	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(hasControl(tree, "Add provider")).toBe(false);
 });
 
@@ -1320,4 +1321,125 @@ it("says a connection test's result under the actions", async () => {
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Works");
 	expect(renderedText(tree)).toContain("The provider rejected these credentials.");
+});
+
+async function openWork(tree: ReactTestRenderer) {
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+}
+
+const choose = (text: string) =>
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === text)
+			?.onPress?.(),
+	);
+
+it("asks before Cancel or a swipe throws away an edited provider (spec 6)", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	// A swipe down asks; Keep editing keeps the edit and the sheet.
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	expect(control(tree, "Base URL").props.value).toBe("https://changed.example");
+	// Cancel asks too; Discard goes back to the provider's detail.
+	press(tree, (label) => label === "Cancel");
+	expect(alertRequests).toHaveLength(2);
+	choose("Discard");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(hasControl(tree, "Edit")).toBe(true);
+});
+
+it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	// Nothing pasted yet: Cancel just closes the field.
+	press(tree, (label) => label === "Cancel");
+	expect(alertRequests).toHaveLength(0);
+	expect(hasControl(tree, "API key")).toBe(false);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+	press(tree, (label) => label === "Cancel");
+	choose("Discard");
+	expect(hasControl(tree, "API key")).toBe(false);
+});
+
+it("asks before Done throws away a pasted key", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Done");
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	choose("Discard");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
+it("holds a swipe down while a pasted key is being saved, without asking", async () => {
+	alertRequests.length = 0;
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save key");
+	await act(async () => {});
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests).toHaveLength(0);
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+});
+
+it("closes the editor without asking once its save lands", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(alertRequests).toHaveLength(0);
+});
+
+it("closes the detail with Done while an unrelated write is in flight, with no key pasted", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })]);
+	fake.on("evener/instance/setDefault", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Make default");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
 });

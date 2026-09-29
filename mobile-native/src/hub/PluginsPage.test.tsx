@@ -2708,8 +2708,11 @@ it("holds Add marketplace open, and says Adding, while the add is in flight", as
 	expect(cancel.props.disabled).toBe(true);
 	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
 	expect(onClose).not.toHaveBeenCalled();
+	alertRequests.length = 0;
 	await act(async () => finish());
+	// The add landed: it closes without asking, though a source was typed.
 	expect(onClose).toHaveBeenCalledOnce();
+	expect(alertRequests).toHaveLength(0);
 });
 
 it("heads Add marketplace with the shared sheet header: its title and Cancel, and no second title in the body", () => {
@@ -3171,4 +3174,61 @@ it("never asks to reconnect or offers pull-to-refresh, in any segment", async ()
 	await choose(tree, "Installed");
 	await openDetail(tree, "demo-plugin");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+});
+
+it("waits for the installed list in the same padded space every Hub page waits in", async () => {
+	const hub = pageHub([]);
+	hub.on("evener/plugin/list", () => new Promise(() => {}));
+	const { tree } = await mountPage(hub);
+	const spinner = tree.root.findByProps({ accessibilityLabel: "Loading installed plugins" });
+	expect(spinner.props.style).toEqual({ padding: 32 });
+});
+
+function mountAdd(onClose = vi.fn()) {
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={async () => {}}
+		/>,
+	);
+	return { tree, onClose };
+}
+
+it("closes an untouched Add marketplace at once, by Cancel or a swipe", () => {
+	alertRequests.length = 0;
+	const { tree, onClose } = mountAdd();
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).toHaveBeenCalledTimes(2);
+	expect(alertRequests).toHaveLength(0);
+});
+
+it("asks before Cancel or a swipe throws away a typed source (spec 6)", () => {
+	alertRequests.length = 0;
+	const { tree, onClose } = mountAdd();
+	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).not.toHaveBeenCalled();
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Keep editing")
+			?.onPress?.(),
+	);
+	expect(onClose).not.toHaveBeenCalled();
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Discard")
+			?.onPress?.(),
+	);
+	expect(onClose).toHaveBeenCalledOnce();
 });

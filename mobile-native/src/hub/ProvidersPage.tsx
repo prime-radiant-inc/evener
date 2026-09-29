@@ -7,7 +7,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
 	activeSourceLabel,
@@ -30,16 +30,18 @@ import { appliedInstanceWrite } from "../appliedInstanceWrite";
 import { isReady, whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
 import { destructiveButton } from "../haptics";
-import { ProviderEditor } from "../ProviderEditor";
+import { type LeaveGuard, ProviderEditor } from "../ProviderEditor";
 import { signInKind, statusOf } from "../providers/providerStatus";
 import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
+import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
+import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 
@@ -88,7 +90,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 	// useCredentialStore already survives a flap on its own (connectionChanged
 	// rebinds it - credentialStore.ts), so unlike Plugins/HubSettings this
 	// page reads no retained client: <Providers> below takes only `store`,
-	// never `client` directly, and Connecting below waits on the display alone.
+	// never `client` directly, and FirstLoad below waits on the display alone.
 	const store = useCredentialStore();
 	// The sign-in statuses read under the same authorization the sign-in flow
 	// gets below, so a re-key window never reads the previous hub's.
@@ -134,7 +136,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} label="Loading providers" />
 			</GroupedPage>
 		);
 	const { focus, signIn: signInFocus } = route.params;
@@ -226,7 +228,8 @@ function Providers({
 	const stale = staleListingHeld(core);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [configuration, setConfiguration] = useState<"create" | "edit" | null>(null);
-	const editorSaving = useRef(false);
+	// The open editor's leave check: a swipe down asks it, as its Cancel does.
+	const editorLeave = useRef<LeaveGuard | null>(null);
 	const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
 	// The instance the credential editor was opened for, with the endpoint it
 	// resolved to then: a key typed for that destination is never saved against a
@@ -290,6 +293,10 @@ function Providers({
 		});
 		setKey("");
 	}
+	// A pasted key or credential JSON: leaving it waits out its save, and asks
+	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
+	const leaveKey = (leave: () => void) =>
+		guardLeave({ busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
 	function close() {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -432,7 +439,7 @@ function Providers({
 		<>
 			<GroupedPage>
 				<SheetStatus />
-				{core.listingEstablished ? null : <Connecting hubName={hubName} />}
+				{core.listingEstablished ? null : <FirstLoad hubName={hubName} label="Loading providers" />}
 				{loadError ? <GroupFooter tone="danger">{loadError}</GroupFooter> : null}
 				{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
 				{core.listingEstablished ? (
@@ -489,8 +496,11 @@ function Providers({
 			<ModalFrame
 				visible={!!instance || configuration === "create"}
 				onRequestClose={() => {
-					// A swipe down waits out a save in flight, as Cancel does.
-					if (!editorSaving.current) close();
+					// A swipe down asks before an edit or a pasted key goes (spec 6),
+					// and waits out a save in flight, as each Cancel does.
+					// An open editor always answers for itself, never the key guard.
+					if (configuration) editorLeave.current?.(close);
+					else leaveKey(close);
 				}}
 			>
 				{/* The native modal covers the page's status line, so each sheet in it
@@ -524,13 +534,11 @@ function Providers({
 							if (configuration === "create") close();
 							else setConfiguration(null);
 						}}
-						onSavingChange={(saving) => {
-							editorSaving.current = saving;
-						}}
+						leaveGuard={editorLeave}
 						accessory={<SheetStatus />}
 					/>
 				) : (
-					<Sheet title={instance?.name ?? ""} done={{ onPress: close }} accessory={<SheetStatus />}>
+					<Sheet title={instance?.name ?? ""} done={{ onPress: () => leaveKey(close) }} accessory={<SheetStatus />}>
 						<GroupedPage>
 							{instance ? (
 								<>
@@ -583,8 +591,10 @@ function Providers({
 													tone="accent"
 													disabled={surface.busy}
 													onPress={() => {
-														setEditingCredential(null);
-														setKey("");
+														leaveKey(() => {
+															setEditingCredential(null);
+															setKey("");
+														});
 													}}
 												/>
 											</Group>
@@ -652,7 +662,7 @@ function Providers({
 									)}
 									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
-									{surface.busy && <ActivityIndicator accessibilityLabel="Updating provider" />}
+									{surface.busy && <Spinner label="Updating provider" />}
 									{editingCredential ? null : (
 										<>
 											<Group label="Manage">

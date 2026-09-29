@@ -236,7 +236,7 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+	row, err := hostAddCommittedRow(ctx, client, appwire.HostAddParams{
 		Entry: appwire.HostEntry{
 			Name:       hostName,
 			Address:    dest,

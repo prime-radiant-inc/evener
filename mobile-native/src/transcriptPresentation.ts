@@ -1,5 +1,5 @@
 import {
-	presetContent,
+	contentVectorForConfig,
 	sessionTokens,
 	tokenUnitLabel,
 	type EvenerUsage,
@@ -70,32 +70,20 @@ export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The live run shows its steps: at the levels that show tool calls. At
+	 * Chat and Intent the tray shows the live step, so the run keeps to its
+	 * line (S7). */
+	liveRunsOpen: boolean;
 	usage: SessionAccounting | null;
 	showDuration: boolean;
 }
 
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
-const MAX_ACTION_DETAIL_LENGTH = 256;
-
-function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string | undefined {
-	if (item.family !== "tool" || item.label !== "write_file") return undefined;
-	if (!item.detail.arguments) return undefined;
-	try {
-		const args: unknown = JSON.parse(item.detail.arguments);
-		if (typeof args !== "object" || args === null) return undefined;
-		const record = args as Record<string, unknown>;
-		const path = typeof record.file_path === "string" ? record.file_path.trim() : "";
-		if (!path) return undefined;
-		const boundedPath =
-			path.length > MAX_ACTION_DETAIL_LENGTH ? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...` : path;
-		return `Write ${boundedPath}`;
-	} catch {
-		return undefined;
-	}
-}
 
 function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
-	return item.detail.description?.trim() || writeFileActionSummary(item) || ACTION_SUMMARY_UNAVAILABLE;
+	// The step's own words when it has no rationale: the one path to them
+	// (projectedRows builds them with the package's toolStepSummary).
+	return item.detail.description?.trim() || item.detail.summary || ACTION_SUMMARY_UNAVAILABLE;
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality
@@ -204,14 +192,16 @@ export function projectNativeTranscript(
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
 		};
+	const content = contentVectorForConfig(config);
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
-			.expandByDefault,
+		expandByDefault: content.expandByDefault,
+		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};

@@ -26,6 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -346,6 +348,7 @@ function hubClient(
 	readLatencyMs = 0,
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
+	olderPage: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -381,7 +384,10 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
-			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "thread/turns/list") {
+				await olderPage;
+				return { data: olderTurns };
+			}
 			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
@@ -437,6 +443,9 @@ async function mount(
 		settled = true,
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
+		// Holds the older page until the promise settles, for what happens
+		// while one is on its way.
+		olderPage = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -444,7 +453,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -634,6 +643,28 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(scrolled).toContain(LONG_WHY);
 		expect(body.holds("Leave them")).toBe(true);
 		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
+	});
+
+	// The bar's cap is measured, not a percentage (#3248): arriving by a push,
+	// the screen first lays out at the full window, then shorter once the
+	// header's inset lands, and a dock's content arriving in that same pass left
+	// a percentage cap worked out against the old height until the next layout.
+	it("caps the bottom bar at four fifths of its room's latest height, in points", async () => {
+		const served = thread("ref-question-cap", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+		const room = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar-room",
+		);
+		// Before the room is measured, the cap is the same share as a percentage.
+		expect(flatStyle(bar).maxHeight).toBe("80%");
+		const layout = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 375, height } } });
+		act(() => room.props.onLayout(layout(667)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(533.6);
+		// The header's inset lands: the room is shorter, and so is the cap.
+		act(() => room.props.onLayout(layout(593)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(474.4);
 	});
 
 	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
@@ -1313,6 +1344,39 @@ describe("following the live end (spec 8.2)", () => {
 		expect(pill(tree)).toBeUndefined();
 	});
 
+	// Tapping "↓ new" follows again, but the cap trims the top only once the
+	// list reaches the end: trimming while it still travels would move what it
+	// passes.
+	it("trims past the cap only once the pill's scroll reaches the end", async () => {
+		const served = working("ref-follow-trim");
+		const turns = (served as unknown as { turns: { items: unknown[] }[] }).turns;
+		turns[0].items = Array.from({ length: 510 }, (_, i) => ({
+			id: `u-${i}`,
+			turnId: "turn_1",
+			type: "userMessage",
+			status: "completed",
+			text: `message ${i}`,
+			transcriptKey: `turn_1:${i}:0`,
+			position: { entry: i, item: 0 },
+		}));
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, pageBefore: true };
+		const { tree, hub } = await mount(served);
+		const rows = () => (list(tree).props.data as unknown[]).length;
+		drag(tree, 100);
+		// A reply lands below while you read above: nothing is trimmed, so the
+		// session's rows past the cap are all there.
+		stream(hub, served, "s-trim");
+		const grown = rows();
+		const tap = pill(tree);
+		if (!tap) throw new Error("no new-below pill");
+		act(() => tap.props.onPress());
+		// The pill scrolls toward the end; nothing is trimmed on the way.
+		expect(rows()).toBe(grown);
+		scrollTo(tree, END);
+		expect(rows()).toBeLessThan(grown);
+	});
+
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
 		const { tree, hub } = await mount(served);
@@ -1431,6 +1495,28 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
+});
+
+it("moves the Session with the keyboard through the keyboard controller", async () => {
+	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
+	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
+	expect(avoiding).toHaveLength(1);
+	expect(avoiding[0]?.props).toMatchObject({ behavior: "padding", keyboardVerticalOffset: 64 });
+});
+
 // A short transcript rests just above the composer (spec 8.5), not at the top
 // with the page's empty middle between it and the bar.
 it("rests a short transcript's end just above the composer", async () => {
@@ -1469,6 +1555,40 @@ it("loads older history as you drag near the top", async () => {
 	expect(
 		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 	).toEqual(["cursor-1"]);
+});
+
+// A long session watched from its start: its first read held it all, so
+// there is no cursor, and the 500-row cap trimmed its top while you followed
+// the live end. Scrolling up asks for the trimmed rows by the oldest one kept.
+it("pages the rows the cap trimmed back as you drag near the top", async () => {
+	const served = thread("ref-trimmed", "idle");
+	const items = Array.from({ length: 600 }, (_, i) => ({
+		id: `u-${i}`,
+		turnId: "turn_1",
+		type: "userMessage",
+		status: "completed",
+		text: `message ${i}`,
+		transcriptKey: `turn_1:${i}:0`,
+		position: { entry: i, item: 0 },
+	}));
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ id: "turn_1", status: "completed", itemsView: "default", items },
+	];
+	// The hub's read says it pages this thread from a before position.
+	const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+	evener.capabilities = { ...evener.capabilities, pageBefore: true };
+	const { tree, hub } = await mount(served);
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	scrollTo(tree, 100);
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	const pages = hub.requests.filter((request) => request.method === "thread/turns/list").map((r) => r.params);
+	expect(pages).toHaveLength(1);
+	expect(pages[0]).toMatchObject({ ref: "ref-trimmed", before: { entry: 100, item: 0 } });
+	expect(pages[0]).not.toHaveProperty("cursor");
 });
 
 it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
@@ -2063,6 +2183,56 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(promote).toHaveLength(1);
 		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	// While you type in the composer the queue folds to one line: with one
+	// message, its action; with several, their count, which opens them.
+	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		await press(tree, "Steer now, check the logs");
+		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	it("folds several queued messages to their count while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "2 queued")).toBeDefined();
+		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("folds a held message to its count and Send now while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "1 held")).toBeDefined();
+		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
+		act(() => keyboard.hide());
+	});
+
+	// The keyboard is up for the find bar's field, not the composer.
+	it("keeps the queue open while you type in the find bar", async () => {
+		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// With the dock in the composer's place, a keyboard up isn't the
+	// composer's, so the queue stays as it is.
+	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
+		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
+		expect(field(tree)).toBeUndefined();
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
 	});
 
 	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
@@ -2742,6 +2912,93 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		expect(renderedText(tree)).toContain("1 of 3");
 	});
 
+	describe("following the live end while find pages older history", () => {
+		// Whether new content pulls the list to its end. The size keeps the
+		// unmeasured test list (a 0pt viewport at offset 0) at its end.
+		const followsTheEnd = (tree: ReactTestRenderer) => {
+			flatListCalls.length = 0;
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 0));
+			return flatListCalls.some((call) => call.method === "scrollToEnd");
+		};
+		const unrelated = [askReplyTurn("turn_0", "Unrelated?", "Yes.")];
+
+		it("leaves the end while a page is on its way, and follows again when find closes", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree, hub } = await mount(findTurns("ref-find-close"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(false);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(true);
+			release();
+			await settle();
+		});
+
+		it("stays off the end when find closes after the list moved away from it", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree } = await mount(findTurns("ref-find-moved"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			act(() =>
+				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+			);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 4_000));
+			scrollTo(tree, 1_000);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(false);
+			release();
+			await settle();
+		});
+
+		it("follows again when a search reaches the start of history with no match", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-miss"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(true);
+		});
+
+		it("stays with a match it paged back to", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-paged-match"), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0", "Is it flaky?", "Sometimes.")],
+			});
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			await search(tree, "Is it flaky");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(flatListCalls.filter((call) => call.method === "scrollToIndex")).not.toEqual([]);
+			expect(followsTheEnd(tree)).toBe(false);
+		});
+
+		it("asks for no page when the match is already loaded", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-loaded"), { olderCursor: "cursor-1" });
+			chooseMenu("Find in session");
+			await search(tree, "settle");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+		});
+	});
+
 	it("says there are no older matches once history ends", async () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
@@ -3024,6 +3281,15 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
 		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
+		const { tree } = await mount(thread("ref-next-typing", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		act(() => keyboard.show());
+		expect(capsule(tree)).toBeUndefined();
+		act(() => keyboard.hide());
+		expect(capsule(tree)).toBeDefined();
 	});
 
 	it("shows no Next while the find bar is open", async () => {

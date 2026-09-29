@@ -132,41 +132,14 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			{offersEdit && editBlocked && editHint ? <Text {...caption}>{editHint}</Text> : null}
 			{ghost.buttons.length > 0 ? (
 				<View style={{ flexDirection: "row", gap: 4 }}>
-					{ghost.buttons.map((action) => {
-						const off = disabled || (action === "edit" && editBlocked);
-						const quiet = action === "discard" || action === "cancel";
-						return (
-							<Pressable
-								key={action}
-								accessibilityRole="button"
-								accessibilityLabel={BUTTON_LABELS[action]}
-								accessibilityState={{ disabled: off }}
-								disabled={off}
-								onPress={() => {
-									if (!off) onAction(action);
-								}}
-								style={({ pressed }) => ({
-									minHeight: 44,
-									minWidth: 44,
-									paddingHorizontal: 8,
-									alignItems: "center",
-									justifyContent: "center",
-									opacity: off ? 0.4 : pressed ? 0.6 : 1,
-								})}
-							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{
-										fontSize: 15 * scale,
-										lineHeight: 20 * scale,
-										color: quiet ? palette.inkHi : palette.accentInk,
-									}}
-								>
-									{BUTTON_LABELS[action]}
-								</Text>
-							</Pressable>
-						);
-					})}
+					{ghost.buttons.map((action) => (
+						<GhostButton
+							key={action}
+							action={action}
+							disabled={disabled || (action === "edit" && editBlocked)}
+							onPress={() => onAction(action)}
+						/>
+					))}
 				</View>
 			) : null}
 		</View>
@@ -186,5 +159,54 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		</SwipeRow>
 	) : (
 		bubble
+	);
+}
+
+/** One of a ghost's text buttons: accent, or quiet when it takes the message
+ * away. Disabled, it dims and does nothing. Away from its bubble, it names
+ * the message it acts on (`subject`) to VoiceOver. */
+export function GhostButton({
+	action,
+	subject,
+	disabled,
+	onPress,
+}: {
+	action: GhostAction;
+	subject?: string;
+	disabled: boolean;
+	onPress(): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const quiet = action === "discard" || action === "cancel";
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={subject === undefined ? BUTTON_LABELS[action] : `${BUTTON_LABELS[action]}, ${subject}`}
+			accessibilityState={{ disabled }}
+			disabled={disabled}
+			onPress={() => {
+				if (!disabled) onPress();
+			}}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				minWidth: 44,
+				paddingHorizontal: 8,
+				alignItems: "center",
+				justifyContent: "center",
+				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					fontSize: 15 * scale,
+					lineHeight: 20 * scale,
+					color: quiet ? palette.inkHi : palette.accentInk,
+				}}
+			>
+				{BUTTON_LABELS[action]}
+			</Text>
+		</Pressable>
 	);
 }

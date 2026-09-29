@@ -151,6 +151,13 @@ export function presetContent(level: ContentLevel): ContentVector {
   return cloneVector(CONTENT_VECTORS[level]);
 }
 
+/** The content vector a display config selects: the named preset's vector, or
+ * the custom selection's own. The one lookup the web and native surfaces share,
+ * so they cannot drift on what a level shows. */
+export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
+  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
+}
+
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
  * warnings, and tool-repair notices - the repair already succeeded) are
@@ -489,7 +496,7 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   const normalized = normalizeConfig(config);
   const visible: TranscriptDisplayCategory[] = ["userMessages", "agentMessages", "criticalRows"];
   const hidden: TranscriptDisplayCategory[] = [];
-  const content = normalized.content.kind === "preset" ? presetContent(normalized.content.level) : normalized.content;
+  const content = contentVectorForConfig(normalized);
   const contentCategories: readonly [keyof ContentVector, TranscriptDisplayCategory][] = [
     ["toolIntent", "toolIntent"],
     ["toolCalls", "toolCalls"],

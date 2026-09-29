@@ -214,6 +214,7 @@ describe("projectedRow — item entries", () => {
 			state: "completed",
 			detail: {
 				description: "Run ls",
+				summary: "Ran ls",
 				arguments: '{"cmd":"ls"}',
 				output: "a\nb",
 				callId: "call-1",
@@ -575,6 +576,8 @@ describe("projectedRow — intent entries", () => {
 		expect(row).toMatchObject({ kind: "activity", summaryOnly: true });
 		expect(row?.kind === "activity" && row.detail).toEqual({
 			arguments: '{"cmd":"ls"}',
+			// The step's words, read before its output went.
+			summary: "Ran ls",
 			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 		});
@@ -670,7 +673,7 @@ describe("projectedRow — critical entries", () => {
 			label: "shell",
 			family: "tool",
 			state: "failed",
-			detail: { error: "boom" },
+			detail: { error: "boom", summary: "Ran a command" },
 			turnId: "t1",
 		});
 	});
@@ -1217,7 +1220,14 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "shell",
 		family: "tool",
 		state: "completed",
-		detail: { description: "  run the audit  ", durationMs: 500, callId: "call-1", startedAtMs: 1000, endedAtMs: 1500 },
+		detail: {
+			description: "  run the audit  ",
+			summary: "Ran a command",
+			durationMs: 500,
+			callId: "call-1",
+			startedAtMs: 1000,
+			endedAtMs: 1500,
+		},
 		turnId: "t1",
 		members: [
 			{
@@ -1227,6 +1237,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				state: "completed",
 				detail: {
 					description: "  run the audit  ",
+					summary: "Ran a command",
 					durationMs: 500,
 					callId: "call-1",
 					startedAtMs: 1000,
@@ -1239,7 +1250,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				label: "grep",
 				family: "tool",
 				state: "completed",
-				detail: { description: "grep the results" },
+				detail: { description: "grep the results", summary: "Searched files" },
 				turnId: "t1",
 			},
 		],
@@ -1250,7 +1261,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "shell",
 		family: "tool",
 		state: "failed",
-		detail: { error: "boom", exitCode: 1 },
+		detail: { error: "boom", exitCode: 1, summary: "Ran a command" },
 		turnId: "t1",
 	},
 	{
@@ -1293,7 +1304,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "read_file",
 		family: "tool",
 		state: "running",
-		detail: { description: "read config" },
+		detail: { description: "read config", summary: "Read a file" },
 		turnId: "t2",
 		members: [
 			{
@@ -1301,10 +1312,10 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				label: "read_file",
 				family: "tool",
 				state: "running",
-				detail: { description: "read config" },
+				detail: { description: "read config", summary: "Read a file" },
 				turnId: "t2",
 			},
-			{ id: "c5", label: "view", family: "tool", state: "completed", detail: {}, turnId: "t2" },
+			{ id: "c5", label: "view", family: "tool", state: "completed", detail: { summary: "Used view" }, turnId: "t2" },
 		],
 	},
 	{
@@ -1458,6 +1469,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.summaryOnly).toBeUndefined();
 				expect(c1.detail).toEqual({
 					description: "  run the audit  ",
+					summary: "Ran a command",
 					durationMs: 500,
 					callId: "call-1",
 					startedAtMs: 1000,
@@ -1476,7 +1488,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 			if (c3?.kind !== "activity") throw new Error("differential lost c3");
 			expect(c3.state).toBe("failed");
 			expect(c3.summaryOnly).toBeUndefined();
-			expect(c3.detail).toEqual({ error: "boom", exitCode: 1 });
+			expect(c3.detail).toEqual({ error: "boom", exitCode: 1, summary: "Ran a command" });
 
 			// The running call is the same attention carve-out: full detail,
 			// running state, at every level.
@@ -1484,7 +1496,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 			if (c4?.kind !== "activity") throw new Error("differential lost the c4 cluster");
 			expect(c4.state).toBe("running");
 			expect(c4.summaryOnly).toBeUndefined();
-			expect(c4.detail).toEqual({ description: "read config" });
+			expect(c4.detail).toEqual({ description: "read config", summary: "Read a file" });
 			// The cluster's settled member is the summarized one.
 			expect(c4.members?.[1]?.summaryOnly).toBe(intentRows ? true : undefined);
 		},
@@ -1659,8 +1671,8 @@ describe("a streamed reply's key once history records its round", () => {
 	});
 
 	it("leaves the round's key to its stream when a communicate preview comes first", () => {
-		// A communicate message is recorded with no round id, so its preview
-		// has nothing to share a key with.
+		// A communicate preview keys by its call, so it leaves the round's key
+		// to the round's own stream.
 		const preview = {
 			key: "preview:call-9",
 			kind: "preview",
@@ -1679,8 +1691,48 @@ describe("a streamed reply's key once history records its round", () => {
 			},
 		};
 		const live = keys(streaming([preview]));
-		expect(live).toContain("preview:call-9");
+		expect(live).toContain("call:call-9:agentMessage");
 		expect(live.at(-1)).toBe(keys(streaming()).at(-1));
+	});
+
+	it("keeps a communicate preview's key when history records its message", () => {
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("call:call-9:agentMessage");
+		// The recorded message carries the call id the preview keyed by, so it
+		// keeps the same row key.
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							ask,
+							recorded("item_assistant_9_0", "agentMessage", 0, { callId: "call-9", text: "Heads up" }),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(after).toContain("call:call-9:agentMessage");
+		expect(after).not.toContain("preview:call-9");
 	});
 
 	it("keeps every key unique when a round records two replies around a delegate_send", () => {

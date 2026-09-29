@@ -28,6 +28,7 @@ import type {
 	ThreadCapabilities,
 	ThreadClearResponse,
 	ThreadForkResponse,
+	ThreadItemPosition,
 	ThreadReadResponse,
 	ThreadTurnsListResponse,
 	TranscriptDisplayConfigV1,
@@ -124,7 +125,12 @@ export interface ConversationReadProjection {
 // need the basic open/send/steer/queue/interrupt/close surface.
 export interface ConversationService {
 	open(ref: string, cursor?: string): Promise<MobileConversation>;
-	loadOlder(cursor: string): Promise<{
+	// The page above cursor, or above before (the oldest row kept after a trim):
+	// with both, before rebases the cursor; with before alone the hub mints one.
+	loadOlder(
+		cursor: string | null,
+		before?: ThreadItemPosition,
+	): Promise<{
 		// The page's own wire turns - the store
 		// folds these into conversation.turns via the package's own
 		// identity-aware merge (a turn can be split into fragments across the
@@ -267,6 +273,15 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 			throw new Error(`ConversationService: capability "sharedNotes" is not a boolean`);
 		}
 		caps.sharedNotes = sharedNotes;
+	}
+	// The hub stamps pageBefore on reads and on the status frames it relays; a
+	// hub that predates it omits it, which leaves it absent (no paging before).
+	const pageBefore = obj.pageBefore;
+	if (pageBefore !== undefined) {
+		if (typeof pageBefore !== "boolean") {
+			throw new Error(`ConversationService: capability "pageBefore" is not a boolean`);
+		}
+		caps.pageBefore = pageBefore;
 	}
 	return caps;
 }
@@ -731,7 +746,7 @@ export function createConversationService<ReadLease = unknown>(
 			return publish;
 		},
 
-		async loadOlder(cursor) {
+		async loadOlder(cursor, before) {
 			const pending = pendingProjection;
 			if (ref === null && pending !== null && pending.instanceId !== null) {
 				// A same-session refresh closes mutation gates while validating its
@@ -760,7 +775,8 @@ export function createConversationService<ReadLease = unknown>(
 			try {
 				response = await client.request("thread/turns/list", {
 					ref: threadRef,
-					cursor,
+					...(cursor !== null ? { cursor } : {}),
+					...(before !== undefined ? { before } : {}),
 					itemsView: "fragment",
 					itemLimit: READ_ITEM_LIMIT,
 				});

@@ -115,6 +115,25 @@ describe("decodeInitializeResponse", () => {
     ).toThrow("invalid initialize response");
   });
 
+  // Additive wire changes need no version bump: a hub that advertises a feature
+  // this build has never heard of must not fail the handshake. The decoder
+  // ignores unknown feature keys (and preserves them) while staying strict
+  // about the keys it does know.
+  test("accepts and preserves an additive feature flag the client has never seen", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, someFutureFeature: true },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("still requires the known feature keys to be present", () => {
+    const { tasks: _omitted, ...withoutTasks } = FAKE_INITIALIZE_RESULT.features;
+    expect(() => decodeInitializeResponse({ ...FAKE_INITIALIZE_RESULT, features: withoutTasks })).toThrow(
+      "invalid initialize response",
+    );
+  });
+
   test.each([
     ["serverInfo", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
     ["protocolVersion", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
@@ -137,6 +156,42 @@ describe("decodeInitializeResponse", () => {
     }
     expect(error).toMatchObject({ field, name: "InitializeValidationError" });
     expect(error).toHaveProperty("message", `invalid initialize response at ${field}`);
+  });
+
+  // A newer hub may add fields to serverInfo or navigation: additive, so the
+  // handshake goes on, and the fields the client knows stay strictly checked
+  // (#3226). The top level stays exact (see "rejects extra top-level key").
+  test("ignores a serverInfo or navigation field this client doesn't know", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      serverInfo: { ...FAKE_INITIALIZE_RESULT.serverInfo, build: "2026.09.29" },
+      navigation: { version: 1, generationId: "generation", sequence: 0, somethingLater: { shape: "any" } },
+    };
+    // Passed through untouched, as features' unknown flags are (#3218).
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test.each([
+    [
+      "serverInfo.version missing",
+      "serverInfo",
+      { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub", build: "x" } },
+    ],
+    [
+      "navigation.sequence missing",
+      "navigation",
+      { ...FAKE_INITIALIZE_RESULT, navigation: { version: 1, generationId: "generation", somethingLater: true } },
+    ],
+    [
+      "navigation.readVersions malformed",
+      "navigation.readVersions",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions: [0], somethingLater: true },
+      },
+    ],
+  ])("still refuses %s beside an unknown field", (_case, field, value) => {
+    expect(() => decodeInitializeResponse(value)).toThrow(`invalid initialize response at ${field}`);
   });
 
   test("accepts and preserves maximum safe navigation integers", () => {

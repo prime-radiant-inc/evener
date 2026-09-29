@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
+import { ScrollView, TextInput, View } from "react-native";
 import { basename, childrenPrefix, isDirEntry, parentOf } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPaths } from "./hubPaths";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 
 export function HubPathField({
 	client,
@@ -80,7 +81,7 @@ export function HubPathField({
 							Parent directory
 						</Action>
 					)}
-					{state.loading && <ActivityIndicator accessibilityLabel="Loading hub paths" />}
+					{state.loading && <Spinner label="Loading hub paths" />}
 					<ErrorMessage message={state.error} />
 					{state.paths?.length === 0 && <Copy muted>No matching paths.</Copy>}
 					{state.paths && state.paths.length > 0 && (

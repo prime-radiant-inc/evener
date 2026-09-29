@@ -211,7 +211,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	host.mustRun(hostHubLaunchScript(hostBin, configPath, hostDir, hostPushAddr))
 	awaitHostHubHealth(t, host, hostPushAddr, hostDir+"/hub.log")
 
-	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+	row, err := hostAddCommittedRow(ctx, client, appwire.HostAddParams{
 		Entry: appwire.HostEntry{
 			Name:       hostPushName,
 			Address:    dest,
