@@ -241,3 +241,22 @@ test("kata xw3t: a line with no URL is unaffected - no accidental link", () => {
   expect(screen.queryByRole("link")).toBeNull();
   expect(screen.getByText("no links here")).toBeTruthy();
 });
+
+// When both models refused, web_fetch returns the page's own content in place
+// of an answer; the card shows it, not the JSON around it.
+test("web_fetch body shows the raw content a refused fetch returns", () => {
+  const Body = toolRendererFor("web_fetch").body!;
+  const output = JSON.stringify({
+    fallback: "raw",
+    content: "Release notes body",
+    url: "https://x.test",
+    size_bytes: 18,
+  });
+  render(
+    <Body
+      item={item({ toolName: "web_fetch", argumentsJSON: JSON.stringify({ url: "https://x.test" }), output })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText("Release notes body")).toBeTruthy();
+});

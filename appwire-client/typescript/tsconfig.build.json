@@ -39,6 +39,7 @@
     "watchText.ts",
     "steeringLabels.ts",
     "systemEventCopy.ts",
+    "toolEvidence.ts",
     "toolSummaries.ts",
     "steeringNotifications.ts",
     "activityList.ts",
