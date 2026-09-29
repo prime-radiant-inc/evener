@@ -4,7 +4,7 @@
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, type ReactNode, type Ref } from "react";
 import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -14,11 +14,13 @@ const SECTION_TOP = 20;
 /** A row's leading glyph slot. */
 const GLYPH = 22;
 
-/** The scrolling page a grouped sheet page sits in. */
-export function GroupedPage({ children }: { children: ReactNode }) {
+/** The scrolling page a grouped sheet page sits in. `scrollRef` is for a page
+ * that brings something into view itself, such as a form's refusal. */
+export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
 	const { palette } = useColors();
 	return (
 		<ScrollView
+			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
 			contentContainerStyle={{ paddingBottom: 32 }}
 			keyboardShouldPersistTaps="handled"
