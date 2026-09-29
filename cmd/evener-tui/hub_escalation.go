@@ -65,6 +65,7 @@ func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationReques
 		mode: params.Mode,
 		ref:  ref,
 	})
+	m.setDashboardRowApproval(ref, true)
 	if ref == strings.TrimSpace(m.detail.Ref) && len(m.escalationsByRef[ref]) == 1 {
 		m.promptHeadEscalation()
 	} else if ref == strings.TrimSpace(m.detail.Ref) {
@@ -72,8 +73,53 @@ func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationReques
 	}
 }
 
+// setDashboardRowApproval keeps the dashboard's approval state live (raise /
+// answer / snapshot merge) without a tree refetch — the dashboard has no
+// periodic refresh. It flips the flag on the cached TREE node for ref and
+// rebuilds the rows from the tree, so every derived surface (the ◆ marker,
+// needs-you count, row order, project rollup/summary) follows from one source
+// and cannot drift from the rows that were kept in step by hand. The selected
+// row is restored by identity. No-op when the tree holds no node for ref.
+func (m *hubModel) setDashboardRowApproval(ref string, pending bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return
+	}
+	changed := setTreeNodeApproval(m.tree.Live, ref, pending)
+	for i := range m.tree.Projects {
+		if setTreeNodeApproval(m.tree.Projects[i].Sessions, ref, pending) {
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	selected := m.selectedRowID()
+	m.rows = buildDashboardRows(m.tree)
+	m.restoreRowSelection(selected)
+	m.clampSelection()
+}
+
+// setTreeNodeApproval sets ApprovalPending on the node for ref, recursing into
+// children, and reports whether it changed anything.
+func setTreeNodeApproval(nodes []hubTreeNode, ref string, pending bool) bool {
+	changed := false
+	for i := range nodes {
+		if nodes[i].Ref == ref && nodes[i].ApprovalPending != pending {
+			nodes[i].ApprovalPending = pending
+			changed = true
+		}
+		if setTreeNodeApproval(nodes[i].Children, ref, pending) {
+			changed = true
+		}
+	}
+	return changed
+}
+
 // headEscalation returns the front-of-queue escalation for the CURRENTLY-VIEWED
-// session, or nil when none is answerable here.
+// session, or nil when that ref's queue is empty. It is queue presence for the
+// viewed ref — the queue holds only escalations not yet resolved — so callers
+// may read "non-nil" as "the viewed session is blocked on an approval".
 func (m *hubModel) headEscalation() *hubEscalation {
 	q := m.escalationsByRef[strings.TrimSpace(m.detail.Ref)]
 	if len(q) == 0 {
@@ -100,24 +146,41 @@ func (m *hubModel) surfaceEscalationsOnEntry() {
 // raised it) are added.
 func (m *hubModel) mergeSnapshotEscalations(detail hubSessionDetail) {
 	ref := strings.TrimSpace(detail.Ref)
-	if ref == "" || len(detail.PendingEscalations) == 0 {
+	if ref == "" {
 		return
 	}
-	if m.escalationsByRef == nil {
-		m.escalationsByRef = map[string][]*hubEscalation{}
-	}
-	seen := map[string]bool{}
-	for _, e := range m.escalationsByRef[ref] {
-		seen[e.id] = true
-	}
-	for _, p := range detail.PendingEscalations {
-		if p.EscalationID == "" || seen[p.EscalationID] {
-			continue
+	if len(detail.PendingEscalations) > 0 {
+		if m.escalationsByRef == nil {
+			m.escalationsByRef = map[string][]*hubEscalation{}
 		}
-		seen[p.EscalationID] = true
-		m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
-			id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
-		})
+		seen := map[string]bool{}
+		for _, e := range m.escalationsByRef[ref] {
+			seen[e.id] = true
+		}
+		for _, p := range detail.PendingEscalations {
+			if p.EscalationID == "" || seen[p.EscalationID] {
+				continue
+			}
+			seen[p.EscalationID] = true
+			m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
+				id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
+			})
+		}
+	}
+	// Reconcile the dashboard flag against the merged queue: an authoritative
+	// snapshot with no pending escalation clears a stale flag (a resolution the
+	// user did not perform), while a locally-held live escalation keeps it set.
+	m.setDashboardRowApproval(ref, len(m.escalationsByRef[ref]) > 0)
+}
+
+// removeEscalationByID drops the escalation with id from ref's queue, if any.
+func (m *hubModel) removeEscalationByID(ref, id string) {
+	ref = strings.TrimSpace(ref)
+	for i, e := range m.escalationsByRef[ref] {
+		if e.id == id {
+			m.removeEscalationAt(ref, i)
+			return
+		}
 	}
 }
 
@@ -198,6 +261,7 @@ func (m *hubModel) handleEscalationResolved(msg hubEscalationResolvedMsg) {
 	switch {
 	case msg.err == nil:
 		m.removeEscalationAt(msg.ref, idx)
+		m.setDashboardRowApproval(msg.ref, len(m.escalationsByRef[msg.ref]) > 0)
 		if msg.approve {
 			echo("Allowed once.")
 		} else {
@@ -205,6 +269,7 @@ func (m *hubModel) handleEscalationResolved(msg hubEscalationResolvedMsg) {
 		}
 	case errors.As(msg.err, &we) && we.Code == appwire.CodeConflict:
 		m.removeEscalationAt(msg.ref, idx)
+		m.setDashboardRowApproval(msg.ref, len(m.escalationsByRef[msg.ref]) > 0)
 		echo("Sandbox approval already resolved.")
 	default:
 		q[idx].resolving = false

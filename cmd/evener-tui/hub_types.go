@@ -14,12 +14,11 @@ type hubTreeResponse struct {
 }
 
 type hubTreeProject struct {
-	Key         string
-	Name        string
-	WorkingDir  string
-	RollupState string
-	Sessions    []hubTreeNode
-	identity    string // presentation grouping only; never used as an action key
+	Key        string
+	Name       string
+	WorkingDir string
+	Sessions   []hubTreeNode
+	identity   string // presentation grouping only; never used as an action key
 }
 
 type hubTreeNode struct {
@@ -31,13 +30,16 @@ type hubTreeNode struct {
 	State       string
 	IsSubagent  bool // a delegate thread at any depth (thread.Evener.Kind == "subagent")
 	AskPending  bool
-	Model       string
-	Age         string
-	RowID       string
-	CreatedAt   int64
-	UpdatedAt   int64
-	Live        bool
-	Children    []hubTreeNode
+	// ApprovalPending is true while the session is blocked on a sandbox
+	// escalation (M7), derived from its escalation cards (#2513).
+	ApprovalPending bool
+	Model           string
+	Age             string
+	RowID           string
+	CreatedAt       int64
+	UpdatedAt       int64
+	Live            bool
+	Children        []hubTreeNode
 }
 
 type hubSessionCapabilities struct {
@@ -210,7 +212,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(node.State, node.IsSubagent), identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}
@@ -234,19 +236,20 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 	}
 	project := projectNameFromCWD(thread.CWD)
 	return hubTreeNode{
-		Ref:         ref,
-		SessionID:   thread.SessionID,
-		SourceLabel: sourceLabelFromRefText(ref),
-		Title:       title,
-		Project:     project,
-		State:       thread.Status.Type,
-		IsSubagent:  thread.Evener.Kind == "subagent",
-		AskPending:  thread.Evener.AskPending,
-		Model:       hubThreadModelLabel(thread),
-		RowID:       "project:" + ref,
-		CreatedAt:   thread.CreatedAt,
-		UpdatedAt:   thread.UpdatedAt,
-		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusNotLoaded,
+		Ref:             ref,
+		SessionID:       thread.SessionID,
+		SourceLabel:     sourceLabelFromRefText(ref),
+		Title:           title,
+		Project:         project,
+		State:           thread.Status.Type,
+		IsSubagent:      thread.Evener.Kind == "subagent",
+		AskPending:      thread.Evener.AskPending,
+		ApprovalPending: len(thread.Evener.PendingEscalations) > 0,
+		Model:           hubThreadModelLabel(thread),
+		RowID:           "project:" + ref,
+		CreatedAt:       thread.CreatedAt,
+		UpdatedAt:       thread.UpdatedAt,
+		Live:            thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusNotLoaded,
 	}
 }
 

@@ -42,24 +42,25 @@ const (
 )
 
 type hubRow struct {
-	kind        hubRowKind
-	ref         appwire.Ref
-	sourceLabel string
-	title       string
-	project     string
-	projectKey  string // server-supplied canonical project ID; empty is non-actionable
-	groupKey    string // presentation-only grouping key; never sent to the server
-	state       string
-	isSubagent  bool // a delegate thread at any depth; caps its rollupContribution (#2558)
-	askPending  bool
-	live        bool
-	model       string
-	age         string
-	rowID       string
-	createdAt   int64
-	updatedAt   int64
-	liveCount   int
-	recentCount int
+	kind            hubRowKind
+	ref             appwire.Ref
+	sourceLabel     string
+	title           string
+	project         string
+	projectKey      string // server-supplied canonical project ID; empty is non-actionable
+	groupKey        string // presentation-only grouping key; never sent to the server
+	state           string
+	isSubagent      bool // a delegate thread at any depth; caps its rollupContribution (#2558)
+	askPending      bool
+	approvalPending bool // a sandbox escalation blocks this session mid-turn (#2568)
+	live            bool
+	model           string
+	age             string
+	rowID           string
+	createdAt       int64
+	updatedAt       int64
+	liveCount       int
+	recentCount     int
 }
 
 type hubForkDraft struct {

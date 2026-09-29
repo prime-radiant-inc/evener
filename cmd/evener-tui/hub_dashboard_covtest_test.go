@@ -434,13 +434,10 @@ func TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow(t *testing.T) {
 }
 
 // TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped guards the
-// root cause behind the bug above: hubTreeFromThreads seeds a new project's
-// hubTreeProject.RollupState from whichever thread it encounters first for
-// that project, which can be the subagent rather than its coordinator
-// depending on wire order. The cap must hold there too, not only in
-// buildDashboardRows's fold, or a subagent thread that happens to arrive
-// before its coordinator would seed the rollup with its own uncapped
-// attention state.
+// root cause behind the bug above: the project rollup is folded from each
+// session's rollupContribution, which caps a subagent's non-active state, so a
+// subagent thread that happens to arrive before its coordinator cannot raise
+// the project rollup with its own attention state.
 func TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped(t *testing.T) {
 	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
 		subagentThread("01SUB3", "01COORD3", appwire.ThreadStatusSystemError),

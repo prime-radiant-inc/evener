@@ -45,6 +45,18 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySandboxEscalation(params, notificationPendingRef(notification))
 		}
 		return nil
+	case appwire.NotifyEvenerSandboxEscalationResolved:
+		// Handled ABOVE the mode/session filters so a resolution the user did
+		// not perform — another client, or the daemon's turn-interrupt/close
+		// path — drops the stale card and clears the dashboard's approval flag,
+		// the way the local resolve ACK does for the user's own answer.
+		var params appwire.SandboxEscalationResolved
+		if json.Unmarshal(notification.Params, &params) == nil && params.EscalationID != "" {
+			ref := notificationPendingRef(notification)
+			m.removeEscalationByID(ref, params.EscalationID)
+			m.setDashboardRowApproval(ref, len(m.escalationsByRef[strings.TrimSpace(ref)]) > 0)
+		}
+		return nil
 	case appwire.NotifyThreadNameChanged:
 		// Handled ABOVE the mode/session filters so a rename that arrives while
 		// the dashboard is showing still refreshes the cached row and tree node
@@ -442,8 +454,24 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 	for i := range m.rows {
 		if m.rows[i].ref.String() == ref {
 			m.rows[i].model = model
-			return
+			break
 		}
+	}
+	updateTreeNodeModels(m.tree.Live, ref, model)
+	for i := range m.tree.Projects {
+		updateTreeNodeModels(m.tree.Projects[i].Sessions, ref, model)
+	}
+}
+
+// updateTreeNodeModels keeps the cached tree node's Model in step with a live
+// thread/model/changed push, so a later buildDashboardRows rebuild (a live
+// escalation change, for one) does not revert the row to the stale tree value.
+func updateTreeNodeModels(nodes []hubTreeNode, ref, model string) {
+	for i := range nodes {
+		if nodes[i].Ref == ref {
+			nodes[i].Model = model
+		}
+		updateTreeNodeModels(nodes[i].Children, ref, model)
 	}
 }
 

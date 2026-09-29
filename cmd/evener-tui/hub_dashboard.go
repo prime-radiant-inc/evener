@@ -65,6 +65,61 @@ func rollupContribution(state string, isSubagent bool) string {
 	return state
 }
 
+// dashboardGroupState folds a project's session rows into its rollup state, the
+// way buildDashboardRows seeds and raises each group's state — the highest
+// attention contribution wins (a subagent's non-active state never raises it,
+// rollupContribution). Reading it from the rows, not a cached project state,
+// lets a live approval change recompute the group without a tree fetch.
+func dashboardGroupState(sessions []hubRow) string {
+	state := ""
+	seeded := false
+	for _, row := range sessions {
+		if row.kind != hubRowSession {
+			continue
+		}
+		// A non-active subagent contributes "" (rollupContribution caps it): it
+		// says nothing about the project rollup, so skip it rather than seeding
+		// the group from it and losing a rank-0 sibling state ("ended").
+		capped := rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent)
+		if capped == "" {
+			continue
+		}
+		contribution := stateLabel(capped)
+		// Seed from the first real contribution unconditionally: a rank-0 state
+		// ("ended") still names the group, and seeding "" would lose it.
+		if !seeded || attentionRankLabel(contribution) > attentionRankLabel(state) {
+			state = contribution
+			seeded = true
+		}
+	}
+	return state
+}
+
+// selectedRowID is the identity of the selected dashboard row, so a live
+// row rebuild can restore the selection instead of leaving it on a row that
+// moved.
+func (m hubModel) selectedRowID() string {
+	rows := m.dashboardRows()
+	if m.selected < 0 || m.selected >= len(rows) {
+		return ""
+	}
+	return rows[m.selected].rowID
+}
+
+// restoreRowSelection reselects the row with rowID after a rebuild. A missing
+// id (row gone) leaves the selection for clampSelection to fix.
+func (m *hubModel) restoreRowSelection(rowID string) {
+	if rowID == "" {
+		return
+	}
+	for i, row := range m.dashboardRows() {
+		if row.rowID == rowID {
+			m.selected = i
+			return
+		}
+	}
+}
+
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
 		key        string
@@ -80,7 +135,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	groups := map[string]*dashboardGroup{}
 	var projectOrder []string
 
-	ensureGroup := func(groupKey, projectKey, name, state string) *dashboardGroup {
+	ensureGroup := func(groupKey, projectKey, name string) *dashboardGroup {
 		if name == "" {
 			name = "(no project)"
 		}
@@ -93,7 +148,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			}
 			return group
 		}
-		group := &dashboardGroup{key: groupKey, projectKey: projectKey, name: name, state: state, order: len(projectOrder)}
+		group := &dashboardGroup{key: groupKey, projectKey: projectKey, name: name, order: len(projectOrder)}
 		groups[groupKey] = group
 		projectOrder = append(projectOrder, groupKey)
 		return group
@@ -123,29 +178,26 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			sourceLabel = sourceLabelFromRef(ref)
 		}
 		row := hubRow{
-			kind:        hubRowSession,
-			ref:         ref,
-			sourceLabel: sourceLabel,
-			title:       title,
-			project:     project,
-			projectKey:  projectKey,
-			groupKey:    groupKey,
-			state:       n.State,
-			isSubagent:  n.IsSubagent,
-			askPending:  n.AskPending,
-			live:        n.Live,
-			model:       n.Model,
-			age:         n.Age,
-			rowID:       rowID,
-			createdAt:   n.CreatedAt,
-			updatedAt:   n.UpdatedAt,
+			kind:            hubRowSession,
+			ref:             ref,
+			sourceLabel:     sourceLabel,
+			title:           title,
+			project:         project,
+			projectKey:      projectKey,
+			groupKey:        groupKey,
+			state:           n.State,
+			isSubagent:      n.IsSubagent,
+			askPending:      n.AskPending,
+			approvalPending: n.ApprovalPending,
+			live:            n.Live,
+			model:           n.Model,
+			age:             n.Age,
+			rowID:           rowID,
+			createdAt:       n.CreatedAt,
+			updatedAt:       n.UpdatedAt,
 		}
-		contribution := rollupContribution(n.State, n.IsSubagent)
-		group := ensureGroup(groupKey, projectKey, project, contribution)
+		group := ensureGroup(groupKey, projectKey, project)
 		group.sessions = append(group.sessions, row)
-		if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
-			group.state = stateLabel(contribution)
-		}
 		if recency := rowRecency(row); recency > group.updatedAt {
 			group.updatedAt = recency
 		}
@@ -160,7 +212,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if groupKey == "" {
 			groupKey = presentationProjectGroupKey(p)
 		}
-		ensureGroup(groupKey, projectKey, p.Name, p.RollupState)
+		ensureGroup(groupKey, projectKey, p.Name)
 		for _, n := range p.Sessions {
 			addSession(groupKey, projectKey, p.Name, n)
 			for _, child := range n.Children {
@@ -186,6 +238,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if len(group.sessions) == 0 {
 			continue
 		}
+		group.state = dashboardGroupState(group.sessions)
 		sort.SliceStable(group.sessions, func(i, j int) bool {
 			return dashboardRowLess(group.sessions[i], group.sessions[j])
 		})
@@ -232,13 +285,13 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 }
 
 func dashboardRowLess(a, b hubRow) bool {
-	ar, br := attentionRankLabel(a.state), attentionRankLabel(b.state)
+	ar, br := attentionRankLabel(attentionState(a.state, a.approvalPending)), attentionRankLabel(attentionState(b.state, b.approvalPending))
 	if ar != br {
 		return ar > br
 	}
-	// The dashboard shows no approvals: it reads the ask from its thread/list
-	// rows but not their pending escalations, so it ranks no approval either.
-	aBand, bBand := hubapi.NeedsYouBand(stateLabel(a.state), a.askPending, false), hubapi.NeedsYouBand(stateLabel(b.state), b.askPending, false)
+	// Like the web, an approval shares the questions' blocked band (NeedsYouBand)
+	// and is ranked through the same attention state as the working rows.
+	aBand, bBand := hubapi.NeedsYouBand(attentionState(a.state, a.approvalPending), a.askPending, a.approvalPending), hubapi.NeedsYouBand(attentionState(b.state, b.approvalPending), b.askPending, b.approvalPending)
 	if aBand != bBand {
 		return aBand > bBand
 	}
@@ -289,20 +342,21 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 			sourceLabel = sourceLabelFromRef(ref)
 		}
 		row := hubRow{
-			kind:        hubRowSession,
-			ref:         ref,
-			sourceLabel: sourceLabel,
-			title:       title,
-			project:     project.Name,
-			projectKey:  projectKey,
-			groupKey:    groupKey,
-			state:       state,
-			live:        n.Live,
-			model:       n.Model,
-			age:         n.Age,
-			rowID:       rowID,
-			createdAt:   n.CreatedAt,
-			updatedAt:   n.UpdatedAt,
+			kind:            hubRowSession,
+			ref:             ref,
+			sourceLabel:     sourceLabel,
+			title:           title,
+			project:         project.Name,
+			projectKey:      projectKey,
+			groupKey:        groupKey,
+			state:           state,
+			approvalPending: n.ApprovalPending,
+			live:            n.Live,
+			model:           n.Model,
+			age:             n.Age,
+			rowID:           rowID,
+			createdAt:       n.CreatedAt,
+			updatedAt:       n.UpdatedAt,
 		}
 		if n.Live {
 			liveRows = append(liveRows, row)
@@ -516,7 +570,7 @@ func rowFilterHaystack(row hubRow) string {
 		row.projectKey,
 		row.sourceLabel,
 		row.model,
-		row.state,
+		attentionState(row.state, row.approvalPending),
 		row.age,
 	}, " "))
 }

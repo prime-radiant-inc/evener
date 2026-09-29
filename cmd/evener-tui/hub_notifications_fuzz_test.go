@@ -36,6 +36,7 @@ var notifyMethods = []string{
 	appwire.NotifyEvenerMarketplaceUpdated,
 	appwire.NotifyEvenerPluginUpdated,
 	appwire.NotifyEvenerSandboxEscalationRequested,
+	appwire.NotifyEvenerSandboxEscalationResolved,
 	appwire.NotifyEvenerThreadResync,
 	// The read model (Task 17): the TUI renders history/updated and the
 	// overlay instead of turn/*/item/*.
