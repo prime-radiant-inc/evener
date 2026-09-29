@@ -1,26 +1,44 @@
 import { useEffect, useState } from "react";
 import { AccessibilityInfo } from "react-native";
 
-/** Whether Reduce Motion is on, following the setting as it changes
- * (reanimated's useReducedMotion reads it once, at launch). */
-export function useReduceMotion(): boolean {
-	const [reduce, setReduce] = useState(false);
+/** An on/off accessibility setting, read at mount and followed as it changes
+ * (reanimated's useReducedMotion reads Reduce Motion once, at launch). */
+function useAccessibilitySetting(
+	read: () => Promise<boolean>,
+	event: "reduceMotionChanged" | "reduceTransparencyChanged",
+): boolean {
+	const [on, setOn] = useState(false);
 	useEffect(() => {
 		let live = true;
 		// A change that arrives before the mount-time read answers is newer
 		// than that read, so the read must not overwrite it.
 		let changed = false;
-		void AccessibilityInfo.isReduceMotionEnabled().then((value) => {
-			if (live && !changed) setReduce(value);
+		void read().then((value) => {
+			if (live && !changed) setOn(value);
 		});
-		const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", (value) => {
+		const subscription = AccessibilityInfo.addEventListener(event, (value) => {
 			changed = true;
-			setReduce(value);
+			setOn(value);
 		});
 		return () => {
 			live = false;
 			subscription.remove();
 		};
-	}, []);
-	return reduce;
+	}, [read, event]);
+	return on;
+}
+
+// Read at call time, so a test's spy on AccessibilityInfo is the one called.
+const readReduceMotion = () => AccessibilityInfo.isReduceMotionEnabled();
+const readReduceTransparency = () => AccessibilityInfo.isReduceTransparencyEnabled();
+
+/** Whether Reduce Motion is on, following the setting as it changes. */
+export function useReduceMotion(): boolean {
+	return useAccessibilitySetting(readReduceMotion, "reduceMotionChanged");
+}
+
+/** Whether Reduce Transparency is on (iOS), following the setting as it
+ * changes: system glass gives way to an opaque fill while it is. */
+export function useReduceTransparency(): boolean {
+	return useAccessibilitySetting(readReduceTransparency, "reduceTransparencyChanged");
 }

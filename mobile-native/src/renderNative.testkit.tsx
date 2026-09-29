@@ -39,6 +39,34 @@ import { shrinkingScroller } from "./session/dockCard";
 /** The software keyboard as React Native's Keyboard module reports it: a
  * screen subscribes through Keyboard.addListener, and a test raises or lowers
  * it with show() and hide(). */
+/** The device's system glass and its accessibility settings, as the app
+ * reads them: whether the Liquid Glass API is there (expo-glass-effect's
+ * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
+ * Transparency, which a test turns on or off with setReduceTransparency. */
+export const systemGlass = (() => {
+	const listeners = new Set<(value: boolean) => void>();
+	let reduceTransparency = false;
+	return {
+		available: false,
+		get reduceTransparency() {
+			return reduceTransparency;
+		},
+		listen(listener: (value: boolean) => void) {
+			listeners.add(listener);
+			return { remove: () => listeners.delete(listener) };
+		},
+		setReduceTransparency(value: boolean) {
+			reduceTransparency = value;
+			for (const listener of listeners) listener(value);
+		},
+		reset() {
+			this.available = false;
+			reduceTransparency = false;
+			listeners.clear();
+		},
+	};
+})();
+
 export const keyboard = (() => {
 	const listeners = new Map<string, Set<() => void>>();
 	const emit = (event: string) => {
@@ -197,7 +225,9 @@ export function nativeModuleMock() {
 		AccessibilityInfo: {
 			announceForAccessibility: vi.fn(),
 			isReduceMotionEnabled: () => Promise.resolve(false),
-			addEventListener: () => ({ remove: () => {} }),
+			isReduceTransparencyEnabled: () => Promise.resolve(systemGlass.reduceTransparency),
+			addEventListener: (event: string, listener: (value: boolean) => void) =>
+				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
 		},
 		ActivityIndicator: "ActivityIndicator",
 		// In front the whole test; a test that needs the app to come and go
