@@ -62,4 +62,10 @@ describe("sanitizeMermaidSvg against hostile markup", () => {
     expect(clean).not.toContain("onbegin");
     expect(clean).not.toContain("<a");
   });
+
+  it("strips SVG <image> resource fetches", () => {
+    const hostile = `<svg><image href="https://evil.example/pixel.png"/></svg>`;
+    const clean = sanitizeMermaidSvg(hostile);
+    expect(clean).not.toContain("<image");
+  });
 });

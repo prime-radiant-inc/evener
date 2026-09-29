@@ -1,6 +1,6 @@
 import { MermaidDiagram } from "../../widgets/mermaid";
+import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
-import styles from "./gallery-section.module.css";
 
 // The inline diagram's own gallery section (every src/widgets/* directory needs
 // one). The Markdown section shows the fence-in-prose cases; this section shows

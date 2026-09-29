@@ -10,6 +10,9 @@ import DOMPurify from "dompurify";
 export const MERMAID_FORBID_TAGS = [
   "a",
   "img",
+  // SVG <image href> is a resource-fetch channel with no backstop in the
+  // guard's instrumentation; no mermaid diagram type emits it.
+  "image",
   "video",
   "audio",
   "iframe",
