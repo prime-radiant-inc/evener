@@ -1834,7 +1834,7 @@ func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
 	// and it takes it for "remove" the moment after, where the later retry would
 	// meet it busy (#3178). That run removes the host from the registry while it
 	// holds the gate, so the host gone from the registry and the gate free again
-	// is the point past which it no longer touches the name.
+	// is the point past which it no longer contends for the gate.
 	unwedge()
 	waitFor(t, func() bool {
 		if _, registered := reg.Get("side"); registered {
