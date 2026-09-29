@@ -197,6 +197,29 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	it("shows a job's status and what it runs, not the JSON around them", () => {
+		expect(real("call_job_status")).toEqual([
+			{ kind: "output", text: "running — printf 'started\\n'; sleep 10", lines: 1 },
+		]);
+	});
+
+	// The line says only the stop's status; its evidence keeps the whole footer.
+	it("shows a job stop's whole footer", () => {
+		expect(real("call_job_stop")).toEqual([
+			{
+				kind: "output",
+				text: "[shell job_fixture · cancelled · cancelled_by_request · stopped_by_parent]",
+				lines: 1,
+			},
+		]);
+	});
+
+	it("shows what a job check printed when it isn't the tool's JSON", () => {
+		expect(stepEvidence({ label: "job_status", detail: { output: "not json" } })).toEqual([
+			{ kind: "output", text: "not json", lines: 1 },
+		]);
+	});
+
 	it("shows a command's output without the shell tool's exit footer", () => {
 		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
 	});

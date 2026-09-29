@@ -9,6 +9,7 @@ import {
 	diffStats,
 	editDiffText,
 	filePathOf,
+	jobStatusDisplay,
 	freshNotes,
 	lineCount,
 	parseArgs,
@@ -19,6 +20,7 @@ import {
 	skillContext,
 	str,
 	toolFamily,
+	toolJSONResult,
 	turns,
 	webFetchResult,
 	worktreeMessage,
@@ -142,6 +144,16 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		case "worktree":
 			// What the operation says it did, not the JSON around it.
 			return rawOutput(worktreeMessage(text) ?? text);
+		case "jobs": {
+			// A job check: its status and what it runs, not the JSON around
+			// them. A list and a stop print lines of their own.
+			const job = toolJSONResult(text);
+			const status = job ? str(job, "status") : undefined;
+			if (!job || !status) return rawOutput(text);
+			const description = str(job, "description");
+			const line = jobStatusDisplay(status, str(job, "reason"));
+			return rawOutput(description ? `${line} — ${description}` : line);
+		}
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
