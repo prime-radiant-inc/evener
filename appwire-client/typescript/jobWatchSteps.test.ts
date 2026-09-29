@@ -29,3 +29,17 @@ test("shows nothing more for a create with no note or a terminal catch-up, and c
     "No watches.",
   );
 });
+
+// An inspect names what the watch watched for in every state, and its note
+// once: a note-only watch's trigger phrase already is its note.
+test("words an inspected watch's trigger in every state, and its note once", () => {
+  const inspect = (raw: Record<string, unknown>) =>
+    jobWatchEvidence({ toolName: "job_watch", argumentsJSON: '{"operation":"inspect"}', raw });
+  const timer = { watch_id: "watch_x", source: "self", condition: "after_seconds: 300; note: n", note: "n" };
+  expect(inspect({ ...timer, watching: false, end_reason: "fired" })).toBe("ended: fired\nin 5m · this session\nn");
+  expect(inspect({ ...timer, watching: false })).toBe("pending\nin 5m · this session\nn");
+  expect(
+    inspect({ watch_id: "watch_x", source: "self", watching: true, condition: "note: Check CI", note: "Check CI" }),
+  ).toBe("Check CI · this session");
+  expect(inspect({ watch_id: "watch_x", watching: false })).toBe("");
+});

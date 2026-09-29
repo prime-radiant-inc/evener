@@ -343,31 +343,34 @@ export function watchRowStateWord(row: WatchRow): string {
   return state === "missing" ? "not found" : state;
 }
 
+// A watch row's trigger and source in words ("in 5m · this session"),
+// whatever became of the watch, and whether those words already name its
+// note: a note-only watch's trigger is its note.
+function rowTrigger(row: WatchRow): { phrase: string; namesNote: boolean } {
+  const source = sourceLabel(row.source);
+  if (!row.condition) return { phrase: source, namesNote: false };
+  const parsed = parseConditionText(row.condition, row.note);
+  // The trigger wording comes from the shared composer, so a row and the
+  // watch card can never word the same condition differently.
+  const { timer, bits } = watchTriggerPhrases(parsed);
+  if (timer) return { phrase: `${timer} · ${source}`, namesNote: false };
+  if (bits.length > 0) return { phrase: `${bits.join(" · ")} · ${source}`, namesNote: false };
+  // No trigger bits parsed: the condition is either a bare note or
+  // unrecognized grammar. A note-only row still names its note (the
+  // structured field verbatim, else the parsed note: clause), never the raw
+  // Condition grammar ("note: …"). Anything else names just the source
+  // rather than echoing machine tokens.
+  const fallbackNote = row.note ?? parsed.note;
+  if (fallbackNote) return { phrase: `${fallbackNote} · ${source}`, namesNote: true };
+  return { phrase: source, namesNote: false };
+}
+
 /** A watch row's trigger and source in words ("in 5m · this session"), or
  * what became of it ("ended: fired", "not found"). List rows and inspect
  * bodies share it so the two never drift. */
 export function rowConditionPhrase(row: WatchRow): string {
   const state = watchDisplayState(row);
-  if (state === "watching") {
-    if (row.condition) {
-      const source = sourceLabel(row.source);
-      const parsed = parseConditionText(row.condition, row.note);
-      // The trigger wording comes from the shared composer, so this row and
-      // the watch card can never word the same condition differently.
-      const { timer, bits } = watchTriggerPhrases(parsed);
-      if (timer) return `${timer} · ${source}`;
-      if (bits.length > 0) return `${bits.join(" · ")} · ${source}`;
-      // No trigger bits parsed: the condition is either a bare note or
-      // unrecognized grammar. A note-only row still names its note (the
-      // structured field verbatim, else the parsed note: clause), never the
-      // raw Condition grammar ("note: …"). Anything else names just the
-      // source rather than echoing machine tokens.
-      const fallbackNote = row.note ?? parsed.note;
-      if (fallbackNote) return `${fallbackNote} · ${source}`;
-      return source;
-    }
-    return sourceLabel(row.source);
-  }
+  if (state === "watching") return rowTrigger(row).phrase;
   // A missing watch has no source to name: sourceLabel would invent "this
   // session" for a watch that is not there.
   if (state === "missing") return "not found";
@@ -377,7 +380,8 @@ export function rowConditionPhrase(row: WatchRow): string {
 
 /** What a job_watch step shows when opened, in words, as the web's body shows
  * it: a list's rows ("watching  watch_x  in 5m · this session"), an inspected
- * watch's trigger and note, a create's note. "" when the line says it all (a
+ * watch's trigger (after what became of it, once it ended or waits) and note,
+ * a create's note. "" when the line says it all (a
  * clear, a terminal catch-up, a create with no note); undefined when the
  * step's state isn't one this build reads, so a client shows what the tool
  * printed. */
@@ -397,7 +401,18 @@ export function jobWatchEvidence(step: JobWatchStep): string | undefined {
     case "inspect": {
       const row = normalizeRow(raw);
       if (!row) return undefined;
-      return row.note ? `${rowConditionPhrase(row)}\n${row.note}` : rowConditionPhrase(row);
+      // The line names the watch and its state; a watch that isn't there has
+      // nothing more to show.
+      const state = watchDisplayState(row);
+      if (state === "missing") return "";
+      // What it watched for, in every state: an ended or pending watch says
+      // what became of it first. Its note follows, unless the trigger's
+      // words already are the note.
+      const trigger = rowTrigger(row);
+      const lines = state === "watching" ? [] : [state === "pending" ? "pending" : rowConditionPhrase(row)];
+      lines.push(trigger.phrase);
+      if (row.note && !trigger.namesNote) lines.push(row.note);
+      return lines.join("\n");
     }
     case "clear":
       return "";
