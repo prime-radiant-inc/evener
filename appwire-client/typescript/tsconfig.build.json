@@ -41,6 +41,7 @@
     "activityMerge.ts",
     "itemFailure.ts",
     "jobOutput.ts",
+    "hostMutations.ts",
     "hubOverview.ts",
     "hubUpdate.ts",
     "model.ts",
