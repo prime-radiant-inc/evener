@@ -2432,10 +2432,13 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Typing in the composer: Next steps aside and the queue folds to one line,
-	// so the transcript keeps its room; both return when the keyboard lowers.
-	// A keyboard up for a dock's own field is not this.
-	const typing = keyboardShown && composerShown;
+	// Typing in the composer: Next and the header's chips and note step aside,
+	// and the queue folds to one line, so the transcript keeps its room; all of
+	// it returns when the keyboard lowers.
+	// A keyboard up for a dock's field or the find bar is not this: the find
+	// bar's own field raises it with the composer still mounted. (The header
+	// keeps the find bar in place itself, whatever hides the chips.)
+	const typing = keyboardShown && composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
@@ -2815,7 +2818,7 @@ export function ConversationScreen({
 										/>
 									) : undefined
 								}
-								hidden={headerHiding.hidden}
+								hidden={headerHiding.hidden || typing}
 								onChip={openChip}
 								notes={
 									notesPreview ? (
