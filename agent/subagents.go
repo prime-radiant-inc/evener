@@ -122,6 +122,13 @@ type subagent struct {
 	disposeGated bool
 }
 
+// startBlockedLocked reports whether the child can't take a new generation
+// now: a run, a drive or a finalizer is in flight, or worktree disposal holds
+// it. The caller holds a.mu.
+func (a *subagent) startBlockedLocked() bool {
+	return a.running || a.driving || a.finalizing || a.disposeGated
+}
+
 type preparedSubagentRun struct {
 	sub                *subagent
 	input              string

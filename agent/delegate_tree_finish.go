@@ -153,6 +153,11 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The finished generation's lease is no longer exact here, so the
+	// finalizing runtime is released by identity before the lease check.
+	if live := c.live[lease.delegateID]; live != nil && runtime != nil && live.finalizingRuntime == runtime {
+		live.finalizingRuntime = nil
+	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
 }
@@ -242,13 +247,41 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// boundRuntimeLocked is the runtime bound to lease's generation, or nil when
+// the lease is not the live binding's. The caller holds c.mu.
+func (c *delegateTreeController) boundRuntimeLocked(lease delegateLease) *Session {
+	live := c.live[lease.delegateID]
+	if live == nil || live.binding == nil || live.binding.lease != lease {
+		return nil
+	}
+	return live.binding.runtime
+}
+
+// awaitFinalizationLocked marks runtime as still finalizing once decision has
+// finished its generation: every caller of FinishGeneration and
+// FinishNoAction reports quiescence for that runtime when its finalize tail
+// is done. The caller holds c.mu.
+func (c *delegateTreeController) awaitFinalizationLocked(decision finishDecision, runtime *Session) {
+	if runtime == nil || !decision.releaseGeneration || decision.events == nil {
+		return
+	}
+	if live := c.live[decision.lease.delegateID]; live != nil {
+		live.finalizingRuntime = runtime
+	}
+}
+
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	runtime := c.boundRuntimeLocked(lease)
+	decision := c.reduceGenerationFinishIntent(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	}))
+	})
+	plans, cancel, err := c.executeFinishDecisionLocked(decision)
+	if err == nil {
+		c.awaitFinalizationLocked(decision, runtime)
+	}
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -266,11 +299,16 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		c.mu.Unlock()
 		return delegateMutationPlans{}, noAction.err
 	}
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	runtime := c.boundRuntimeLocked(claim.lease)
+	decision := c.reduceGenerationFinishIntent(finishIntent{
 		lease:              claim.lease,
 		finish:             noAction.finish,
 		authorizedNoAction: true,
-	}))
+	})
+	plans, cancel, err := c.executeFinishDecisionLocked(decision)
+	if err == nil {
+		c.awaitFinalizationLocked(decision, runtime)
+	}
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()

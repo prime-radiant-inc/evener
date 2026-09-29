@@ -183,6 +183,14 @@ type delegateLiveState struct {
 	// ReportActivityPhase, which resets the baseline to activityAt.
 	quietNotifiedAt time.Time
 	quietClaim      *delegateQuietAttentionClaim
+	// finalizingRuntime is the runtime whose generation FinishGeneration just
+	// finished while that runtime's own finalize tail is still running: the
+	// aggregate already reads idle, and its parent may already hold the
+	// result, but the child is not ready for another generation until the
+	// tail reports quiescence (ReportFinalizationQuiesced). ReserveStart
+	// refuses while it is still the resident runtime, so idle means ready for
+	// a send.
+	finalizingRuntime *Session
 }
 
 type delegateSnapshot struct {
