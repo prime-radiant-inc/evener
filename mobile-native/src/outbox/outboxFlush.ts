@@ -66,9 +66,12 @@ export class OutboxFlush {
 	/** Screens' targets this connection is settling for them right now. */
 	private readonly settlingForScreens = new Map<string, symbol>();
 	private unsubscribe: (() => void) | null = null;
-	/** A look again after storage failed, and how many failed in a row. */
+	/** A look again after storage failed, how many looks failed in a row,
+	 * and how many outbox reads after a settle have failed on this connection
+	 * (a look that met one doesn't count as a success). */
 	private retry: ReturnType<typeof setTimeout> | null = null;
 	private failures = 0;
+	private readFailures = 0;
 
 	/** `runtime` is read at the first ready connection: a message kept from an
 	 * earlier launch can only be found in the mutations database. */
@@ -83,7 +86,9 @@ export class OutboxFlush {
 		this.owned.clear();
 		this.touched.clear();
 		this.settlingForScreens.clear();
-		this.stopRetrying();
+		this.clearRetry();
+		this.failures = 0;
+		this.readFailures = 0;
 		// The runtime calls storage listeners synchronously, and unsubscribing
 		// deletes this one at once, so no callback of an earlier bind runs after
 		// this line. A check one started before holds the claim it found, and
@@ -94,8 +99,6 @@ export class OutboxFlush {
 		this.client = client;
 		this.generation += 1;
 		if (hubId === null || client === null) return;
-		const runtime = this.runtime();
-		this.unsubscribe = runtime.subscribeStorage((keys) => this.changed(runtime, keys));
 		void this.flush().catch(() => undefined);
 	}
 
@@ -104,9 +107,13 @@ export class OutboxFlush {
 	async flush(): Promise<void> {
 		const { hubId, client, generation } = this;
 		if (hubId === null || client === null || client.state !== "ready") return;
-		const runtime = this.runtime();
+		let runtime: FlushRuntime;
 		let keys: string[];
 		try {
+			// Opening the mutations database can throw: it is retried like any
+			// other storage failure, never thrown into the app.
+			runtime = this.runtime();
+			this.watch(runtime);
 			// A fresh runtime dispatches nothing until started.
 			await runtime.start();
 			keys = await runtime.storage.listTargetRefs();
@@ -117,7 +124,8 @@ export class OutboxFlush {
 			return;
 		}
 		if (generation !== this.generation) return;
-		this.stopRetrying();
+		this.clearRetry();
+		const readFailures = this.readFailures;
 		// Every target settles at once, as the web's handleReady does, so a read
 		// the hub is slow to answer holds up no other. A claim is taken before a
 		// settle's first await, so a flush running beside this one finds the
@@ -126,10 +134,25 @@ export class OutboxFlush {
 		await Promise.all(
 			keys.map((key) => {
 				const target = parseTargetKey(key);
-				if (target === null || target.hubId !== hubId || this.owned.has(key)) return undefined;
+				if (target === null || target.hubId !== hubId) return undefined;
+				// A claim whose registration is gone (a session screen took the
+				// target over, then let it go) holds nothing: take it again.
+				const claim = this.owned.get(key);
+				if (claim !== undefined && !claim.settling && runtime.targetClient(hubId, target.ref) === undefined)
+					this.owned.delete(key);
+				if (this.owned.has(key)) return undefined;
 				return this.settle(runtime, key, hubId, target.ref, client).catch(() => undefined);
 			}),
 		);
+		// A look that met no storage failure ends the run of failures.
+		if (generation === this.generation && this.readFailures === readFailures) this.failures = 0;
+	}
+
+	/** Follows storage for the bound connection, once per bind: bind() ends
+	 * the watch, and the runtime calls it synchronously, so no callback of an
+	 * earlier bind runs after that. */
+	private watch(runtime: FlushRuntime): void {
+		if (this.unsubscribe === null) this.unsubscribe = runtime.subscribeStorage((keys) => this.changed(runtime, keys));
 	}
 
 	dispose(): void {
@@ -228,7 +251,9 @@ export class OutboxFlush {
 		try {
 			waiting = await this.waiting(runtime, key);
 		} catch {
-			if (this.release(key, claim)) this.retryLater(generation);
+			if (!this.release(key, claim)) return;
+			this.readFailures += 1;
+			this.retryLater(generation);
 			return;
 		}
 		if (!waiting) this.release(key, claim);
@@ -246,10 +271,9 @@ export class OutboxFlush {
 		}, reconnectDelay(this.failures));
 	}
 
-	private stopRetrying(): void {
+	private clearRetry(): void {
 		if (this.retry !== null) clearTimeout(this.retry);
 		this.retry = null;
-		this.failures = 0;
 	}
 
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {

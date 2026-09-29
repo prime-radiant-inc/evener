@@ -526,6 +526,95 @@ it("lets go of a target whose outbox can't be read after it settles, and looks a
 	}
 });
 
+it("takes a target back once a screen that took it over lets it go", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => read("ref-1"));
+	// The first send is out, so the flush keeps its claim.
+	const starts: (() => void)[] = [];
+	client.on(
+		"turn/start",
+		(params) =>
+			new Promise((resolve) => {
+				starts.push(() => resolve(applied(params)));
+			}),
+	);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(starts).toHaveLength(1));
+	// A session screen opens the session, taking the target over, and leaves.
+	const unregister = outbox.registerTarget("hub-1", "ref-1", client);
+	unregister();
+	expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined();
+
+	await flush.flush();
+
+	await vi.waitFor(() => expect(methods(client).filter((method) => method === "thread/read")).toHaveLength(2));
+	flush.dispose();
+	await outbox.stop();
+});
+
+it("backs off further while the outbox stays unreadable after each settle", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outbox = runtime();
+		await outbox.submit(message());
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => read("ref-1"));
+		client.on("turn/start", applied);
+		const listOutbox = outbox.storage.listOutbox.bind(outbox.storage);
+		vi.spyOn(outbox.storage, "listOutbox").mockImplementation(async (...args) => {
+			if (methods(client).includes("turn/start")) throw new Error("the database is busy");
+			return listOutbox(...args);
+		});
+		const reads = () => methods(client).filter((method) => method === "thread/read").length;
+		const flush = new OutboxFlush(() => outbox);
+		flush.bind("hub-1", client);
+		await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
+		await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
+		const first = reads();
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		await vi.waitFor(() => expect(reads()).toBe(first + 1));
+		// The second failure in a row waits the second step, not the first again.
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		expect(reads()).toBe(first + 1);
+		await vi.advanceTimersByTimeAsync(reconnectDelay(2) - reconnectDelay(1));
+		await vi.waitFor(() => expect(reads()).toBe(first + 2));
+		flush.dispose();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("never throws when the mutations database can't open, and looks again after a backoff", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outbox = runtime();
+		await outbox.submit(message());
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => read("ref-1"));
+		client.on("turn/start", applied);
+		let opens = 0;
+		const flush = new OutboxFlush(() => {
+			opens += 1;
+			if (opens === 1) throw new Error("the mutations database couldn't open");
+			return outbox;
+		});
+
+		expect(() => flush.bind("hub-1", client)).not.toThrow();
+		await expect(flush.flush()).resolves.toBeUndefined();
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+
+		await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
+		flush.dispose();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("reads the hub and ref out of a composite target key", () => {
 	expect(parseTargetKey(JSON.stringify(["hub-1", "local:thread-1"]))).toEqual({
 		hubId: "hub-1",
