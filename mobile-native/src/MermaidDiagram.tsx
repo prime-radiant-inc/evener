@@ -17,8 +17,21 @@ import { codeFontFamily } from "./markdownStyle";
 import { Action, styles as uiStyles, useColors } from "./ui";
 
 // Last posted height per source, so a FlatList remount shows the right-sized
-// placeholder while the WebView re-initializes (spec: Known trade-offs).
+// placeholder while the WebView re-initializes (spec: Known trade-offs). A long
+// session can show many distinct diagrams, so the map is bounded: writing past
+// the limit drops the source measured longest ago.
 const heightCache = new Map<string, number>();
+const HEIGHT_CACHE_LIMIT = 100;
+
+function cacheHeight(source: string, height: number) {
+	// Re-inserted so sources stay in the order they were last written to.
+	heightCache.delete(source);
+	heightCache.set(source, height);
+	if (heightCache.size > HEIGHT_CACHE_LIMIT) {
+		const longestAgo = heightCache.keys().next().value;
+		if (longestAgo !== undefined) heightCache.delete(longestAgo);
+	}
+}
 
 const PLACEHOLDER_HEIGHT = 120;
 
@@ -221,7 +234,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 			// reply for a source that has since been superseded must not be stored
 			// here. Its arrival still settles the queue below.
 			if (message.id === renderPosts.latestId()) {
-				heightCache.set(source, message.value);
+				cacheHeight(source, message.value);
 				setHeight(message.value);
 			}
 			renderPosts.settle();

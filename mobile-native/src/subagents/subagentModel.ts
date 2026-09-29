@@ -272,6 +272,22 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	return { text: "Working" };
 }
 
+// Each tree's rows by id, built once however many transcript rows ask of it.
+const rowsByTree = new WeakMap<ActivityTree, Map<string, SubagentRow>>();
+
+/** A finished subagent's outcome line from the coordinator's tree, as the
+ * Subagents list gives it (subagentWhy): its report's opening line, or
+ * "Finished" or "Stopped". Undefined while the tree doesn't show it done. */
+export function subagentOutcome(tree: ActivityTree, delegateId: string, now: number): string | undefined {
+	let rows = rowsByTree.get(tree);
+	if (!rows) {
+		rows = new Map(flattenSubagents(tree).map((row) => [row.id, row]));
+		rowsByTree.set(tree, rows);
+	}
+	const row = rows.get(delegateId);
+	return row?.state === "done" ? subagentWhy(row, now).text : undefined;
+}
+
 export interface SubagentLastLine {
 	/** Who started it, for a subagent another subagent started. */
 	parent?: string;

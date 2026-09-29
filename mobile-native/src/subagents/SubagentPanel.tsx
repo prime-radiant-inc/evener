@@ -39,6 +39,9 @@ export interface SubagentPanelProps {
 	/** This subagent's row in its coordinator's tree, as the tree reads it, for
 	 * the screen's state line to time its run as the row does. */
 	onRow?(row: SubagentRow | null): void;
+	/** The coordinator's thread the panel reads its tree under, as it reads
+	 * now, for the screen's own hold on the same tree. */
+	onTreeThread?(threadId: string): void;
 	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
 }
 
@@ -53,6 +56,7 @@ export function SubagentPanel({
 	barShown,
 	showToast,
 	onRow,
+	onTreeThread,
 	navigation,
 }: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
@@ -72,6 +76,7 @@ export function SubagentPanel({
 		onRow?.(row);
 		return () => onRow?.(null);
 	}, [onRow, row]);
+	useEffect(() => onTreeThread?.(treeThreadId), [onTreeThread, treeThreadId]);
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 

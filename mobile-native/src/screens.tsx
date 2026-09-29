@@ -178,13 +178,16 @@ import {
 } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -925,6 +928,7 @@ export function ConversationScreen({
 	// times how long ago it ended, which is no Working time, so a session still
 	// winding down times its turn instead.
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const [coordinatorThread, setCoordinatorThread] = useState<string | null>(null);
 	const runMs = useCallback(
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
@@ -1248,17 +1252,42 @@ export function ConversationScreen({
 		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	// A subagent row opens the subagent's own session, under this session as
-	// its coordinator, or on a subagent's screen, under the same coordinator.
+	// A subagent row's coordinator: this session, or on a subagent's screen,
+	// the same coordinator. A row shows only in a loaded transcript, which
+	// names its thread.
+	const threadId = conversation?.threadId;
+	const coordinator = useMemo(
+		() => subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null),
+		[subagentOf, threadId, route.params.ref, route.params.title],
+	);
+	// A finished subagent's row reads its outcome from the coordinator's tree,
+	// which the screen holds while the transcript shows one.
+	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
+	const subagentTreeTarget = useMemo(
+		() =>
+			transcriptTreeTarget({
+				showsFinished: showsFinishedSubagent,
+				coordinator,
+				onSubagentScreen: !!subagentOf,
+				panelThread: coordinatorThread,
+			}),
+		[showsFinishedSubagent, coordinator, subagentOf, coordinatorThread],
+	);
+	const subagentTree = useTranscriptSubagentTree(
+		route.params.hubId,
+		subagentTreeTarget,
+		liveClientFor({ client, state: connectionState, activeProfile }, route.params.hubId),
+		{ inFront: focused, receivesUpdates: !subagentOf },
+	);
+	// A subagent row opens the subagent's own session, under its coordinator,
+	// on the coordinator's thread as this screen's panel last read it.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			// A row shows only in a loaded transcript, which names its thread.
-			const threadId = store.getState().conversation?.threadId;
-			const coordinator =
-				subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null);
-			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+			if (!coordinator) return;
+			const current = subagentOf && coordinatorThread ? { ...coordinator, threadId: coordinatorThread } : coordinator;
+			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator: current });
 		},
-		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
+		[navigation, route.params.hubId, coordinator, subagentOf, coordinatorThread],
 	);
 	const answerFor = useCallback((itemId: string) => answerTo(conversation, itemId), [conversation]);
 	// Stable across renders, so a settled agent message keeps its memoized
@@ -2623,6 +2652,7 @@ export function ConversationScreen({
 						live={item.id === liveRun}
 						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
+						subagentTree={subagentTree}
 						openSubagent={openSubagent}
 						answerFor={answerFor}
 						errorActionFor={(row) =>
@@ -3040,6 +3070,7 @@ export function ConversationScreen({
 								barShown={subagentBar}
 								showToast={showSubagentToast}
 								onRow={setSubagentRow}
+								onTreeThread={setCoordinatorThread}
 								navigation={navigation as never}
 							/>
 						) : null}
