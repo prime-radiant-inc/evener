@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { palettes } from "../design/tokens";
+import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group, GroupFooter, GroupLabel, Row, Segmented, SwitchRow, Tag } from "./Grouped";
+import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag } from "./Grouped";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -133,9 +133,20 @@ describe("labels, footers and tags", () => {
 	});
 
 	it("colors a footer by what it reports", () => {
-		expect(
-			texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style.color,
-		).toBe(light.dangerInk);
+		const style = texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style;
+		expect(merged(style).color).toBe(light.dangerInk);
+		expect(merged(style).fontFamily).toBeUndefined();
+	});
+
+	it("sets a machine footer, such as an error the hub reported, in Menlo", () => {
+		const style = texts(
+			render(
+				<GroupFooter tone="danger" machine>
+					ssh: connect refused
+				</GroupFooter>,
+			),
+		)[0]?.props.style;
+		expect(merged(style)).toMatchObject({ color: light.dangerInk, fontFamily: fonts.mono });
 	});
 
 	it("draws version drift as a gray tag", () => {
@@ -143,5 +154,26 @@ describe("labels, footers and tags", () => {
 			color: light.inkMid,
 			backgroundColor: light.inset,
 		});
+	});
+});
+
+describe("a row's value with a tag", () => {
+	it("sets the value in ink-mid tabular figures beside its tag, and reads as both", () => {
+		const tree = render(<Row label="Hosts" value={<RowValue text="2" tag={{ text: "1 offline", tone: "amber" }} />} />);
+		const [value, tag] = texts(tree).slice(1);
+		expect(merged(value?.props.style)).toMatchObject({ color: light.inkMid, fontVariant: ["tabular-nums"] });
+		expect(value?.props.children).toBe("2");
+		expect(tag?.props.style).toMatchObject({ color: light.attentionInk, backgroundColor: light.attentionBg });
+		expect(tag?.props.children).toBe("1 offline");
+	});
+
+	it("sets a value that needs a human in the attention ink", () => {
+		const tree = render(<RowValue text="Offline" tone="attention" />);
+		expect(merged(texts(tree)[0]?.props.style)).toMatchObject({ color: light.attentionInk });
+	});
+
+	it("shows the tag alone when there is no value", () => {
+		const tree = render(<RowValue tag={{ text: "Hub runs 0.9.412", tone: "gray" }} />);
+		expect(texts(tree).map((node) => node.props.children)).toEqual(["Hub runs 0.9.412"]);
 	});
 });

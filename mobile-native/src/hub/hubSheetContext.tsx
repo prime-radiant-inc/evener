@@ -3,11 +3,16 @@
 // navigator, so the pages HubSheet mounts can read it without importing their
 // own navigator.
 import type { AppwireClient, HubUpdateController } from "@evener/appwire-client";
+import type { HostsController } from "../hosts/hostsController";
+import type { LiveSessionsReader } from "../hosts/liveCounts";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 /** The Hub's pages. Every page names the hub it was opened for. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
+	/** focus opens that host's detail once. */
+	Hosts: { hubId: string; focus?: string };
+	HostDetail: { hubId: string; name: string };
 };
 
 export interface HubSheetContextValue {
@@ -22,6 +27,9 @@ export interface HubSheetContextValue {
 	/** The hub's own update: the header's "up to date" or "Update available",
 	 * and About's "Update hub" (ruling 22). */
 	updates: HubUpdateController;
+	/** The hub's hosts and its live sessions, per client; null before one. */
+	hosts: HostsController | null;
+	live: LiveSessionsReader | null;
 }
 
 const HubSheetContext = createContext<HubSheetContextValue | null>(null);

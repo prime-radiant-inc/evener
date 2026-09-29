@@ -19,6 +19,19 @@ import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/fronte
 import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
 
 const HUB_VERSION = "0.9.412";
+
+/** Every demo hub, fleet or not, is up to date, so the Hub's About reads as
+ * it does on a real hub. */
+export function demoUpdateCheck(): MethodTypes["evener/update/check"]["result"] {
+	return {
+		channel: "release",
+		buildChannel: "release",
+		currentVersion: HUB_VERSION,
+		currentCommit: "demo",
+		updateAvailable: false,
+		applicable: true,
+	};
+}
 const HOST = "paradise-park";
 const HOST_VERSION = "0.9.409";
 const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation timed out";
@@ -319,14 +332,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			if (!forward) throw new Error("Method not implemented by demonstration server");
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
-		"evener/update/check": () => ({
-			channel: "release",
-			buildChannel: "release",
-			currentVersion: HUB_VERSION,
-			currentCommit: "demo",
-			updateAvailable: false,
-			applicable: true,
-		}),
+		"evener/update/check": demoUpdateCheck,
 		"evener/instance/list": instanceList,
 		// Extends the fleet's answer (the Board's expired sign-in) with the
 		// other providers that sign in with an account.
