@@ -119,9 +119,7 @@ export function sessionRows(
 /** The questions an earlier ask_user row shows (QuestionHistory), or
  * undefined when its arguments name none it can read. */
 export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user"
-		? parseAskUserQuestions({ argumentsJSON: row.detail.arguments })
-		: undefined;
+	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments }) : undefined;
 }
 
 // A composed answer reply: "[answers]" and then numbered lines like
