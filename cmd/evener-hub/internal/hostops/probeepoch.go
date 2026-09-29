@@ -9,10 +9,10 @@ import (
 )
 
 // Probe epochs and the serving hub's guard epoch (deploy pipeline 08b §6 step 2,
-// §10; crash-fencing spec §4).
+// §10).
 //
-// A probe epoch is a fencing-epoch-shaped record — a (controller boot id,
-// per-host monotonic op sequence) pair — that authorizes exactly one bounded
+// A probe epoch is an epoch-shaped record — a (controller boot id, per-host
+// monotonic op sequence) pair — that authorizes exactly one bounded
 // probe mutation. The controller side persists it in the operation-store file in
 // its own atomic write before the first `evener/host/running` call, bound to the
 // host's current (generation, incarnation id) pair; the eventual token mint
@@ -21,9 +21,9 @@ import (
 // worker, no deploy/restart kind, and never appears in `operations` reads.
 //
 // The serving side is the guard-epoch row: §10 requires the serving hub to
-// persist the epoch the caller presented before the probe's write half runs,
-// validate it against the host's current fencing epoch, and refuse stale epochs
-// without probing.
+// validate the epoch the caller presented against the guard epoch it last
+// admitted before the probe's write half runs, refuse a stale same-boot epoch
+// without persisting it or probing, and persist only an admitted epoch.
 //
 // The crash-fencing execution the epoch model once anticipated — lease
 // takeover, bounded kill/wait of the superseded epoch, the remote guard file's
@@ -31,9 +31,9 @@ import (
 // of the program (comp08). What remains is the honest subset this file always
 // implemented: the probe epoch's persistence and the guard epoch's admission,
 // where the guard row admits an epoch whose boot id differs from the stored one
-// and only refuses a lower op sequence for the same boot id. The row is the
-// single current epoch this hub was last presented, since v1 admits one calling
-// controller per host.
+// and only refuses a lower op sequence for the same boot id — the accepted
+// cross-restart limitation. The row is the single current epoch this hub was
+// last presented, since v1 admits one calling controller per host.
 
 // ProbeEpoch is one host's durable probe-epoch record: the controller boot id it
 // was minted under, the per-host monotonic op sequence that orders it within
@@ -211,20 +211,20 @@ func (s *Store) GuardEpoch() (GuardEpoch, bool) {
 	return *s.cell.state.GuardEpoch, true
 }
 
-// AdmitGuardEpoch validates a presented epoch against the host's current one and
-// persists it before the probe's write half runs (§10: "the serving hub persists
-// the presented epoch per calling host before the write half runs, validates it
-// against the host's current fencing epoch, and refuses stale epochs without
-// probing").
+// AdmitGuardEpoch validates a presented epoch against the guard epoch this hub
+// last admitted and persists the admitted one before the probe's write half runs
+// (§10: "the serving hub validates the presented epoch against the guard epoch
+// it last admitted for the host before anything is written or probed ... only
+// an admitted epoch is persisted before the write half runs").
 //
 // Staleness as far as this machinery can honestly decide it: an epoch carrying
 // the same controller boot id as the stored one but a lower op sequence is
 // stale and refused — the current epoch, or a replay of it, is admitted
 // idempotently, and a higher sequence is persisted. An epoch from a different
-// boot id has no defined order against the stored one (crash-fencing §4: the
-// pair alone "has no defined cross-restart order"; the remote guard file's
-// compare-and-advance is that order), so it is admitted and persisted — see the
-// FENCING BOUNDARY note above for what the fencing slice retrofits here.
+// boot id has no defined order against the stored one (the pair alone has no
+// defined cross-restart order; the remote guard file's compare-and-advance that
+// once supplied it was withdrawn with the crash-fencing program, comp08), so it
+// is admitted and persisted — the accepted cross-restart limitation.
 //
 // A malformed epoch — no boot id, or a zero op sequence, both of which are what
 // an absent or defaulted wire field decodes to — is ErrInvalidGuardEpoch: it is
