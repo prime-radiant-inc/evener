@@ -265,16 +265,38 @@ function isClientUnreachableError(error: unknown): boolean {
   return message !== undefined && CLIENT_UNREACHABLE_PATTERN.test(message);
 }
 
+// HostMutationOutcomeError is thrown by committedMutationRow (hostMutations.ts)
+// for a host mutation-result arm that is NOT a committed success (registry spec
+// 08 §11): a keyless add's `ambiguous` arm, a `collision-dropped` arm, or a
+// mutation that committed but whose teardown failed. `outcome` names the arm so
+// a caller can branch on it (the remnant repair affordances are slice 16's).
+// Unlike an arbitrary JS exception its message was written for a person to read
+// - it names what happened and, for a teardown failure, the `remnantId` to
+// repair - so friendlyErrorMessage shows it instead of the generic sentence.
+export type HostMutationOutcome = "ambiguous" | "collision-dropped" | "committed-with-teardown-failure" | "unknown";
+
+export class HostMutationOutcomeError extends Error {
+  readonly outcome: HostMutationOutcome;
+  constructor(message: string, outcome: HostMutationOutcome) {
+    super(message);
+    this.name = "HostMutationOutcomeError";
+    this.outcome = outcome;
+  }
+}
+
 // friendlyErrorMessage is the one conversion every user-facing error display
 // must go through instead of errorText/err.message: a WireError's message
 // came from the hub and was written for a person to read, so it survives
-// untouched; the client-unreachable family (see CLIENT_UNREACHABLE_PATTERN)
-// becomes one plain sentence; everything else - a plain JS exception, a
-// timeout, a string, anything this module doesn't otherwise recognize -
-// becomes the same generic sentence. Never returns a class name or an
-// internal method name.
+// untouched, and so does a HostMutationOutcomeError's (hostMutations.ts wrote
+// it for a person too); the client-unreachable family (see
+// CLIENT_UNREACHABLE_PATTERN) becomes one plain sentence; everything else - a
+// plain JS exception, a timeout, a string, anything this module doesn't
+// otherwise recognize - becomes the same generic sentence. Never returns a
+// class name or an arbitrary exception's method name; the two recognized
+// client-side families (WireError, HostMutationOutcomeError) may name the hub
+// operation their message is about, since its author wrote it for a person.
 export function friendlyErrorMessage(error: unknown): string {
-  if (error instanceof WireError) {
+  if (error instanceof WireError || error instanceof HostMutationOutcomeError) {
     const detail = error.message.trim();
     return detail === "" ? GENERIC_ERROR_MESSAGE : detail;
   }
