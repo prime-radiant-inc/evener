@@ -6,6 +6,7 @@ import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { expandLineTabs, expandTabs } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
 import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "../taskStatus";
@@ -49,7 +50,11 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 	const [viewing, setViewing] = useState(false);
 	// Only the preview's own lines are parsed: the output can run to 64 KiB.
 	const preview = useMemo(
-		() => keyedByOffset(parseAnsiLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")), ansiLineLength),
+		() =>
+			keyedByOffset(
+				parseAnsiLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")).map(expandLineTabs),
+				ansiLineLength,
+			),
 		[text],
 	);
 	const showAll = `Show all ${lines} lines`;
@@ -129,7 +134,9 @@ function diffLineStyle(line: string, palette: Palette) {
 function Diff({ text, added, removed }: { text: string; added: number; removed: number }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const lines = useMemo(() => keyedByOffset(text.split("\n"), (line) => line.length), [text]);
+	// Go source is tab-indented: a tab expands to its stop, the +/- column
+	// counting as column 0, as a terminal draws a diff.
+	const lines = useMemo(() => keyedByOffset(text.split("\n").map(expandTabs), (line) => line.length), [text]);
 	const count = { fontSize: 13 * scale, lineHeight: 18 * scale, fontVariant: ["tabular-nums" as const] };
 	return (
 		<>
