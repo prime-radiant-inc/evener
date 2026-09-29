@@ -126,23 +126,23 @@ connectionStore.subscribe((state) => {
   const replaced = lastNonNullClient !== null && state.client !== lastNonNullClient;
   lastNonNullClient = state.client;
   if (replaced) {
-    // A different hub whose registry has answered nothing. Invalidate the OLD
-    // connection's in-flight registry gate: a refresh after the swap must issue
-    // its OWN request rather than join a promise whose response the client fence
-    // below will discard, and the stale read must not hold the new connection's
-    // `reading` gate (a settled stale read decrements it harmlessly at the zero
-    // floor). Advance the revision, clear the published marker, and reset the
-    // load to "loading": the new connection's registry is unconsulted, so a
-    // remote listing is re-read on this connection alone (the spawn-only path,
-    // stores/credentials.ts's useHostInstances) instead of being held.
-    // publishReady lets this connection's first answer publish - and advance the
-    // revision - even when byte-identical to the old connection's, by treating a
-    // null publishedRevision as "nothing published by this connection yet".
+    // A different hub whose registry has answered nothing. Drop the old
+    // connection's quiet-read slot: a refresh after the swap must issue its OWN
+    // request rather than join a promise whose response the client fence below
+    // will discard. The outstanding `reading` count is left intact - the old
+    // connection's in-flight reads decrement it themselves when they settle, so
+    // it never collides with a read this connection starts. Advance the
+    // revision, clear the published marker, and reset the load to "loading": the
+    // new connection's registry is unconsulted, so a remote listing is re-read
+    // on this connection alone (the spawn-only path, stores/credentials.ts's
+    // useHostInstances) instead of being held. publishReady lets this
+    // connection's first answer publish - and advance the revision - even when
+    // byte-identical to the old connection's, by treating a null
+    // publishedRevision as "nothing published by this connection yet".
     refreshInflight = null;
     hostsStore.setState((previous) => ({
       revision: previous.revision + 1,
       publishedRevision: null,
-      reading: 0,
       load: { phase: "loading" },
     }));
   }

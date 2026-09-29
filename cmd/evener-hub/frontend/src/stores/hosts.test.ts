@@ -81,24 +81,36 @@ describe("client replacement", () => {
     expect(hostsStore.getState().revision).toBe(revision);
   });
 
-  test("a replacement drops the old connection's in-flight registry gate", async () => {
+  test("a replacement drops the old quiet-read slot without disturbing the new connection's reads", async () => {
     const a = connectFakeClient();
-    // A registry read that never settles: it owns the `reading` gate and the
-    // quiet-read slot.
-    a.on("evener/host/list", () => new Promise<HostListResponse>(() => {}));
+    let settleOld!: (value: HostListResponse) => void;
+    const oldRead = new Promise<HostListResponse>((resolve) => (settleOld = resolve));
+    a.on("evener/host/list", () => oldRead);
     void hostsStore.getState().refresh();
     await Promise.resolve();
     expect(hostsStore.getState().reading).toBe(1);
 
+    // The replacement drops the old connection's quiet-read slot, so a refresh
+    // issues its OWN request on the new client rather than joining the old one.
     const b = new FakeClient("ready");
-    b.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    let settleNew!: (value: HostListResponse) => void;
+    const newRead = new Promise<HostListResponse>((resolve) => (settleNew = resolve));
+    b.on("evener/host/list", () => newRead);
     connectionStore.getState().connect(b);
+    const nextRefresh = hostsStore.getState().refresh();
+    await Promise.resolve();
+    expect(b.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
+    expect(hostsStore.getState().reading).toBe(2);
 
-    // The old connection's in-flight read no longer holds the new connection's
-    // gate, and a refresh issues its OWN request on the new client.
+    // The stale old read settles AFTER the new request started: it releases only
+    // its own slot, so the new connection's read still owns the gate.
+    settleOld({ hosts: [row("alpha")] });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(hostsStore.getState().reading).toBe(1);
+
+    settleNew({ hosts: [row("alpha")] });
+    await nextRefresh;
     expect(hostsStore.getState().reading).toBe(0);
-    await hostsStore.getState().refresh();
-    expect(b.calls.filter((call) => call.method === "evener/host/list").length).toBeGreaterThanOrEqual(1);
     expect(hostsStore.getState().publishedRevision).not.toBeNull();
   });
 });
