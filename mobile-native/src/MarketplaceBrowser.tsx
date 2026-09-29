@@ -25,6 +25,7 @@ import {
 	Segmented,
 	TextFieldRow,
 	useErrorInView,
+	useFormError,
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
@@ -585,7 +586,7 @@ export function AddMarketplace({
 	const [source, setSource] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const nameInput = useRef<TextInput>(null);
 	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
@@ -669,7 +670,7 @@ export function AddMarketplace({
 			}
 		>
 			<GroupedPage scrollRef={page}>
-				<FormError message={error} />
+				<FormError error={error} />
 				<GroupGap />
 				<Segmented<MarketplaceKind>
 					label="Kind"

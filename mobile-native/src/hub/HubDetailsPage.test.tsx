@@ -192,6 +192,11 @@ it("keeps the hub editor open on Cancel while a save is in flight", async () => 
 		cancel.props.onPress();
 	});
 	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
+	// A swipe down or Android's back waits it out too.
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
 	await act(async () => finish());
 	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
 });

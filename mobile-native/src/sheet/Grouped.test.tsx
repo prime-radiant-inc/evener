@@ -17,6 +17,7 @@ import {
 	Tag,
 	TextFieldRow,
 	useErrorInView,
+	useFormError,
 } from "./Grouped";
 
 vi.mock("react-native", async () => ({
@@ -262,14 +263,14 @@ describe("a form's error", () => {
 	it("shows in danger ink, and VoiceOver hears each new one", () => {
 		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
 		announce.mockClear();
-		const tree = render(<FormError message="Name is required." />);
+		const tree = render(<FormError error={{ message: "Name is required." }} />);
 		const text = texts(tree)[0];
 		expect(merged(text?.props.style).color).toBe(light.dangerInk);
 		expect(text?.props.accessibilityLiveRegion).toBe("polite");
 		expect(announce).toHaveBeenLastCalledWith("Name is required.");
-		act(() => tree.update(<FormError message="Select an available base provider." />));
+		act(() => tree.update(<FormError error={{ message: "Select an available base provider." }} />));
 		expect(announce).toHaveBeenLastCalledWith("Select an available base provider.");
-		act(() => tree.update(<FormError message={null} />));
+		act(() => tree.update(<FormError error={null} />));
 		expect(texts(tree)).toHaveLength(0);
 		expect(announce).toHaveBeenCalledTimes(2);
 	});
@@ -280,7 +281,7 @@ describe("a form's error", () => {
 		const os = Platform.OS;
 		Object.assign(Platform, { OS: "android" });
 		try {
-			const tree = render(<FormError message="Name is required." />);
+			const tree = render(<FormError error={{ message: "Name is required." }} />);
 			expect(texts(tree)[0]?.props.accessibilityLiveRegion).toBe("polite");
 			expect(announce).not.toHaveBeenCalled();
 		} finally {
@@ -288,13 +289,22 @@ describe("a form's error", () => {
 		}
 	});
 
-	it("brings the form back to its top, where the error shows, each time a new one appears", () => {
+	it("brings the form to its top and speaks again on each refusal, even one that repeats the last", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
 		const scrolls: unknown[] = [];
-		function Form({ error }: { error: string | null }) {
+		let refuse = (_message: string | null) => {};
+		function Form() {
+			const [error, setError] = useFormError();
+			refuse = (message) => {
+				// A save clears the last error and fails again in one handler.
+				setError(null);
+				setError(message);
+			};
 			const page = useErrorInView(error);
 			return (
 				<GroupedPage scrollRef={page}>
-					<FormError message={error} />
+					<FormError error={error} />
 				</GroupedPage>
 			);
 		}
@@ -302,10 +312,15 @@ describe("a form's error", () => {
 			createNodeMock: (element: { type: unknown }) =>
 				element.type === "ScrollView" ? { scrollTo: (to: unknown) => scrolls.push(to) } : null,
 		};
-		const tree = render(<Form error={null} />, options);
+		render(<Form />, options);
 		expect(scrolls).toEqual([]);
-		act(() => tree.update(<Form error="Name is required." />));
-		expect(scrolls).toEqual([{ y: 0, animated: true }]);
+		act(() => refuse("Name is required."));
+		act(() => refuse("Name is required."));
+		expect(scrolls).toEqual([
+			{ y: 0, animated: true },
+			{ y: 0, animated: true },
+		]);
+		expect(announce).toHaveBeenCalledTimes(2);
 	});
 });
 

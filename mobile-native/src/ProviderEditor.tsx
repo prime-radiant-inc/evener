@@ -19,6 +19,7 @@ import {
 	SearchField,
 	TextFieldRow,
 	useErrorInView,
+	useFormError,
 } from "./sheet/Grouped";
 import { Sheet } from "./sheet/Sheet";
 
@@ -90,7 +91,7 @@ export function ProviderEditor({
 	// this editor's target row; a row the hub could not fingerprint at open
 	// asserts nothing, as before.
 	const assertedFingerprint = useRef(instance?.endpointFingerprint);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const [choosing, setChoosing] = useState(false);
 	const [query, setQuery] = useState("");
 	const [saving, setSaving] = useState(false);
@@ -191,7 +192,7 @@ export function ProviderEditor({
 			accessory={accessory}
 		>
 			<GroupedPage scrollRef={page}>
-				<FormError message={error} />
+				<FormError error={error} />
 				{!instance && (
 					<>
 						<Group label="Base provider">

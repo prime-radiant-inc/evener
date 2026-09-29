@@ -10,6 +10,7 @@ import {
 	SwitchRow,
 	TextFieldRow,
 	useErrorInView,
+	useFormError,
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 
@@ -32,7 +33,7 @@ export function HubEditor({
 	const [token, setToken] = useState("");
 	const [saving, setSaving] = useState(false);
 	const pending = useRef(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const tokenInput = useRef<TextInput>(null);
 	const page = useErrorInView(error);
 	async function submit() {
@@ -69,7 +70,7 @@ export function HubEditor({
 			onRequestClose={cancel}
 		>
 			<GroupedPage scrollRef={page}>
-				<FormError message={error} />
+				<FormError error={error} />
 				<Group label="Name">
 					<TextFieldRow
 						label="Hub name"

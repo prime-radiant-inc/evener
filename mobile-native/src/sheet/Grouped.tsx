@@ -4,7 +4,18 @@
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode, type Ref, type RefObject, useEffect, useRef } from "react";
+import {
+	Children,
+	Fragment,
+	isValidElement,
+	type ReactNode,
+	type Ref,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -453,21 +464,35 @@ export function TextFieldRow({
  * caused it sits up in the header, so each new message is spoken: iOS has no
  * live region, so it's announced there; Android reads the polite live region
  * on its own, and announcing too would say it twice. */
-export function FormError({ message }: { message: string | null }) {
+export function FormError({ error }: { error: FormErrorReport | null }) {
 	useEffect(() => {
-		if (message && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(message);
-	}, [message]);
-	return message ? (
+		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
+	}, [error]);
+	return error ? (
 		<GroupFooter tone="danger" live>
-			{message}
+			{error.message}
 		</GroupFooter>
 	) : null;
+}
+
+/** One refusal of a form's save. Each report is a new object, so a refusal
+ * that repeats the last one's words still scrolls and speaks again. */
+export interface FormErrorReport {
+	message: string;
+}
+
+/** A form's error state: set a message (or null to clear it) as with
+ * useState, and each message becomes its own FormErrorReport. */
+export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+	const [error, setError] = useState<FormErrorReport | null>(null);
+	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	return [error, report];
 }
 
 /** A ref for a form's GroupedPage that scrolls back to the top, where its
  * FormError shows, each time a new error appears: a person scrolled down to
  * the last field who taps Save in the header would otherwise miss it. */
-export function useErrorInView(error: string | null): RefObject<ScrollView | null> {
+export function useErrorInView(error: FormErrorReport | null): RefObject<ScrollView | null> {
 	const page = useRef<ScrollView>(null);
 	useEffect(() => {
 		if (error) page.current?.scrollTo({ y: 0, animated: true });
