@@ -106,7 +106,6 @@ const KEY = { sessionRef: "local:fix", path: PATH };
 
 type Served = { status?: number; body: string; headers?: Record<string, string> };
 let served: Record<string, Served> = {};
-let fetchSpy: ReturnType<typeof vi.spyOn>;
 let client: FakeClient;
 let memory: DocumentMemory;
 // The memory's clock: the phone's, unless a test moves it.
@@ -146,7 +145,7 @@ beforeEach(() => {
 	harness.clipboard = [];
 	harness.appState = [];
 	served = { [PATH]: { body: PLAN } };
-	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
 		const answer = served[url.searchParams.get("path") ?? ""] ?? { status: 404, body: "not found" };
 		return new Response(answer.body, {

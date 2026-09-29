@@ -4,7 +4,6 @@
 
 import type {
 	AnyNotification,
-	AskQuestionRef,
 	EvenerThread,
 	InputItem,
 	MutationReceipt,
@@ -43,13 +42,7 @@ import type { ActivityView } from "../services/activity";
 import type { ConversationReadProjection, LiveConversationService } from "../services/conversation";
 import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
-import {
-	createConversationStore,
-	type LiveActivitySink,
-	MAX_ITEM_BYTES,
-	TRUNCATION_MARKER,
-	truncateText,
-} from "./conversation";
+import { createConversationStore, type LiveActivitySink, MAX_ITEM_BYTES, TRUNCATION_MARKER } from "./conversation";
 import type {
 	ConversationMutationPendingPort,
 	ConversationMutationRequest,
@@ -14183,12 +14176,6 @@ describe("ConversationStore", () => {
 				turns: [makeTurn({ id: "t1", status: "inProgress", items })],
 				evener: evenerWith({ activeTurnId: "t1" }),
 			});
-		const modelItem = (store: ReturnType<typeof createConversationStore>, id: string) =>
-			store
-				.getState()
-				.conversation?.turns.flatMap((turn) => turn.items)
-				.find((item) => item.id === id);
-
 		it("clears modelRetry when the model's own output item completes", async () => {
 			const store = await openProjectedThread(withActiveTurn([agentMessageItem("a1", undefined, "inProgress")]));
 			store.getState().applyNotification({
