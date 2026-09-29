@@ -38,10 +38,11 @@ export class CameraAccessDenied extends Error {
 	}
 }
 
-/** An image as base64, and the type it is in. */
+/** An image as base64, and the type it is in: always an image, so only its
+ * size is checked once it's encoded. */
 export interface EncodedImage {
 	data: string;
-	mediaType: string;
+	mediaType: "image/jpeg" | "image/png";
 }
 
 /** The largest picked file the phone decodes to scale it: far above a camera
@@ -54,15 +55,15 @@ const FULL_FRAME_WIDTH = 8064;
 const FULL_FRAME_HEIGHT = 6048;
 const MAX_SOURCE_PIXELS = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
 
-/** Why an image can't be attached, in a sentence after its name (#3166). */
+/** Why an image can't be attached, after its name: the reason, then what to
+ * do (#3166). Too large to decode and too large to send read the same. */
 const REFUSED: Record<AttachmentRejection, string> = {
-	notImage: "This isn't an image, so it can't be attached.",
-	tooMany: `You can attach up to ${MAX_ATTACHMENTS} images.`,
-	tooLarge: "This image is too large to attach. Try a smaller image.",
+	notImage: "This isn't an image. Choose an image to attach.",
+	tooMany: `You can attach up to ${MAX_ATTACHMENTS} images. Remove one to add another.`,
+	tooLarge: "This image is too large to attach. Try a smaller image or a screenshot.",
 };
-const TOO_LARGE_TO_DECODE = "This photo is too large to attach. Try a screenshot or a smaller image.";
-const SIZE_UNREAD = "Its size couldn't be read, so it can't be attached.";
-const NOT_PREPARED = "This image couldn't be prepared to attach. Try another one.";
+const SIZE_UNREAD = "This image's size couldn't be read. Try another image.";
+const NOT_PREPARED = "This image couldn't be prepared to attach. Try another image.";
 
 function refused(image: PickedImage, why: string): string {
 	return `${image.name}: ${why}`;
@@ -75,7 +76,7 @@ function refused(image: PickedImage, why: string): string {
 function sourceRejection(image: PickedImage, reserved: number): string | undefined {
 	if (!Number.isFinite(image.size) || image.size < 0) return refused(image, SIZE_UNREAD);
 	if (image.size > MAX_SOURCE_BYTES || (image.width ?? 0) * (image.height ?? 0) > MAX_SOURCE_PIXELS)
-		return refused(image, TOO_LARGE_TO_DECODE);
+		return refused(image, REFUSED.tooLarge);
 	const rejection = admissionRejection(image, reserved);
 	return rejection && refused(image, REFUSED[rejection]);
 }
