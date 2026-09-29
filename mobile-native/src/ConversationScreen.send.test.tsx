@@ -2120,6 +2120,23 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		act(() => keyboard.hide());
 	});
 
+	it("pads the transcript's end by the bar on Android, and keeps a follower at the end as the bar changes", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-bar-follow-android", "active"));
+			barLaysOut(tree, 180);
+			expect(transcript(tree).props.contentInset).toBeUndefined();
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(180 + 60);
+			flatListCalls.length = 0;
+			barLaysOut(tree, 260);
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(260 + 60);
+			expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		} finally {
+			platform.OS = "ios";
+		}
+	});
+
 	it("never moves a reader mid-list, or one resting at the end without following, as the bar changes", async () => {
 		const { tree } = await mount(thread("ref-bar-reader", "active"));
 		barLaysOut(tree, 180);

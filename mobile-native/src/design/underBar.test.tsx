@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";
 import { renderHook } from "../renderNative.testkit";
-import { FLOAT_GAP, underBar, useBarHeight } from "./underBar";
+import { underBar, useBarHeight } from "./underBar";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
@@ -25,10 +25,6 @@ describe("underBar", () => {
 	it("pads the list's end by the bar on Android, which has no content inset", () => {
 		platform.OS = "android";
 		expect(underBar(180)).toEqual({ scrollIndicatorInsets: { bottom: 180 }, endPadding: 180 });
-	});
-
-	it("floats what floats over the list 10pt above the bar", () => {
-		expect(FLOAT_GAP).toBe(10);
 	});
 });
 
