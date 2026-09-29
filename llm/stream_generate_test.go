@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -950,21 +949,16 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 	}
 }
 
-// textStreamForwarderRunning reports whether a (*StreamResult).TextStream
-// forwarding goroutine is currently live. It scans every goroutine stack into
-// buf (reused by the caller) for the forwarding closure, so an abandoned
-// forwarder parked on its downstream send is observable without draining the
-// channel it is stuck on.
-func textStreamForwarderRunning(buf []byte) bool {
-	n := runtime.Stack(buf, true)
-	return strings.Contains(string(buf[:n]), "(*StreamResult).TextStream.func")
-}
-
 // TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer pins LLM-01: a
-// consumer that stops reading after the 16-entry buffer fills must be released by
-// the supported Close operation, not left parked on the downstream send forever.
+// consumer that abandons the channel after its buffer fills must be released by
+// the supported Close operation, and a closed stream must not keep forwarding
+// text. The oracle is the channel contract itself: after Close, draining the
+// channel must find only what the forwarder had already buffered (at most its
+// 16-entry capacity) and then the channel must close. Before the fix the
+// forwarder stayed parked on its downstream send and, once drained, delivered
+// every delta still queued upstream.
 func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
-	const deltas = 64 // comfortably more than the TextStream buffer (16)
+	const deltas = 256 // well beyond the TextStream buffer (16) and event buffer (128)
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -975,7 +969,7 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 				go func() {
 					defer st.CloseSend()
 					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					for i := 0; i < deltas; i++ {
+					for range deltas {
 						st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
 					}
 					<-ctx.Done()
@@ -999,20 +993,22 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
+	t.Cleanup(func() { _ = res.Close() })
 
-	ch := res.TextStream() // consumer abandons it: it never reads.
+	ch := res.TextStream() // the consumer abandons it: it never reads.
+
 	// Wait until the forwarder has filled the channel buffer and parked on its
-	// downstream send — the exact leaked state the audit describes.
-	stackBuf := make([]byte, 1<<20)
+	// downstream send, with more deltas still queued on the event stream — the
+	// exact leaked state the audit describes.
 	deadline := time.Now().Add(2 * time.Second)
-	for len(ch) < cap(ch) && time.Now().Before(deadline) {
+	for (len(ch) < cap(ch) || len(res.Events()) == 0) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if len(ch) < cap(ch) {
 		t.Fatalf("forwarder never filled its channel buffer (len=%d cap=%d)", len(ch), cap(ch))
 	}
-	if !textStreamForwarderRunning(stackBuf) {
-		t.Fatal("precondition: TextStream forwarder should be blocked mid-send")
+	if len(res.Events()) == 0 {
+		t.Fatal("precondition: expected deltas still queued on the event stream")
 	}
 
 	// The supported close operation must release the abandoned forwarder.
@@ -1020,12 +1016,21 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 		t.Fatalf("Close: %v", cerr)
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
-	for textStreamForwarderRunning(stackBuf) {
-		if time.Now().After(deadline) {
-			t.Fatal("TextStream forwarder did not terminate after Close (goroutine leak)")
+	drained := make(chan int, 1)
+	go func() {
+		n := 0
+		for range ch {
+			n++
 		}
-		time.Sleep(time.Millisecond)
+		drained <- n
+	}()
+	select {
+	case n := <-drained:
+		if n > cap(ch) {
+			t.Fatalf("TextStream forwarded %d deltas after Close, want at most its %d-entry buffer", n, cap(ch))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TextStream channel did not close after Close (forwarder leak)")
 	}
 }
 

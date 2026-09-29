@@ -44,6 +44,13 @@ func (r *StreamResult) TextStream() <-chan string {
 		defer close(ch)
 		for ev := range r.stream.Events() {
 			if ev.Type == StreamEventTextDelta {
+				// A closed stream must never forward another delta, even when
+				// the buffer has room: prefer shutdown over the pending send.
+				select {
+				case <-r.stream.closing:
+					return
+				default:
+				}
 				select {
 				case ch <- ev.Delta:
 				case <-r.stream.closing:
