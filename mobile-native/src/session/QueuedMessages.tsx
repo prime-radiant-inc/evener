@@ -23,7 +23,7 @@ export interface QueuedMessagesProps {
 	draftAttachments?: ReactNode;
 	/** The composer's focus: while you type in it (useComposerTyping), the
 	 * queue folds to one line until you tap it open. */
-	composerFocus?: ComposerFocus;
+	composerFocus: ComposerFocus;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }

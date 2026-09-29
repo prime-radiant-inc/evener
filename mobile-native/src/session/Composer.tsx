@@ -134,7 +134,12 @@ export function Composer({
 				{overflows ? (
 					<SymbolButton
 						label="Expand editor"
-						onPress={() => setExpanded(true)}
+						onPress={() => {
+							// The editor's own field takes the keyboard; the composer's
+							// blur isn't something to wait on.
+							focus?.set(false);
+							setExpanded(true);
+						}}
 						style={{ position: "absolute", top: -8, right: -8 }}
 					>
 						<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15 * scale} />

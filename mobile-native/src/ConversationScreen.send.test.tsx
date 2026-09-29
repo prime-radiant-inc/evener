@@ -2383,6 +2383,23 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(renderedText(tree)).toContain("check the logs");
 	});
 
+	// Moving from the composer to the find bar's field keeps the keyboard up;
+	// it isn't the composer's any more, so the queue opens again.
+	it("opens the queue again when you move from the composer to the find bar with the keyboard up", async () => {
+		const { tree } = await mount(thread("ref-typing-to-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		typeInComposer(tree);
+		expect(renderedText(tree)).not.toContain("check the logs");
+		const findField = tree.root.find(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		);
+		act(() => field(tree)?.props.onBlur());
+		act(() => findField.props.onFocus?.());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
 	// With the dock in the composer's place, a keyboard up isn't the
 	// composer's, so the queue stays as it is.
 	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {

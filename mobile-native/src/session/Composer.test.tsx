@@ -181,6 +181,17 @@ describe("Composer", () => {
 		expect(renderedText(tree)).not.toContain("Done");
 	});
 
+	// The full-screen editor's own field takes the keyboard, so what folds
+	// while you type in the composer comes back behind it.
+	it("lets go of the composer's focus when the full-screen editor opens", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7", focus });
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => pressable(tree, "Expand editor")?.props.onPress());
+		expect(focus.getSnapshot()).toBe(false);
+	});
+
 	it("offers the editor when long lines wrap past six lines", () => {
 		const { tree } = composer({ value: "one long paragraph" });
 		expect(pressable(tree, "Expand editor")).toBeUndefined();

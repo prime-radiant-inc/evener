@@ -49,7 +49,7 @@ export interface QuestionDockProps {
 	/** The focus of the composer back beneath the dock ("Other answer…").
 	 * While you type in it, the dock shows only its header and the question:
 	 * the room is short, and the composer's Send is the answer. */
-	composerFocus?: ComposerFocus;
+	composerFocus: ComposerFocus;
 }
 
 export function QuestionDock({

@@ -56,12 +56,10 @@ describe("useComposerTyping", () => {
 		const focus = composerFocusedAs(true);
 		const composers = renderHook(() => useComposerTyping(focus));
 		const someoneElses = renderHook(() => useComposerTyping(composerFocusedAs(false)));
-		const noComposer = renderHook(() => useComposerTyping(undefined));
 		expect(composers.result.current).toBe(false);
 		act(() => keyboard.show());
 		expect(composers.result.current).toBe(true);
 		expect(someoneElses.result.current).toBe(false);
-		expect(noComposer.result.current).toBe(false);
 		// Focus moving to another field with the keyboard still up.
 		act(() => focus.set(false));
 		expect(composers.result.current).toBe(false);

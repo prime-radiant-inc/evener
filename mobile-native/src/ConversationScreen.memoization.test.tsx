@@ -306,9 +306,10 @@ function typeInComposer(tree: ReactTestRenderer) {
 
 // The keyboard rising or falling, and the composer's focus, change only what
 // folds or steps aside over the composer (the queue, Next, the header's
-// chips); each reads them itself, so the flip never re-renders the screen or its transcript rows. A
-// screen-wide commit as the keyboard starts to move holds back the keyboard
-// controller's per-frame padding for as long as it takes (#3247).
+// chips); each reads them itself, so the flip never re-renders the screen
+// or its transcript rows. A screen-wide commit as the keyboard starts to
+// move holds back the keyboard controller's per-frame padding for as long as
+// it takes (#3247).
 it("re-renders no transcript row when the keyboard comes up or goes down", async () => {
 	const { tree } = await mount(twoTurns("ref-memo-keyboard"));
 	expect(tree.root.findAll((node) => node.type === TimelineItem)).not.toEqual([]);

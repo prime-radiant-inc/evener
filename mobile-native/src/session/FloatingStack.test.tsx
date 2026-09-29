@@ -16,7 +16,14 @@ function column(tree: ReturnType<typeof render>) {
 
 describe("what floats above the transcript's end", () => {
 	it("stacks the toast, then Next, then the pill, 8pt apart and 10pt up, so none covers another", () => {
-		const tree = render(<FloatingStack toast={<Text>toast</Text>} next={<Text>next</Text>} pill={<Text>pill</Text>} />);
+		const tree = render(
+			<FloatingStack
+				toast={<Text>toast</Text>}
+				next={<Text>next</Text>}
+				pill={<Text>pill</Text>}
+				composerFocus={composerFocusedAs(false)}
+			/>,
+		);
 		const stack = column(tree);
 		expect(stack.props.style).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 });
 		expect(stack.props.style.flexDirection ?? "column").toBe("column");
@@ -27,7 +34,9 @@ describe("what floats above the transcript's end", () => {
 	});
 
 	it("leaves out what doesn't show, so what does keeps its 10pt", () => {
-		const tree = render(<FloatingStack toast={null} next={<Text>next</Text>} pill={null} />);
+		const tree = render(
+			<FloatingStack toast={null} next={<Text>next</Text>} pill={null} composerFocus={composerFocusedAs(false)} />,
+		);
 		const slots = column(tree).children as ReturnType<typeof column>[];
 		expect(slots).toHaveLength(1);
 		expect(slots[0].props.style).toMatchObject({ alignItems: "flex-end" });

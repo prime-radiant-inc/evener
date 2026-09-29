@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import type { ComposerFocus } from "./session/composerFocus";
 import { Keyboard, Platform } from "react-native";
+import type { ComposerFocus } from "./session/composerFocus";
 
 /** Whether the software keyboard is up. iOS says so as the keyboard starts
  * to move, so a layout that answers it changes in that first frame, while
@@ -33,9 +33,7 @@ export function useKeyboardShown(): boolean {
  * rise would re-render the transcript's cells, and Reanimated holds its own
  * commits while React commits, stalling the keyboard controller's per-frame
  * padding for as long as that takes (#3247). */
-export function useComposerTyping(focus: ComposerFocus | undefined): boolean {
-	const focused = useSyncExternalStore(focus?.subscribe ?? neverChanges, focus?.getSnapshot ?? unfocused);
+export function useComposerTyping(focus: ComposerFocus): boolean {
+	const focused = useSyncExternalStore(focus.subscribe, focus.getSnapshot);
 	return useKeyboardShown() && focused;
 }
-const neverChanges = () => () => {};
-const unfocused = () => false;

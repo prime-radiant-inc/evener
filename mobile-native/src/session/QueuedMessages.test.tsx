@@ -210,6 +210,7 @@ it("shows the images an unconfirmed send carried in its own bubble, and only the
 			disabled={false}
 			canEdit
 			editHint={null}
+			composerFocus={composerFocusedAs(false)}
 			backdrop="surface"
 			draftAttachments={<Image accessibilityLabel="Image 1: proof.png" />}
 			onAction={() => {}}

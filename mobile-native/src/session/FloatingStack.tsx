@@ -50,7 +50,7 @@ export function FloatingStack({
 	pill: ReactNode;
 	/** The composer's focus: while you type in it (useComposerTyping), Next
 	 * steps aside. */
-	composerFocus?: ComposerFocus;
+	composerFocus: ComposerFocus;
 	/** How tall the bar under the transcript's end stands; the stack floats
 	 * FLOAT_GAP above it. */
 	barHeight?: number;

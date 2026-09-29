@@ -52,7 +52,7 @@ export function SessionHeader({
 	hidden: boolean;
 	/** The composer's focus: while you type in it (useComposerTyping), the
 	 * chips and note step aside too. */
-	composerFocus?: ComposerFocus;
+	composerFocus: ComposerFocus;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
 	/** The find bar, in the chips' place while find is open (spec 8.7). It

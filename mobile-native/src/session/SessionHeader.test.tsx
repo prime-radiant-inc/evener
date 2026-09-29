@@ -64,7 +64,7 @@ function header(
 			status={over.status ?? null}
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
-			composerFocus={over.composerFocus}
+			composerFocus={over.composerFocus ?? composerFocusedAs(false)}
 			notes={over.notes}
 			glassTop={over.glassTop}
 			onChip={over.onChip ?? (() => {})}
