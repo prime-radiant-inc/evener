@@ -27,7 +27,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { createPluginMutationGate } from "../pluginMutationGate";
 import { PluginsPage } from "./PluginsPage";
-import { alertRequests, nativeModuleMock, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -953,10 +953,7 @@ it("retires an earlier fence on the read a later outcome's fence outran", async 
 	const acmeRead = new Promise<void>((resolve) => {
 		releaseAcmeRead = () => resolve();
 	});
-	let releaseLaterReads!: () => void;
-	const laterReads = new Promise<void>((resolve) => {
-		releaseLaterReads = () => resolve();
-	});
+	const laterReads = new Promise<void>(() => {});
 	let releaseAcmeRemoval!: () => void;
 	const acmeRemoval = new Promise<never>((_resolve, reject) => {
 		releaseAcmeRemoval = () => reject(cloneLitterError(null, false));

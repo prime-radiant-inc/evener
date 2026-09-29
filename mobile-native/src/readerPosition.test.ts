@@ -9,6 +9,7 @@ import {
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -74,6 +75,16 @@ describe("reader positions", () => {
 	});
 	it("uses stable transcript identity and pair ordering", () => {
 		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
+		// A reply's round key outlasts its stream's wire id and its recording.
+		const reply: TimelineRow = {
+			kind: "assistant",
+			id: "wire",
+			transcriptKey: "key-wire",
+			roundKey: "round:r1:agentMessage",
+			markdown: "",
+			streaming: false,
+		};
+		expect(readerKey(reply)).toBe("round:r1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
@@ -93,6 +104,20 @@ describe("reader positions", () => {
 			index: 1,
 			viewOffset: -18,
 		});
+	});
+	it("anchors on the first row in view, passing over a time marker", () => {
+		// A marker can leave the list when an older page lands, so an anchor on
+		// it would find nothing to restore to.
+		const marker: TimelineRow = { kind: "time", id: "time-turn_2", turnId: "turn_2", at: 0 };
+		const rows = [row("a", { entry: 1, item: 1 }), marker, row("b", { entry: 2, item: 1 })];
+		const measurements = new Map([
+			[readerKey(rows[0]), { key: readerKey(rows[0]), y: 0, height: 100 }],
+			[readerKey(marker), { key: readerKey(marker), y: 100, height: 30 }],
+			[readerKey(rows[2]), { key: readerKey(rows[2]), y: 130, height: 80 }],
+		]);
+		expect(readerAnchorRow(rows, measurements, 50)).toBe(rows[0]);
+		expect(readerAnchorRow(rows, measurements, 110)).toBe(rows[2]);
+		expect(readerAnchorRow(rows, measurements, 300)).toBeUndefined();
 	});
 	it("does not capture an unmeasured row", () => {
 		const item = row("a", { entry: 1, item: 1 });
