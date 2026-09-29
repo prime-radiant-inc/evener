@@ -56,13 +56,15 @@ import {
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
-	toolStepSummary,
+	composeStepWords,
+	toolStepWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
 	SteeringFragment,
+	StepWords,
 	TaskRow,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
@@ -114,6 +116,9 @@ export interface ActivityDetail {
 	// · lines 1-40"): the package's toolStepSummary, the web's words, read once
 	// here from the whole step, since a summary-only row keeps no output.
 	summary?: string;
+	// The same words in parts (the package's toolStepWords), so a step line
+	// can set what the step acted on in Menlo.
+	words?: StepWords;
 	arguments?: string;
 	output?: string;
 	error?: string;
@@ -335,10 +340,13 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId, summary } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary, words } = row.detail;
+	// Its words' target names what it acted on, which its line sets in Menlo
+	// under a rationale as under its own words.
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
+		...(words !== undefined ? { words } : {}),
 	};
 	// With no rationale of its own, the row keeps the step's words, read from
 	// the whole step before its output goes.
@@ -416,7 +424,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: toolLabel(it),
 			family: "tool",
 			state: activityState(it, context.turnStatus),
-			detail: { ...activityDetail(it), summary: toolStepSummary(it, { cwd: context.cwd }) },
+			detail: { ...activityDetail(it), ...stepWordsOf(it, context.cwd) },
 			...identity,
 		};
 	}
@@ -568,6 +576,12 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 	const start = hubTime(startedAt);
 	const end = hubTime(completedAt);
 	return start === null || end === null ? {} : { start, end };
+}
+
+// A tool step's words, in parts and composed, read once from the whole step.
+function stepWordsOf(it: ItemModel, cwd: string | undefined): Pick<ActivityDetail, "summary" | "words"> {
+	const words = toolStepWords(it, { cwd });
+	return { summary: composeStepWords(words), words };
 }
 
 /** A tool or reasoning item's expandable detail, read once from the item. */
@@ -1252,9 +1266,26 @@ export type BoundText = (text: string) => string;
 // description is the summary line a collapsed row shows
 // (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
 // as much as the output is.
+// A step's words, each part cut to the bound like the summary they compose
+// (a command can run long); the source words when nothing was cut.
+function boundWords(words: StepWords, bound: BoundText): StepWords {
+	const verb = bound(words.verb);
+	const target = words.target === undefined ? undefined : bound(words.target);
+	const after = words.after === undefined ? undefined : bound(words.after);
+	const detail = words.detail === undefined ? undefined : bound(words.detail);
+	if (verb === words.verb && target === words.target && after === words.after && detail === words.detail) return words;
+	return {
+		verb,
+		...(target === undefined ? {} : { target }),
+		...(after === undefined ? {} : { after }),
+		...(detail === undefined ? {} : { detail }),
+	};
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
+	const words = detail.words ? boundWords(detail.words, bound) : detail.words;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
@@ -1263,6 +1294,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	if (
 		description === detail.description &&
 		summary === detail.summary &&
+		words === detail.words &&
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error
@@ -1273,6 +1305,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		...detail,
 		description,
 		summary,
+		...(words ? { words } : {}),
 		arguments: args,
 		output,
 		error,

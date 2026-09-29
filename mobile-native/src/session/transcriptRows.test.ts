@@ -11,7 +11,6 @@ import {
 	runSummary,
 	runSummaryText,
 	sessionRows,
-	stepTarget,
 	timeMarkerText,
 } from "./transcriptRows";
 
@@ -288,8 +287,13 @@ describe("the live run", () => {
 });
 
 describe("a run's one line", () => {
-	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep =>
-		step(id, "shell", { detail: command === undefined ? {} : { arguments: JSON.stringify({ command }) }, ...over });
+	// A shell step as projectedRows builds it: its arguments, and its words,
+	// whose target is the command with the session's own cd left out.
+	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep => {
+		const detail =
+			command === undefined ? {} : { arguments: JSON.stringify({ command }), words: { verb: "Ran", target: command } };
+		return step(id, "shell", { ...over, detail: { ...detail, ...over.detail } });
+	};
 
 	it("counts steps, says what they did, and how long the run took", () => {
 		const steps: RunStep[] = [
@@ -340,6 +344,11 @@ describe("a run's one line", () => {
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
 			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
 		]);
+	});
+
+	it("names the program a command ran, not the cd to the session's own directory", () => {
+		const cd = shell("a", "go test ./...", { detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) } });
+		expect(runSummary([cd]).parts).toEqual([{ key: "shell", family: "shell", text: "ran go test", failed: 0 }]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no
@@ -468,24 +477,6 @@ describe("a run's worktree steps", () => {
 		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
 		expect(texts([step("a", "manage_worktree")])).toEqual(["managed worktrees once"]);
 		expect(texts([step("a", "manage_worktree"), step("b", "manage_worktree")])).toEqual(["managed worktrees 2 times"]);
-	});
-});
-
-describe("a step's target", () => {
-	it.each([
-		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
-		["shell", { file_path: "agent/session.go" }, undefined],
-		["read_file", { file_path: "agent/session.go" }, "agent/session.go"],
-		["edit_file", { file_path: "agent/session.go", path: "agent" }, "agent/session.go"],
-		["grep", { path: "agent", pattern: "Turn" }, "agent"],
-		["web_search", { query: "evener" }, undefined],
-	])("a %s step with %j reads %s", (label, args, target) => {
-		expect(stepTarget(label, JSON.stringify(args))).toBe(target);
-	});
-
-	it("reads nothing from arguments that are missing or don't parse", () => {
-		expect(stepTarget("read_file", undefined)).toBeUndefined();
-		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
 	});
 });
 
