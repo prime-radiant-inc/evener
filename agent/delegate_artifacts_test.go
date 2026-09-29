@@ -167,6 +167,9 @@ func TestCreateDelegate_ConstructFailureRemovesArtifactsDir(t *testing.T) {
 	if result.ChildSessionID == "" {
 		t.Fatalf("construct failure returned no child session id: %#v", result)
 	}
+	if result.ArtifactsDir != "" {
+		t.Fatalf("construct failure advertised a removed artifacts dir: %q", result.ArtifactsDir)
+	}
 	dir, err := delegateArtifactsDir(root.stateDir, result.ChildSessionID)
 	if err != nil {
 		t.Fatalf("delegateArtifactsDir: %v", err)

@@ -1790,10 +1790,10 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	// Every delegation gets its own durable artifacts directory at creation,
 	// under its own session state (<stateDir>/sessions/<childSessionID>) rather
-	// than a /tmp scratch base, so a read-only or non-writing seat has a private
-	// place for report artifacts that survives it and is named in the creation
-	// result. A failure here aborts the committed start through the same
-	// construction-failure path as any later failure.
+	// than a /tmp scratch base, so a seat with write access has a private place
+	// for report artifacts that survives it and is named in the creation result.
+	// A failure here aborts the committed start through the same construction-
+	// failure path as any later failure.
 	var artifactsDir string
 	// removeArtifacts takes back the just-created artifacts directory on an exit
 	// that leaves no child session to dispose. A start that fails before a child
@@ -1805,6 +1805,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 			return
 		}
 		_ = removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID)
+		// The path is gone, so the failure result must not advertise it.
+		artifactsDir = ""
 	}
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
@@ -1814,14 +1816,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		result.ArtifactsDir = artifactsDir
 		return result
 	}
-	if childID := strings.TrimSpace(started.descriptor.ChildSessionID); childID != "" {
-		artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, childID)
-		if err != nil {
-			// ensure reported no path, so removeArtifacts is a no-op here; take
-			// back whatever a partial MkdirAll may have left.
-			_ = removeDelegateArtifacts(s.stateDir, childID)
-			return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
-		}
+	// ReserveCreate always mints a child session id, so an empty one is a bug:
+	// fail closed rather than silently skip the per-delegation artifacts dir.
+	artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, started.descriptor.ChildSessionID)
+	if err != nil {
+		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)

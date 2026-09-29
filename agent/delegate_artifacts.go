@@ -41,6 +41,11 @@ func ensureDelegateArtifactsDir(stateDir, childSessionID string) (string, error)
 		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		// MkdirAll may have created the session-directory chain before failing on
+		// the leaf. Take back the (empty) session dir it left so a failed creation
+		// leaves no residue; os.Remove only removes an empty directory, so a
+		// pre-existing populated dir is left alone.
+		_ = os.Remove(filepath.Dir(dir))
 		return "", fmt.Errorf("delegate artifacts dir: %w", err)
 	}
 	return dir, nil
