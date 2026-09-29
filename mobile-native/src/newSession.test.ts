@@ -912,3 +912,16 @@ it("never sends a saved per-launch model the host doesn't list", async () => {
 	expect(start).not.toHaveProperty("model");
 	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
 });
+
+// A per-launch effort with no model, which only an older build could save,
+// is dropped: the form's effort belongs to its model, and with Hub default
+// there is no model whose levels could take it.
+it("drops a saved per-launch effort that came with no model", async () => {
+	const { store, requests } = restored({ launchOverrides: { reasoningEffort: "high", maxRounds: 7 } }, [model]);
+	await store.getState().loadModels(true);
+	expect(store.getState()).toMatchObject({ model: null, reasoning: "", launchOverrides: { maxRounds: 7 } });
+	await store.getState().submit();
+	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
+	expect(start).not.toHaveProperty("reasoningEffort");
+	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
+});
