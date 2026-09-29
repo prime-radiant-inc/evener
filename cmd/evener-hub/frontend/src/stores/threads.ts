@@ -232,10 +232,11 @@ export interface ThreadsStoreState {
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   // Durably enqueues the human shared-note (an empty note clears it). Returns
   // the committed outbox record, not the daemon acknowledgment. Receipt
-  // responses and evener/notes/updated publish canonical note state. Returns
-  // undefined when storage was unavailable and the note was dispatched
-  // directly instead (enqueueMutationIntent's fallback): there is no durable
-  // row for the caller, and evener/notes/updated still publishes the result.
+  // responses and evener/notes/updated publish canonical note state. A note
+  // save is never a composer send, so it never takes enqueueMutationIntent's
+  // direct fallback (DIRECT_FALLBACK_METHODS) and always resolves with the
+  // committed record; the `| undefined` on the signature is that function's
+  // return union, not a value this method produces.
   setHumanNote(
     ref: string,
     note: string,
