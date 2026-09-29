@@ -100,10 +100,7 @@ function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activ
 
 function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
 	return (
-		item.detail.description?.trim() ||
-		writeFileActionSummary(item) ||
-		item.detail.summary ||
-		ACTION_SUMMARY_UNAVAILABLE
+		item.detail.description?.trim() || writeFileActionSummary(item) || item.detail.summary || ACTION_SUMMARY_UNAVAILABLE
 	);
 }
 

@@ -119,9 +119,11 @@ describe("a run expanded into its steps", () => {
 			lineHeight: 18,
 		});
 		// A step that reads as its words has no second, Menlo line repeating them.
-		expect(texts(tree.root).filter((node) => node.props.style?.fontFamily === "Menlo").map(textOf)).toEqual([
-			"agent/session.go",
-		]);
+		expect(
+			texts(tree.root)
+				.filter((node) => node.props.style?.fontFamily === "Menlo")
+				.map(textOf),
+		).toEqual(["agent/session.go"]);
 		const marks = tree.root.findAllByType("SymbolView" as never);
 		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([
 			["checkmark.circle.fill", INK_LOW],
