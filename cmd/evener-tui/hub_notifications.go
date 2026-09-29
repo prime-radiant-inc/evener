@@ -45,6 +45,18 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySandboxEscalation(params, notificationPendingRef(notification))
 		}
 		return nil
+	case appwire.NotifyEvenerSandboxEscalationResolved:
+		// Handled ABOVE the mode/session filters so a resolution the user did
+		// not perform — another client, or the daemon's turn-interrupt/close
+		// path — drops the stale card and clears the dashboard's approval flag,
+		// the way the local resolve ACK does for the user's own answer.
+		var params appwire.SandboxEscalationResolved
+		if json.Unmarshal(notification.Params, &params) == nil && params.EscalationID != "" {
+			ref := notificationPendingRef(notification)
+			m.removeEscalationByID(ref, params.EscalationID)
+			m.setDashboardRowApproval(ref, len(m.escalationsByRef[strings.TrimSpace(ref)]) > 0)
+		}
+		return nil
 	case appwire.NotifyThreadNameChanged:
 		// Handled ABOVE the mode/session filters so a rename that arrives while
 		// the dashboard is showing still refreshes the cached row and tree node

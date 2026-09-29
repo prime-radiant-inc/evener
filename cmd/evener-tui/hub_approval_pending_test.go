@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -368,5 +369,35 @@ func TestDashboardGroupState_SubagentFirstAllEndedReadsEnded(t *testing.T) {
 	}}}
 	if got := projectRowState(buildDashboardRows(tree)); got != "ended" {
 		t.Fatalf("subagent-first all-ended project state = %q, want ended", got)
+	}
+}
+
+// A resolution the user did not perform (another client, or the daemon's
+// turn-interrupt/close) arrives as a push; it must clear the stale card and the
+// dashboard's approval flag (roborev #3129 round 11).
+func TestResolvedNotification_ClearsDashboardRow(t *testing.T) {
+	m := approvalTestModel(t, true)
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
+	params, err := json.Marshal(appwire.SandboxEscalationResolved{Ref: "local:th_1", EscalationID: "esc_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerSandboxEscalationResolved, Params: params})
+	if n := len(m.escalationsByRef["local:th_1"]); n != 0 {
+		t.Fatalf("resolved notification left %d escalation(s) queued", n)
+	}
+	if sessionApproval(m.rows, "local:th_1") {
+		t.Fatal("a resolved-elsewhere escalation must clear the dashboard row's approval flag")
+	}
+}
+
+func TestMergeSnapshotEscalations_EmptySnapshotClears(t *testing.T) {
+	m := approvalTestModel(t, true)
+	if !sessionApproval(m.rows, "local:th_1") {
+		t.Fatal("fixture should start approval-pending")
+	}
+	m.mergeSnapshotEscalations(hubSessionDetail{Ref: "local:th_1"})
+	if sessionApproval(m.rows, "local:th_1") {
+		t.Fatal("an empty authoritative snapshot must clear a stale approval flag")
 	}
 }

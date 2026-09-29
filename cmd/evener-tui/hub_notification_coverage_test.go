@@ -26,9 +26,6 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyEvenerTaskUpdated,
 	// TUI goal status still comes from its own fetch/status surface.
 	appwire.NotifyEvenerGoalUpdated,
-	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
-	// prompt it already cleared locally when the user answered.
-	appwire.NotifyEvenerSandboxEscalationResolved,
 	// Transcript display defaults configure the Web UI's projector. The TUI has
 	// its own transcript renderer and no matching live/default settings surface.
 	appwire.NotifyEvenerSettingsTranscriptDisplayChanged,

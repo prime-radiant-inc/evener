@@ -146,26 +146,42 @@ func (m *hubModel) surfaceEscalationsOnEntry() {
 // raised it) are added.
 func (m *hubModel) mergeSnapshotEscalations(detail hubSessionDetail) {
 	ref := strings.TrimSpace(detail.Ref)
-	if ref == "" || len(detail.PendingEscalations) == 0 {
+	if ref == "" {
 		return
 	}
-	if m.escalationsByRef == nil {
-		m.escalationsByRef = map[string][]*hubEscalation{}
-	}
-	seen := map[string]bool{}
-	for _, e := range m.escalationsByRef[ref] {
-		seen[e.id] = true
-	}
-	for _, p := range detail.PendingEscalations {
-		if p.EscalationID == "" || seen[p.EscalationID] {
-			continue
+	if len(detail.PendingEscalations) > 0 {
+		if m.escalationsByRef == nil {
+			m.escalationsByRef = map[string][]*hubEscalation{}
 		}
-		seen[p.EscalationID] = true
-		m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
-			id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
-		})
+		seen := map[string]bool{}
+		for _, e := range m.escalationsByRef[ref] {
+			seen[e.id] = true
+		}
+		for _, p := range detail.PendingEscalations {
+			if p.EscalationID == "" || seen[p.EscalationID] {
+				continue
+			}
+			seen[p.EscalationID] = true
+			m.escalationsByRef[ref] = append(m.escalationsByRef[ref], &hubEscalation{
+				id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
+			})
+		}
 	}
+	// Reconcile the dashboard flag against the merged queue: an authoritative
+	// snapshot with no pending escalation clears a stale flag (a resolution the
+	// user did not perform), while a locally-held live escalation keeps it set.
 	m.setDashboardRowApproval(ref, len(m.escalationsByRef[ref]) > 0)
+}
+
+// removeEscalationByID drops the escalation with id from ref's queue, if any.
+func (m *hubModel) removeEscalationByID(ref, id string) {
+	ref = strings.TrimSpace(ref)
+	for i, e := range m.escalationsByRef[ref] {
+		if e.id == id {
+			m.removeEscalationAt(ref, i)
+			return
+		}
+	}
 }
 
 // promptHeadEscalation surfaces the approval prompt for the viewed session's head
