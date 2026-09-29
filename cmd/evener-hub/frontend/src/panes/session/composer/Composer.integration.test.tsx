@@ -166,9 +166,7 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
       <Composer ref={ref} focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 
@@ -1247,9 +1245,7 @@ test("shows the session's cwd and git branch under the composer card", async () 
       <Composer ref="local:ref_loc" focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
   const line = await screen.findByTestId("composer-repo-location");
   expect(screen.getByTestId("composer-repo-path").textContent).toBe("/home/jesse/repo");
@@ -1291,9 +1287,7 @@ test("keeps the location line under a finished session with no composer card", a
       <Composer ref="local:ref_ended" focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
@@ -1314,9 +1308,7 @@ test("does not resolve a branch for a source-backed (non-local) session", async 
       <Composer ref="remote:ref_remote" focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
   expect(screen.getByTestId("composer-repo-path").textContent).toBe("/srv/remote/repo");
   expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
@@ -1558,8 +1550,8 @@ test("a pending ask hides the composer's input row, which un-hides once the ask 
   await act(async () => {
     await askDockStore.sendBatch("ref_a", batchId);
     await turnStarted;
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await expect(turnStarted).resolves.toMatchObject({
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
