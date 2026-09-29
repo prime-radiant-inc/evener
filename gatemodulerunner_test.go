@@ -10,14 +10,19 @@ import (
 	"testing"
 )
 
-// moduleRunnerScript is the gate that owns module selection, the short/full flag
-// rewrite, private per-module HOME/TMPDIR, wave scheduling, the concurrent
-// frontend stream, and the zero-test refusal. Until this file, nothing drove
-// that orchestration end to end: only the libraries under it had direct tests
-// (gatebounded_test.go, gatebudgets_test.go), and make/coverage.mk records the
-// gap in its own comment. The cases here run the real script against tiny local
-// Go modules built by the installed toolchain -- a real `go test` with a real
-// exit status, never a faked `go` on PATH, which testing.md bans outright.
+// moduleRunnerScript is the gate that owns module selection, private per-module
+// HOME/TMPDIR, wave scheduling, the concurrent frontend stream, and the
+// zero-test refusal. Until this file, nothing drove that orchestration end to
+// end: only the libraries under it had direct tests (gatebounded_test.go,
+// gatebudgets_test.go), and make/testing.mk recorded the gap in its own comment.
+// The cases here run the real script against tiny local Go modules built by the
+// installed toolchain -- a real `go test` with a real exit status, never a faked
+// `go` on PATH, which testing.md bans outright. They pin module selection, the
+// explicit WAVE1/WAVE2 overrides, the private per-stream environment, caller
+// flags reaching `go test`, failure propagation, cleanup, and the zero-test
+// refusal. The root-module short-mode rewrite and the frontend (WEB) stream are
+// left to the root module's own suites: exercising them would re-enter the real
+// test tree or npm, not a bounded fixture.
 const moduleRunnerScript = "scripts/gate/run-module-tests.sh"
 
 // controlledScratchEnv makes the runner's scratch deterministic and test-owned.
@@ -29,24 +34,47 @@ func controlledScratchEnv(ctrl string) []string {
 	return []string{"TMPDIR=" + ctrl, "GATE_SCRATCH_MIN_KB=1099511627776", "WEB=0"}
 }
 
-// runnerEnv builds the environment for one runner invocation: the ambient
-// environment minus every variable a case sets for itself (so a value exported
-// by an enclosing gate run cannot leak in and change the scenario), with the
-// overrides applied.
-func runnerEnv(overrides ...string) []string {
+// runnerEnv builds the environment for one runner invocation. Every variable
+// the runner or the nested `go` would otherwise read from an enclosing run is
+// dropped: the runner's own GATE_* knobs (a case re-adds only the ones it
+// wants), the module/wave/stream selection, and the Go toolchain controls. The
+// nested `go` still needs the test's own build and module caches, so those are
+// resolved explicitly from `go env` rather than inherited, making the
+// dependency visible instead of ambient. GOFLAGS is forced empty so a caller's
+// flags cannot make the runner refuse before its work.
+func runnerEnv(t *testing.T, overrides ...string) []string {
+	t.Helper()
 	controlled := map[string]bool{
 		"MODULES": true, "WAVE1": true, "WAVE2": true, "WEB": true,
-		"TMPDIR": true, "GATE_SCRATCH_MIN_KB": true,
-		"EVENER_RUNNER_TEST_OBSERVE": true, "GOFLAGS": true,
+		"TMPDIR": true, "EVENER_RUNNER_TEST_OBSERVE": true,
+		"GOFLAGS": true, "GOCACHE": true, "GOMODCACHE": true, "GOPATH": true,
+		"GOENV": true, "GOTOOLCHAIN": true, "GOPROXY": true, "GOSUMDB": true,
+		"GOPRIVATE": true, "GONOPROXY": true, "GONOSUMDB": true, "GOTMPDIR": true,
 	}
 	base := make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
-		if !controlled[name] {
-			base = append(base, entry)
+		if controlled[name] || strings.HasPrefix(name, "GATE_") {
+			continue
 		}
+		base = append(base, entry)
+	}
+	base = append(base, "GOFLAGS=")
+	for _, name := range []string{"GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "GOCACHE", "GOMODCACHE", "GOPATH"} {
+		base = append(base, name+"="+goEnvValue(t, name))
 	}
 	return envOverride(base, overrides...)
+}
+
+// goEnvValue is the test process's own effective value for one `go env`
+// variable, used to seed the nested runner's environment explicitly.
+func goEnvValue(t *testing.T, name string) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", name).Output()
+	if err != nil {
+		t.Fatalf("go env %s: %v", name, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // writeRunnerFixtureModule writes a tiny local module under root and returns it.
@@ -86,6 +114,7 @@ func observingModuleSrc(moduleName string) string {
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -99,7 +128,8 @@ func TestObserve(t *testing.T) {
 		"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME") + "\n" +
 		"XDG_CACHE_HOME=" + os.Getenv("XDG_CACHE_HOME") + "\n" +
 		"XDG_STATE_HOME=" + os.Getenv("XDG_STATE_HOME") + "\n" +
-		"GOENV=" + os.Getenv("GOENV") + "\n"
+		"GOENV=" + os.Getenv("GOENV") + "\n" +
+		"SHORT=" + strconv.FormatBool(testing.Short()) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "` + moduleName + `.env"), []byte(record), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +176,7 @@ func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerRe
 	}
 	cmd := exec.Command("bash", script, "-short", "-count=1")
 	cmd.Dir = workDir
-	cmd.Env = runnerEnv(env...)
+	cmd.Env = runnerEnv(t, env...)
 	out, err := cmd.CombinedOutput()
 	result := moduleRunnerResult{output: string(out)}
 	if err != nil {
@@ -207,8 +237,8 @@ func assertPrivateModuleEnv(t *testing.T, record map[string]string, module, ambi
 			t.Errorf("%s %s = %q, want %q", module, key, record[key], want)
 		}
 	}
-	if env := record["GOENV"]; env != "off" && !strings.HasPrefix(env, tmp+string(filepath.Separator)) {
-		t.Errorf("%s GOENV = %q, want it private under %q", module, env, tmp)
+	if env := record["GOENV"]; env != "" && env != "off" && !strings.HasPrefix(env, tmp+string(filepath.Separator)) {
+		t.Errorf("%s GOENV = %q, want it unset, off, or private under %q", module, env, tmp)
 	}
 }
 
@@ -243,8 +273,10 @@ func TestModuleRunnerRunsSelectedModulesWithPrivateHomes(t *testing.T) {
 			t.Errorf("runner did not report PASS for selected module %s:\n%s", module, result.output)
 		}
 	}
-	if strings.Contains(result.output, "gamma") {
-		t.Errorf("runner reported an unselected module:\n%s", result.output)
+	for _, verdict := range []string{"PASS  gamma", "FAIL  gamma"} {
+		if strings.Contains(result.output, verdict) {
+			t.Errorf("runner reported an unselected module:\n%s", result.output)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(observeDir, "gamma.env")); !os.IsNotExist(err) {
 		t.Errorf("unselected module gamma ran (observe file err = %v)", err)
@@ -257,10 +289,53 @@ func TestModuleRunnerRunsSelectedModulesWithPrivateHomes(t *testing.T) {
 	if alpha["TMPDIR"] == beta["TMPDIR"] {
 		t.Errorf("alpha and beta share TMPDIR %q; each stream must get a private one", alpha["TMPDIR"])
 	}
+	// The caller's -short must reach the fixture's own go test.
+	if alpha["SHORT"] != "true" {
+		t.Errorf("fixture ran with testing.Short()=%q; the caller's -short must reach go test", alpha["SHORT"])
+	}
 
 	// A successful run reclaims its scratch.
 	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) != 0 {
 		t.Errorf("successful run left scratch behind: %v", leftovers)
+	}
+}
+
+// TestModuleRunnerHonorsWaveOverrides pins that an explicit WAVE1/WAVE2 split
+// selects the modules, not MODULES: a caller redistributes modules across waves
+// without changing the coverage boundary, so a regression that ignored the
+// overrides and fell back to the MODULES split would run the wrong set while the
+// default-split case stayed green. The waved modules are deliberately absent
+// from MODULES, and a module present only in MODULES must stay unrun.
+func TestModuleRunnerHonorsWaveOverrides(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	observeDir := filepath.Join(root, "observe")
+	if err := os.MkdirAll(observeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, module := range []string{"wave-one", "wave-two", "gamma"} {
+		writeRunnerFixtureModule(t, modules, module, observingModuleSrc(module))
+	}
+	env := append(controlledScratchEnv(ctrl),
+		"EVENER_RUNNER_TEST_OBSERVE="+observeDir,
+		// MODULES names only gamma; the waves name the two modules that must run.
+		"MODULES=gamma",
+		"WAVE1=wave-one",
+		"WAVE2=wave-two",
+	)
+	result := runModuleRunner(t, modules, env...)
+	if result.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0:\n%s", result.exitCode, result.output)
+	}
+	for _, module := range []string{"wave-one", "wave-two"} {
+		if !strings.Contains(result.output, "PASS  "+module) {
+			t.Errorf("runner did not run WAVE-assigned module %s:\n%s", module, result.output)
+		}
+		if _, err := os.Stat(filepath.Join(observeDir, module+".env")); err != nil {
+			t.Errorf("WAVE-assigned module %s did not run: %v", module, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(observeDir, "gamma.env")); !os.IsNotExist(err) {
+		t.Errorf("module gamma ran from MODULES despite being in no wave (err = %v)", err)
 	}
 }
 
@@ -305,17 +380,12 @@ func TestBad(t *testing.T) { t.Fatal("fixture failure") }
 // nothing.
 func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
 	_, modules, ctrl := newRunnerFixture(t)
-	writeRunnerFixtureModule(t, modules, "fuzzonly", `package fixture
-
-import "testing"
-
-func FuzzOnly(f *testing.F) {
-	f.Add("seed")
-	f.Fuzz(func(t *testing.T, _ string) {})
-}
+	// A test file with no Test, Example, or Fuzz entrypoint: the gate's
+	// Test/Example surface executes nothing, so the guard is unambiguous.
+	writeRunnerFixtureModule(t, modules, "zero", `package fixture
 `)
 
-	env := append(controlledScratchEnv(ctrl), "MODULES=fuzzonly")
+	env := append(controlledScratchEnv(ctrl), "MODULES=zero")
 	result := runModuleRunner(t, modules, env...)
 	if result.exitCode == 0 {
 		t.Fatalf("runner exit = 0 when no scheduled module executed a test:\n%s", result.output)
