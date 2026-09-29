@@ -1139,8 +1139,8 @@ test("a late failure for an earlier attempt's request does not flip the final at
 // The unmatched-requestId edge is a decided rule, not an accident: a
 // loadingFailed whose requestWillBeSent was never seen has no request
 // identity, so it is anchored to the last COMMITTED navigation - the document
-// that is live when the failure arrives. In the gap before a new navigation's
-// response lands that is still the PREVIOUS document (the gap tests below pin
+// that is live when the failure arrives. In the gap before a new navigation
+// commits that is still the PREVIOUS document (the gap tests below pin
 // that side); once the final navigation has committed, a death arriving with
 // no seen send counts for that final attempt.
 test("a loadingFailed whose send was never seen counts for the navigation that is live when it arrives", async () => {
@@ -1215,6 +1215,14 @@ test("an old document's request emitted in the navigate gap is not filed under t
               params: { requestId: "req-old-doc", loaderId: `loader-${navigations - 1}` },
             }),
           });
+        } else {
+          // Every earlier navigation commits, naming its loaderId.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
+            }),
+          });
         }
         socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
         if (navigations === 1 + BOOT_RETRY_LIMIT) {
@@ -1222,6 +1230,13 @@ test("an old document's request emitted in the navigate gap is not filed under t
             data: JSON.stringify({
               method: "Network.loadingFailed",
               params: { requestId: "req-old-doc", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+          // The final navigation commits only now.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
             }),
           });
         }
@@ -1265,6 +1280,15 @@ test("an unseen failure arriving in the navigate gap belongs to the previous nav
     switch (method) {
       case "Page.navigate":
         navigations++;
+        if (navigations !== 1 + BOOT_RETRY_LIMIT) {
+          // The earlier navigations commit, so their documents own the gap.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
+            }),
+          });
+        }
         socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
         if (navigations === 1 + BOOT_RETRY_LIMIT) {
           // In the gap: the counter already says the final attempt, but the
@@ -1275,6 +1299,13 @@ test("an unseen failure arriving in the navigate gap belongs to the previous nav
             data: JSON.stringify({
               method: "Network.loadingFailed",
               params: { requestId: "req-unseen-gap", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+          // The final navigation commits only now.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${navigations}` } },
             }),
           });
         }
@@ -1296,6 +1327,91 @@ test("an unseen failure arriving in the navigate gap belongs to the previous nav
       }),
       (error) => {
         assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A load event is NOT correlated with a navigation: a delayed Page.loadEventFired
+// from the old document can arrive just as the new navigation starts. Treating
+// it (plus the Page.navigate response) as proof of commit would advance the
+// live-document identity before the new frame has navigated, so the old
+// document's still-live requests in that window would be filed under the
+// incoming attempt - stale evidence in the terminal verdict.
+test("a delayed load event from the previous document does not commit the incoming navigation", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // A delayed load event from the PREVIOUS document arrives as this
+          // navigation starts. The new frame does not commit yet.
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          // After the navigate response resolves - and so after any
+          // uncorrelated load-fallback would have run - the previous document
+          // emits a request that dies; the new frame commits only afterwards.
+          setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.requestWillBeSent",
+                params: { requestId: "req-delayed" },
+              }),
+            });
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { requestId: "req-delayed", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Page.frameNavigated",
+                params: { frame: { loaderId: `loader-${navigations}` } },
+              }),
+            });
+          }, 0);
+          return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+        }
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Page.frameNavigated",
+            params: { frame: { loaderId: `loader-${navigations}` } },
+          }),
+        });
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        // Hold the boot check open past the delayed request above so it lands
+        // before the verdict.
+        if (navigations === 1 + BOOT_RETRY_LIMIT) await new Promise((resolve) => setTimeout(resolve, 10));
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The delayed request belongs to the previous document; the final
+        // attempt severed nothing, so this is a harness regression.
         assert.doesNotMatch(error.message, /environment problem/);
         assert.match(error.message, /No request failures were captured/);
         return true;
@@ -1418,9 +1534,10 @@ test("without a reported loaderId, attribution degrades to the arrival counter",
   assert.equal(socket.listenerCount("message"), 0);
 });
 
-// The LIVE-DOCUMENT identity must advance as soon as a navigation COMMITS (its
-// Page.navigate response lands), not only when the load event fires. A new
-// document emits Network.requestWillBeSent for its module burst and its
+// The LIVE-DOCUMENT identity must advance at the navigation's COMMIT (the main
+// frame's Page.frameNavigated), not at the Page.navigate response (which only
+// signals initiation) and not at the load event. A new document emits
+// Network.requestWillBeSent for its module burst and its
 // iframes BETWEEN commit and load, and a resource that dies on the wire does
 // not delay the load event - so the failure arrives while the identity still
 // named the previous document. Binding a first-seen loaderId to the previous

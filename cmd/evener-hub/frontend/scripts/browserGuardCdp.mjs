@@ -400,13 +400,13 @@ function isNetworkChangeFailure(failure) {
  * boot seam correlates request evidence by - or null when the response does
  * not report one; the legacy two-argument callers ignore the return value.
  *
- * `onCommitted`, when given, runs the moment the navigation COMMITS - the main
+ * `onCommitted`, when given, runs when the navigation COMMITS - the main
  * frame's Page.frameNavigated - so the boot seam can scope the new document's
  * own requests (its module burst, its iframes) without waiting for the load
- * event. The Page.navigate RESPONSE is NOT that instant: it only signals
- * initiation, and the old document is still live and emitting until the frame
- * navigates. When no commit event is observed, the response's loaderId is
- * reported once the load event fires, preserving the previous behavior.
+ * event. Neither the Page.navigate RESPONSE (which only signals initiation) nor
+ * a Page.loadEventFired is a commit: the load event is not correlated with a
+ * navigation, so a delayed load from the old document must never advance the
+ * live-document identity to a navigation that has not committed.
  *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
@@ -442,10 +442,6 @@ async function navigateToOnce({ ws, send }, url, onCommitted) {
     // is still pending. Serial awaits leave that first rejection unhandled.
     const navigateCommand = withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
     const [, navigated] = await Promise.all([loaded, navigateCommand]);
-    // Fallback for a navigation whose main-frame commit event was not observed:
-    // the load event has fired, so the document is certainly live and the
-    // response's loaderId is the best identity available.
-    reportCommit(navigated?.result?.loaderId ?? null);
     return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
