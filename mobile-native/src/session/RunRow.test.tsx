@@ -2,6 +2,7 @@ import { composeStepWords, toolStepWords } from "@evener/appwire-client";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
+import type { ActivityDetail } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
 import { stepEvidence } from "./evidence";
 import { RunRow } from "./RunRow";
@@ -372,6 +373,30 @@ describe("a step's evidence", () => {
 		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
 			[{ kind: "output", text: "Check the deploy finished.", lines: 1 }],
 		]);
+	});
+
+	// The row hands a step's whole detail on: a field added to ActivityDetail
+	// must be set here to compile (Required), and must reach stepEvidence.
+	it("hands every field of a step's detail on to its evidence", () => {
+		const detail: Required<ActivityDetail> = {
+			description: "Watch the deploy",
+			summary: "Remind me in 5m",
+			words: { verb: "Remind me in 5m" },
+			arguments: '{"operation":"create"}',
+			output: "[watching self · after 300s]",
+			error: "boom",
+			exitCode: 1,
+			durationMs: 2000,
+			callId: "call_w",
+			startedAtMs: 1,
+			endedAtMs: 2001,
+			tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }],
+			watchEvidence: "Check the deploy finished.",
+		};
+		const full: Run = { kind: "run", id: "run:full", turnId: "t1", steps: [{ ...step("f", "job_watch", {}), detail }] };
+		render(<RunRow run={full} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-full" />);
+		const handed = vi.mocked(stepEvidence).mock.calls.at(-1)?.[0];
+		expect(handed?.detail).toEqual(detail);
 	});
 
 	// Each projection parses the task list again: a new array, the same tasks.

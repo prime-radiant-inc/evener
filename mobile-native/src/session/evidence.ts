@@ -218,7 +218,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
-	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode" | "tasks" | "watchEvidence">;
+	detail: ActivityDetail;
 };
 
 export function stepEvidence(step: EvidenceSource): Evidence[] {
