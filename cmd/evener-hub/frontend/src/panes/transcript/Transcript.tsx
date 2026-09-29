@@ -13,8 +13,12 @@
 //
 // Both live and read-only panes now hand their hydrated model to the shared
 // TranscriptBody. The read-only surface injects only its older-row affordance
-// and deliberately omits live flow-overlay/new-content-pill machinery.
-import { resolveEffectiveConfig } from "@evener/appwire-client";
+// and deliberately omits live flow-overlay/new-content-pill machinery - but it
+// runs the SAME scroll coordinator (useTranscriptScroll) the live pane does,
+// so landing at the latest, near-top paging, following a prepend, and the
+// geometry fill behind a too-short page all behave identically on both
+// surfaces instead of drifting apart in a second implementation.
+import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -25,10 +29,13 @@ import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets"
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
-import { isAtBottom, readScrollMetrics } from "../session/transcript/flow/scrollMetrics";
-import { useNearTopLoadOlder } from "../session/transcript/flow/useNearTopLoadOlder";
-import { scrollToLastRow } from "../session/transcript/flow/useTranscriptScroll";
-import { TranscriptBody } from "../session/transcript/TranscriptBody";
+import { useTranscriptScroll } from "../session/transcript/flow/useTranscriptScroll";
+import {
+  TranscriptBody,
+  transcriptAnchorEntriesForRows,
+  transcriptRowsForProjection,
+  transcriptSourceTurnRowIndexesForRows,
+} from "../session/transcript/TranscriptBody";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
 
@@ -84,52 +91,14 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
 
   // Older-turn paging is automatic here too, and reports a failed page inline
   // with a Retry rather than as a toast - see Session.tsx's own comment on the
-  // same wiring. LoadOlderRow fills a page too short to scroll; the near-top
-  // hook below is this surface's own trigger for one that overflows.
-  const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  // same wiring. This surface passes the RAW loadOlder to the coordinator (its
+  // rejections are best-effort, like the live pane's near-top trigger) and the
+  // reporting one to the row, so the row's own geometry fill and its Retry
+  // still surface a failure inline.
+  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
-
-  // Open at the latest turn once, when content first arrives. anchorToEnd on
-  // the VirtualList below keeps the viewport pinned to the TRUE end while the
-  // initial estimate->measured correction settles (and follows later appends
-  // only while the reader stays at the end) - without it this one-shot scroll
-  // lands at the ESTIMATED end and strands the reader mid-transcript. The ref
-  // guard keeps it a one-shot: a later "load older" prepend doesn't yank the
-  // view back to the bottom (and the list's own end-anchor keeps a prepend
-  // visually anchored either way).
-  const turnCount = model?.turns.length ?? 0;
-  const didInitialScrollRef = useRef(false);
-  useEffect(() => {
-    if (!didInitialScrollRef.current && turnCount > 0) {
-      didInitialScrollRef.current = true;
-      listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
-    }
-  }, [turnCount]);
-
-  // A leading-edge change (older history paged in above) shifts every row's
-  // index, and the mount landing's own reconcile loop would otherwise keep
-  // re-targeting the stale one - dragging a reader who was at the bottom up
-  // above the latest. The live pane's useTranscriptScroll makes this same
-  // correction; this pane shares the geometry fill that pages, and it has no
-  // jump-to-latest pill to recover with, so it needs the correction too.
-  const firstTurnId = model?.turns[0]?.id;
-  const prevFirstTurnIdRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    const previous = prevFirstTurnIdRef.current;
-    prevFirstTurnIdRef.current = firstTurnId;
-    if (previous === undefined || firstTurnId === undefined || firstTurnId === previous) return;
-    const el = listRef.current?.getScrollElement();
-    if (el === null || el === undefined) return;
-    if (!isAtBottom(readScrollMetrics(el))) return;
-    scrollToLastRow(listRef, turnCount);
-  }, [firstTurnId, turnCount]);
-
-  // The live pane gets the near-top rule from useTranscriptScroll; this pane
-  // mounts no scroll coordinator, so it registers the same rule (and the same
-  // distance from the top) through the shared hook.
-  useNearTopLoadOlder({ listRef, loadOlder: loadOlderReportingError, enabled: turnCount > 0 });
 
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
@@ -138,6 +107,35 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
     () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
     [displayHub, displayLocal, displayViewport],
   );
+
+  // The projection/rows/anchors are derived here, not left to TranscriptBody,
+  // for the same reason Session.tsx derives them: the scroll coordinator needs
+  // the ROW count and the anchor list, and rows are not turns (a cross-turn
+  // intent run coalesces into one row, a turn can split into several). Handing
+  // the body the same trio also keeps one derivation per revision.
+  const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
+  const rows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
+  const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(rows), [rows]);
+  const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(rows), [rows]);
+  const preparedView = useMemo(
+    () => (projection ? { projection, rows, anchorEntries } : undefined),
+    [projection, rows, anchorEntries],
+  );
+
+  // The same scroll coordinator the live pane runs: it lands at the end on
+  // open, pages near the top, follows a prepend without stranding the reader
+  // above the latest, and owns the stick-to-bottom bookkeeping. The read-only
+  // surface renders none of the pill/ask-dock UI it also feeds.
+  useTranscriptScroll({
+    ref,
+    model,
+    listRef,
+    loadOlder,
+    viewKey: configFingerprint(displayConfig),
+    anchorEntries,
+    renderedRowCount: rows.length,
+    sourceTurnRowIndexes,
+  });
 
   if (!model) {
     return (
@@ -155,6 +153,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
         <TranscriptBody
           model={model}
           config={displayConfig}
+          preparedView={preparedView}
           surface="readOnly"
           disclosureScope={`transcript:readOnly:${ref}`}
           sessionRef={ref}
