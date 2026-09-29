@@ -6,6 +6,7 @@ import { SymbolView } from "expo-symbols";
 import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useKeyboardShown } from "../useKeyboardShown";
 import { type GhostBackdrop, GhostBubble, GhostButton } from "./GhostBubble";
 import { foldQueue, type Ghost, type GhostAction, type QueueFold, shownGhosts } from "./ghosts";
 
@@ -19,9 +20,11 @@ export interface QueuedMessagesProps {
 	backdrop: GhostBackdrop;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
-	/** Whether you're typing (the keyboard is up): the queue folds to one
-	 * line until you tap it open. */
-	typing?: boolean;
+	/** Whether a keyboard up now would be the composer's: then you're typing,
+	 * and the queue folds to one line until you tap it open. The queue reads
+	 * the keyboard itself, so the keyboard coming and going re-renders it
+	 * alone, never the screen around it (#3247). */
+	composerKeyboard?: boolean;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -33,12 +36,13 @@ export function QueuedMessages({
 	editHint,
 	backdrop,
 	draftAttachments,
-	typing = false,
+	composerKeyboard = false,
 	onAction,
 	onMore,
 }: QueuedMessagesProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const typing = useKeyboardShown() && composerKeyboard;
 	// Opened while typing; the next time you type, the queue folds again.
 	const [opened, setOpened] = useState(false);
 	if (!typing && opened) setOpened(false);
