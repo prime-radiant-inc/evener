@@ -424,6 +424,36 @@ function sessionInfoHost() {
 	return host;
 }
 
+// The model's name comes from the catalog, which the screen keeps across a
+// screen pushed over it and back: its new controls start from it, so the
+// Session sheet never names the model by its raw id while the next read is
+// out (audit N6).
+it("keeps naming the model after a screen pushed over it closes, while the catalog reads again", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				// The first read answers; the one after the push never does.
+				return modelReads === 1
+					? { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] }
+					: new Promise<never>(() => {});
+			},
+		},
+	);
+	await flush();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await flush();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await flush();
+	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
+	tree.unmount();
+});
+
 it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
 	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
 		"evener/archive/set": {},
