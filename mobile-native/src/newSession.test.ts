@@ -857,3 +857,58 @@ it("keeps the host's recent models with its list, and drops both when the form m
 	await moving;
 	expect(store.getState().recentModels).toEqual([]);
 });
+
+/** A store over `saved`, bound to a hub whose model list is `models`, with every
+ * request recorded. */
+function restored(draft: Partial<CreationDraft>, models: unknown[]) {
+	const { saved, storage } = memoryDrafts();
+	saved.set("hub-a", {
+		source: "local",
+		cwd: "/project",
+		prompt: "go",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+		...draft,
+	});
+	const requests: { method: string; params: unknown }[] = [];
+	const store = createNewSessionStore("hub-a", storage);
+	store.getState().bind(
+		createNewSessionService({
+			request: async (method: string, params: unknown) => {
+				requests.push({ method, params });
+				if (method === "model/list") return { data: models };
+				return { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} };
+			},
+		} as ConversationClientLike),
+	);
+	return { store, requests };
+}
+
+it("makes a saved per-launch model the form's choice when the host lists it", async () => {
+	const { store, requests } = restored({ launchOverrides: { model: "p/a", reasoningEffort: "high", maxRounds: 7 } }, [
+		model,
+	]);
+	await store.getState().loadModels(true);
+	expect(store.getState()).toMatchObject({ model, reasoning: "high", launchOverrides: { maxRounds: 7 } });
+	await store.getState().submit();
+	expect(requests.find((r) => r.method === "thread/start")?.params).toMatchObject({
+		model: "a",
+		modelProvider: "p",
+		reasoningEffort: "high",
+		launchOverrides: { maxRounds: 7 },
+	});
+});
+
+it("never sends a saved per-launch model the host doesn't list", async () => {
+	const { store, requests } = restored({ launchOverrides: { model: "gone/old", maxRounds: 7 } }, [model]);
+	await store.getState().loadModels(true);
+	expect(store.getState().model).toBeNull();
+	await store.getState().submit();
+	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
+	expect(start).not.toHaveProperty("model");
+	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
+});
