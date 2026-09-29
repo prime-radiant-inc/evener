@@ -8,6 +8,7 @@
 
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
 import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -37,6 +38,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
   const store = useExtensionsHostStore();
   const directory = useHostDirectoryActions();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
+  const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
 
   const [addOpen, setAddOpen] = useState(false);
@@ -45,7 +47,6 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
   const [repoValue, setRepoValue] = useState("");
   const [pathValue, setPathValue] = useState("");
   const [nameValue, setNameValue] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   const urlId = useId();
   const repoId = useId();
@@ -68,8 +69,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
+    if (hubWriteBusy) return;
     const trimmedName = nameValue.trim();
     try {
       await store.getState().addMarketplace({ name: trimmedName, source: buildSource() });
@@ -77,9 +77,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
-      toasts.push("error", `Add marketplace failed: ${errorText(err)}`);
-    } finally {
-      setSubmitting(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Add marketplace failed: ${errorText(err)}`);
     }
   }
 
@@ -162,10 +160,10 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
             />
           </FormRow>
           <div className={CLASS.formActions}>
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={hubWriteBusy}>
               Add
             </Button>
-            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={submitting}>
+            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>
               Cancel
             </Button>
           </div>

@@ -506,7 +506,6 @@ export function MarketplaceBrowser({
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
-					gate={gate}
 					ready={ready}
 					canUseConnection={canUseConnection}
 					onClose={() => setAdding(false)}
@@ -568,7 +567,6 @@ export function AddMarketplace({
 	connectionState,
 	client,
 	hubName,
-	gate,
 	ready,
 	canUseConnection,
 	onClose,
@@ -576,12 +574,12 @@ export function AddMarketplace({
 }: {
 	connectionState: ConnectionState;
 	hubName: string;
-	gate: HubWriteGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
 	onClose(): void;
-	/** The write itself; the gate around it lives here, so a refusal keeps the
-	 * modal open on the busy copy just as it does everywhere else. */
+	/** The write itself; the store's shared gate refuses it if another write
+	 * holds it, so a refusal keeps the modal open on the busy copy just as it
+	 * does everywhere else. */
 	onAdd(params: MarketplaceAddParams): Promise<void>;
 	client: ConversationClientLike;
 }) {

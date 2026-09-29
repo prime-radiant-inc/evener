@@ -148,12 +148,15 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
-  (`createMarketplacesStore(client)`, a framework-free store over a
+  (`createMarketplacesStore(client, gate)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
   one cached browse result per marketplace), the installed-plugins store
-  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  (`createPluginsStore(client, gate)`, the same port, holding a hub's installed
   plugins, their six mutations and a `pluginRevision` that moves as the hub
-  announces a change), the global launch-layer store
+  announces a change). `gate` is the `HubWriteGate` those two stores share
+  (`createHubWriteGate`), which serializes their writes the way the hub
+  serializes them under one lock; a write that finds it held rejects with
+  `HubWriteBusyError`. The global launch-layer store
   (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
   skill directory lists and the MCP server list are four fields of, read and
   written at cwd `/` and layer `global`), and the pieces they are built over:
@@ -162,7 +165,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen. In every store fetches record their failure in state and
+  from its screen, and `createHubWriteGate`, the one write gate the marketplaces
+  and plugins stores share. In every store fetches record their failure in state and
   mutations reject. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
