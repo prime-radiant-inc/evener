@@ -200,6 +200,28 @@ func DecodeHeader(line []byte) (Header, error) {
 	return header, nil
 }
 
+// ReadHeader reads a transcript's leading header line from reader and decodes
+// it. Blank lines before the header are skipped. A reader that ends without a
+// complete, non-blank line is reported as ErrUnsupportedFormat. The reader is
+// left positioned just past the header line, so a caller scanning the rest of
+// the file can keep reading records from it.
+func ReadHeader(reader *bufio.Reader, maxLineBytes int) (Header, error) {
+	for {
+		line, complete, _, err := ReadLine(reader, maxLineBytes)
+		if err != nil {
+			return Header{}, err
+		}
+		if !complete {
+			return Header{}, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		return DecodeHeader(line)
+	}
+}
+
 // DecodeEntry strictly decodes one semantic v2 entry. Raw entry bytes are safe
 // to pass to a projector only after this function succeeds.
 func DecodeEntry(line []byte) (Entry, error) {

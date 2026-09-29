@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"database/sql"
@@ -448,14 +447,7 @@ func checkTranscriptHeader(transcriptPath string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	line, complete, _, err := transcript.ReadLine(bufio.NewReader(f), 128<<20)
-	if err != nil {
-		return err
-	}
-	if !complete {
-		return fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-	}
-	_, err = transcript.DecodeHeader(bytes.TrimSpace(line))
+	_, err = transcript.ReadHeader(bufio.NewReader(f), 128<<20)
 	return err
 }
 
