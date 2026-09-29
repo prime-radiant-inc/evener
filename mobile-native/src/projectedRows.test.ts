@@ -273,23 +273,39 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
 
-	it("maps a daemon steering item to an informational notice", () => {
-		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "steering", text: "<SYSTEM-REMINDER>steer</SYSTEM-REMINDER>", steeringKind: "hook-context" })),
+		);
 		expect(row).toEqual<MobileTimelineItem>({
 			kind: "notice",
 			id: "i1",
 			origin: "steering",
-			steeringKind: "note",
+			steeringKind: "hook-context",
 			family: "informational",
 			tone: "info",
 			text: "steer",
+			label: "Hook context",
 			turnId: "t1",
 		});
 	});
 
-	it("maps a warning steering kind to a warning-tone notice", () => {
-		const row = projectedRow(itemEntry(item({ type: "steering", text: "loop", steeringKind: "loop-detected" })));
-		expect(row).toMatchObject({ kind: "notice", origin: "steering", family: "warning", tone: "warning" });
+	it("labels a steer of a kind it has no label for as System steered, never its raw text", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+		expect(row).toMatchObject({ kind: "notice", label: "System steered", text: "steer" });
+	});
+
+	it("reads a loop-detected or provider-failure steer as a quiet notice: the turn's error is the failure", () => {
+		for (const steeringKind of ["loop-detected", "provider-failure"]) {
+			const row = projectedRow(itemEntry(item({ type: "steering", text: "loop", steeringKind })));
+			expect(row).toMatchObject({ kind: "notice", origin: "steering", family: "informational", tone: "info" });
+		}
+	});
+
+	it("leaves out the current task and the task list", () => {
+		for (const steeringKind of ["current-task", "task-list"]) {
+			expect(projectedRow(itemEntry(item({ type: "steering", text: "task", steeringKind })))).toBeNull();
+		}
 	});
 
 	it("maps a system message to a notice carrying its event kind, family and exit code", () => {

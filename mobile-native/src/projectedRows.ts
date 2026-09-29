@@ -41,6 +41,7 @@ import {
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
+	isSuppressedSteeringKind,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
@@ -48,7 +49,9 @@ import {
 	parseAskUserQuestions,
 	pendingTextJoined,
 	projectThread,
+	steeringKindLabel,
 	steeringNotificationFragments,
+	stripSystemReminder,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -382,7 +385,10 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 		};
 	}
 
-	if (it.type === "steering") return { ...steeringNotice(it), ...identity };
+	if (it.type === "steering") {
+		const notice = steeringNotice(it);
+		return notice === null ? null : { ...notice, ...identity };
+	}
 	if (it.type === "systemMessage") return { ...systemNotice(it), ...identity };
 
 	if (it.type === "warning") {
@@ -628,8 +634,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_STEERING_KINDS = new Set(["loop-detected", "turn-limit", "provider-failure"]);
-
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
@@ -661,24 +665,30 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone = it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
-	return {
-		kind: "notice",
+// A daemon steer is instructions to the agent, never the conversation: it
+// folds to what it did, and opens to what it said (spec 8.2 "System event"),
+// with the label the web shows for its kind (steeringKindLabel). One the
+// daemon sends as notification markup reads as its cards instead. A
+// loop-detected or provider-failure steer is quiet too: the failure it answers
+// shows as the turn's own error. The current task and the task list are left
+// out, as the web leaves them: the tasks surfaces own them.
+function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
+	if (isSuppressedSteeringKind(it.steeringKind)) return null;
+	const notifications = steeringNotificationFragments(it.text);
+	const common = {
+		kind: "notice" as const,
 		id: it.id,
-		origin: "steering",
+		origin: "steering" as const,
 		steeringKind: it.steeringKind,
-		family: tone === "warning" ? "warning" : "informational",
-		tone,
-		text: it.text,
-		...notificationsOf(it.text),
+		family: "informational" as const,
+		tone: "info" as const,
 	};
+	if (notifications) return { ...common, text: it.text, notifications };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringKindLabel(it.steeringKind) ?? STEERED };
 }
 
-function notificationsOf(text: string): { notifications?: SteeringFragment[] } {
-	const notifications = steeringNotificationFragments(text);
-	return notifications ? { notifications } : {};
-}
+// A steer whose kind this build has no label for (a newer daemon, or none).
+const STEERED = "System steered";
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
 	// A system family of "warning" IS the warning tone (systemFamily's own

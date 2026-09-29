@@ -2,31 +2,10 @@ import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
-// A labelled notice folds to its label until opened: a compaction's summary,
-// and task-control instructions, which stay available without crowding the
-// conversation.
+// A labelled notice folds to its label until opened: a daemon steer
+// (steeringNotice) or a compaction's summary (systemNotice).
 export function noticeLabel(item: Notice): string | undefined {
-	if (isCriticalNotice(item)) return undefined;
-	if (item.label !== undefined) return item.label;
-	if (item.origin !== "steering") return undefined;
-	switch (item.steeringKind) {
-		case "interrupted":
-			return "Interrupted";
-		case "interrupted-salvage":
-			return "Interrupted draft";
-		case "tasks-done":
-			return "Tasks complete";
-		case "task-nudge":
-			return "Task reminder";
-		case "task-inactive":
-			return "Task list idle";
-		case "current-task":
-			return "Current task";
-		case "task-list":
-			return "Task list";
-		default:
-			return undefined;
-	}
+	return isCriticalNotice(item) ? undefined : item.label;
 }
 
 export function isCriticalNotice(item: Notice): boolean {

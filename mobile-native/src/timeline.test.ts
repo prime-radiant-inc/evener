@@ -121,54 +121,19 @@ it("retains a disclosure identity as adjacent details arrive", () => {
 	expect(groupTimeline([])).toEqual([]);
 });
 
-it.each([
-	"interrupted",
-	"interrupted-salvage",
-	"tasks-done",
-	"task-nudge",
-	"task-inactive",
-	"current-task",
-	"task-list",
-])("offers a compact disclosure only for noncritical typed %s steering", (steeringKind) => {
+it("folds a labelled notice to its label, unless it is critical", () => {
 	const notice = {
 		...setup,
 		family: "informational" as const,
 		origin: "steering" as const,
-		steeringKind,
-	};
-	expect(noticeLabel(notice)).toEqual(expect.any(String));
-	expect(timelineGap(message, notice)).toBeLessThan(timelineGap(message, message));
-	expect(noticeLabel({ ...notice, origin: "system" })).toBeUndefined();
-	expect(noticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
-});
-
-it("labels interrupted salvage as a draft", () => {
-	const interruptedSalvage = {
-		...setup,
-		family: "informational" as const,
-		origin: "steering" as const,
-		steeringKind: "interrupted-salvage" as const,
-	};
-	expect(noticeLabel(interruptedSalvage)).toBe("Interrupted draft");
-	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(timelineGap(message, message));
-});
-
-it("keeps unknown steering, untyped notices, and critical diagnostics visible", () => {
-	const task = {
-		...setup,
-		origin: "steering" as const,
 		steeringKind: "tasks-done",
+		label: "Tasks complete",
 	};
-	for (const override of [
-		{ steeringKind: undefined },
-		{ steeringKind: "unknown" },
-		{ steeringKind: "notification" },
-		{ family: "warning" as const },
-		{ eventKind: "error" },
-		{ eventKind: "hook_completed", exitCode: 3 },
-	])
-		expect(noticeLabel({ ...task, ...override })).toBeUndefined();
-	expect(noticeLabel({ ...setup, text: "tasks-done" })).toBeUndefined();
+	expect(noticeLabel(notice)).toBe("Tasks complete");
+	expect(timelineGap(message, notice)).toBeLessThan(timelineGap(message, message));
+	expect(noticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
+	expect(noticeLabel({ ...notice, eventKind: "error" })).toBeUndefined();
+	expect(noticeLabel({ ...notice, label: undefined })).toBeUndefined();
 });
 
 // A tool repair is a quiet system event (spec 8.2): the call ran, corrected.

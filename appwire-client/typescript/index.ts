@@ -445,6 +445,7 @@ export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSch
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export { isSuppressedSteeringKind, STEERING_KIND_LABELS, steeringKindLabel } from "./steeringLabels";
 export {
   decodeNotificationEntities,
   escapeNotificationEntities,

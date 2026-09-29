@@ -7,6 +7,7 @@ import {
 	hydrateThread,
 	makeTranscriptDisplayConfig,
 	shippedConfig,
+	stripSystemReminder,
 	type Thread,
 	type ThreadItem,
 	type Turn,
@@ -159,5 +160,43 @@ describe("system events (G7, G9)", () => {
 		expect(renderedText(show("context-compaction"))).toBe("Context compacted · 412K → 38K tokens");
 		expect(renderedText(show("context-compaction-turns"))).toBe("Context compacted · 40 → 5 turns");
 		expect(renderedText(show("context-compaction-bare"))).toBe("Context compacted");
+	});
+});
+
+// The engineering labels get plain words (spec 5); the rest keep the web's.
+const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
+	["steer-hook-context", "Hook context"],
+	["steer-precompact-hook", "Hook context before compacting"],
+	["steer-compact-nudge", "Running low on context"],
+	["steer-no-tool-calls", "Reminded to keep working"],
+	["steer-loop-detected", "Loop detection"],
+	["steer-provider-failure", "Provider failure"],
+	["steer-transcript-pointer", "Where to find the full transcript"],
+	["steer-task-nudge", "Task reminder"],
+	["steer-note-handoff", "Note to self"],
+];
+
+describe("the daemon's steers (G8)", () => {
+	it.each(STEER_LABELS)("collapses %s to its label, which opens to what it said", (name, label) => {
+		const tree = show(name);
+		expect(renderedText(tree)).toBe(label);
+		press(tree);
+		expect(renderedText(tree)).toBe(`${label} ${stripSystemReminder(systemEventWireItem(name).text ?? "")}`);
+	});
+
+	it.each(["steer-loop-detected", "steer-provider-failure"] as const)(
+		"reads %s as a quiet labelled event, since the failure itself is the turn's error",
+		(name) => {
+			const row = rowFor(name);
+			if (row?.kind !== "notice") throw new Error(`no ${name} notice`);
+			expect(isCriticalNotice(row)).toBe(false);
+			expect(inked(show(name), DANGER_INK)).toBe(false);
+		},
+	);
+
+	it.each(LEVELS)("leaves out the current task and the task list, as the web does, at %s", (level) => {
+		for (const name of ["steer-current-task", "steer-task-list"] as const) {
+			expect(rowFor(name, level)).toBeUndefined();
+		}
 	});
 });
