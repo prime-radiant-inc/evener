@@ -32,7 +32,11 @@ function hubSlot(hubId: string, ready = true, listed = true, catalog: { name: st
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({
 		marketplaces: listed
-			? ["acme", "beta"].map((name) => ({ name, source: { kind: "github" as const, repo: `${name}/plugins` }, lastUpdated: 1 }))
+			? ["acme", "beta"].map((name) => ({
+					name,
+					source: { kind: "github" as const, repo: `${name}/plugins` },
+					lastUpdated: 1,
+				}))
 			: [],
 	}));
 	hub.on("evener/marketplace/browse", (params: { name: string }) => ({ name: params.name, plugins: catalog }));

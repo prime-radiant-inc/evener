@@ -3126,11 +3126,15 @@ it("leaves an open plugin's late result behind when a link opens another plugin"
 	});
 	const other = { plugin: "other", marketplace: entry("other").marketplace };
 	await act(async () => {
-		tree.update(<PluginsStack {...props} route={{ ...props.route, params: { ...props.route.params, focus: other } }} />);
+		tree.update(
+			<PluginsStack {...props} route={{ ...props.route, params: { ...props.route.params, focus: other } }} />,
+		);
 	});
 	await act(async () => fail(new Error("upstream 502")));
 	await act(async () => {});
-	expect(tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Upgrade" }).length).toBeGreaterThan(0);
+	expect(
+		tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Upgrade" }).length,
+	).toBeGreaterThan(0);
 	expect(renderedText(tree)).toContain("other");
 	expect(renderedText(tree)).not.toContain("Could not confirm the change");
 });
