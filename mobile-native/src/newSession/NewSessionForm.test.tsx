@@ -65,8 +65,9 @@ interface Options {
 	holdStart?: boolean;
 	/** How often the form's hosts controller reads the hub's hosts. */
 	hostPollMs?: number;
-	/** How evener/plugin/preview answers; no plugins when absent. */
-	plugins?: PluginPreviewResponse;
+	/** How evener/plugin/preview answers; no plugins when absent, a refusal
+	 * when an Error. */
+	plugins?: PluginPreviewResponse | Error;
 	/** The project's branch; "" outside a repository. */
 	branch?: string;
 	/** The hub's launch defaults for the project. */
@@ -93,7 +94,10 @@ async function mount(options: Options = {}) {
 				return { data: [glm] };
 			}
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
-			if (forwarded === "evener/plugin/preview") return options.plugins ?? { plugins: [] };
+			if (forwarded === "evener/plugin/preview") {
+				if (options.plugins instanceof Error) throw options.plugins;
+				return options.plugins ?? { plugins: [] };
+			}
 			if (forwarded === "evener/git/head") return { head: options.branch ?? "" };
 			if (forwarded === "evener/launch/resolve") {
 				if (options.refuseDefaults) throw new Error("hub away");
@@ -593,5 +597,19 @@ it("names no access until the hub says its default, unless the person chose one"
 	expect(form.text()).not.toContain("Full access");
 	await act(async () => form.store.getState().setLaunchOverrides({ sandbox: "restricted" }));
 	expect(form.row("Access")?.props.accessibilityLabel).toBe("Access, Reads and writes only in the project, Restricted");
+	form.dispose();
+});
+
+it("says the Plugins row waits for a project", async () => {
+	const form = await mount({ draft: { prompt: "go" } });
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, Listed once a project is chosen");
+	form.dispose();
+});
+
+it("says the host's plugins couldn't be listed when the first preview fails", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, plugins: new Error("plugin cache locked") });
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, Couldn't list this host's plugins");
 	form.dispose();
 });

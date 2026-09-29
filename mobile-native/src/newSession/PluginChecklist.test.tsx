@@ -47,7 +47,7 @@ const preview: PluginPreviewResponse = {
 	diagnostics: [{ name: "superpowers-chrome", message: "Chrome isn't installed on this host" }],
 };
 
-function mount(options: { refuse?: Error; answer?: PluginPreviewResponse } = {}) {
+function mount(options: { refuse?: Error; answer?: PluginPreviewResponse; cwd?: string } = {}) {
 	const calls: { method: string; params: unknown }[] = [];
 	const client = {
 		request: async (method: string, params: unknown) => {
@@ -58,7 +58,11 @@ function mount(options: { refuse?: Error; answer?: PluginPreviewResponse } = {})
 		onNotification: () => () => {},
 	};
 	const store = createNewSessionStore("hub-1");
-	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener", launchOverrides: { maxRounds: 7 } });
+	store.setState({
+		source: "paradise-park",
+		cwd: options.cwd ?? "/Users/jesse/git/evener",
+		launchOverrides: { maxRounds: 7 },
+	});
 	const tree = render(
 		<TestSheet value={sheetContext(store, { client: client as never })}>
 			<PluginChecklist />
@@ -134,4 +138,12 @@ it("shows a failed preview's message with no button", async () => {
 	expect(page.text()).toContain("the plugin cache is locked");
 	expect(pressable(page.tree, "Retry plugin preview")).toBeUndefined();
 	expect(page.text()).not.toMatch(/Retry|Refresh|Reconnect/);
+});
+
+it("says plugins wait for a project, rather than checking forever", async () => {
+	const page = mount({ cwd: "" });
+	await debounce();
+	expect(page.calls).toEqual([]);
+	expect(page.text()).toContain("Plugins are listed once a project is chosen.");
+	expect(page.text()).not.toContain("Checking plugins");
 });

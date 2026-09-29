@@ -23,7 +23,7 @@ import { pluginChoice } from "./sheetPlugins";
 
 export function PluginChecklist() {
 	const { store, plugins, hostLabel } = useNewSession();
-	const { source, launchOverrides, submitting, setLaunchOverrides } = useStore(store);
+	const { source, cwd, launchOverrides, submitting, setLaunchOverrides } = useStore(store);
 	const [query, setQuery] = useState("");
 	const { selection, response, on, total, issues } = pluginChoice(launchOverrides, plugins);
 	const change = (next: PluginSelectionState) => setLaunchOverrides(withPluginSelection(launchOverrides, next));
@@ -48,7 +48,9 @@ export function PluginChecklist() {
 				</View>
 			</View>
 			{plugins.status === "error" ? <GroupFooter tone="danger">{plugins.message}</GroupFooter> : null}
-			{!response && plugins.status === "loading" ? (
+			{!cwd.trim() ? (
+				<GroupFooter>Plugins are listed once a project is chosen.</GroupFooter>
+			) : !response && plugins.status === "loading" ? (
 				<GroupFooter>{`Checking plugins on ${hostLabel(source)}…`}</GroupFooter>
 			) : null}
 			{groups.map((group) => (

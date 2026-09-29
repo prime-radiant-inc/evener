@@ -54,6 +54,18 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const model = creationModel(form.models, form.model, form.launchOverrides);
 	const pluginsChosen = pluginChoice(form.launchOverrides, plugins);
 	const branch = useHostRead(client, ready, form.source, form.cwd, readBranch);
+	// The Plugins row: what the preview says, or why there is nothing to count.
+	const pluginsLine: { sub?: string; subTone?: "danger"; value?: string } = !form.cwd.trim()
+		? { sub: "Listed once a project is chosen" }
+		: pluginsChosen.response
+			? {
+					sub: pluginsChosen.issues.length > 0 ? `${pluginsChosen.issues.length} need attention` : undefined,
+					subTone: "danger",
+					value: `${pluginsChosen.on.length} of ${pluginsChosen.total}`,
+				}
+			: plugins.status === "error"
+				? { sub: "Couldn't list this host's plugins", subTone: "danger" }
+				: { value: "…" };
 	const access = knownAccess(form.launchOverrides.sandbox, launchDefaults);
 	const block = startBlock({
 		ready,
@@ -230,9 +242,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					icon="puzzlepiece.extension"
 					label="Plugins"
 					tone={block?.field === "plugins" ? "danger" : "normal"}
-					sub={pluginsChosen.issues.length > 0 ? `${pluginsChosen.issues.length} need attention` : undefined}
-					subTone="danger"
-					value={pluginsChosen.response ? `${pluginsChosen.on.length} of ${pluginsChosen.total}` : "…"}
+					{...pluginsLine}
 					chevron
 					onPress={() => navigation.navigate("Plugins")}
 				/>
