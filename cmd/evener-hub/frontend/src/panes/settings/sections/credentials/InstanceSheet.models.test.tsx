@@ -152,7 +152,10 @@ describe("long model lists", () => {
 
   test("clears the search when a different instance opens", () => {
     credentialsStore.setState({
-      instances: [{ ...entry(), models: manyModels(60) }, { ...entry(), name: "other", models: manyModels(2) }],
+      instances: [
+        { ...entry(), models: manyModels(60) },
+        { ...entry(), name: "other", models: manyModels(2) },
+      ],
       availableProviders: [],
     });
     const h = handlers();
