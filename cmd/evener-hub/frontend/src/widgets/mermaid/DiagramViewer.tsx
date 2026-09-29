@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
 import { CopyButton } from "../copybutton";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
@@ -47,22 +47,40 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const drag = useRef<{ pointerId: number; startX: number; startY: number; baseX: number; baseY: number } | null>(null);
 
-  function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    // Zoom around the cursor: keep the point under the cursor stationary.
-    const rect = event.currentTarget.getBoundingClientRect();
-    const cursorX = event.clientX - rect.left;
-    const cursorY = event.clientY - rect.top;
-    setView((current) => {
-      const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, current.scale * factor));
-      const ratio = next / current.scale;
-      return {
-        scale: next,
-        x: cursorX - ratio * (cursorX - current.x),
-        y: cursorY - ratio * (cursorY - current.y),
-      };
-    });
-  }
+  // The wheel zoom is a NATIVE, non-passive listener, not React's onWheel:
+  // react-dom registers wheel as passive at the root (it emulates document's
+  // passive-event intervention, see DOMPluginEventSystem), so a preventDefault
+  // inside an onWheel handler is a no-op and the zoom would still chain-scroll
+  // the transcript behind the overlay. A ref callback attaches it exactly while
+  // the surface is mounted (the diagram, not the source, is shown) and the
+  // returned cleanup detaches it on unmount.
+  const attachWheel = useCallback((element: HTMLDivElement | null) => {
+    if (element === null) return;
+    const surface = element;
+    function handleWheel(event: WheelEvent) {
+      // A zero deltaY is a horizontal-wheel gesture, not a zoom: ignore it
+      // (the ternary below would otherwise take its zoom-out branch).
+      if (event.deltaY === 0) return;
+      // Own the gesture so a wheel-zoom never chain-scrolls the transcript.
+      event.preventDefault();
+      // Zoom around the cursor: keep the point under the cursor stationary.
+      const rect = surface.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      setView((current) => {
+        const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+        const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, current.scale * factor));
+        const ratio = next / current.scale;
+        return {
+          scale: next,
+          x: cursorX - ratio * (cursorX - current.x),
+          y: cursorY - ratio * (cursorY - current.y),
+        };
+      });
+    }
+    surface.addEventListener("wheel", handleWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", handleWheel);
+  }, []);
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -116,8 +134,8 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
         </pre>
       ) : (
         <div
+          ref={attachWheel}
           className={CLASS.zoomSurface}
-          onWheel={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
