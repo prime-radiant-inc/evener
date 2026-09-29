@@ -1191,6 +1191,34 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("runs a message queued for a resting fleet session as its own turn, as the daemon does", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-flakes");
+		try {
+			await client.connect();
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			expect(thread.status.type).not.toBe("active");
+			const queued = (await client.request("turn/queue", {
+				ref,
+				expectedInstanceId: thread.evener.instanceId ?? "",
+				clientMutationId: "queued-1",
+				input: [{ type: "text", text: "Check the nightly runs too." }],
+			})) as { receipt: { turnId?: string; queueEntryIds?: string[] } };
+			expect(queued.receipt.turnId).toBeDefined();
+			expect(queued.receipt.queueEntryIds).toBeUndefined();
+			const after = (await client.request("thread/read", { ref, includeTurns: true })).thread;
+			expect(after.status.type).toBe("active");
+			expect(after.evener.queue.depth ?? 0).toBe(0);
+			expect(after.turns?.at(-1)?.items?.find((item) => item.type === "userMessage")?.text).toBe(
+				"Check the nightly runs too.",
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});

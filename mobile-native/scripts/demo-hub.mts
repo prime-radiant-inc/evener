@@ -497,6 +497,33 @@ export async function createDemoHub(
 							throw new WireError("Session identity changed", -32013, {
 								evenerErrorInfo: "conflict",
 							});
+						// A message queued for a resting session runs as its own
+						// turn, as the daemon's ProcessPendingUserInput runs it; only
+						// a Stop parks the queue (the last turn "interrupted").
+						const lastTurn = selected.turns?.at(-1);
+						if (
+							request.method === "turn/queue" &&
+							selected.status.type !== "active" &&
+							lastTurn?.status !== "interrupted"
+						) {
+							const turn = startScriptedTurn(
+								selected,
+								inputText(params.input),
+								params.clientMutationId,
+							);
+							result = {
+								receipt: {
+									clientMutationId: params.clientMutationId,
+									disposition: "applied",
+									threadId: selected.id,
+									instanceId: selected.evener.instanceId,
+									turnId: turn.id,
+									projectionState: "pending",
+								} satisfies MutationReceipt,
+							};
+							changed = selected;
+							break;
+						}
 						const queue = selected.evener.queue;
 						const ids = queue.ids ?? [];
 						const texts = queue.texts ?? [];
