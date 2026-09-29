@@ -31,7 +31,10 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	const { state, canUseConnection, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
 	const close = useCallback(() => navigation.goBack(), [navigation]);
-	const leave = useCallback(() => navigation.navigate("Hubs"), [navigation]);
+	// With no hub selected, the Board under this sheet is stale: first run
+	// becomes the whole stack. (React Navigation 7's navigate would push a
+	// second Hubs screen, inside this sheet, rather than go back to the first.)
+	const leave = useCallback(() => navigation.reset({ index: 0, routes: [{ name: "Hubs" }] }), [navigation]);
 	useClosesOnHubChange(hubId, close, leave);
 	const ready = isReady(state);
 	const updates = useHubUpdates(renderClient, ready);

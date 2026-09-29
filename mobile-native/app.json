@@ -78,7 +78,8 @@
         {
           "cameraPermission": "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
           "microphonePermission": false,
-          "recordAudioAndroid": false
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
         }
       ]
     ],

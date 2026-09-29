@@ -3,6 +3,7 @@
 // Whichever plugin runs last wins, so both carry the same sentence, and this
 // reads the Info.plist Expo would generate to prove the one that ships.
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
@@ -21,3 +22,12 @@ it("asks for the camera with one sentence that covers scanning and photos, and n
 	expect(config.ios.infoPlist.NSCameraUsageDescription).toBe(CAMERA);
 	expect(config.ios.infoPlist.NSMicrophoneUsageDescription).toBeUndefined();
 }, 60_000);
+
+it("leaves out expo-camera's ZXing scanner, which the pairing code doesn't need and which crashed launch", () => {
+	// Its precompiled framework links a dynamic ExpoCamera that the app never
+	// embeds (ExpoCamera builds static), so dyld stopped the app at launch.
+	// QR codes, all pairing uses, scan natively without it.
+	const lock = readFileSync(join(__dirname, "..", "Podfile.lock"), "utf8");
+	expect(lock).toContain("ExpoCamera (");
+	expect(lock).not.toContain("ExpoCameraBarcodeScanning");
+});
