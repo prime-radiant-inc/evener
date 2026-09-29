@@ -447,7 +447,7 @@ func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpo
 		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no fencible probe epoch can be bound")
+		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no probe epoch can be bound")
 	}
 	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
 		Host:          entry.Name,

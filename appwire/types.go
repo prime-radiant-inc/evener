@@ -1741,11 +1741,12 @@ type TurnError struct {
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a
-// warning/error notification. Today the only Kind is "provider" (an HTTP
-// failure from an LLM adapter); consumers can typed-branch on Kind
-// instead of substring-matching the message (kata cmfz). The agent's
-// events.ErrorCause projects to this shape; absence is signaled by an
-// omitted/nil pointer on the carrying envelope.
+// warning/error notification. Kinds today are "provider" (an HTTP failure
+// from an LLM adapter) and "signInRequired" (the user must sign in to a
+// provider instance again); consumers can typed-branch on Kind instead of
+// substring-matching the message (kata cmfz). The agent's events.ErrorCause
+// projects to this shape; absence is signaled by an omitted/nil pointer on
+// the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
@@ -4908,11 +4909,11 @@ const (
 	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
 )
 
-// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
-// crash-fencing §9): the controller boot id plus the per-host monotonic op
-// sequence. `evener/host/running` requires it — absent or malformed is a typed
-// `probe-failed` refusal, never an unfenced write — and the fencing spec's
-// remote-fencing boundary carries the same pair.
+// FencingEpoch is the epoch wire shape (deploy pipeline 08b §10): the controller
+// boot id plus the per-host monotonic op sequence. `evener/host/running` requires
+// it — absent or malformed is a typed `probe-failed` refusal, never an unfenced
+// write. The name is retained historical wire vocabulary; a `probeEpoch` rename
+// is a wire-compat follow-up.
 type FencingEpoch struct {
 	BootID string `json:"bootId"`
 	OpSeq  uint64 `json:"opSeq"`

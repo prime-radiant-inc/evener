@@ -116,6 +116,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 			textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint,
 		).toBeUndefined();
 	});
+
+	it("leaves the connection status unannounced: it is ambient and changes often (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(header({ status: "Reconnecting…", chips: [goal] }));
+		act(() => tree.update(header({ status: "Offline · updated 3m ago", chips: [goal] })));
+		expect(announce).not.toHaveBeenCalled();
+	});
 });
 
 describe("the chips row (spec 8.1)", () => {

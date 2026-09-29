@@ -288,9 +288,9 @@ export interface TranscriptBodyProps {
    * those rows. A caller that already derives the trio for its own manifest
    * hands it down so one model revision costs one derivation instead of the
    * caller's and the body's separate copies. Callers that supply no prepared
-   * view (standalone preview and read-only surfaces) derive their own, as they
-   * always have. The three members travel together: they are one derivation,
-   * and a partially supplied view would let the rendered rows diverge from the
+   * view (the standalone preview surface) derive their own, as they always
+   * have. The three members travel together: they are one derivation, and a
+   * partially supplied view would let the rendered rows diverge from the
    * projection the rest of the body reads.
    */
   preparedView?: {

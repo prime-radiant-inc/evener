@@ -196,10 +196,12 @@ func TestOpenRefusesAStoreReadableBeyondItsOwner(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesACorruptStore pins this layer's half of spec §4's corrupt-store
-// rule: a corrupt or schema-invalid store file is refused (startup does not
-// serve it). The custody-first quarantine that §4 also takes at boot belongs to
-// the crash-fencing slice; this layer refuses and nothing more.
+// TestOpenRefusesACorruptStore pins the refusal half of spec §4's corrupt-store
+// rule: a corrupt or schema-invalid store file whose custody snapshot cannot be
+// shown complete refuses the load (startup does not serve it), and the refused
+// file is never rewritten. The quarantine half — a corrupt file that yields a
+// complete custody snapshot — runs through the same Open path (quarantine.go /
+// custody.go).
 func TestOpenRefusesACorruptStore(t *testing.T) {
 	record := `{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1",` +
 		`"kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1",` +
@@ -343,8 +345,9 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 }
 
 // TestOpenFailsOnAStoreItCannotRead pins this layer's answer to a store it
-// cannot read at all: refusal, never a half-served store. The custody-first
-// quarantine spec §4 takes for a corrupt store is the crash-fencing slice's.
+// cannot read at all (a filesystem error, not a parse failure): refusal, never a
+// half-served store. The custody-first quarantine §4 defines applies to a
+// corrupt file whose snapshot is provable, not to one this layer cannot read.
 func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 	t.Run("unreadable file", func(t *testing.T) {
 		if os.Geteuid() == 0 {
