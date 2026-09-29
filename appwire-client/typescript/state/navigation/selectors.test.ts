@@ -7,6 +7,7 @@ import {
   selectSessionOmittedArmedWatches,
   selectSessionOmittedWatches,
   selectSources,
+  subagentTallyToShow,
 } from "./selectors";
 import { createNavigationStore } from "./store";
 import { isSettledGone, keyID, navigationViewScope, type ResourceKey, type ResourceState } from "./types";
@@ -218,4 +219,33 @@ test("the two views differ exactly where settledness does", () => {
   const stale = manifestResource({ stale: true });
   expect(sourcesOf(stale)).toEqual([]);
   expect(displaySourcesOf(stale).map((source) => source.id)).toEqual(["local", "buildbox"]);
+});
+
+// D6: only a live root shows its subagent tally, and only when something in it
+// is worth a glance. Done subagents are history, so a tally of all done shows
+// nothing.
+test("subagentTallyToShow shows a live root's running and failed counts and hides the rest", () => {
+  const row = (overrides: Partial<NavigationSessionSummary>): NavigationSessionSummary => ({
+    ref: "local:s",
+    host_id: "local",
+    session_id: "s",
+    title: "t",
+    project: "p",
+    state: "active",
+    kind: "session",
+    live: true,
+    children: [],
+    ...overrides,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 3, failed: 1, done: 5 } }))).toEqual({
+    running: 3,
+    failed: 1,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 2, done: 0 } }))).toEqual({
+    running: 0,
+    failed: 2,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 0, done: 4 } }))).toBeNull();
+  expect(subagentTallyToShow(row({}))).toBeNull();
+  expect(subagentTallyToShow(row({ live: false, subagents: { running: 3, failed: 0, done: 0 } }))).toBeNull();
 });

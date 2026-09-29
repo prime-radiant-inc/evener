@@ -42,7 +42,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -124,10 +123,13 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 		if err := m.verifyOrphanRecord(ctx, record); err != nil {
 			if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
 				message := fmt.Sprintf("host %q: orphan-unverified record %s cannot be resolved: %v", record.Host, record.ID, err)
-				if gate.Discriminator == hostfence.DiscriminatorHelperAbsent {
-					return appwire.OperationRecord{}, appwire.FencingHelperAbsent(record.Host, strconv.Itoa(gate.PinnedVersion), message)
+				if wire, ok := helperGateWire(gate, message); ok {
+					return appwire.OperationRecord{}, wire
 				}
-				return appwire.OperationRecord{}, appwire.FencingHelperUntrusted(record.Host, strconv.Itoa(gate.ObservedVersion), message)
+				// A discriminator this build cannot render is refused explicitly,
+				// never as an absent/untrusted arm (§8:161).
+				return appwire.OperationRecord{}, appwire.InternalError(fmt.Sprintf(
+					"host %q: the helper gate refused with an unknown discriminator %q: %v", record.Host, gate.Discriminator, err))
 			}
 			if errors.Is(err, hostfence.ErrOrphanBoundaryPresent) {
 				return appwire.OperationRecord{}, appwire.HostBusyTransient(fmt.Sprintf(

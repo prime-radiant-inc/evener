@@ -40,7 +40,11 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import {
+  publishOutboxRecordForTests,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "./queue/pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
@@ -3422,14 +3426,12 @@ test("a session whose harness advertises no send at all renders NO card, not a d
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
 });
 
-// Regression for the review finding on the reduced branch. A stopped local
-// session is recovery-fenced (resumeRequired -> the wire advertises send:false
-// and the store holds a restart-blocking obligation). The composer keeps its
-// card so the draft and the recovery notice's explicit Resume action stay
-// reachable, but Send must not be offered: turn/start no longer carries an
-// implicit resume in this branch, so a Send here would either implicitly
-// resume the session or toast a refusal.
-test("a stopped local session offers no Send, only the explicit Resume action", async () => {
+// A merely-resumable local session (a shut-down `notLoaded` snapshot the hub
+// overlays resumeRequired on, no Stop in flight) folds the resume into the send:
+// the hub admits turn/start while only ResumeRequired stands (cmd/evener-hub's
+// sessionActionRecoveryError turn/start carve-out), so the composer offers Send
+// and the first press resumes the session. The card and its writing surface stay.
+test("a merely-resumable stopped local session offers Send and sends turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-recovery";
   const fake = await mountComposer(ref, {
@@ -3439,9 +3441,19 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
       capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
       mutationStateAuthoritative: false,
       resumeRequired: true,
+      resumeOnlyFoldable: true,
       queue: { revision: 0 },
     },
   });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_resumed", status: "inProgress", itemsView: "" },
+  }));
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   // The card stays: it is the writing surface the retained draft lives in.
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
@@ -3454,20 +3466,233 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
   await user.click(editor);
   await user.type(editor, "omt");
 
-  expect(submitButton().disabled).toBe(true);
-  // The Mod+Enter chord reaches the form by the same route the button does; it
-  // must refuse too, never dispatching a turn/start that resumes the session.
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const calls = fake.calls.filter((call) => call.method === "turn/start");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.params).toMatchObject({ ref, input: [{ type: "text", text: "omt" }] });
+});
+
+// RoboRev Medium (round 13): resumeOnlyFoldable is stamped by a snapshot
+// hydration and the thread/status/changed branch keeps ...model, so a stale bit
+// could outlive the shut-down snapshot it described. The hub's resume-only
+// admission is status-independent, so the defence is not a status gate in the
+// predicate: the store clears the stale bit - and the recovery obligation the
+// snapshot armed - off the shut-down transition (settleResumeOnlyOffShutdown).
+// Once the session moves to active, the bit is gone, so availabilityFor routes
+// normally (Queue behind the running turn) rather than folding; otherwise the
+// fence would keep Send and Queue off.
+test("a stale resumeOnlyFoldable bit is cleared off its shut-down snapshot, routing like a normal active session", async () => {
+  const user = userEvent.setup();
+  const ref = "local:stale-foldable";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: true },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  fake.on("turn/queue", receipt);
+  fake.on("turn/start", (params) => ({
+    ...receipt(params),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+
+  // The session's own folded resume (or any later frame) moves it to active.
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+  // The stale snapshot bit and the obligation it rode on do not survive.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await user.type(textarea(), "omt");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // Normal active routing: Queue, never a resume-only turn/start.
+  expect(routedCalls(fake)).toEqual(["turn/queue"]);
+});
+
+// A merely-resumable session that also holds delivery-uncertain messages is NOT
+// the clean resume case: the hub's explicit Resume still reconciles those rows
+// (the connection/uncertain-message shape), and the resume-only carve-out must
+// not offer a Send whose folded resume would skip that reconciliation. The
+// composer keeps Send disabled and the chord sends no turn/start.
+test("a merely-resumable local session with uncertain messages keeps Send disabled", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-uncertain";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await act(async () => {
+    const input = [{ type: "text", text: "uncertain" }];
+    const outbox = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+    await flushPendingTurnsProjectionForTests();
+  });
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "omt");
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+  // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Regression for the RoboRev finding on the fenced-session surface. The hub
-// stamps send:true on every notLoaded thread (pastThreadCapabilities), so a
-// stopped local session can advertise Send while a restart-blocking obligation
-// still fences it. availabilityFor refuses both routes for that snapshot, so an
-// ENABLED button here could only produce a refusal toast - the rendered Send
-// must be disabled, exactly as it is when the wire itself advertises send:false.
+// The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
+// and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
+// dispatch use): a blockedUnknown row published between the render and the
+// press must route the press to the refusal, not fold the resume into a send
+// that the store's own fence would then refuse. The store update and the press
+// run in one synchronous task, so the render-time read cannot have caught up.
+test("a blockedUnknown row published after the render routes the press to the refusal", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-late-uncertain";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "omt");
+  // A durable blockedUnknown row lands in storage, but the projection store is
+  // NOT refreshed: the render still reads no blocked rows, so Send is offered.
+  // It is a turn/queue row, not a send, so it does not itself count as a
+  // pending send (ownPendingSend) - only the uncertainty signal is under test.
+  const input = [{ type: "text", text: "uncertain" }];
+  const record = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input },
+  });
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+  const blocked = await storage.getOutbox(record.clientMutationId);
+  // Narrow the durable read explicitly (the repo's frontend style avoids a
+  // non-null assertion); the assertion below is unchanged.
+  expect(blocked).toBeDefined();
+  if (!blocked) throw new Error("expected the blocked row to be durable");
+  const submit = submitButton();
+  expect(submit.disabled).toBe(false);
+  act(() => {
+    publishOutboxRecordForTests(blocked);
+    fireEvent.click(submit);
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The submit itself refused (route none): the alternative is routing to send
+  // and being refused a step later at enqueue with a different toast.
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain("Send is not available for this session"),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// Part 3: during the resume window a SECOND send must wait for the first, not
+// route its own turn/start. availabilityFor's resume-only branch returns
+// canSend: !pendingSend, matching the ended-session substitution's
+// !tableAvailability.canSend guard below it - the table never offers Send while
+// one is already in flight.
+test("a merely-resumable local session with a pending send refuses a second send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-pending-send";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  // This page's send stays in flight: the runtime dispatches it and the hub
+  // never answers, so it remains the one pending send.
+  const inFlight = deferred<never>();
+  fake.on("turn/start", () => inFlight.promise);
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await refreshPendingTurnsProjection(ref);
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "second");
+  // The pending send keeps Send unavailable during the resume window: the
+  // button is disabled, and the chord still routes the press to the refusal.
+  expect(submitButton().disabled).toBe(true);
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  // The pending send keeps Send unavailable during the resume window: the press
+  // mints no second turn/start, so the outbox still holds only the seeded send.
+  expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/start"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// A snapshot that advertises send is not the hub's resume-fenced shape: the
+// resume requirement clears send:false together with resumeRequired
+// (applyThreadResumeRequirement). The client-side obligation still fences it -
+// with no wire send fence the resume-only carve-out does not apply - so the
+// rendered Send stays disabled rather than offering a press against an
+// obligation the wire never confirmed.
 test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-send-advertised";
@@ -3475,8 +3700,6 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
     status: { type: "notLoaded" },
     evener: {
       ref,
-      // send:true is the shape the finding is about: the hub's stamp for a cold
-      // thread, held beside the store's restart-blocking obligation.
       capabilities: PAST_THREAD_CAPABILITIES,
       mutationStateAuthoritative: false,
       resumeRequired: true,
@@ -3495,14 +3718,15 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Regression for the RoboRev Medium on PR 1393 (fee4eb8): the local recovery
-// fence only applied to notLoaded snapshots. A fenced local session can also
-// hydrate LIVE - idle with resumeRequired:true and send:false - and the
-// availability table falls through to plain-send mode for that shape (it
-// never consults capabilities.send for an idle status), so Send rendered
-// ENABLED and routed to turn/start despite the store's restart-blocking
-// obligation. The fence now covers a local target in whatever status it
-// hydrates as, for as long as the obligation stands.
+// The fence still covers a LIVE snapshot. A live read during a Stop relays the
+// daemon's still-active status while the hub overlays resumeRequired beside it
+// (applyThreadResumeRequirement), and the store arms the obligation on that
+// hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
+// absent, and its status is live (idle), which is not in SHUT_DOWN_STATUSES;
+// isResumeOnlyLocal now keys on the hub bit, the shut-down status, and the
+// uncertain/stop/queued signals, so the merely-resumable carve-out does not
+// apply on either count. The hub still refuses turn/start while the Stop
+// drains, so Send stays disabled.
 test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";
@@ -3527,15 +3751,10 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Regression for the RoboRev Medium on PR 1393 (298d8ac): the ended-session
-// Send gate consulted only the notLoaded-scoped fence, while availabilityFor
-// fences every non-active status. The hub stamps CLOSED frames with send:true
-// too (stampClosedThreadCapabilities), and a live notification folds that
-// frame in without clearing the store's restart-blocking obligation, so a
-// closed local session can advertise Send while the obligation still fences
-// it. availabilityFor refuses both routes for exactly that snapshot, so an
-// ENABLED Send here could only produce the refusal toast this branch exists
-// to eliminate; the rendered Send must be disabled instead.
+// A closed local frame carries send:true (stampClosedThreadCapabilities); it is
+// not the hub's resume-fenced shape, which clears send:false alongside
+// resumeRequired (applyThreadResumeRequirement). With no wire send fence the
+// resume-only carve-out does not apply, so Send stays disabled.
 test("a fenced closed local session that advertises send renders a disabled Send", async () => {
   const user = userEvent.setup();
   const ref = "local:closed-send-advertised";
@@ -3543,10 +3762,6 @@ test("a fenced closed local session that advertises send renders a disabled Send
     status: { type: "closed" },
     evener: {
       ref,
-      // The hub's closed-frame stamp (send stays true), held beside the
-      // store's restart-blocking obligation: resumeRequired:true sets the
-      // obligation at hydrate, and only a compatible read without it clears
-      // the obligation - a closed frame is not that read.
       capabilities: PAST_THREAD_CAPABILITIES,
       mutationStateAuthoritative: false,
       resumeRequired: true,

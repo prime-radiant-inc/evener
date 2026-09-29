@@ -11,16 +11,25 @@ import { useHubFleet } from "../hosts/useHubFleet";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
+import { AddHubPage } from "./AddHubPage";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { DisplayPage } from "./DisplayPage";
 import { HostDetailPage } from "./HostDetailPage";
 import { HostsPage } from "./HostsPage";
+import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
+import { HubsPage } from "./HubsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 
 const HubStack = createNativeStackNavigator<HubRoutes>();
+
+const ADD_HUB_TITLES: Record<HubRoutes["AddHub"]["how"], string> = {
+	scan: "Scan pairing code",
+	paste: "Paste pairing link",
+	address: "Enter the address",
+};
 
 export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) {
 	const { activeProfile } = useConnection();
@@ -28,7 +37,10 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	const { state, canUseConnection, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
 	const close = useCallback(() => navigation.goBack(), [navigation]);
-	const leave = useCallback(() => navigation.navigate("Hubs"), [navigation]);
+	// With no hub selected, the Board under this sheet is stale: first run
+	// becomes the whole stack. (React Navigation 7's navigate would push a
+	// second Hubs screen, inside this sheet, rather than go back to the first.)
+	const leave = useCallback(() => navigation.reset({ index: 0, routes: [{ name: "Hubs" }] }), [navigation]);
 	useClosesOnHubChange(hubId, close, leave);
 	const ready = isReady(state);
 	const updates = useHubUpdates(renderClient, ready);
@@ -81,6 +93,13 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					options={({ route }) => ({ title: route.params.name })}
 				/>
 				<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
+				<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
+				<HubStack.Screen
+					name="AddHub"
+					component={AddHubPage}
+					options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
+				/>
+				<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);

@@ -17,7 +17,8 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	useConnectionStatusText: () => status.line,
 }));
 // The connection the Providers row's credential store binds to; the hub's
-// client when a test lists providers.
+// client when a test lists providers. Two saved hubs value the Hubs row
+// (mount sets both).
 const connection = vi.hoisted(() => ({
 	value: { state: "ready", fatal: false, client: null, activeProfile: null } as Record<string, unknown>,
 }));
@@ -115,13 +116,14 @@ async function mount(
 		fatal: false,
 		client: options.providers ?? null,
 		activeProfile: { id: "hub-1", name: "Work hub" },
+		profiles: [
+			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
+			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
+		],
 	};
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const sheet = { navigate: vi.fn() };
-	const navigation = { getParent: () => root, navigate: sheet.navigate } as unknown as NativeStackScreenProps<
-		HubRoutes,
-		"HubHome"
-	>["navigation"];
+	const sheet = { getParent: () => root, navigate: vi.fn() };
+	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -145,7 +147,7 @@ const ROWS = [
 	"Providers",
 	"Plugins",
 	"Display, System",
-	"Hubs",
+	"Hubs, 2",
 	"Keyboard shortcuts",
 	"Launch defaults",
 	"Hub settings",
@@ -216,7 +218,7 @@ it("says the hub is connected and lists its pages", async () => {
 });
 
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
-	const { root, press } = await mount();
+	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Plugins", "Plugins"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
@@ -230,8 +232,17 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 			payload: { name: screen, params: { hubId: "hub-1" } },
 		});
 	}
-	press("Hubs");
-	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {
+	const { tree, root, sheet, press } = await mount();
+	expect(renderedText(tree)).toContain("2");
+	press("Hubs, 2");
+	expect(sheet.navigate).toHaveBeenCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(root.dispatch).not.toHaveBeenCalled();
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {

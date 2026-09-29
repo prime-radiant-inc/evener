@@ -19,6 +19,7 @@ import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { DisplayProvider } from "./src/display/displayContext";
 import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
 import { HubSheet } from "./src/hub/HubSheet";
+import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
@@ -40,11 +41,7 @@ import {
 	SessionLocationScreen,
 } from "./src/ProjectsScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
-import {
-	ConversationScreen,
-	HubsScreen,
-	type Routes,
-} from "./src/screens";
+import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
@@ -160,8 +157,8 @@ function Navigation() {
 				>
 					<Stack.Screen
 						name="Hubs"
-						component={HubsScreen}
-						options={{ title: "Evener · Hubs" }}
+						component={FirstRunScreen}
+						options={{ headerShown: false }}
 					/>
 					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen

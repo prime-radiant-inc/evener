@@ -40,6 +40,7 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   resolvePendingEscalation,
+  SHUT_DOWN_STATUSES,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -52,7 +53,6 @@ import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from ".
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
-  type MutationClientLookup,
   type MutationCommit,
   type MutationIntent,
   type MutationOptimisticRecord,
@@ -129,6 +129,14 @@ export interface ThreadsStoreState {
   mutationReconciliationFailures: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
+  // Refs with a Force stop RPC this page started still in flight. The hub holds
+  // Stopping > 0 for exactly that window and refuses even turn/start for the
+  // drain (cmd/evener-hub's sessionActionRecoveryError), so a notLoaded snapshot
+  // taken mid-drain must not be read as the merely-resumable shape
+  // (isResumeOnlyLocal). Cleared when the RPC settles. A stop another client
+  // started is not observable here (no wire signal carries Stopping), so that
+  // rare window degrades to the same bounded refusal the normal fence covers.
+  stoppingRefs: ReadonlySet<string>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -812,17 +820,45 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
+function currentDispatchClient(targetRef?: string, method?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  const state = threadsStore.getState();
   if (
     targetRef &&
     (pendingMutationReconciliations.has(targetRef) ||
-      threadsStore.getState().restartBlockingObligations.has(targetRef) ||
-      threadsStore.getState().mutationReconciliationFailures.has(targetRef))
+      // A Force stop this page started is its own fence for its whole drain
+      // window: the hub holds Stopping > 0 and refuses EVERY method there,
+      // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
+      // independently of restartBlockingObligations, which a stale thread
+      // refresh can clear while the RPC is still in flight.
+      state.stoppingRefs.has(targetRef) ||
+      // A merely-resumable session's send must dispatch: the hub folds its
+      // resume into turn/start, so the obligation does not park the mutation.
+      // Only turn/start is carved out of the hub's recovery admission, though,
+      // so the exemption holds only for that method: the dispatcher names the
+      // record it is about to send (dispatcher.ts's method-aware lookup), and a
+      // queued turn/queue/turn/steer/turn/interrupt parks instead of meeting a
+      // refusal. The ref-less and pre-record calls pass no method, where the
+      // exemption is the readiness answer they always were. Every other
+      // obligation (Stop drain, restartRequired) still blocks it.
+      //
+      // This gate reads resumeOnlyLocalDispatchable, NOT resumeOnlyLocalModel:
+      // dispatch asks "is this exact head record admissible?". At the
+      // head-of-loop lookup the named record may itself be the turn/start with
+      // nothing ahead of it, while resumeOnlyLocalModel's hasQueuedNonSend
+      // clause answers the ADMISSION question ("may a NEW send be minted behind
+      // this queue?"), where a queued non-send row is genuinely ahead of the
+      // candidate. Used here that clause refused the head turn/start before the
+      // method-aware recheck could name it, so a ref holding [turn/start,
+      // turn/queue] could neither resume nor drain its outbox. The method check
+      // below still parks the tail non-send row.
+      (state.restartBlockingObligations.has(targetRef) &&
+        !(resumeOnlyLocalDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
+      state.mutationReconciliationFailures.has(targetRef))
   )
     return null;
-  if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
+  if (targetRef && state.threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
@@ -907,6 +943,20 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
     });
 }
 
+// The dispatch gate a durable projection read opens. A resume-only ref's head
+// send parks while its ref's outbox read is in flight (the pending-turns
+// projection fails readiness closed through that window, and the predicate
+// reads it), so the read resolving is what unparks it. Nothing else re-attempts
+// that dispatch, so the projection hands the refs that (re)gained readiness
+// here - the same explicit send-aside publishAndReconcileThreadHydration makes
+// when its reconciliation opens the gate. A ref with no dispatchable mutation
+// is a no-op.
+export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  scheduleMutationDispatch(runtime, refs);
+}
+
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
@@ -976,11 +1026,13 @@ function getMutationRuntime(): MutationRuntime | null {
     void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
   });
   // One client lookup for both halves of the mutation runtime: the dispatcher
-  // asks it per target ref, and the outbox asks it ref-less for "is any client
-  // ready right now". Wiring them from one function is what keeps the
-  // dispatcher's readiness and the outbox's from drifting apart.
-  const getClient: MutationClientLookup = (targetRef) =>
-    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
+  // asks it per target ref (with the record's method, for the resume-only
+  // carve-out), and the outbox asks it ref-less for "is any client ready right
+  // now". Wiring them from one function is what keeps the dispatcher's
+  // readiness and the outbox's from drifting apart; the method is optional so
+  // the same function satisfies the outbox's ref-only lookup too.
+  const getClient = (targetRef?: string, method?: string): AppwireClientLike | null =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
     onStorageChange: (targetRefs) => {
@@ -1103,6 +1155,101 @@ let userIntentStopSequence = 0;
 
 function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, ++userIntentStopSequence);
+}
+
+// Marks/clears a Force stop this page started as in flight. A fresh Set each
+// change (never mutating the initial state's Set) so a subscriber selects on
+// the boolean and re-renders when the drain begins and ends.
+function markStopping(ref: string, stopping: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.stoppingRefs.has(ref) === stopping) return state;
+    const stoppingRefs = new Set(state.stoppingRefs);
+    if (stopping) stoppingRefs.add(ref);
+    else stoppingRefs.delete(ref);
+    return { stoppingRefs };
+  });
+}
+
+// The refcounted group of Force stops this module has in flight for a ref.
+// markStopping is a boolean Set with no ownership: two overlapping stops would
+// clear the fence when the FIRST completed, while the second was still draining,
+// and a stale thread/read refresh could then clear the restart obligation too -
+// reopening mutation dispatch for the rest of the stop window. A bare count
+// fixes that early clear but not the shared recovery obligation: each stop
+// capturing the map's value and restoring it on its own abort can clobber a
+// fence a sibling still owns, or write back a sibling's arming symbol. So the
+// group records the pre-group obligation once, on the 0 -> 1 transition, and
+// whether any member signalled a daemon, and settles both on the 1 -> 0
+// transition.
+interface StopGroup {
+  count: number;
+  // The obligation the ref held before the group's first stop armed its own
+  // fence. endStop restores it only when no member of the group reached a
+  // daemon.
+  previousObligation: symbol | undefined;
+  // The exact symbol this group armed on its 0 -> 1 transition. endStop
+  // restores/deletes the ref's obligation only while the ref still holds THIS
+  // symbol: a concurrent hydration can arm a fresh fence during an aborting
+  // stop's cancellation await, and only a still-owned entry is the group's to
+  // settle. Otherwise the group leaves the newer fence in place.
+  ownObligation: symbol;
+  // Whether any member reached client.forceStop, i.e. signalled a daemon. A
+  // group that did keeps its armed fence (a later snapshot clears it); one that
+  // never did restores previousObligation exactly.
+  signalled: boolean;
+}
+const activeStops = new Map<string, StopGroup>();
+
+// Arm the stopping fence and the recovery obligation on the 0 -> 1 transition
+// only: every overlapping stop shares the one group, and endStop settles it once
+// the count returns to 0. Capturing the pre-group obligation here - not per
+// call - is what keeps an aborting stop from restoring a value another stop
+// still owns.
+function beginStop(ref: string): void {
+  const existing = activeStops.get(ref);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+  const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
+  const ownObligation = Symbol();
+  activeStops.set(ref, { count: 1, previousObligation, ownObligation, signalled: false });
+  markStopping(ref, true);
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, ownObligation),
+  }));
+}
+
+// Settle one member's return. `signalled` is true when the member reached
+// client.forceStop (even if the RPC then rejected: the signal may still have
+// reached the daemon). On the 1 -> 0 transition restore the pre-group obligation
+// only when no member of the group ever signalled; a group that signalled keeps
+// the fence armed until a later snapshot clears it, and no aborting member
+// writes back its own captured value over an entry a sibling still owns. The
+// ownership test is the group's own arming symbol, not merely "no sibling": a
+// hydration can arm a fresh fence during the aborting member's cancellation
+// await, and that newer fence must survive the abort untouched.
+function endStop(ref: string, signalled: boolean): void {
+  const group = activeStops.get(ref);
+  if (!group) return;
+  if (signalled) group.signalled = true;
+  group.count -= 1;
+  if (group.count > 0) return;
+  activeStops.delete(ref);
+  markStopping(ref, false);
+  if (group.signalled) return;
+  threadsStore.setState((state) => {
+    // A hydration (publishAndReconcileThreadHydration) can arm a fresh
+    // obligation during this aborting stop's cancellation await. Only a ref
+    // still holding this group's own fence is the group's to restore; a newer
+    // fence is left exactly as the hydration wrote it, rather than overwritten
+    // with a stale captured value or deleted outright.
+    if (state.restartBlockingObligations.get(ref) !== group.ownObligation) return {};
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    if (group.previousObligation === undefined) restartBlockingObligations.delete(ref);
+    else restartBlockingObligations.set(ref, group.previousObligation);
+    return { restartBlockingObligations };
+  });
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
@@ -1796,10 +1943,12 @@ function composerMutationIntent(
 // The local recovery fence. A LOCAL session carrying a restart-blocking
 // obligation (a Stop in flight, or a snapshot the daemon reports as
 // restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/start,
-// turn/steer, turn/queue and every other fenced mutation for exactly that
-// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
-// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// obligation stands: the hub's recovery admission refuses turn/steer,
+// turn/queue and every other fenced mutation for exactly that window
+// (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
+// the projected status), with turn/start carved out only for the merely-
+// resumable shape isResumeOnlyLocal names, so even a still-ACTIVE snapshot is
+// fenced while
 // a Stop drains - a live read relays the daemon's active status with
 // resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
 // store arms the obligation on that very hydration. An offered press in that
@@ -1810,6 +1959,182 @@ function composerMutationIntent(
 // re-exports it for the surfaces.
 export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
   return ref.startsWith("local:") && restartObligated;
+}
+
+// A LOCAL session the hub admits a folded send for. The authority is the hub's
+// OWN answer, not a shape this client infers: ResumeOnlyFoldable (whom
+// applyThreadResumeRequirement stamps) is true exactly when a turn/start on the
+// current connection would be admitted under the resume-only carve-out
+// (cmd/evener-hub's sessionAdmitsResumeRequired, read without a request: the
+// requirement is set, no Stop is draining, the exit is confirmed, and no
+// connection fence applies). The client no longer reads resumeRequired plus a
+// cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
+// sets both for a Stop drain, an unconfirmed force-stop exit, the
+// connection-recovery fence, and an incompatible-protocol daemon too, four
+// shapes whose turn/start the hub still refuses, so inferring from them offered
+// Send where the hub would refuse it.
+//
+// Deliberately narrow - it is NOT the whole recovery fence. Every clause below
+// excludes a shape the hub would refuse or one whose send would starve:
+//
+//   - the hub bit must be true; an older or non-local snapshot that never
+//     carried it is not this shape.
+//   - no status clause: the hub's admission is status-independent
+//     (sessionActionRecoveryError / resumeOnlyFoldable read no status), so a
+//     live snapshot the hub legitimately stamped foldable - a daemon another
+//     controller started under a confirmed force-stop obligation - is admitted
+//     and folds. A status clause here would hide the folded send from a
+//     snapshot the hub would happily admit, silently falling back to the old
+//     explicit-Resume step the fold exists to remove. The stale bit a shut-down
+//     snapshot leaves behind is defended against where it is written, not here:
+//     the off-shut-down transition clears it (settleResumeOnlyOffShutdown) and
+//     a connection-generation change invalidates it
+//     (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
+//     has ended cannot mis-route a send.
+//   - signals.uncertainMessages must be false: while delivery-uncertain rows
+//     exist the hub's explicit Resume still runs reconciliation, so the send is
+//     not the whole story and the Resume affordance stays.
+//   - signals.stopInFlight must be false: a snapshot taken before this page's
+//     Stop was answered can still carry the bit the hub stamped before the
+//     Stop's drain began, so the local in-flight Stop keeps the fence.
+//   - signals.queuedNonSend must be false: a queued non-turn/start durable row
+//     (still "submitting", attempted or not) parks at the target's FIFO ahead
+//     of a turn/start, so folding a send behind it would silently never
+//     deliver it.
+//
+// A Stop in flight / active drain, a restartRequired daemon that needs the
+// older daemon stopped first, and a stale-connection snapshot all leave the hub
+// bit false; all keep the fence.
+export interface ResumeOnlySignals {
+  // The store's delivery-uncertain rows (blockedUnknown).
+  uncertainMessages?: boolean;
+  // A Force stop this page started is still draining (stoppingRefs).
+  stopInFlight?: boolean;
+  // A queued non-turn/start durable row (still "submitting", attempted or not)
+  // ahead of the send (the pending-turns projection's hasQueuedNonSend).
+  queuedNonSend?: boolean;
+}
+
+export function isResumeOnlyLocal(
+  ref: string,
+  model: Pick<ThreadModel, "resumeOnlyFoldable">,
+  signals: ResumeOnlySignals = {},
+): boolean {
+  return (
+    ref.startsWith("local:") &&
+    model.resumeOnlyFoldable === true &&
+    signals.uncertainMessages !== true &&
+    signals.stopInFlight !== true &&
+    signals.queuedNonSend !== true
+  );
+}
+
+// The pending-turns projection's synchronous view of a ref's durable outbox,
+// published by pendingTurnsStore.ts at its own module load. Deliberately NOT
+// read through the projection module: threads.ts cannot import it (it imports
+// this one), so the projection registers its read here instead. The composer's
+// blockedMutations selector and this read see the same durable rows; routing
+// the store-wide predicate through it is what gives the press, enqueue and
+// dispatch paths the delivery-uncertain signal the render already had.
+//
+// Failing closed: until a projection is installed the read answers "uncertain",
+// so the carve-out never folds a resume ahead of rows nobody has reconciled.
+// The projection is installed wherever a session pane is (Session/Composer
+// import it), and every caller of the predicate acts on a loaded session.
+interface ResumeOnlyProjection {
+  // Whether `ref`'s durable outbox has been read and published into the
+  // projection. An installed projection whose first durable read for the ref
+  // has not resolved yet still holds an EMPTY outbox for it - the same map a
+  // ref with no rows holds - so a predicate that read only hasBlockedUnknown/
+  // hasQueuedNonSend would report "no uncertainty" through exactly the window
+  // between hydration and the refresh completing, where an unreconciled
+  // blockedUnknown row can sit. Both reads below therefore fail closed until
+  // this is true, per ref.
+  isLoaded(ref: string): boolean;
+  hasBlockedUnknown(ref: string): boolean;
+  // Queued non-turn/start rows (still "submitting", attempted or not): a
+  // turn/start queued behind one starves at the target's FIFO, so a ref holding
+  // one is not foldable.
+  hasQueuedNonSend(ref: string): boolean;
+}
+let resumeOnlyProjection: ResumeOnlyProjection | null = null;
+
+export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
+  resumeOnlyProjection = projection;
+}
+
+// Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
+// as the pending-turns projection last published them. True when no projection
+// is installed OR the ref's own durable outbox has not loaded yet (failing
+// closed - an installed-but-unrefreshed projection holds an empty outbox for
+// every ref). Exported so a surface that reasons about the fence can ask the
+// same question the store-wide predicate does.
+export function hasBlockedUnknown(ref: string): boolean {
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
+  );
+}
+
+// Whether ref's durable outbox holds a queued non-turn/start row (still
+// "submitting", attempted or not), as the pending-turns projection last
+// published them. True when no projection is installed OR the ref's own
+// durable outbox has not loaded yet (failing closed). Exported so a surface
+// that reasons about the fence can ask the same question the store-wide
+// predicate does.
+export function hasQueuedNonSend(ref: string): boolean {
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
+  );
+}
+
+// isResumeOnlyLocal over the store's current model for ref: the ADMISSION
+// predicate the press (liveControls) and enqueue (enqueueMutationIntent) paths
+// share. Unlike isResumeOnlyLocal it reads the delivery-uncertain signal
+// itself, from the pending-turns projection (hasBlockedUnknown), and the
+// queued-non-send signal (hasQueuedNonSend), so a direct caller that bypassed
+// the composer's own reads - the palette's slash fallthrough, the ask dock's
+// batch send, a failed turn's Retry - still keeps the fence while blockedUnknown
+// rows or a queued non-send row stand. It can also read the store's own
+// in-flight Stop (stoppingRefs). Dispatch reads its sibling instead:
+// resumeOnlyLocalDispatchable omits the queued-non-send clause because at
+// dispatch the named head record may itself be the send, with no non-send row
+// ahead of it (currentDispatchClient).
+export function resumeOnlyLocalModel(ref: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  return (
+    model !== undefined &&
+    isResumeOnlyLocal(ref, model, {
+      stopInFlight: state.stoppingRefs.has(ref),
+      uncertainMessages: hasBlockedUnknown(ref),
+      queuedNonSend: hasQueuedNonSend(ref),
+    })
+  );
+}
+
+// The DISPATCH reading of the resume-only carve-out, used by
+// currentDispatchClient when it names the exact head record it is about to
+// send. It is deliberately NOT resumeOnlyLocalModel: the two callers ask
+// genuinely different questions. resumeOnlyLocalModel answers ADMISSION - "may
+// a new send be minted behind this queue?" - where any queued non-send row is
+// genuinely ahead of the candidate, so hasQueuedNonSend belongs. Dispatch asks
+// "is this exact head record admissible?", and the head record is the next
+// thing the wire sees: a queued non-send row BEHIND a head turn/start is not
+// ahead of it, so it must not park the head. currentDispatchClient still
+// exempts only turn/start (and the ref-less/pre-record calls), so the gate
+// names a queued non-send method itself and parks it; this reading only stops
+// a tail non-send row from refusing the head send. The delivery-uncertain and
+// in-flight-Stop signals stay, because both fence the head record too.
+export function resumeOnlyLocalDispatchable(ref: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  return (
+    model !== undefined &&
+    isResumeOnlyLocal(ref, model, {
+      stopInFlight: state.stoppingRefs.has(ref),
+      uncertainMessages: hasBlockedUnknown(ref),
+    })
+  );
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
@@ -1827,7 +2152,10 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 // (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
-// table is the whole policy.
+// table is the whole policy. turn/start is fenced only while the fence is NOT
+// the merely-resumable case (isResumeOnlyLocal): a session that only needs
+// resume folds it into the send, so enqueueMutationIntent carves that method
+// out - a live Stop drain or a restartRequired daemon still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "turn/start": "Send isn't available until this session is resumed",
   "turn/steer": "Steer isn't available until this session is resumed",
@@ -1851,9 +2179,24 @@ async function enqueueMutationIntent(
   // is refused here - before any durable write, so every caller shape hears
   // the same admission refusal.
   const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
+  const admissionState = threadsStore.getState();
   if (
     fenceRefusal !== undefined &&
-    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))
+    // The obligation, OR an in-flight Stop of our own: a stale thread refresh
+    // can clear restartBlockingObligations while the forceStop RPC still
+    // drains, and the hub holds Stopping > 0 (refusing even turn/start) for
+    // that whole window - so stopInFlight is an independent fence here, not
+    // only a blocker of the resume-only carve-out below.
+    isLocalRecoveryFenced(
+      ref,
+      admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref),
+    ) &&
+    // A merely-resumable session folds its resume into turn/start - the hub
+    // admits it (cmd/evener-hub's sessionActionRecoveryError turn/start
+    // carve-out) - so its send must not be refused here. turn/start on a live
+    // Stop drain or a restartRequired daemon is not this case; every other
+    // fenced verb keeps the refusal unchanged.
+    !(intent.method === "turn/start" && resumeOnlyLocalModel(ref))
   )
     throw new Error(fenceRefusal);
   const client = requireClient();
@@ -2403,12 +2746,21 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
+): {
+  next: Map<string, ThreadModel> | null;
+  changedRefs: string[];
+  acceptedRefs: string[];
+  // Refs whose thread/status/changed fold moved them OFF the shut-down set: the
+  // merely-resumable window those refs' snapshots described has ended, so their
+  // recovery obligation is the caller's to clear (see handleNotification).
+  endedResumeOnlyRefs: string[];
+} {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
+  const endedResumeOnlyRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs, acceptedRefs };
+  if (!routed) return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   const accept = (model: ThreadModel): void => {
     acceptedRefs.push(model.ref);
   };
@@ -2418,19 +2770,52 @@ function applyToMap(
       const updated = applyNotification(model, n, now);
       if (updated === model) continue;
       next ??= new Map(map);
-      next.set(model.ref, updated);
+      next.set(model.ref, settleResumeOnlyOffShutdown(model, updated, endedResumeOnlyRefs));
       changedRefs.push(model.ref);
     }
-    return { next, changedRefs, acceptedRefs };
+    return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   }
   accept(routed);
   const updated = applyNotification(routed, n, now);
   if (updated !== routed) {
     next = new Map(map);
-    next.set(routed.ref, updated);
+    next.set(routed.ref, settleResumeOnlyOffShutdown(routed, updated, endedResumeOnlyRefs));
     changedRefs.push(routed.ref);
   }
-  return { next, changedRefs, acceptedRefs };
+  return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+}
+
+// A folded notification that moved a ref OFF the shut-down set ends the
+// merely-resumable shape that ref's snapshot described: the resume the hub bit
+// was stamped for has started, so the snapshot's resumeOnlyFoldable bit must
+// not outlive the status that carried it. The bit is written ONLY by a snapshot
+// hydration (reducer.ts's threadFields), while the thread/status/changed branch
+// keeps ...model, so without this a stale bit would ride a live status. The
+// predicate reads no status of its own, so this is where a bit whose shut-down
+// snapshot has ended is cleared - the bit belongs to the snapshot, not to every
+// later frame. The ref is reported so the caller clears the recovery obligation
+// the same snapshot armed. Only the off-set direction counts: a fold onto the
+// set (or within it) keeps the window, and the reverse transition is a shutdown,
+// not a resume.
+function settleResumeOnlyOffShutdown(previous: ThreadModel, updated: ThreadModel, endedRefs: string[]): ThreadModel {
+  if (!SHUT_DOWN_STATUSES.has(previous.status.type) || SHUT_DOWN_STATUSES.has(updated.status.type)) {
+    return updated;
+  }
+  // Only a model that genuinely carried the snapshot's resume-only shape ends
+  // here. A ref that was never resume-only - a restart-required daemon, an
+  // unconfirmed force-stop exit, connection recovery - keeps both its bit
+  // (already false) and its recovery obligation: an off-shut-down status fold
+  // alone is not evidence the hub resumed it, so clearing that ref's fence
+  // would admit mutations the hub still rejects.
+  if (previous.resumeOnlyFoldable !== true) {
+    return updated;
+  }
+  // A Stop this page started still owns the ref's obligation until its RPC
+  // settles (the hub holds Stopping > 0, refusing even turn/start, for that
+  // whole window), so the ref is not reported for the obligation clear. Its bit
+  // still clears with the snapshot.
+  if (!activeStops.has(updated.ref)) endedRefs.push(updated.ref);
+  return invalidateResumeOnlyForReconnect(updated);
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -2504,11 +2889,13 @@ function handleNotification(n: AnyNotification): void {
     next: nextThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
+    endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
   const {
     next: nextWatchedThreads,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
+    endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
@@ -2544,6 +2931,23 @@ function handleNotification(n: AnyNotification): void {
     patch.watchedThreads = nextWatchedThreads;
   }
   threadsStore.setState(patch);
+
+  // A status frame that moved a ref off the shut-down set ends the
+  // merely-resumable window: the recovery obligation the same shut-down
+  // snapshot armed is stale now, and leaving it armed would fence a session the
+  // hub has resumed (stillFenced keeps Send and Queue off until a fresh read
+  // clears it). Clear it here, in the same step the model's stale
+  // resumeOnlyFoldable bit was cleared, so the composer routes normally. The
+  // fold withholds a ref a Stop this page started still owns (see
+  // settleResumeOnlyOffShutdown), so every reported ref is this clear's to make.
+  if (endedThreadsResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
+    const endedRefs = new Set([...endedThreadsResumeOnly, ...endedWatchedResumeOnly]);
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      for (const ref of endedRefs) restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+  }
 
   if (invalidatedThreadRefs.length > 0 || invalidatedWatchedRefs.length > 0) {
     const client = wiredClient;
@@ -3077,14 +3481,32 @@ function detachClient(): void {
 // reconnect's re-read goes out, so that read always replaces whole history
 // rather than merging by version. A no-op the first time a client ever
 // connects: nothing is tracked yet.
+//
+// The same connection change also invalidates the resumeOnlyFoldable bit: it
+// is the PREVIOUS connection's answer (applyThreadResumeRequirement stamped it
+// on a snapshot that connection produced), and the hub's connection-recovery
+// fence can refuse a folded turn/start on the new connection. Clearing it here
+// - the store's single connection-generation hook - is what keeps a send from
+// folding from a bit the current connection has not re-stamped; a fresh read
+// on the current connection restores folding.
 function invalidateHeldHistoriesForReconnect(): void {
   const { threads, watchedThreads } = threadsStore.getState();
   for (const [ref, model] of threads) {
-    if (model.history) putThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putThreadModel(ref, next);
   }
   for (const [ref, model] of watchedThreads) {
-    if (model.history) putWatchedThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putWatchedThreadModel(ref, next);
   }
+}
+
+// Clears the retained resumeOnlyFoldable bit: the outgoing connection's answer
+// on a reconnect, and the shut-down snapshot a status fold ended. A model with
+// an absent or already-false bit is returned in place, so neither caller writes
+// for the sessions that were not foldable.
+function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
+  return model.resumeOnlyFoldable === true ? { ...model, resumeOnlyFoldable: false } : model;
 }
 
 // The single reactive trigger for rewireClient: every connectionStore
@@ -3225,6 +3647,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   mutationReconciliationFailures: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
+  stoppingRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
@@ -3835,28 +4258,54 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async forceStop(ref) {
     cancelPendingUserIntents(ref);
-    // Write-first (stop-cancellation-outbox §4): the cancellation lands
-    // durably before the stop RPC, so a storage failure aborts the stop here
-    // with the daemon untouched and the user free to retry.
-    await cancelUnattemptedMutations(ref);
+    // Arm the stopping fence and the recovery obligation synchronously with the
+    // drain, BEFORE the first await: the hub holds Stopping > 0 for the whole
+    // window and refuses even turn/start there (cmd/evener-hub's
+    // sessionActionRecoveryError), so the store's own admission -
+    // currentDispatchClient, enqueueMutationIntent, and every control surface
+    // that reads this obligation - must fence that window too, not only the
+    // restartRequired state the drain leaves behind. The in-flight Stop is not
+    // itself a fence, so arming after the cancellation write's await would leave
+    // that write's window unfenced. beginStop arms the group's shared fence and
+    // captures the pre-group obligation on the 0 -> 1 transition; endStop
+    // settles both when the last overlapping stop returns.
+    beginStop(ref);
+    // Whether this stop reached a daemon signal. A Stop that proceeds keeps the
+    // fence; only a group in which no stop ever signalled restores the captured
+    // obligation, on its last return.
+    let signalled = false;
     try {
-      await requireClient().forceStop(ref);
+      // Write-first (stop-cancellation-outbox §4): the cancellation lands
+      // durably before the stop RPC, so a storage failure aborts the stop here
+      // with the daemon untouched and the user free to retry.
+      await cancelUnattemptedMutations(ref);
+      // Resolve the client in its own step, so a lookup failure is
+      // distinguishable by construction from a signal failure: no client
+      // means no signal reached any daemon, so - exactly like the
+      // cancellation-storage abort above - the obligation is restored on the
+      // group's last return, and refreshThread must NOT be kicked (while
+      // offline it cannot clear the fence and only leaves a live session's
+      // recovery fenced).
+      const client = requireClient();
+      // Reaching the call counts as signalling even if it rejects below: the
+      // signal may have reached the daemon despite failed exit confirmation.
+      signalled = true;
+      await client.forceStop(ref);
     } catch (error) {
-      // The signal may have succeeded despite failed exit confirmation.
-      // Retain the recovery fence until a fresh snapshot proves it can clear.
-      threadsStore.setState((state) => ({
-        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-      }));
-      // Reconcile the hub's recovery requirement without delaying this error.
-      void threadsStore
-        .getState()
-        .refreshThread(ref)
-        .catch(() => {});
+      if (signalled) {
+        // The signal may have succeeded despite failed exit confirmation.
+        // The fence armed by beginStop is retained until a fresh snapshot
+        // proves it can clear. Reconcile the hub's recovery requirement without
+        // delaying this error.
+        void threadsStore
+          .getState()
+          .refreshThread(ref)
+          .catch(() => {});
+      }
       throw error;
+    } finally {
+      endStop(ref, signalled);
     }
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-    }));
   },
 
   async shutdown(ref) {
@@ -4011,6 +4460,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
+  activeStops.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
