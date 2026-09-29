@@ -742,7 +742,7 @@ describe("demo fleet question after a delay", () => {
 
 	it("moves s-gateway into Needs you, shaped like the fleet's own question row, once asked", () => {
 		const demo = fleet();
-		demo.askQuestion();
+		demo.step("question");
 		const gateway = findRow(liveRows(demo), "s-gateway");
 		const audit = findRow(liveRows(demo), "s-audit");
 		expect(gateway.state).toBe(audit.state);
@@ -759,7 +759,7 @@ describe("demo fleet question after a delay", () => {
 	it("answers at a higher revision after the question, so an invalidated read is not below target", () => {
 		const demo = fleet();
 		const before = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
-		const payload = demo.askQuestion();
+		const payload = demo.step("question");
 		const after = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
 		expect(after.revision).toBeGreaterThan(before.revision);
 		expect(after.etag).not.toBe(before.etag);
@@ -783,8 +783,63 @@ describe("demo fleet question after a delay", () => {
 			sequence: 0,
 			readVersions: [2],
 		});
-		const payload = demo.askQuestion();
+		const payload = demo.step("question");
 		expect(demo.navigationCapability().sequence).toBe(payload.sequence);
+	});
+});
+
+describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
+	const steppedAt = STARTUP + 30 * 1000;
+	const fleet = () => createDemoFleet({ now: STARTUP, clock: () => steppedAt });
+	const needsYouRow = (demo: ReturnType<typeof fleet>, slug: string) =>
+		sessionsOf(read(demo, params({ resource: "section", section: "needs_you" }))).find(
+			(row) => row.session_id === demoSessionId(slug),
+		);
+
+	it.each([
+		["failure", "s-readintent", { state: "errored" }],
+		["approval", "s-landing", { state: "active", approval_pending: true }],
+	] as const)("%s moves %s into Needs you, raising the revision the targets name", (step, slug, shape) => {
+		const demo = fleet();
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		const payload = demo.step(step);
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(payload.sequence).toBe(1);
+		expect(payload.targets).toEqual(
+			expect.arrayContaining([
+				{ kind: "manifest", revision: after.revision },
+				{ kind: "section", section: "live", revision: after.revision },
+				{ kind: "section", section: "needs_you", revision: after.revision },
+			]),
+		);
+		expect(needsYouRow(demo, slug)).toMatchObject(shape);
+		expect(findRow(liveRows(demo), slug)).toMatchObject(shape);
+	});
+
+	it("finish leaves s-resume awaiting you with no question, outside Needs you", () => {
+		const demo = fleet();
+		demo.step("finish");
+		const row = findRow(liveRows(demo), "s-resume");
+		expect(row.state).toBe("awaiting");
+		expect(row.ask_pending).toBeUndefined();
+		expect(needsYouRow(demo, "s-resume")).toBeUndefined();
+	});
+
+	it("takes paradise-park and its rows offline, and brings them back", () => {
+		const demo = fleet();
+		const payload = demo.step("host-offline");
+		expect(payload.targets).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "manifest" })]));
+		const sources = () =>
+			(read(demo, params({ resource: "manifest" })).sources as { id: string; online: boolean }[]).find(
+				(source) => source.id === "paradise-park",
+			);
+		expect(sources()?.online).toBe(false);
+		expect(findRow(liveRows(demo), "s-retry").offline).toBe(true);
+		demo.step("host-online");
+		expect(sources()?.online).toBe(true);
+		expect(findRow(liveRows(demo), "s-retry").offline).toBeUndefined();
+		expect(demo.navigationCapability().sequence).toBe(2);
 	});
 });
 
@@ -870,7 +925,7 @@ describe("demo fleet archive", () => {
 		const demo = fleet();
 		const deslop = findRow(liveRows(demo), "s-deslop");
 		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
-		demo.askQuestion();
+		demo.step("question");
 		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
 		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
 	});

@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
@@ -1165,6 +1166,89 @@ describe("native demonstration hub's fleet sessions", () => {
 				}),
 			).rejects.toThrow("Unknown demonstration session");
 		});
+	});
+});
+
+describe("the demo hub's staged events for the phase 6 screenshots", () => {
+	it("plays a step typed on its command input for every connected client, and three for burst", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const sequences: number[] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				sequences.push((notification.params as { sequence: number }).sequence);
+		});
+		try {
+			await client.connect();
+			commands.write("question\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1]));
+			commands.write("burst\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1, 2, 3, 4]));
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("lists the commands when it doesn't know the one typed", async () => {
+		const commands = new PassThrough();
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		try {
+			commands.write("dance\n");
+			await vi.waitFor(() =>
+				expect(info).toHaveBeenCalledWith(
+					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst",
+				),
+			);
+		} finally {
+			info.mockRestore();
+			await hub.close();
+		}
+	});
+
+	it("answers a send with an unknown outcome when told its outcomes can't be recorded", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { unconfirmed: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await expect(
+				client.request("turn/start", {
+					ref: "demo:playground",
+					expectedInstanceId: "demo-instance",
+					clientMutationId: "start-1",
+					input: [{ type: "text", text: "Go" }],
+				}),
+			).rejects.toMatchObject({
+				code: -32603,
+				data: {
+					clientMutationId: "start-1",
+					mutationOutcome: "unknown",
+					retryDisposition: "blocked",
+					cause: "persistenceUnavailable",
+				},
+			});
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("advertises the protocol version it is told to, so the phone sees a mismatch", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { protocolVersion: "evener-appwire-v0" });
+		const socket = new WebSocket(`${hub.origin.replace("http", "ws")}/rpc`);
+		try {
+			await new Promise((resolve) => socket.once("open", resolve));
+			const answer = new Promise<{ result?: { protocolVersion?: string } }>((resolve) =>
+				socket.once("message", (data) => resolve(JSON.parse(String(data)))),
+			);
+			socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
+			expect((await answer).result?.protocolVersion).toBe("evener-appwire-v0");
+		} finally {
+			socket.close();
+			await hub.close();
+		}
 	});
 });
 

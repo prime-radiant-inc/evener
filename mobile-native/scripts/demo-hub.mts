@@ -2,6 +2,7 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { WireError } from "@evener/appwire-client";
@@ -21,6 +22,7 @@ import {
 	ASKING_SESSION_ID,
 	createDemoFleet,
 	type DemoFleetOptions,
+	type DemoStep,
 	fleetSessionRef,
 	fleetSessions,
 } from "../src/dev/demoFleet.js";
@@ -63,10 +65,36 @@ const FLEET_SESSION_METHODS = {
 } as const;
 type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
 
+// The phase 6 screenshots' staging (see the startup block below for the
+// environment variables that set these).
+export interface DemoHubModes {
+	// With the fleet on, one command per line: a DemoStep's name, or "burst".
+	commands?: NodeJS.ReadableStream;
+	// turn/start and turn/queue answer as a daemon that can't record a
+	// mutation's outcome does, so a send shows "Couldn't confirm this was
+	// sent".
+	unconfirmed?: boolean;
+	// The handshake's protocolVersion, to show the phone a version mismatch.
+	protocolVersion?: string;
+}
+
+const DEMO_STEPS: readonly DemoStep[] = [
+	"question",
+	"failure",
+	"approval",
+	"finish",
+	"host-offline",
+	"host-online",
+];
+const COMMANDS = [...DEMO_STEPS, "burst"].join(", ");
+// Three alerts within a second, for the coalesced banner.
+const BURST: readonly DemoStep[] = ["question", "failure", "approval"];
+
 export async function createDemoHub(
 	port = 9196,
 	initialMarkdown?: string,
 	fleetOptions?: DemoFleetOptions,
+	modes: DemoHubModes = {},
 ) {
 	// One instant the fleet's rows and its sessions' threads both measure
 	// "ago" from, so a row and its thread agree on when it last changed.
@@ -175,7 +203,7 @@ export async function createDemoHub(
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
-		protocolVersion: "evener-appwire-v6",
+		protocolVersion: modes.protocolVersion ?? "evener-appwire-v6",
 		sourceId: "demo",
 		features: {
 			threadList: true,
@@ -207,7 +235,7 @@ export async function createDemoHub(
 	// Makes the fleet's working row ask its question. Returned for tests to
 	// fire on demand.
 	function askQuestion() {
-		broadcastNavigation(requireFleet().askQuestion());
+		broadcastNavigation(requireFleet().step("question"));
 		const asking = threads.get(fleetSessionRef(ASKING_SESSION_ID));
 		// Asked once: a second ask finds the session already waiting.
 		if (asking?.status.type === "active") {
@@ -215,6 +243,24 @@ export async function createDemoHub(
 			resync(asking);
 		}
 	}
+	// Plays one scripted event for every connected client.
+	function play(step: DemoStep) {
+		if (step === "question") askQuestion();
+		else broadcastNavigation(requireFleet().step(step));
+	}
+	// The command input: a step's name plays it, "burst" plays three at once.
+	const commandLines =
+		demoFleet && modes.commands
+			? createInterface({ input: modes.commands, terminal: false })
+			: undefined;
+	commandLines?.on("line", (line) => {
+		const command = line.trim();
+		if (command === "burst") for (const step of BURST) play(step);
+		else if ((DEMO_STEPS as readonly string[]).includes(command))
+			play(command as DemoStep);
+		else if (command !== "")
+			console.info(`Unknown command ${command}. Commands: ${COMMANDS}`);
+	});
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
 	const askTimer =
@@ -311,6 +357,24 @@ export async function createDemoHub(
 				let changed: Thread | null = null;
 				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
+				// A daemon that can't record a send's outcome
+				// (appwire/errors.go's MutationUnknown).
+				if (
+					modes.unconfirmed &&
+					(request.method === "turn/start" ||
+						request.method === "turn/queue")
+				)
+					throw new WireError(
+						"The send's outcome couldn't be recorded",
+						-32603,
+						{
+							evenerErrorInfo: "mutationOutcomeUnknown",
+							clientMutationId: params.clientMutationId,
+							mutationOutcome: "unknown",
+							retryDisposition: "blocked",
+							cause: "persistenceUnavailable",
+						},
+					);
 				if (demoSetup?.handles(request.method))
 					result = demoSetup.answer(request.method, params);
 				else
@@ -639,6 +703,7 @@ export async function createDemoHub(
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
+				commandLines?.close();
 				for (const socket of server.clients) socket.terminate();
 				server.close();
 				http.close((error) => (error ? reject(error) : resolve()));
@@ -681,10 +746,18 @@ if (
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 				}
 			: undefined,
+		{
+			commands:
+				process.env.EVENER_DEMO_FLEET === "1" ? process.stdin : undefined,
+			unconfirmed: process.env.EVENER_DEMO_UNCONFIRMED === "1",
+			protocolVersion: process.env.EVENER_DEMO_PROTOCOL || undefined,
+		},
 	);
 	console.info(
 		`Scripted native UI demonstration: ${hub.origin} (no token, no LLM).`,
 	);
+	if (process.env.EVENER_DEMO_FLEET === "1")
+		console.info(`Type a command to stage an alert: ${COMMANDS}.`);
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		process.once(signal, () => {
 			void hub.close();
