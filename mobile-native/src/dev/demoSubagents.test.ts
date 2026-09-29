@@ -100,7 +100,7 @@ describe("the demo fleet's documents", () => {
 			{
 				sessionRef: "local:s-pr2138",
 				path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-				versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+				text: SETTLE_RACE_PLAN,
 			},
 		],
 		"/home/jesse/git/evener",
@@ -112,15 +112,13 @@ describe("the demo fleet's documents", () => {
 			),
 		);
 
-	it("serves a plan's first version on the first read and its revision after, by a relative or an absolute path", () => {
-		expect(read("local:s-pr2138", "docs/superpowers/plans/2026-09-25-settle-race.md")).toEqual({
-			status: 200,
-			body: SETTLE_RACE_PLAN,
-		});
-		expect(read("local:s-pr2138", "/home/jesse/git/evener/docs/superpowers/plans/2026-09-25-settle-race.md")).toEqual({
-			status: 200,
-			body: SETTLE_RACE_PLAN_REVISED,
-		});
+	it("serves a plan by a relative or an absolute path, the same on every read", () => {
+		for (const path of [
+			"docs/superpowers/plans/2026-09-25-settle-race.md",
+			"/home/jesse/git/evener/docs/superpowers/plans/2026-09-25-settle-race.md",
+			"docs/superpowers/plans/2026-09-25-settle-race.md",
+		])
+			expect(read("local:s-pr2138", path)).toEqual({ status: 200, body: SETTLE_RACE_PLAN });
 		expect(SETTLE_RACE_PLAN_REVISED).not.toBe(SETTLE_RACE_PLAN);
 	});
 

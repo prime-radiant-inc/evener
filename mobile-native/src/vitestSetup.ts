@@ -1,0 +1,33 @@
+// Runs before every mobile-native test file (vitest.config.mts setupFiles):
+// fakes for native modules vitest can't load, which a suite would otherwise
+// have to mock only because a screen it renders reaches them. A suite's own
+// vi.mock of the same module replaces these.
+//
+// - expo-haptics: haptics.ts plays it from screens across the app. The fake
+//   records what played in the testkit's playedHaptics, so haptics.ts runs
+//   for real and a suite can assert on what a press played.
+// - expo-sqlite/kv-store: the device's key-value store, which the Haptics
+//   switch (Hub > In-app alerts) is read from. In memory, per test file.
+import { vi } from "vitest";
+
+vi.mock("expo-haptics", async () => {
+	const { playedHaptics } = await import("./renderNative.testkit");
+	return {
+		ImpactFeedbackStyle: { Light: "light", Rigid: "rigid" },
+		NotificationFeedbackType: { Success: "success", Warning: "warning" },
+		selectionAsync: async () => void playedHaptics.push("selection"),
+		impactAsync: async (style: string) => void playedHaptics.push(`impact:${style}`),
+		notificationAsync: async (type: string) => void playedHaptics.push(`notification:${type}`),
+	};
+});
+
+vi.mock("expo-sqlite/kv-store", () => {
+	const values = new Map<string, string>();
+	return {
+		Storage: {
+			getItemSync: (key: string) => values.get(key) ?? null,
+			setItemSync: (key: string, value: string) => void values.set(key, value),
+			removeItemSync: (key: string) => void values.delete(key),
+		},
+	};
+});

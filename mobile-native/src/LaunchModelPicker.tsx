@@ -47,7 +47,7 @@ export function LaunchModelPicker({
 						autoCorrect={false}
 						style={[styles.input, { color: colors.text, borderColor: colors.border }]}
 					/>
-					{!client && <Copy>Reconnect to browse this hub's models. Your selection is kept.</Copy>}
+					{!client && <Copy>You can browse this hub's models once it's back. Your selection is kept.</Copy>}
 					<ErrorMessage message={state.error} />
 					{state.loading && <ActivityIndicator accessibilityLabel="Loading launch models" />}
 					{state.error && (

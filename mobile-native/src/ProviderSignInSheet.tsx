@@ -69,7 +69,7 @@ export function ProviderSignInSheet({
 					contentContainerStyle={{ padding: 20, gap: 12 }}
 				>
 					<Copy>Sign in to {name}</Copy>
-					{!connected && <Copy muted>Waiting for this hub to reconnect…</Copy>}
+					{!connected && <Copy muted>Waiting for the hub…</Copy>}
 					<ErrorMessage message={localError || state.error} />
 					{state.busy && <ActivityIndicator accessibilityLabel="Checking sign-in" />}
 					{state.credentialState !== "unknown" && (
@@ -79,7 +79,7 @@ export function ProviderSignInSheet({
 								: "Current OAuth sign-in is not configured."}
 						</Copy>
 					)}
-					{state.phase === "authorized" && <Copy>Signed in. Provider credentials will refresh when connected.</Copy>}
+					{state.phase === "authorized" && <Copy>Signed in. The hub picks up the new credentials once it's back.</Copy>}
 					{state.phase === "device" && state.device && (
 						<>
 							<Copy>Copy the code, then authorize in your browser.</Copy>

@@ -88,7 +88,7 @@ export async function createDemoHub(
 						{
 							sessionRef: planSession.ref,
 							path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-							versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+							text: fleetOptions?.planRevised ? SETTLE_RACE_PLAN_REVISED : SETTLE_RACE_PLAN,
 						},
 					],
 					planSession.workingDir,
@@ -351,7 +351,9 @@ export async function createDemoHub(
 						created.sessionId = `demo-session-created-${sessionNumber}`;
 						// Another host's session is named by that host, as a real
 						// hub qualifies a remote ref (appwire/refs.go).
-						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
+						const source = params.source || "demo";
+						created.evener.ref = `${source}:created-${sessionNumber}`;
+						created.source = source;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";
@@ -673,6 +675,7 @@ if (
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 				}
 			: undefined,
 	);

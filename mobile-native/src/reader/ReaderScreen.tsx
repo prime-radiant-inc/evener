@@ -475,8 +475,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			{blocks ? (
 				<View style={{ paddingBottom: insets.bottom, paddingHorizontal: 16 }}>
 					{comments.length === 0 ? <CommentTip /> : null}
+					{/* The two ends take the room their words need, and the change
+					    stepper the rest: in equal thirds Send review wrapped. */}
 					<View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>
-						<View style={{ flex: 1, alignItems: "flex-start" }}>
+						<View style={{ alignItems: "flex-start" }}>
 							{comments.length > 0 ? (
 								<BarButton
 									label="Comments"
@@ -487,7 +489,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							) : null}
 						</View>
 						{changed.length > 0 ? (
-							<View style={{ flexDirection: "row", alignItems: "center" }}>
+							<View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
 								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
 								<Text
 									allowFontScaling={allowFontScaling}
@@ -505,8 +507,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								</Text>
 								<Chevron name="chevron.right" label="Next change" onPress={() => stepBy(1)} />
 							</View>
-						) : null}
-						<View style={{ flex: 1, alignItems: "flex-end" }}>
+						) : (
+							<View style={{ flex: 1 }} />
+						)}
+						<View style={{ alignItems: "flex-end" }}>
 							{canReview ? (
 								<Pressable
 									accessibilityRole="button"
@@ -516,6 +520,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								>
 									<Text
 										allowFontScaling={allowFontScaling}
+										numberOfLines={1}
 										style={{
 											color: palette.accentInk,
 											fontSize: 15 * scale,

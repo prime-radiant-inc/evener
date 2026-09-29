@@ -12858,6 +12858,10 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		// hub's remnants by forwarding them.
 		appwire.MethodEvenerHostTeardownRetry,
 		appwire.MethodEvenerHostTeardownRecover,
+		// The crash-fencing surface's operator way out (08c §5): controller-local
+		// like the repair mutations above — it resolves this hub's own operation
+		// store's orphan-unverified records — so a peer hub must not forward it.
+		appwire.MethodEvenerHostOrphanResolve,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

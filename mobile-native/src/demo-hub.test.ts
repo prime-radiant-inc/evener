@@ -24,8 +24,9 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	async function withFleetHub(
 		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
+		options: { planRevised?: boolean } = {},
 	) {
-		const hub = await createDemoHub(0, undefined, { now: Date.now() });
+		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
@@ -89,14 +90,22 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
-	it("serves the plan on the same port, then its revision", async () => {
+	it("serves the plan on the same port, however often it's read", async () => {
+		// A document chip and a Files row read the plan too, so a version that
+		// changed with the read count would reach the Reader already revised.
 		await withFleetHub(async (hub) => {
 			const port = nativeDocPort(hub.origin, "");
-			const first = await readDocFile(PR2138, PLAN, port);
-			const second = await readDocFile(PR2138, PLAN, port);
-			expect(first.text).toBe(SETTLE_RACE_PLAN);
-			expect(second.text).toBe(SETTLE_RACE_PLAN_REVISED);
+			for (let read = 0; read < 3; read++) expect((await readDocFile(PR2138, PLAN, port)).text).toBe(SETTLE_RACE_PLAN);
 		});
+	});
+
+	it("serves the plan's revision once restarted with EVENER_DEMO_FLEET_PLAN_REVISED", async () => {
+		await withFleetHub(
+			async (hub) => {
+				expect((await readDocFile(PR2138, PLAN, nativeDocPort(hub.origin, ""))).text).toBe(SETTLE_RACE_PLAN_REVISED);
+			},
+			{ planRevised: true },
+		);
 	});
 });
 
@@ -434,6 +443,9 @@ describe("native demonstration hub's redesign fleet", () => {
 				source: "paradise-park",
 			});
 			expect(started.thread.evener.ref).toBe("paradise-park:created-1");
+			// A real hub names a remote session's source by its host
+			// (remote_hub_refs.go's fromRemoteThread), matching the ref.
+			expect(started.thread.source).toBe("paradise-park");
 			expect(started.thread.cwd).toBe("/Users/jesse/git/evener");
 			const local = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
 			expect(local.thread.evener.ref).toBe("demo:created-2");
@@ -641,14 +653,14 @@ describe("native demonstration hub's fleet sessions", () => {
 			// Steer now, while the turn runs.
 			const [first, second] = queued.queue?.ids ?? [];
 			if (!first || !second) throw new Error("Missing queue ids");
-			expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
+			expect(ghosts(queued, [], null, [], true).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
 			await service.promoteQueuedAsSteer(0, first, instanceId);
 			// Stop with a message queued holds it, and Send now releases it.
 			await service.interrupt();
 			const stopped = await service.open(fleetSessionRef("s-pr2138"));
 			expect(stopped.status.type).toBe("idle");
 			expect(stopped.queue?.texts).toEqual(["One more thing"]);
-			expect(ghosts(stopped, [], null, [])).toEqual([
+			expect(ghosts(stopped, [], null, [], true)).toEqual([
 				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 			]);
 			await service.promoteQueuedAsSteer(0, second, instanceId);
@@ -685,6 +697,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					reconcilePendingEntries(ref, records, model, new Map(), () => true),
 					null,
 					[],
+					true,
 				);
 			};
 			const opened = await service.open(ref);
