@@ -28,6 +28,7 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, T
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
 import Session from "../panes/session/Session";
+import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
@@ -138,7 +139,11 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 
 // ?paged=1: the read answers with a page plus an olderCursor, so the paging row
 // mounts - the open-with-history shape the other passes lack.
+// ?readonly=1: render the READ-ONLY transcript pane instead of the live Session.
+// It runs the same useTranscriptScroll coordinator (#2963), so its paging and
+// landing must behave identically - the pass the guard lacked.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
+const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
 const OLDER_CURSOR = "cursor_page_1";
 const OLDER_PAGE_TURNS = 12;
 let olderPageCalls = 0;
@@ -238,7 +243,11 @@ rootEl.style.height = "100%";
 createRoot(rootEl).render(
   <ClientProvider client={fake}>
     <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
-      <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      {READONLY ? (
+        <Transcript params={{ ref: REF }} paneId="transcriptscrollguard" focused={false} />
+      ) : (
+        <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      )}
     </div>
     <Toast />
   </ClientProvider>,
@@ -293,6 +302,13 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    * row mounts only once the model carries an olderCursor).
    */
   pagingRow: boolean;
+  /**
+   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
+   * The read-only Transcript pane passes no footer, so this distinguishes the
+   * two surfaces from the DOM itself: a pass that claims to exercise the
+   * read-only pane while the live Session rendered would read `true` here.
+   */
+  paneFooter: boolean;
   errors: string[];
 }
 
@@ -309,6 +325,7 @@ function metrics(): TranscriptScrollMetrics {
     renderedRows: document.querySelectorAll('[data-testid="transcript-row"]').length,
     listCalls: olderPageCalls,
     pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
+    paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
     errors: pageErrors(),
   };
 }

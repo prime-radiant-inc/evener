@@ -120,7 +120,7 @@ import {
 	type QueueEntryRef,
 	whatCanActNow,
 } from "./session/ghosts";
-import { FloatingStack } from "./session/FloatingStack";
+import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
 import { atEnd, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
@@ -177,7 +177,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -876,8 +876,8 @@ export function ConversationScreen({
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
 	);
-	// How tall the toast, Next and "↓ new" stand over the transcript's end.
-	const [floatingHeight, setFloatingHeight] = useState(0);
+	// The room the transcript keeps at its end for what floats over it.
+	const transcriptEnd = transcriptEndRoomAt(useTextScale());
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
@@ -2572,12 +2572,13 @@ export function ConversationScreen({
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
 							renderItem={renderItem}
-							// The end stays clear of what floats over it (the toast, Next
-							// and "↓ new"), so they never hide the newest message.
+							// The end keeps a fixed room for what floats over it (spec 8.3),
+							// so Next never sits on the last line and nothing coming or
+							// going there moves the list.
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
+								paddingBottom: transcriptEnd,
 							}}
 							// Dragging the transcript lowers the keyboard: following the finger
 							// as in Messages on iOS, and at the drag's start on Android, which
@@ -2769,7 +2770,6 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
-							onHeight={setFloatingHeight}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer, and

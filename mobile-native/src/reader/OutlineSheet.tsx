@@ -3,7 +3,8 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlatList, Pressable, Text } from "react-native";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { OutlineEntry } from "./documentBlocks";

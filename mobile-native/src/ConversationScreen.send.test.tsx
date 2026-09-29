@@ -2618,18 +2618,51 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
-	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
-		// Ruling on the device pass: the pills must never hide the newest
-		// message, so the list's end grows by the stack's height.
-		const { tree } = await mount(thread("ref-inset", "active"));
+	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+		const served = thread("ref-inset", "active");
+		const { tree, hub } = await mount(served);
 		const list = () =>
 			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
 		const bottom = () => list().props.contentContainerStyle.paddingBottom;
-		const stack = tree.root.findByType(FloatingStack);
-		act(() => stack.props.onHeight(104));
-		expect(bottom()).toBe(16 + 104 + 10);
-		act(() => stack.props.onHeight(0));
-		expect(bottom()).toBe(16);
+		// Who needs you changes, as fleet polling finds: Next goes, then comes.
+		let sequence = 0;
+		async function needsYou(sessions: typeof fleet.needsYou) {
+			fleet.needsYou = sessions;
+			fleet.live = sessions;
+			sequence += 1;
+			fleet.revision = sequence + 1;
+			act(() =>
+				hub.notify({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "generation-test",
+						sequence,
+						targets: [
+							{ kind: "section", section: "needs_you", revision: sequence + 1 },
+							{ kind: "section", section: "live", revision: sequence + 1 },
+						],
+					},
+				} as AnyNotification),
+			);
+			await settle();
+		}
+		await needsYou([]);
+		expect(capsule(tree)).toBeUndefined();
+		expect(bottom()).toBe(60);
+		await needsYou([failing]);
+		expect(capsule(tree)).toBeDefined();
+		expect(bottom()).toBe(60);
+		// A toast joins it.
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(bottom()).toBe(60);
+		// Away from the end, with rows the list didn't hold then, the pill joins too.
+		act(() =>
+			list().props.onScroll({
+				nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			}),
+		);
+		expect(bottom()).toBe(60);
 	});
 
 	it("shows no Next while this session asks you something", async () => {
