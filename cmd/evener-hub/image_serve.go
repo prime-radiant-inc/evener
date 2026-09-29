@@ -3,6 +3,7 @@ package hub
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -123,7 +124,7 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 	reader := bufio.NewReaderSize(f, 64*1024)
-	if _, err := transcript.ReadHeader(reader, maxRecordBytes); err != nil {
+	if _, err := transcript.ReadHeader(context.Background(), reader, maxRecordBytes); err != nil {
 		return nil, "", false, err
 	}
 	var matchedData []byte

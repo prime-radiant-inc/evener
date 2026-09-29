@@ -1480,7 +1480,7 @@ func transcriptHeader(path string, maxLineBytes int) (transcript.Header, error) 
 // transcriptHeaderFromReader reads source's leading header line and nothing
 // past its read buffer.
 func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.Header, error) {
-	return transcript.ReadHeader(bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes), maxLineBytes)
+	return transcript.ReadHeader(context.Background(), bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes), maxLineBytes)
 }
 
 // handleAppThreadTurnsList pages backward (older) through the thread's

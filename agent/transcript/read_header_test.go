@@ -2,8 +2,10 @@ package transcript
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -17,7 +19,7 @@ func TestReadHeaderSkipsBlankLinesAndStopsAfterHeader(t *testing.T) {
 		`{"kind":"header","format_version":2,"session_id":"s1"}` + "\n" +
 		`{"kind":"entry","seq":1,"turn":{}}` + "\n"
 	reader := bufio.NewReader(strings.NewReader(body))
-	header, err := ReadHeader(reader, DefaultMaxLineBytes)
+	header, err := ReadHeader(context.Background(), reader, DefaultMaxLineBytes)
 	if err != nil {
 		t.Fatalf("ReadHeader: %v", err)
 	}
@@ -46,7 +48,7 @@ func TestReadHeaderMissing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ReadHeader(bufio.NewReader(strings.NewReader(tt.body)), DefaultMaxLineBytes)
+			_, err := ReadHeader(context.Background(), bufio.NewReader(strings.NewReader(tt.body)), DefaultMaxLineBytes)
 			if !errors.Is(err, ErrUnsupportedFormat) {
 				t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
 			}
@@ -60,8 +62,38 @@ func TestReadHeaderMissing(t *testing.T) {
 // TestReadHeaderRejectsNonV2 pins that a complete but non-v2 leading line is
 // classified as an unsupported format.
 func TestReadHeaderRejectsNonV2(t *testing.T) {
-	_, err := ReadHeader(bufio.NewReader(strings.NewReader(`{"kind":"header","format_version":1}`+"\n")), DefaultMaxLineBytes)
+	_, err := ReadHeader(context.Background(), bufio.NewReader(strings.NewReader(`{"kind":"header","format_version":1}`+"\n")), DefaultMaxLineBytes)
 	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
 	}
+}
+
+// TestReadHeaderStopsWhenContextCancelledMidScan pins that the leading-blank
+// skip honours context cancellation. A cancelled context must be observed at
+// the next line, so a reader cancelled while delivering its first blank line
+// returns the cancellation instead of scanning every blank line to the header.
+func TestReadHeaderStopsWhenContextCancelledMidScan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Many leading blank lines then a valid header: without the per-line check
+	// the scan would run to the header and return it with no error.
+	body := strings.Repeat("\n", 10000) + `{"kind":"header","format_version":2,"session_id":"s1"}` + "\n"
+	reader := bufio.NewReader(&cancelOnFirstRead{cancel: cancel, data: strings.NewReader(body)})
+	_, err := ReadHeader(ctx, reader, DefaultMaxLineBytes)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadHeader err = %v, want context.Canceled", err)
+	}
+}
+
+// cancelOnFirstRead cancels its context on the first Read, modelling a client
+// disconnect that arrives while the scan is already reading.
+type cancelOnFirstRead struct {
+	cancel context.CancelFunc
+	once   sync.Once
+	data   *strings.Reader
+}
+
+func (r *cancelOnFirstRead) Read(p []byte) (int, error) {
+	r.once.Do(r.cancel)
+	return r.data.Read(p)
 }

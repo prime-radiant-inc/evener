@@ -1324,7 +1324,7 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 	if err := ctx.Err(); err != nil {
 		return transcript.Header{}, err
 	}
-	header, err := transcript.ReadHeader(reader, maxLineBytes)
+	header, err := transcript.ReadHeader(ctx, reader, maxLineBytes)
 	if err != nil {
 		return transcript.Header{}, err
 	}

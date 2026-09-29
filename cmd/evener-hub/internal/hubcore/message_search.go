@@ -448,7 +448,7 @@ func checkTranscriptHeader(transcriptPath string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	_, err = transcript.ReadHeader(bufio.NewReader(f), 128<<20)
+	_, err = transcript.ReadHeader(context.Background(), bufio.NewReader(f), 128<<20)
 	return err
 }
 
