@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -64,4 +65,35 @@ func TestHubRPCLocalThreadListRowAdvertisesPageBefore(t *testing.T) {
 		}
 	}
 	t.Fatalf("list = %+v, want a row for %s", listed.Data, ref)
+}
+
+// A status frame carries the daemon's capability set, which never names
+// pageBefore; the relay stamps the hub's answer on it, so the thread keeps
+// reading the same after its first status change.
+func TestRelayedStatusFrameCarriesThePageBeforeAnswer(t *testing.T) {
+	frame := func(capabilities string) appwire.Notification {
+		return appwire.Notification{
+			Method: appwire.NotifyThreadStatusChanged,
+			Params: json.RawMessage(`{"threadId":"t1","status":{"type":"idle"},"capabilities":` + capabilities + `}`),
+		}
+	}
+	decode := func(n appwire.Notification) appwire.ThreadCapabilities {
+		var params struct {
+			Capabilities appwire.ThreadCapabilities `json:"capabilities"`
+		}
+		if err := json.Unmarshal(n.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		return params.Capabilities
+	}
+	if caps := decode(stampPageBeforeCapability(frame(`{"send":true}`), true)); !caps.PageBefore || !caps.Send {
+		t.Fatalf("stamped capabilities = %+v, want pageBefore beside the daemon's send", caps)
+	}
+	if caps := decode(stampPageBeforeCapability(frame(`{"send":true,"pageBefore":true}`), false)); caps.PageBefore {
+		t.Fatalf("stamped capabilities = %+v, want a stale pageBefore cleared", caps)
+	}
+	other := appwire.Notification{Method: appwire.NotifyThreadNameChanged, Params: json.RawMessage(`{"threadId":"t1"}`)}
+	if got := stampPageBeforeCapability(other, true); string(got.Params) != string(other.Params) {
+		t.Fatalf("a non-status frame changed: %s", got.Params)
+	}
 }

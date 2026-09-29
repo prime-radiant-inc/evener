@@ -433,6 +433,14 @@ func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolve
 			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
 	}
+	// Nothing precedes the boundary (the transcript's first item): an empty,
+	// exhausted page, as the daemon itself answers.
+	if len(candidates) == 0 && response.NextCursor == "" {
+		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, state); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		return ItemCandidateResult{Identity: identity, Exhausted: true, History: PageHistoryIdentity(response)}, nil
+	}
 	selected := localDaemonCandidatesBefore(candidates, before, itemLimit)
 	if len(selected) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
