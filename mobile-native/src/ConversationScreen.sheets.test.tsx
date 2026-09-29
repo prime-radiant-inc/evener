@@ -770,20 +770,6 @@ function sessionList(tree: ReturnType<typeof render>) {
 	};
 }
 
-// The goal is a context chip (spec 8.1). The bottom bar doesn't repeat it as a
-// row of its own: that row cost the transcript a line on every goal session.
-it("shows a session's goal as its chip alone, not again above the composer", async () => {
-	const { tree } = mount(busy);
-	await flush();
-	const session = sessionList(tree);
-	const goalChips = session
-		.block()
-		.findAll((node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Goal, blocked");
-	expect(goalChips).toHaveLength(1);
-	expect(renderedText(tree)).not.toContain("Goal · blocked");
-	tree.unmount();
-});
-
 it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
 	const { tree } = mount(busy);
 	await flush();
@@ -792,6 +778,9 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	// A live connection says nothing, and the old Reconnect row is gone.
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	// The goal is a context chip (spec 8.1) and nothing else: the bottom bar
+	// doesn't repeat it as a row, which would cost the transcript a line.
+	expect(renderedText(tree)).not.toContain("Goal · blocked");
 	const chip = (label: string) => {
 		const found = session
 			.block()
