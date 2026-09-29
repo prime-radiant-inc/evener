@@ -42,7 +42,7 @@ if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
 fi
 
 # formattable lists the staged added/copied/modified/renamed files under
-# $1 (a path prefix) that Biome formats, one per line.
+# $1 (an extended-regex path prefix) that Biome formats, one per line.
 formattable() {
 	git diff --cached --name-only --diff-filter=ACMR |
 		grep -E "^$1.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$" || true
@@ -67,9 +67,7 @@ format_tree() {
 		return 1
 	fi
 
-	partial=$(printf '%s\n' "$files" | while IFS= read -r file; do
-		git diff --quiet -- "$file" || echo "$file"
-	done)
+	partial=$(git diff --name-only | grep -Fx -e "$files" || true)
 	if [ -n "$partial" ]; then
 		echo "pre-commit: these files have unstaged edits on top of what is staged; formatting would stage the edits too:" >&2
 		printf '%s\n' "$partial" | sed 's/^/  /' >&2
@@ -87,11 +85,11 @@ format_tree() {
 		echo "pre-commit: Biome failed in $tree (output above); the commit is aborted." >&2
 		return 1
 	}
-	printf '%s\n' "$files" | while IFS= read -r file; do git add -- "$file" || exit 1; done
+	printf '%s\n' "$files" | tr '\n' '\0' | git add --pathspec-from-file=- --pathspec-file-nul
 }
 
-native_files=$( (formattable 'mobile-native/src/'; formattable 'mobile/src/') | sed '/^$/d')
-web_files=$( (formattable 'cmd/evener-hub/frontend/src/'; formattable 'appwire-client/typescript/') | sed '/^$/d')
+native_files=$(formattable '(mobile-native|mobile)/src/')
+web_files=$(formattable '(cmd/evener-hub/frontend/src|appwire-client/typescript)/')
 
 failed=0
 format_tree mobile-native "$native_files" "format --write" || failed=1

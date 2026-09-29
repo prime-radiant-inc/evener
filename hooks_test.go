@@ -34,11 +34,7 @@ func hookRepo(t *testing.T) string {
 	runIn(t, repo, "git", "config", "user.name", "Hook Test")
 	runIn(t, repo, "git", "config", "commit.gpgsign", "false")
 	for _, name := range []string{"pre-commit", "install.sh"} {
-		data, err := os.ReadFile(filepath.Join("scripts", "hooks", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeTestFile(t, filepath.Join(repo, "scripts", "hooks", name), data, 0o755)
+		copyRepositoryFile(t, ".", repo, filepath.Join("scripts", "hooks", name), 0o755)
 	}
 	runIn(t, repo, "git", "config", "core.hooksPath", "scripts/hooks")
 	return repo
@@ -140,10 +136,10 @@ func TestPreCommitHookFormatsNonASCIIAndGlobNamedFiles(t *testing.T) {
 	stageFile(t, repo, "mobile-native/src/café.ts", "a\n")
 	stageFile(t, repo, "mobile-native/src/[id]&x.ts", "b\n")
 
-	runIn(t, repo, "git", "-c", "core.quotePath=false", "commit", "-q", "-m", "x")
+	runIn(t, repo, "git", "commit", "-q", "-m", "x")
 
 	for _, path := range []string{"mobile-native/src/café.ts", "mobile-native/src/[id]&x.ts"} {
-		if got := runIn(t, repo, "git", "-c", "core.quotePath=false", "show", "HEAD:"+path); !strings.HasSuffix(got, "// formatted\n") {
+		if got := committedContent(t, repo, path); !strings.HasSuffix(got, "// formatted\n") {
 			t.Errorf("committed %s = %q, want it formatted", path, got)
 		}
 	}
