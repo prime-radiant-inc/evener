@@ -482,6 +482,19 @@ func TestRemoteHubSourceCompleteContinuationAnswersEarlierBoundaries(t *testing.
 	if !replayed.Exhausted || replayed.Candidates.OlderCursor != "" {
 		t.Fatalf("replayed page = %+v, want exhaustion", replayed)
 	}
+
+	// A before beside a cursor moves the cursor's boundary here too, not only
+	// in the RPC handler that usually applies it first.
+	boundary := page2.Candidates.Candidates[0].Position
+	rebased, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: page1.Candidates.OlderCursor, Before: &boundary,
+	})
+	if err != nil {
+		t.Fatalf("cursor with before: %v", err)
+	}
+	if len(rebased.Candidates.Candidates) != 3 || rebased.Candidates.Candidates[0].Position.Entry != 4 {
+		t.Fatalf("cursor with before candidates = %+v, want the page before entry 7, [4,5,6]", rebased.Candidates.Candidates)
+	}
 }
 
 // A fresh observation that re-reports an already-observed position with a

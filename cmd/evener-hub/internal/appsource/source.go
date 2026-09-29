@@ -275,6 +275,11 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 	if err := ctx.Err(); err != nil {
 		return ItemCandidateResult{}, err
 	}
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
 	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err

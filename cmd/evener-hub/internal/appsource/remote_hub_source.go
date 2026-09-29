@@ -782,6 +782,11 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	if params.Cursor == "" && params.Before != nil {
 		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
 	}
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err

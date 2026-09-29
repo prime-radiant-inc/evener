@@ -446,6 +446,12 @@ export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export {
+  isSuppressedSteeringKind,
+  type LabelledSteeringKind,
+  STEERING_KIND_LABELS,
+  steeringKindLabel,
+} from "./steeringLabels";
+export {
   decodeNotificationEntities,
   escapeNotificationEntities,
   isNotificationRemnant,
