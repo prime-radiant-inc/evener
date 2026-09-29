@@ -156,7 +156,8 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	};
 }
 
-// data.js's settle-race plan (data.js:505-531), as the first read serves it.
+// data.js's settle-race plan (data.js:505-531), the text the demo hub serves
+// unless EVENER_DEMO_FLEET_PLAN_REVISED is set.
 export const SETTLE_RACE_PLAN = `# Fix the settle/drain race
 
 ## Problem
