@@ -477,6 +477,14 @@ test("renders current work directly before the compose card", async () => {
   expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
+test("the current-work goal row carries the goal's live status", async () => {
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ goal: true }),
+  });
+
+  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("Active");
+});
+
 test("clicking the current goal fills and focuses an empty composer with an editable goal command", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {

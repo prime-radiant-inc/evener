@@ -205,9 +205,11 @@ export {
   committedMutationRow,
   createHostMutations,
   ErrorStaleEntry,
+  HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
   HOST_GATE_TIMEOUT_MS,
+  hostChangedSinceOpened,
   rootsFromText,
   rootsToText,
 } from "./hostMutations";

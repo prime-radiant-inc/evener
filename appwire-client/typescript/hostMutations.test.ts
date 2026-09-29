@@ -4,10 +4,12 @@ import {
   committedMutationRow,
   createHostMutations,
   ErrorStaleEntry,
+  HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
   HOST_GATE_TIMEOUT_MS,
   type HostMutationPair,
+  hostChangedSinceOpened,
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
@@ -54,10 +56,16 @@ function harness(rows: HostRow[]) {
 }
 
 describe("guarded host mutations (registry spec 08 §12)", () => {
-  test("an update echoes the held pair with a fresh mutation id and returns the committed row", async () => {
-    const h = harness([row("alpha")]);
+  test("an update echoes the pair of the row its form opened on, with a fresh mutation id", async () => {
+    // The rows have moved on since the form opened; the edit still speaks for
+    // the row the person saw.
+    const h = harness([row("alpha", { generation: 5 })]);
     h.answers.push(() => ({ outcome: "committed", host: row("alpha", { address: "a2", generation: 2 }) }));
-    const updated = await h.mutations.update({ name: "alpha", entry: { address: "a2" } });
+    const updated = await h.mutations.update({
+      name: "alpha",
+      entry: { address: "a2" },
+      expected: { generation: 1, incarnationId: "alpha-1" },
+    });
     expect(updated.generation).toBe(2);
     expect(h.sent).toEqual([
       {
@@ -74,14 +82,32 @@ describe("guarded host mutations (registry spec 08 §12)", () => {
     ]);
   });
 
-  test("a stale-entry refusal re-reads and retries once with the new pair and a new mutation id", async () => {
+  test("an update refused as stale surfaces to its form, never retried over the newer edit", async () => {
+    // Only add and update advance a generation (spec 08), so a stale update
+    // means someone else edited the host: retrying would overwrite that edit.
+    const h = harness([row("alpha", { generation: 2 })]);
+    h.answers.push(() => {
+      throw stale();
+    });
+    await expect(
+      h.mutations.update({
+        name: "alpha",
+        entry: { address: "a1" },
+        expected: { generation: 1, incarnationId: "alpha-1" },
+      }),
+    ).rejects.toThrow("the entry moved");
+    expect(h.sent).toHaveLength(1);
+    expect(h.registry.reads).toBe(0);
+  });
+
+  test("a remove refused as stale re-reads and retries once with the new pair and a new mutation id", async () => {
     const h = harness([row("alpha")]);
     h.answers.push(() => {
       h.registry.rows = [row("alpha", { generation: 2 })];
       throw stale();
     });
-    h.answers.push(() => ({ outcome: "committed", host: row("alpha", { generation: 3 }) }));
-    await h.mutations.update({ name: "alpha", entry: { address: "a1" } });
+    h.answers.push(() => ({ outcome: "committed", host: { name: "alpha", generation: 2, incarnationId: "alpha-1" } }));
+    await h.mutations.remove("alpha");
     expect(h.registry.reads).toBe(1);
     expect(h.sent.map((request) => [request.params.expectedGeneration, request.params.mutationId])).toEqual([
       [1, "m1"],
@@ -117,9 +143,13 @@ describe("guarded host mutations (registry spec 08 §12)", () => {
     h.answers.push(() => {
       throw new WireError("missing ssh destination", -32602, { evenerErrorInfo: "invalidHostField", field: "address" });
     });
-    await expect(h.mutations.update({ name: "alpha", entry: { address: "" } })).rejects.toThrow(
-      "missing ssh destination",
-    );
+    await expect(
+      h.mutations.update({
+        name: "alpha",
+        entry: { address: "" },
+        expected: { generation: 1, incarnationId: "alpha-1" },
+      }),
+    ).rejects.toThrow("missing ssh destination");
     expect(h.sent).toHaveLength(1);
     expect(h.registry.reads).toBe(0);
   });
@@ -187,5 +217,19 @@ describe("the editable host fields", () => {
       label: "Roots",
       help: "Optional directories on the host to serve. One per line.",
     });
+  });
+});
+
+describe("an edit refused because the host changed", () => {
+  test("is told apart from any other refusal", () => {
+    expect(hostChangedSinceOpened(stale())).toBe(true);
+    expect(hostChangedSinceOpened(new WireError("missing ssh destination", -32602))).toBe(false);
+    expect(hostChangedSinceOpened(new Error("the entry moved"))).toBe(false);
+  });
+
+  test("says what happened and what to do", () => {
+    expect(HOST_CHANGED_MESSAGE).toBe(
+      "This host changed since you opened it. Cancel, then open it again to see the change.",
+    );
   });
 });

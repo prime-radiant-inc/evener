@@ -179,8 +179,17 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 // stays silent. Failures are silent — the next tick retries — and
 // cancellation stops the loop.
 func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegistry, interval time.Duration, startBackground func(func()), changed func()) {
-	startBackground(func() {
+	startPeriodicPrefetch(ctx, interval, startBackground, func() {
 		prefetchAllLiveModels(ctx, holder, changed)
+	})
+}
+
+// startPeriodicPrefetch runs pass once, then on interval until ctx ends, on the
+// caller's background runner. It is the shared scaffold behind the live-model
+// and launch-model prefetches, which differ only in the pass they run.
+func startPeriodicPrefetch(ctx context.Context, interval time.Duration, startBackground func(func()), pass func()) {
+	startBackground(func() {
+		pass()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -188,7 +197,7 @@ func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegist
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				prefetchAllLiveModels(ctx, holder, changed)
+				pass()
 			}
 		}
 	})

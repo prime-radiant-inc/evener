@@ -107,10 +107,9 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
-	archiveSession,
 	archiveTarget,
 	archivingSessionId,
-	pinSession,
+	journalOutcome,
 	projectChange,
 	type RowAction,
 	type RowActionContext,
@@ -123,7 +122,7 @@ import {
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
-import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
+import { archiveRequest, archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
@@ -295,8 +294,6 @@ function Board({
 	// Board is focused and it's free.
 	const [hold] = useState(() => boardHold(hubId));
 	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
-	const heldNow = useRef(held);
-	heldNow.current = held;
 	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
 	// A press answered later (an alert, a sheet) asks what's true then.
 	const liveNow = useRef(actionsConnected);
@@ -521,17 +518,10 @@ function Board({
 			onPress: () => scrollTo("archived"),
 		});
 
-	// What a row's actions may do now (rulings 16 and 21), by whether it sits
-	// in an archived tier. It keeps its identity while those facts hold, so
-	// the row menu's host below changes when a row's actions can.
-	const rowContext = useCallback(
-		(archived: boolean): RowActionContext => ({
-			connected: actionsConnected,
-			organizationReady: organization.ready,
-			archived,
-		}),
-		[actionsConnected, organization.ready],
-	);
+	// What a row's actions depend on: whether it sits in an archived tier.
+	// Offline or with the journal busy the same actions are offered, and a
+	// change that can't go now is held (holdsChange below).
+	const rowContext = useCallback((archived: boolean): RowActionContext => ({ archived }), []);
 	// The row menu, a sheet route that asks the Board's host below for the
 	// row and its actions. It carries the tier it opened from, since a
 	// session can show twice (Live and a project's Archived tier) and the two
@@ -542,28 +532,46 @@ function Board({
 		list.setInteraction("menu", true);
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
 	};
-	/** Whether a change of this kind waits in the hold for this session. A
-	 * new one on it goes through the hold too, even online, so it replaces,
-	 * undoes or queues behind the held one instead of racing its replay. */
+	/** Whether a change of this kind waits in the hold for this session. */
 	const waitsFor = (ref: string, kind: HeldAction["kind"]) =>
-		heldFor(heldNow.current, ref).some((record) => record.action.kind === kind);
+		heldFor(hold.getSnapshot(), ref).some((record) => record.action.kind === kind);
+	/** Whether a Board change goes into the hold rather than out now (phase 6
+	 * ruling 18): offline; for an organization change (an archive, a pin, a
+	 * project setting), while the journal can't take one; and while a change
+	 * on the same subject waits in the hold, which the new one then replaces,
+	 * undoes or queues behind rather than racing its replay. A held change
+	 * goes when it can, so a Board change is never refused. */
+	const holdsChange = (waiting: boolean, organization: boolean) =>
+		waiting || !liveNow.current || (organization && !organizationOpen(organizationNow.current));
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
 		const kind = action === "pin" ? "pin" : action === "stop" ? "stop" : "archive";
-		if (!actionsConnected || (kind !== "stop" && waitsFor(row.ref, kind))) holdRowAction(row, action);
+		if (holdsChange(waitsFor(row.ref, kind), kind !== "stop")) holdRowAction(row, action);
 		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
-		else if (action === "stop" && actionsConnected && client)
+		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
-		else if (action === "archive" || action === "unarchive")
-			void archiveRow(organization, row, action === "archive", toast);
+		else if (action === "archive" || action === "unarchive") archiveOrHold(row, action === "archive");
 	};
-	/** A swipe's or the menu's action taken offline, held until the
-	 * connection returns: Pin asks for the category over the Board's loaded
-	 * catalog, and a Stop names the turn you saw (phase 6 ruling 18). */
+	/** Archive or Unarchive a row, and its Undo: through the journal, or held
+	 * when it can't go now (holdsChange), including when the journal turns
+	 * out not to take it. */
+	const holdArchive = (archived: boolean) => (row: NavigationSessionSummary) =>
+		holdRowAction(row, archived ? "archive" : "unarchive");
+	const archiveOrHold = (row: NavigationSessionSummary, archived: boolean) => {
+		const holdIt = () => holdArchive(archived)(row);
+		const actions = organizationNow.current.actions;
+		if (holdsChange(waitsFor(row.ref, "archive"), true) || !actions) holdIt();
+		else
+			void archiveRow(actions, row, archived, toast, () => archiveOrHold(row, !archived)).then((outcome) => {
+				if (outcome === "notTaken") holdIt();
+			});
+	};
+	/** A swipe's or the menu's action held until it can go: Pin asks for the
+	 * category over the Board's loaded catalog, and a Stop names the turn you
+	 * saw (phase 6 ruling 18). */
 	const holdRowAction = (row: NavigationSessionSummary, action: Exclude<SwipeRowAction, "more">) => {
 		if (action === "pin")
 			chooseCategory(
-				() => true,
 				board.getSnapshot().pins.rows,
 				toast,
 				(section) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
@@ -576,14 +584,14 @@ function Board({
 	};
 	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
 	 * them, the read marks on this phone, and Shut down and Rename as the
-	 * Session sends them (rulings 18-21), held while offline. */
+	 * Session sends them (rulings 18-21), held when they can't go now. */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "markRead") seen.markRead(actionsClient, [row]);
 		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
 		else if (action === "shutDown")
 			confirmShutDown(row, () => {
-				const on = liveNow.current ? clientNow.current : null;
+				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
 					shutDownSession(on, row.ref).then(
@@ -593,7 +601,7 @@ function Board({
 			});
 		else if (action === "rename")
 			promptRename(row, (name) => {
-				const on = liveNow.current && !waitsFor(row.ref, "rename") ? clientNow.current : null;
+				const on = holdsChange(waitsFor(row.ref, "rename"), false) ? null : clientNow.current;
 				if (!on) {
 					if (name.trim()) holdAction({ kind: "rename", ref: row.ref, title: row.title, name: name.trim() });
 					return;
@@ -618,7 +626,7 @@ function Board({
 		draftRefs,
 		activityOf,
 		msSinceRead,
-		waiting: (ref) => waitingLine(held, ref),
+		waiting: (ref) => waitingLine(held, ref, actionsConnected),
 		swipes: (item, archived) =>
 			rowSwipes(item, rowContext(archived), archivingId, (action) =>
 				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
@@ -777,14 +785,16 @@ function Board({
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
 			// What is on its way can't be taken back, so it offers no Cancel.
 			held: (item) =>
-				heldFor(heldNow.current, item.row.ref)
+				heldFor(hold.getSnapshot(), item.row.ref)
 					.filter((record) => !hold.isSending(record.id))
 					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
 			cancel: (id) => hold.cancel(id),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
 			closed: () => list.setInteraction("menu", false),
 		}),
-		[shownRows, rowContext, hostLabel, list, hold],
+		// A new host whenever the hold changes, so an open menu re-reads its
+		// Cancel entries.
+		[shownRows, rowContext, hostLabel, list, hold, held],
 	);
 	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
@@ -864,20 +874,17 @@ function Board({
 		leaveSearch();
 		revealProject(project.key);
 	};
-	/** A project's change: held while offline, or through the journal. */
+	/** A project's change: through the journal, or held when it can't go now
+	 * (holdsChange), asked at the press since the journal may have moved
+	 * while the menu was up. */
 	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
 		const target = { key: project.key, workingDir: project.working_dir };
-		// A change waiting on the same setting goes through the hold too, as a
-		// row's does (waitsFor).
-		const pending = heldProjectState(heldNow.current, project.key);
+		const pending = heldProjectState(hold.getSnapshot(), project.key);
 		const waits =
 			action === "pin" || action === "unpin" ? pending.favorite !== undefined : pending.archived !== undefined;
-		if (!liveNow.current || waits) holdAction({ kind: "project", project: target, action });
-		else {
-			// Asked at the press: the journal may have moved since the render.
-			const now = organizationNow.current;
-			if (now.actions && organizationOpen(now)) void projectChange(now.actions, target, action);
-		}
+		const actions = organizationNow.current.actions;
+		if (holdsChange(waits, true) || !actions) holdAction({ kind: "project", project: target, action });
+		else void projectChange(actions, target, action);
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		// The menu offers what the project will be once what's held goes, so a
@@ -889,11 +896,7 @@ function Board({
 				favorite: pending.favorite ?? project.favorite,
 				is_archived: pending.archived ?? project.is_archived,
 			},
-			{
-				connected,
-				organizationReady: organization.ready,
-				archived: pending.archived ?? section === "archived",
-			},
+			{ archived: pending.archived ?? section === "archived" },
 		);
 		return actions.length
 			? () => openProjectMenu(project, actions, (action) => actOnProject(project, action))
@@ -1029,44 +1032,54 @@ function Board({
 	const shownRowItems = settled.display.flatMap((item) =>
 		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
 	);
-	const selection = selectionActions(
-		shownRowItems.filter(({ item }) => chosen.has(item.row.ref)),
-		{ connected: actionsConnected, organizationReady: organization.ready },
-	);
-	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
-		if (!liveNow.current) {
-			for (const row of rows) holdRowAction(row, "archive");
-			leaveSelect();
-			return;
+	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
+	/** Select mode's change to many rows, one at a time through the journal,
+	 * reading the Board as it is now. A row whose change can't go now
+	 * (holdsChange) is held, and so is every row after one the journal
+	 * didn't take or couldn't confirm. Resolves the rows the hub confirmed,
+	 * and how many it tried. */
+	const changeEach = async (
+		rows: readonly NavigationSessionSummary[],
+		kind: "archive" | "pin",
+		holdOne: (row: NavigationSessionSummary) => void,
+		request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	) => {
+		const actions = organizationNow.current.actions;
+		const sending: NavigationSessionSummary[] = [];
+		for (const row of rows) {
+			if (!actions || holdsChange(waitsFor(row.ref, kind), true)) holdOne(row);
+			else sending.push(row);
 		}
-		const archived = await confirmEach(organization, rows, (actions, row) => archiveOne(actions, row, true));
+		const confirmed = actions ? await confirmEach(actions, sending, request, (rest) => rest.forEach(holdOne)) : [];
+		return { confirmed, tried: sending.length };
+	};
+	const archiveEach = (rows: readonly NavigationSessionSummary[], archived: boolean) =>
+		changeEach(rows, "archive", holdArchive(archived), (actions, row) => archiveRequest(actions, row, archived));
+	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
+		const { confirmed, tried } = await archiveEach(rows, true);
 		leaveSelect();
-		if (archived.length)
+		if (confirmed.length)
 			toast.show({
-				text: sessionCount("Archived", archived.length, rows.length),
+				text: sessionCount("Archived", confirmed.length, tried),
 				action: {
 					label: "Undo",
 					run: () =>
-						void confirmEach(organization, archived, (actions, row) => archiveOne(actions, row, false)).then(
-							(unarchived) => {
-								if (unarchived.length)
-									toast.show({ text: sessionCount("Unarchived", unarchived.length, archived.length) });
-							},
-						),
+						void archiveEach(confirmed, false).then((undone) => {
+							if (undone.confirmed.length)
+								toast.show({ text: sessionCount("Unarchived", undone.confirmed.length, undone.tried) });
+						}),
 				},
 			});
 	};
 	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
-		if (!liveNow.current) {
-			for (const row of rows) holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } });
-			leaveSelect();
-			return;
-		}
-		const pinned = await confirmEach(organization, rows, (actions, row) =>
-			pinSession(actions, { sessionRef: row.ref, ...section }),
+		const { confirmed, tried } = await changeEach(
+			rows,
+			"pin",
+			(row) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
+			(actions, row) => actions.assignPin({ sessionRef: row.ref, ...section }),
 		);
 		leaveSelect();
-		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, rows.length)} to ${name}` });
+		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
 	const markChosenRead = () => {
 		seen.markRead(actionsClient, selection.markRead);
@@ -1190,11 +1203,8 @@ function Board({
 					onDone={leaveSelect}
 					onArchive={() => void archiveChosen(selection.archive)}
 					onPin={() =>
-						chooseCategory(
-							() => !liveNow.current || organizationOpen(organizationNow.current),
-							board.getSnapshot().pins.rows,
-							toast,
-							(section, name) => pinChosen(selection.pin, section, name),
+						chooseCategory(board.getSnapshot().pins.rows, toast, (section, name) =>
+							pinChosen(selection.pin, section, name),
 						)
 					}
 					onMarkRead={markChosenRead}
@@ -1295,42 +1305,38 @@ function sessionCount(verb: string, done: number, of: number): string {
 }
 
 /** Makes one journaled change per session, in order, through the Board's
- * organization journal, stopping at the first the hub doesn't confirm (the
- * journal is then settled once). Resolves the sessions it confirmed. Does
- * nothing while a change can't go out. */
+ * organization journal, stopping at the first the hub doesn't confirm: an
+ * unconfirmed one is the journal's to settle, and `holdRest` gets the rows
+ * after it, or that row and the rows after it when the journal didn't take
+ * it. Resolves the sessions it confirmed. */
 async function confirmEach(
-	organization: BoardOrganization,
+	actions: NavigationActions,
 	rows: readonly NavigationSessionSummary[],
-	change: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<boolean>,
+	request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	holdRest: (rows: readonly NavigationSessionSummary[]) => void,
 ): Promise<NavigationSessionSummary[]> {
-	const actions = organization.actions;
-	if (!actions || !organizationOpen(organization)) return [];
 	const confirmed: NavigationSessionSummary[] = [];
-	for (const row of rows) {
-		if (!(await change(actions, row))) {
-			void actions.reconcile();
-			break;
+	for (const [index, row] of rows.entries()) {
+		const outcome = await journalOutcome(actions, () => request(actions, row));
+		if (outcome === "confirmed") {
+			confirmed.push(row);
+			continue;
 		}
-		confirmed.push(row);
+		if (outcome === "unconfirmed") void actions.reconcile();
+		holdRest(rows.slice(outcome === "unconfirmed" ? index + 1 : index));
+		break;
 	}
 	return confirmed;
-}
-
-function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, archived: boolean): Promise<boolean> {
-	const target = archiveTarget(row);
-	return target ? archiveSession(actions, target, archived) : Promise.resolve(false);
 }
 
 /** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
  * one, as an action sheet. A new category's name is 1-80 characters, the
  * journal's own bound. */
 function chooseCategory(
-	canChoose: () => boolean,
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
 	pin: (section: PinTarget, name: string) => void,
 ) {
-	if (!canChoose()) return;
 	const createCategory = () =>
 		Alert.prompt(
 			"New category",

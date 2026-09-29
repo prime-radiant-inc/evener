@@ -266,16 +266,23 @@ it("keeps a Shut down whose connection dropped while it read the thread", async 
 describe("through the organization journal", () => {
 	/** A journal that takes each change (publishing it pending, then
 	 * confirmed) unless told it can't, recording what it was asked. */
-	function journal({ takes = true } = {}) {
+	function journal({ takes = true, confirms = true } = {}) {
 		const listeners = new Set<() => void>();
-		let state = { pending: false, uncertain: false, storageUnavailable: false, recovery: null, error: null };
+		let state = {
+			pending: false,
+			uncertain: false,
+			storageUnavailable: false,
+			recovery: null as unknown,
+			error: null,
+		};
 		const sent: unknown[] = [];
 		const change = async (request: unknown) => {
 			if (!takes) return;
 			sent.push(request);
 			state = { ...state, pending: true };
 			for (const listener of listeners) listener();
-			state = { ...state, pending: false };
+			// Unconfirmed, the journal keeps its recovery record to settle.
+			state = { ...state, pending: false, ...(confirms ? {} : { uncertain: true, recovery: { request } }) };
 			for (const listener of listeners) listener();
 		};
 		const actions = {
@@ -315,6 +322,30 @@ describe("through the organization journal", () => {
 		hold.claim(held.id);
 		await replay.organize(organization, isLive);
 		expect(sent).toEqual([]);
+	});
+
+	it("hands an unconfirmed change to the journal, whose settling may fail without an unhandled rejection", async () => {
+		const { hold, replay, isLive } = setup();
+		const { organization, actions } = journal({ confirms: false });
+		// A plain function: a vi.fn records how its promise settles, which
+		// handles the rejection and would hide a floating one.
+		let reconciles = 0;
+		(actions as { reconcile: () => Promise<void> }).reconcile = () => {
+			reconciles += 1;
+			return Promise.reject(new Error("the hub didn't answer"));
+		};
+		const unhandled = vi.fn();
+		process.on("unhandledRejection", unhandled);
+		try {
+			hold.hold({ kind: "archive", ref: "local:a", target: { kind: "session", id: "a" }, archived: true }, 1);
+			await replay.organize(organization, isLive);
+			expect(reconciles).toBe(1);
+			expect(hold.getSnapshot()).toEqual([]);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(unhandled).not.toHaveBeenCalled();
+		} finally {
+			process.off("unhandledRejection", unhandled);
+		}
 	});
 
 	it("keeps a change the journal didn't take, and doesn't hand it to the journal", async () => {

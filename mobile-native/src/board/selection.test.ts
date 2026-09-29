@@ -22,7 +22,6 @@ const chosen = (summary: NavigationSessionSummary, state: BoardState, archived =
 	archived,
 });
 const refs = (rows: NavigationSessionSummary[]) => rows.map((summary) => summary.ref);
-const online = { connected: true, organizationReady: true };
 
 it("applies each action to the sessions it can act on, once each", () => {
 	const finished = row(local("a"));
@@ -30,32 +29,22 @@ it("applies each action to the sessions it can act on, once each", () => {
 	const remote = row("paradise-park:c", { host_id: "paradise-park", session_id: "c" });
 	const fork = row(local("d"), { kind: "fork" });
 	const archivedAlready = row(local("e"), { state: "ended", live: false });
-	const actions = selectionActions(
-		[
-			chosen(finished, "finished"),
-			chosen(finished, "finished"),
-			chosen(working, "working"),
-			chosen(remote, "finished"),
-			chosen(fork, "finished"),
-			chosen(archivedAlready, "shutDown", true),
-		],
-		online,
-	);
+	const actions = selectionActions([
+		chosen(finished, "finished"),
+		chosen(finished, "finished"),
+		chosen(working, "working"),
+		chosen(remote, "finished"),
+		chosen(fork, "finished"),
+		chosen(archivedAlready, "shutDown", true),
+	]);
 	expect(refs(actions.archive)).toEqual([local("a"), local("b"), "paradise-park:c"]);
 	expect(refs(actions.pin)).toEqual([local("a"), local("b"), "paradise-park:c", local("e")]);
 	expect(refs(actions.markRead)).toEqual([local("a"), "paradise-park:c", local("d")]);
 });
 
-it("keeps only Mark as read while a change is unresolved", () => {
+it("offers Archive and Pin whatever the connection or the journal says, since a change that can't go now is held (phase 6)", () => {
 	const selected = [chosen(row(local("a")), "finished")];
-	const actions = selectionActions(selected, { connected: true, organizationReady: false });
-	expect([actions.archive, actions.pin].map(refs)).toEqual([[], []]);
-	expect(refs(actions.markRead)).toEqual([local("a")]);
-});
-
-it("keeps every action offline, to be held until the connection returns (phase 6 ruling 18)", () => {
-	const selected = [chosen(row(local("a")), "finished")];
-	const actions = selectionActions(selected, { connected: false, organizationReady: false });
+	const actions = selectionActions(selected);
 	expect([actions.archive, actions.pin, actions.markRead].map(refs)).toEqual([
 		[local("a")],
 		[local("a")],

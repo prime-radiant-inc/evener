@@ -2,7 +2,8 @@
 // the hub's organization journal holds (organizationCheck.ts), settles it
 // whenever the Board is focused and connected, as usePinNavigation does, and
 // never shows the journal's own error text: while a change is unresolved,
-// `ready` is false and the Board hides its organization actions.
+// `ready` is false, and a Board change made meanwhile is held until it is
+// true again (BoardScreen's holdsChange; phase 6 ruling 18).
 import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";

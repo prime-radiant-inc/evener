@@ -1,8 +1,10 @@
 import {
   friendlyErrorMessage,
+  HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_TEXT,
   type HostEntry,
   type HostRow,
+  hostChangedSinceOpened,
   hostFieldError,
   rootsFromText,
   rootsToText,
@@ -216,8 +218,14 @@ export function HostsSection(_props: HostsSectionProps) {
     toasts.push("success", `Added ${entry.name}`);
   }
 
+  // row is the snapshot the dialog opened on, so the edit echoes the pair of
+  // the row the person saw, never a newer one a poll brought in since.
   async function handleEdit(row: HostRow, entry: HostEntry): Promise<void> {
-    await hostsStore.getState().update({ name: row.name, entry });
+    await hostsStore.getState().update({
+      name: row.name,
+      entry,
+      expected: { generation: row.generation, incarnationId: row.incarnationId },
+    });
     toasts.push("success", `Updated ${row.name}`);
   }
 
@@ -557,7 +565,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
       const field = hostFieldError(err);
       setError({
         field: field !== undefined && renderedFields.has(field) ? field : null,
-        message: friendlyErrorMessage(err),
+        message: hostChangedSinceOpened(err) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
       });
     } finally {
       setBusy(false);
