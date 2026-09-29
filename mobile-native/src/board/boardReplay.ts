@@ -42,6 +42,11 @@ const AT_ONCE: ReadonlySet<HeldAction["kind"]> = new Set(["stop", "shutDown", "r
 export const SHUT_DOWN_DROPPED = "A newer turn started, so the session wasn't shut down";
 
 export class BoardReplay {
+	/** The newest ask for each stream: one that arrives while the stream runs
+	 * waits here, and runs when it finishes, so a new connection's replay is
+	 * never lost behind the old one's last step. */
+	#sendAsked: { client: AppwireClientLike; isLive: () => boolean } | null = null;
+	#organizeAsked: { organization: BoardOrganization; isLive: () => boolean } | null = null;
 	#sending = false;
 	#organizing = false;
 	#disposed = false;
@@ -61,41 +66,60 @@ export class BoardReplay {
 	 * `isLive` says whether the connection still is; a request that fails once
 	 * it isn't stays held. */
 	async sendImmediate(client: AppwireClientLike, isLive: () => boolean): Promise<void> {
+		this.#sendAsked = { client, isLive };
 		if (this.#sending) return;
 		this.#sending = true;
 		try {
-			for (;;) {
-				if (this.#disposed || !isLive()) return;
-				const record = this.hold.getSnapshot().find((held) => AT_ONCE.has(held.action.kind));
-				if (!record || !(await this.#sendAtOnce(client, record, isLive))) return;
+			while (this.#sendAsked) {
+				const asked = this.#sendAsked;
+				this.#sendAsked = null;
+				await this.#sendAll(asked.client, asked.isLive);
 			}
 		} finally {
 			this.#sending = false;
 		}
 	}
 
+	async #sendAll(client: AppwireClientLike, isLive: () => boolean): Promise<void> {
+		for (;;) {
+			if (this.#disposed || !isLive()) return;
+			const record = this.hold.getSnapshot().find((held) => AT_ONCE.has(held.action.kind));
+			if (!record || !(await this.#sendAtOnce(client, record, isLive))) return;
+		}
+	}
+
 	/** With the Board focused and the journal free: archive, pin and the
-	 * project changes, each confirmed by the journal before the next. */
-	async organize(organization: BoardOrganization): Promise<void> {
+	 * project changes, each confirmed by the journal before the next.
+	 * `isLive` says whether the connection still is, as sendImmediate's. */
+	async organize(organization: BoardOrganization, isLive: () => boolean): Promise<void> {
+		this.#organizeAsked = { organization, isLive };
 		if (this.#organizing) return;
 		this.#organizing = true;
 		try {
-			for (;;) {
-				const actions = organization.actions;
-				if (this.#disposed || !actions || !organizationOpen(organization)) return;
-				const record = this.hold.getSnapshot().find((held) => !AT_ONCE.has(held.action.kind));
-				if (!record) return;
-				if (!(await organizationChange(actions, record.action))) {
-					// The Board went away or the connection dropped: it stays held.
-					if (!organization.isCurrent()) return;
-					// Refused, or its outcome unknown: the journal holds it and
-					// settles it, as it does an online change.
-					void actions.reconcile();
-				}
-				this.hold.settled(record.id);
+			while (this.#organizeAsked) {
+				const asked = this.#organizeAsked;
+				this.#organizeAsked = null;
+				await this.#organizeAll(asked.organization, asked.isLive);
 			}
 		} finally {
 			this.#organizing = false;
+		}
+	}
+
+	async #organizeAll(organization: BoardOrganization, isLive: () => boolean): Promise<void> {
+		for (;;) {
+			const actions = organization.actions;
+			if (this.#disposed || !actions || !isLive() || !organizationOpen(organization)) return;
+			const record = this.hold.getSnapshot().find((held) => !AT_ONCE.has(held.action.kind));
+			if (!record) return;
+			if (!(await organizationChange(actions, record.action))) {
+				// The Board went away or the connection dropped: it stays held.
+				if (!organization.isCurrent() || !isLive()) return;
+				// Refused, or its outcome unknown: the journal holds it and
+				// settles it, as it does an online change.
+				void actions.reconcile();
+			}
+			this.hold.settled(record.id);
 		}
 	}
 
@@ -128,9 +152,15 @@ export class BoardReplay {
 	}
 }
 
-function organizationChange(actions: NavigationActions, action: HeldAction): Promise<boolean> {
-	if (action.kind === "archive") return archiveSession(actions, action.target, action.archived);
-	if (action.kind === "pin") return pinSession(actions, action.target);
-	if (action.kind === "project") return projectChange(actions, action.project, action.action);
-	return Promise.resolve(true);
+/** One organization change through the journal: true once it confirms, and
+ * false when it doesn't or throws. */
+async function organizationChange(actions: NavigationActions, action: HeldAction): Promise<boolean> {
+	try {
+		if (action.kind === "archive") return await archiveSession(actions, action.target, action.archived);
+		if (action.kind === "pin") return await pinSession(actions, action.target);
+		if (action.kind === "project") return await projectChange(actions, action.project, action.action);
+		return true;
+	} catch {
+		return false;
+	}
 }

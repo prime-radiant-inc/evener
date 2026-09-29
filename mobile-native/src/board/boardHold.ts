@@ -15,10 +15,13 @@ import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import type { ProjectMenuAction } from "./projectMenu";
 
-/** The row's turn_ended_at when you pressed: when the session's previous
- * turn ended, or null while none has. */
+/** The turn you saw when you pressed: the row's turn_ended_at (when the
+ * session's previous turn ended, or null while none has), and whether a turn
+ * was running. The stamp alone can't tell a turn that began since a press on
+ * a session at rest: no turn has ended in between. */
 export interface TurnSeen {
 	turnEndedAt: string | null;
+	running: boolean;
 }
 
 export type HeldAction =
@@ -89,6 +92,22 @@ export function waitingLine(records: readonly HeldRecord[], ref: string): string
 	return latest ? `${heldVerb(latest.action)} waits for the connection` : null;
 }
 
+/** What a project will be once the changes held for it go: a held Pin to
+ * top or Unpin sets its favorite, a held Archive or Unarchive its archived
+ * state, and neither is set when nothing is held. */
+export function heldProjectState(
+	records: readonly HeldRecord[],
+	key: string,
+): { favorite?: boolean; archived?: boolean } {
+	const state: { favorite?: boolean; archived?: boolean } = {};
+	for (const { action } of records) {
+		if (action.kind !== "project" || action.project.key !== key) continue;
+		if (action.action === "pin" || action.action === "unpin") state.favorite = action.action === "pin";
+		else state.archived = action.action === "archive";
+	}
+	return state;
+}
+
 /** What waits for one session, in the order held. */
 export function heldFor(records: readonly HeldRecord[], ref: string): HeldRecord[] {
 	return records.filter((record) => heldRef(record.action) === ref);
@@ -102,7 +121,7 @@ export function heldFor(records: readonly HeldRecord[], ref: string): HeldRecord
  * clock: both absent means no turn has ended since the daemon began
  * stamping, and the running turn is the one seen. */
 export function turnStillSeen(seen: TurnSeen, thread: Pick<EvenerThread, "activeTurnId" | "lastTurnEndedAt">): boolean {
-	if (!thread.activeTurnId) return false;
+	if (!thread.activeTurnId || !seen.running) return false;
 	const seenEnd = seen.turnEndedAt === null ? null : Date.parse(seen.turnEndedAt);
 	return (thread.lastTurnEndedAt ?? null) === seenEnd;
 }
@@ -138,7 +157,8 @@ function isAction(value: unknown): value is HeldAction {
 				text(value.ref) &&
 				text(value.title) &&
 				isPlainObject(value.seen) &&
-				(value.seen.turnEndedAt === null || text(value.seen.turnEndedAt))
+				(value.seen.turnEndedAt === null || text(value.seen.turnEndedAt)) &&
+				typeof value.seen.running === "boolean"
 			);
 		default:
 			return false;

@@ -2927,6 +2927,37 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 	act(() => tree.unmount());
 });
 
+it("reflects a project change held offline in its menu and on its row, and its opposite cancels it (phase 6 ruling 18)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [sheet, choose] = openMenu();
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	const [held, undo] = openMenu();
+	expect(held.options).toEqual(["Unpin", "Archive project", "Cancel"]);
+	act(() => undo(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
 it("offers no menu for a project another host shares", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3600,7 +3631,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 						kind: "shutDown",
 						ref: `local:${OTHER_SESSION_ID}`,
 						title: "Write changelog",
-						seen: { turnEndedAt: null },
+						seen: { turnEndedAt: null, running: false },
 					},
 				},
 			]),
@@ -3622,7 +3653,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 				kind: "shutDown",
 				ref: `local:${OTHER_SESSION_ID}`,
 				title: "Write changelog",
-				seen: { turnEndedAt: null },
+				seen: { turnEndedAt: null, running: false },
 			},
 		});
 		harness.kv.set(

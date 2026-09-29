@@ -20,7 +20,7 @@ const stop = (ref: string, turnEndedAt: string | null = null): HeldAction => ({
 	kind: "stop",
 	ref,
 	title: `Session ${ref}`,
-	seen: { turnEndedAt },
+	seen: { turnEndedAt, running: true },
 });
 const kinds = (hold: BoardHold) =>
 	hold.getSnapshot().map((record) => {
@@ -126,16 +126,34 @@ describe("a held Stop's turn (spec 7.5)", () => {
 	const ended = "2026-09-28T10:00:00.000Z";
 	const stamp = Date.parse(ended);
 	it.each([
-		["the turn seen still runs", { turnEndedAt: ended }, { activeTurnId: "t2", lastTurnEndedAt: stamp }, true],
-		["a newer turn runs", { turnEndedAt: ended }, { activeTurnId: "t3", lastTurnEndedAt: stamp + 60_000 }, false],
-		["the first turn still runs", { turnEndedAt: null }, { activeTurnId: "t1" }, true],
+		[
+			"the turn seen still runs",
+			{ turnEndedAt: ended, running: true },
+			{ activeTurnId: "t2", lastTurnEndedAt: stamp },
+			true,
+		],
+		[
+			"a newer turn runs",
+			{ turnEndedAt: ended, running: true },
+			{ activeTurnId: "t3", lastTurnEndedAt: stamp + 60_000 },
+			false,
+		],
+		["the first turn still runs", { turnEndedAt: null, running: true }, { activeTurnId: "t1" }, true],
 		[
 			"a turn ended since a first turn was seen",
-			{ turnEndedAt: null },
+			{ turnEndedAt: null, running: true },
 			{ activeTurnId: "t2", lastTurnEndedAt: stamp },
 			false,
 		],
-		["no turn runs", { turnEndedAt: ended }, { lastTurnEndedAt: stamp }, false],
+		// Seen at rest, and a turn began since: no turn has ended, so the stamp
+		// alone can't tell; the press remembers that nothing ran.
+		[
+			"a turn began since the session was seen at rest",
+			{ turnEndedAt: ended, running: false },
+			{ activeTurnId: "t3", lastTurnEndedAt: stamp },
+			false,
+		],
+		["no turn runs", { turnEndedAt: ended, running: true }, { lastTurnEndedAt: stamp }, false],
 	] as const)("%s", (_name, seen, thread, expected) => {
 		expect(turnStillSeen(seen, thread)).toBe(expected);
 	});

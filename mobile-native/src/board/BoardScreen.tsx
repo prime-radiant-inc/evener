@@ -75,7 +75,7 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
-import { type HeldAction, heldFor, heldVerb, waitingLine } from "./boardHold";
+import { type HeldAction, heldFor, heldProjectState, heldVerb, waitingLine } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
@@ -311,13 +311,18 @@ function Board({
 			}),
 	);
 	useEffect(() => () => replay.dispose(), [replay]);
+	// Whether the connection a replay runs on is still live, asked of the
+	// client itself: a request lost to a drop fails before any render could
+	// say so, and must stay held rather than read as refused.
+	const liveOn = (on: typeof actionsClient) => () => on?.state === "ready" && clientNow.current === on;
 	useEffect(() => {
-		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, () => liveNow.current);
+		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
 	}, [replay, actionsClient, held]);
 	const organizationNow = useRef(organization);
 	organizationNow.current = organization;
 	useEffect(() => {
-		if (focused && organization.ready && held.length) void replay.organize(organizationNow.current);
+		if (focused && organization.ready && held.length)
+			void replay.organize(organizationNow.current, liveOn(clientNow.current));
 	}, [replay, focused, organization.ready, held]);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
@@ -845,11 +850,21 @@ function Board({
 			);
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
-		const actions = projectMenuActions(project, {
-			connected,
-			organizationReady: organization.ready,
-			archived: section === "archived",
-		});
+		// The menu offers what the project will be once what's held goes, so a
+		// held Pin to top offers Unpin, which cancels it.
+		const pending = heldProjectState(held, project.key);
+		const actions = projectMenuActions(
+			{
+				...project,
+				favorite: pending.favorite ?? project.favorite,
+				is_archived: pending.archived ?? project.is_archived,
+			},
+			{
+				connected,
+				organizationReady: organization.ready,
+				archived: pending.archived ?? section === "archived",
+			},
+		);
 		return actions.length
 			? () =>
 					openProjectMenu(
@@ -880,7 +895,11 @@ function Board({
 					if ("fold" in item) setFolded(item.fold, !item.folded);
 				}}
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
-				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
+				changing={
+					item.kind === "project" &&
+					(journalHoldsProject(organization, item.project.key) ||
+						Object.keys(heldProjectState(held, item.project.key)).length > 0)
+				}
 			/>
 		);
 		if (item.key !== revealKey) return row;
@@ -1339,9 +1358,9 @@ function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
 }
 
 /** The turn a Stop or Shut down names: the row's turn_ended_at as you saw
- * it (boardHold.ts's turnStillSeen). */
+ * it, and whether a turn was running (boardHold.ts's turnStillSeen). */
 function seenTurn(row: NavigationSessionSummary) {
-	return { turnEndedAt: row.turn_ended_at ?? null };
+	return { turnEndedAt: row.turn_ended_at ?? null, running: row.state === "active" };
 }
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the

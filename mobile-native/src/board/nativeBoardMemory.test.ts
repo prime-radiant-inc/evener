@@ -43,7 +43,7 @@ describe("the Board's memory per hub", () => {
 		const searches = recentSearches("hub-c");
 		const hold = boardHold("hub-c");
 		markers.markUnread("local:a");
-		hold.hold({ kind: "stop", ref: "local:a", title: "A", seen: { turnEndedAt: null } }, 1);
+		hold.hold({ kind: "stop", ref: "local:a", title: "A", seen: { turnEndedAt: null, running: true } }, 1);
 		sections.setFolded("idle", false);
 		choice.set("host-project");
 		searches.add("fix");
@@ -56,7 +56,7 @@ describe("the Board's memory per hub", () => {
 		expect([...kv.keys()].filter((key) => key.endsWith(".hub-c"))).toEqual([]);
 		// A replay still answering finds the old hold empty and inert.
 		expect(hold.getSnapshot()).toEqual([]);
-		hold.hold({ kind: "stop", ref: "local:b", title: "B", seen: { turnEndedAt: null } }, 2);
+		hold.hold({ kind: "stop", ref: "local:b", title: "B", seen: { turnEndedAt: null, running: true } }, 2);
 		expect(kv.has("evener.native.board-hold.hub-c")).toBe(false);
 		expect(boardHold("hub-c")).not.toBe(hold);
 		expect(boardHold("hub-c").getSnapshot()).toEqual([]);

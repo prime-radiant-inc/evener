@@ -55,7 +55,7 @@ const stopOf = (ref: string, turnEndedAt: string | null = ended): HeldAction => 
 	kind: "stop",
 	ref,
 	title: ref,
-	seen: { turnEndedAt },
+	seen: { turnEndedAt, running: true },
 });
 
 it("sends what goes at once in the order held, and settles each", async () => {
@@ -64,7 +64,7 @@ it("sends what goes at once in the order held, and settles each", async () => {
 	client.on("evener/thread/name/set", () => ({}) as never);
 	hold.hold({ kind: "rename", ref: "a", title: "A", name: "Renamed" }, 1);
 	hold.hold(stopOf("b"), 2);
-	hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended } }, 3);
+	hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 3);
 	// Organization changes wait for the Board; they stay held here.
 	hold.hold({ kind: "archive", ref: "d", target: { kind: "session", id: "d" }, archived: true }, 4);
 	await replay.sendImmediate(client, isLive);
@@ -84,16 +84,24 @@ it("drops a held Stop whose turn ended, and says so", async () => {
 it("shuts down only when no newer turn runs than the one seen", async () => {
 	const newer = setup({ activeTurnId: "turn-3", lastTurnEndedAt: stamp + 60_000 });
 	newer.client.on("thread/shutdown", () => ({}) as never);
-	newer.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended } }, 1);
+	newer.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 1);
 	await newer.replay.sendImmediate(newer.client, newer.isLive);
 	expect(methods(newer.client)).toEqual([]);
 	expect(newer.toasts).toEqual(["A newer turn started, so the session wasn't shut down"]);
 	expect(newer.hold.getSnapshot()).toEqual([]);
 
+	// Seen at rest, and a turn began since: that turn is work nobody saw.
+	const began = setup({ activeTurnId: "turn-3", lastTurnEndedAt: stamp });
+	began.client.on("thread/shutdown", () => ({}) as never);
+	began.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: false } }, 1);
+	await began.replay.sendImmediate(began.client, began.isLive);
+	expect(methods(began.client)).toEqual([]);
+	expect(began.toasts).toEqual(["A newer turn started, so the session wasn't shut down"]);
+
 	// Nothing running: shutting down stops nothing the person didn't see.
 	const resting = setup({ lastTurnEndedAt: stamp + 60_000 });
 	resting.client.on("thread/shutdown", () => ({}) as never);
-	resting.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended } }, 1);
+	resting.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 1);
 	await resting.replay.sendImmediate(resting.client, resting.isLive);
 	expect(methods(resting.client)).toEqual(["thread/shutdown"]);
 	expect(resting.toasts).toEqual(["Session shut down"]);
@@ -116,7 +124,7 @@ it("settles a request the hub refused, with the online action's toast, and keeps
 	});
 	lost.client.on("thread/shutdown", () => ({}) as never);
 	lost.hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
-	lost.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended } }, 2);
+	lost.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 2);
 	await lost.replay.sendImmediate(lost.client, lost.isLive);
 	expect(lost.toasts).toEqual([]);
 	expect(lost.hold.getSnapshot().map((record) => record.action.kind)).toEqual(["rename", "shutDown"]);
@@ -133,8 +141,8 @@ it("ends when its hub is forgotten mid-replay, sending nothing more", async () =
 				answer = () => resolve({} as never);
 			}) as never,
 	);
-	hold.hold({ kind: "shutDown", ref: "c1", title: "C1", seen: { turnEndedAt: ended } }, 1);
-	hold.hold({ kind: "shutDown", ref: "c2", title: "C2", seen: { turnEndedAt: ended } }, 2);
+	hold.hold({ kind: "shutDown", ref: "c1", title: "C1", seen: { turnEndedAt: ended, running: true } }, 1);
+	hold.hold({ kind: "shutDown", ref: "c2", title: "C2", seen: { turnEndedAt: ended, running: true } }, 2);
 	const running = replay.sendImmediate(client, isLive);
 	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/shutdown"]));
 	hold.forget();
@@ -148,4 +156,45 @@ it("runs one replay at a time", async () => {
 	hold.hold(stopOf("b"), 1);
 	await Promise.all([replay.sendImmediate(client, isLive), replay.sendImmediate(client, isLive)]);
 	expect(stops).toEqual(["b"]);
+});
+
+it("keeps a request whose connection dropped as it failed, deciding from the client itself", async () => {
+	const { hold, client, toasts, replay } = setup();
+	client.on("evener/thread/name/set", () => {
+		// The socket closes: the client says so before the request fails, and
+		// before any render could.
+		client.emitStateChange("reconnecting");
+		throw new Error("socket closed");
+	});
+	hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
+	await replay.sendImmediate(client, () => client.state === "ready");
+	expect(toasts).toEqual([]);
+	expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["rename"]);
+});
+
+it("runs a replay asked for while one was finishing, on the newer connection", async () => {
+	const { hold, replay } = setup();
+	const old = new FakeClient("ready");
+	let fail: () => void = () => {};
+	let oldLive = true;
+	old.on(
+		"evener/thread/name/set",
+		() =>
+			new Promise((_, reject) => {
+				fail = () => {
+					oldLive = false;
+					reject(new Error("socket closed"));
+				};
+			}) as never,
+	);
+	const fresh = new FakeClient("ready");
+	fresh.on("evener/thread/name/set", () => ({}) as never);
+	hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
+	const first = replay.sendImmediate(old, () => oldLive);
+	await vi.waitFor(() => expect(methods(old)).toEqual(["evener/thread/name/set"]));
+	const second = replay.sendImmediate(fresh, () => true);
+	fail();
+	await Promise.all([first, second]);
+	expect(methods(fresh)).toEqual(["evener/thread/name/set"]);
+	expect(hold.getSnapshot()).toEqual([]);
 });
