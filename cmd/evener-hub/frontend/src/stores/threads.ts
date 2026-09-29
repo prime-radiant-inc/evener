@@ -2582,9 +2582,24 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
-      // A client closed for good can never become ready again, so surface at
-      // once rather than waiting out the bound.
-      if (target.state === "closed" || target.terminalReason !== null) throw mapConflict(err);
+      // A failed client that has closed for good can never become ready again,
+      // but a manual retry (ConnectionBanner) may already have wired a healthy
+      // replacement: retry against that replacement, and surface at once only
+      // when there is no ready client to reach - rather than waiting out the
+      // bound. requireClient() is rewire-aware, so it reads the current client,
+      // not the failed one.
+      if (target.state === "closed" || target.terminalReason !== null) {
+        let replacement: AppwireClientLike | null = null;
+        try {
+          const current = requireClient();
+          if (current.state === "ready") replacement = current;
+        } catch {
+          replacement = null;
+        }
+        if (replacement === null) throw mapConflict(err);
+        target = replacement;
+        continue;
+      }
       try {
         target = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
       } catch {
