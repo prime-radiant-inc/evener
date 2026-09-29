@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -393,6 +394,18 @@ func mustWrite(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A freshly written executable can fail execve with ETXTBSY ("text file
+	// busy"): os.WriteFile holds the file open for writing, and if a sibling
+	// parallel test forks for its own os/exec during that window, the forked
+	// child inherits the still-open write fd, so execve of this file is refused
+	// until that child execs. syscall.ForkLock is the standard guard (Go issue
+	// #22315): fork/exec takes it for writing, so holding it for reading across
+	// the whole write excludes any concurrent fork; once the fd is closed no
+	// child can inherit it. Every fixture write lands here, so taking the lock
+	// on every write forecloses the hazard by construction rather than leaning
+	// on test ordering.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
