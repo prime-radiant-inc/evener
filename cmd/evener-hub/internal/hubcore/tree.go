@@ -2,8 +2,6 @@ package hubcore
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -139,7 +137,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 
 // FavoriteCandidates returns every uncapped, top-level session row that is
 // eligible for the pinned tier. It deliberately reads the retained full tier
-// slices, while excluding archived projects and synthetic cluster rows.
+// slices, while excluding archived projects.
 func (t Tree) FavoriteCandidates() []TreeNode {
 	var out []TreeNode
 	seen := make(map[string]struct{})
@@ -159,15 +157,8 @@ func (t Tree) FavoriteCandidates() []TreeNode {
 	for _, project := range t.Projects {
 		for _, rows := range [][]TreeNode{project.allCurrent, project.allRecent} {
 			for _, node := range rows {
-				switch node.Kind {
-				case "session", "fork":
+				if node.Kind == "session" || node.Kind == "fork" {
 					appendNode(node)
-				case "cluster":
-					for _, child := range node.Children {
-						if child.Kind == "session" || child.Kind == "fork" {
-							appendNode(child)
-						}
-					}
 				}
 			}
 		}
@@ -177,9 +168,8 @@ func (t Tree) FavoriteCandidates() []TreeNode {
 
 // PinCandidates returns every uncapped, authoritative top-level session that
 // may populate a named pin section. Unlike FavoriteCandidates, named pins stay
-// reachable when their session or whole project is archived. Synthetic cluster
-// rows and fork rows are excluded, while real session children grouped beneath
-// a synthetic cluster remain candidates under their canonical identities.
+// reachable when their session or whole project is archived. Fork rows are
+// excluded.
 func (t Tree) PinCandidates() []TreeNode {
 	var out []TreeNode
 	seen := make(map[string]struct{})
@@ -195,50 +185,11 @@ func (t Tree) PinCandidates() []TreeNode {
 	}
 	appendRows := func(rows []TreeNode) {
 		for _, node := range rows {
-			switch node.Kind {
-			case "session":
-				appendNode(node)
-			case "cluster":
-				for _, child := range node.Children {
-					appendNode(child)
-				}
-			}
+			appendNode(node)
 		}
 	}
 	for _, node := range t.favoriteLive {
 		appendNode(node)
-	}
-	appendProject := func(project TreeProject) {
-		appendRows(project.allCurrent)
-		appendRows(project.allRecent)
-		appendRows(project.allArchived)
-	}
-	for _, project := range t.Projects {
-		appendProject(project)
-	}
-	for _, project := range t.ArchivedProjects {
-		appendProject(project)
-	}
-	return out
-}
-
-// FavoriteNodeAuthorities exposes node kinds from the uncapped tree rows so
-// read-time favorite classification can recognize current synthetic clusters.
-// The caller supplies source and lineage completeness for session identities;
-// these node facts are only about the current presentation classification.
-func (t Tree) FavoriteNodeAuthorities() []FavoriteNodeAuthority {
-	var out []FavoriteNodeAuthority
-	appendRows := func(rows []TreeNode) {
-		for _, node := range rows {
-			if node.ID == "" {
-				continue
-			}
-			out = append(out, FavoriteNodeAuthority{
-				ID:      node.ID,
-				Kind:    FavoriteNodeKind(node.Kind),
-				Quality: FavoriteAuthorityComplete,
-			})
-		}
 	}
 	appendProject := func(project TreeProject) {
 		appendRows(project.allCurrent)
@@ -442,8 +393,6 @@ func classifySession(decision *bool, lastActivity, now time.Time) string {
 // Kind:
 //   - "session"  – top-level session
 //   - "fork"     – branched session (⎇ glyph, same indent as session, dim)
-//   - "cluster"  – a fold of N same-titled idle sessions (mockup #10/#C); the
-//     individual runs are the cluster's Children and ClusterCount is N.
 type TreeNode struct {
 	ID string
 	// Ref is the canonical navigation identity advertised by a live daemon. It
@@ -487,9 +436,8 @@ type TreeNode struct {
 	// legitimately "active" with nothing in its history yet. Keeping them apart
 	// is also what leaves rollup state, AttentionRank and NeedsYouBand
 	// untouched — none of them gains a case to learn.
-	Dormant      bool
-	Kind         string // "session" | "fork" | "cluster"
-	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
+	Dormant bool
+	Kind    string // "session" | "fork"
 	// RunningJobs and CompletedJobs are the non-delegate jobs owned by this
 	// session. Delegates are counted in Subagents, never listed as rows.
 	RunningJobs   []appwire.EvenerJobInfo
@@ -1484,11 +1432,11 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 		}
 
-		// Split the project's (clustered) rows into activity tiers. A session's
+		// Split the project's rows into activity tiers. A session's
 		// tier is its effective-archived classification: a user decision overrides
 		// the auto rule, otherwise inactivity > 2 weeks auto-archives.
 		var current, recent, archived []TreeNode
-		for _, row := range clusterRepeatedTitles(sessions) {
+		for _, row := range sessions {
 			switch classifySession(decisionFor(decisions, row.ID), row.UpdatedAt, now) {
 			case "current":
 				current = append(current, row)
@@ -1791,7 +1739,7 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 
 // decisionFor returns the explicit archive decision for a session ID as a
 // *bool (nil when there is no decision), the shape classifySession wants. An
-// empty ID (e.g. a synthesized cluster row) never has a decision.
+// empty ID never has a decision.
 func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
 	if id == "" {
 		return nil
@@ -1885,91 +1833,6 @@ func sortedDecisionSources(sources map[string]bool) []string {
 	return out
 }
 
-// clusterRepeatedTitles folds same-titled idle/ended sessions into a single
-// "cluster" node so a project that ran the same one-shot prompt N times
-// ("describe this image ×5") collapses to one row. A cluster's members become
-// its Children and ClusterCount is N. A title only folds when EVERY session
-// bearing it is clusterable: if any same-titled session is live / needs-you /
-// has children, none of them cluster, because hiding live signal behind a fold
-// defeats the sidebar. A title needs at least clusterMin members to fold.
-//
-// The cluster row takes the slot of the title's first (most-recent) appearance;
-// the input recency order is otherwise preserved.
-func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
-	const clusterMin = 3
-
-	// Tally per-title clusterable counts and whether the title is foldable
-	// (no non-clusterable member shares it).
-	clusterableByTitle := make(map[string]int)
-	foldable := make(map[string]bool)
-	for _, s := range sessions {
-		if clusterable(s) {
-			if _, seen := foldable[s.Title]; !seen {
-				foldable[s.Title] = true
-			}
-			clusterableByTitle[s.Title]++
-		} else {
-			foldable[s.Title] = false
-		}
-	}
-
-	out := make([]TreeNode, 0, len(sessions))
-	emitted := make(map[string]bool)
-	for _, s := range sessions {
-		title := s.Title
-		if !clusterable(s) || !foldable[title] || clusterableByTitle[title] < clusterMin {
-			out = append(out, s)
-			continue
-		}
-		if emitted[title] {
-			continue // members other than the first are folded into the cluster
-		}
-		emitted[title] = true
-		members := make([]TreeNode, 0, clusterableByTitle[title])
-		for _, m := range sessions {
-			if m.Title == title && clusterable(m) {
-				members = append(members, m)
-			}
-		}
-		out = append(out, TreeNode{
-			ID:           clusterID(s.Project, title),
-			Title:        title,
-			Project:      s.Project,
-			State:        "ended",
-			Kind:         "cluster",
-			ClusterCount: len(members),
-			UpdatedAt:    s.UpdatedAt, // first (most-recent) member carries recency
-			Age:          s.Age,
-			Children:     members,
-		})
-	}
-	return out
-}
-
-// clusterID is the stable synthetic id for a repeated-title cluster, scoped by
-// project so equal titles in different projects never collide, and never empty
-// (an empty id renders as an empty ref and collides all clusters in a project
-// at RowID "project:<key>:" — round-2 A7/B4).
-func clusterID(project, title string) string {
-	sum := sha256.Sum256([]byte(project + "\x00" + title))
-	return "cluster:" + hex.EncodeToString(sum[:4])
-}
-
-// clusterable reports whether a session row may be folded into a repeated-title
-// cluster: a plain ended session with no children, jobs or watches of its own.
-// A live session never folds, idle included: clusterRepeatedTitles keeps live
-// signal out of a fold, and a live session that finished a turn nobody has
-// seen carries the Board's unseen mark (S4).
-func clusterable(n TreeNode) bool {
-	if n.Kind != "session" {
-		return false
-	}
-	if len(n.Children) > 0 || len(n.RunningJobs) > 0 || len(n.CompletedJobs) > 0 || len(n.Watches) > 0 {
-		return false
-	}
-	return n.State == "ended"
-}
-
 func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) bool {
 	ma, aHasMeta := metaMap[a.ID]
 	mb, bHasMeta := metaMap[b.ID]
@@ -1983,8 +1846,5 @@ func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap 
 			return liveEntryLess(la, lb)
 		}
 	}
-	return sessionOrderLess(
-		sessionOrderKey{updated: a.UpdatedAt, created: a.CreatedAt, title: a.Title, id: a.ID},
-		sessionOrderKey{updated: b.UpdatedAt, created: b.CreatedAt, title: b.Title, id: b.ID},
-	)
+	return TreeNodeLess(a, b)
 }

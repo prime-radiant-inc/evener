@@ -112,7 +112,7 @@ describe("OAuthRedirectDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/auth/login/complete")).toHaveLength(0);
     // The refusal is named for the change it is, never in the store's own words
     // and never as a failed sign-in.
-    expect(screen.getByRole("alert").textContent).toContain("connection was replaced");
+    expect(screen.getByRole("alert").textContent).toContain("connection changed");
     expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
     expect(screen.queryByText(/Sign-in failed/)).toBeNull();
     expect(onSuccess).not.toHaveBeenCalled();

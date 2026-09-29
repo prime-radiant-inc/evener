@@ -181,16 +181,6 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 		}
 	});
 
-	it("places a cluster under its newest member's host", () => {
-		const cluster = session("cluster:x", "cluster", {
-			kind: "cluster",
-			children: [session("paradise-park:m", "paradise-park")],
-		});
-		// The project names no sources, so the one row it has decides its host.
-		const list = items({ projects: [project("docs")], pages: new Map([["docs", pages([cluster])]]) });
-		expect(outline(list)).toEqual(["host paradise-park", "  project docs", "    Today", "    cluster:x"]);
-	});
-
 	it("keeps a host's archived rows in that host's copy", () => {
 		const list = items({
 			projects: [evener],
