@@ -41,8 +41,47 @@ it.each([
 	expect(await locateSession(client, "child")).toMatchObject({
 		params,
 		ref: "child",
+		revealRef: "child",
 	});
 });
+const locationClient = (fields: Record<string, unknown>) =>
+	({
+		request: async () => {
+			const v2 = wireV2({ representationVersion: 2, resource: "location", ref: "child" } as never, {
+				ref: "child",
+				session: { ref: "child", project: "Project" },
+				...fields,
+			});
+			return {
+				...v2,
+				data: {
+					...(v2.data as object),
+					metadata: { ...(v2.data as { metadata: object }).metadata, ...fields },
+				},
+			};
+		},
+		onNotification: () => () => {},
+	}) as ConversationClientLike;
+it.each([
+	["its root", { top_level: false, top_level_ref: "root", project_key: "p", tier: "current" }, "root"],
+	[
+		"a cluster row",
+		{ top_level: false, top_level_ref: "cluster-row", project_key: "p", tier: "recent" },
+		"cluster-row",
+	],
+])("reveals a subagent by %s, not by the subagent itself", async (_name, fields, revealRef) => {
+	expect(await locateSession(locationClient(fields), "child")).toMatchObject({ ref: "child", revealRef });
+});
+it.each(["local:orphan", "host:remote-subagent"])(
+	"shows the existing could-not-be-located message for a gone ref: %s",
+	async (ref) => {
+		const client = {
+			request: async () => ({ status: "gone", generationId: "g", revision: 1, etag: '"one"' }),
+			onNotification: () => () => {},
+		} as ConversationClientLike;
+		await expect(locateSession(client, ref)).rejects.toThrow("This session could not be located. Try again.");
+	},
+);
 it.each([
 	{ status: "missing" },
 	{ status: "ok", data: { ref: "other", session: { ref: "other" } } },

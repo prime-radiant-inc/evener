@@ -12,7 +12,16 @@ import {
 } from "react-native";
 import type { Palette } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
+import {
+	bandOf,
+	type ClassifiedRow,
+	lastLine,
+	stateWord,
+	subagentChip,
+	type Usual,
+	type WhyLine,
+	whyLine,
+} from "./attention";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
 
@@ -149,9 +158,10 @@ export function BoardRow({
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
+	const chip = subagentChip(row);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, waiting ?? reason, age && spokenAge(age)].filter(Boolean).join(", ");
+	const label = [row.title, word, waiting ?? reason, chip?.text, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -212,8 +222,9 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age ? (
+					{hasDraft || age || chip ? (
 						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
+							<SubagentChip session={row} />
 							{hasDraft ? (
 								<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
 									<Text
@@ -256,6 +267,44 @@ export function BoardRow({
 		</Pressable>
 	);
 }
+
+/** The subagent count chip on a live root row (S3). It never takes the Needs
+ * you color (D2): a failure reads in the danger ink, not the attention ink. */
+export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const chip = subagentChip(session);
+	if (!chip) return null;
+	return (
+		<View
+			testID="subagent-chip"
+			accessibilityLabel={chip.text}
+			style={{
+				backgroundColor: chip.failed ? palette.dangerBg : palette.inset,
+				borderRadius: 4,
+				paddingHorizontal: 4,
+			}}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					fontSize: 11 * scale,
+					lineHeight: 13 * scale,
+					fontWeight: "600",
+					color: chip.failed ? palette.dangerInk : palette.inkMid,
+				}}
+			>
+				{chip.text}
+			</Text>
+		</View>
+	);
+}
+
+/** A session row's subagent chip, for the lists that render their own rows
+ * (Projects, Project and Pin sections) rather than a BoardRow. */
+export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null => (
+	<SubagentChip session={session} />
+);
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):

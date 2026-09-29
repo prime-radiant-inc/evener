@@ -1,6 +1,15 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	type ReactElement,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
@@ -19,6 +28,7 @@ import {
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { sessionSubagentChip } from "./board/BoardRow";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -60,10 +70,13 @@ export function PageList<T>({
 	organization,
 	organizationHubId,
 	revealRef,
+	chip,
 }: {
 	header?: ReactElement;
 	organizationHubId?: string;
 	revealRef?: string;
+	/** A row's trailing chip, beside its title (the subagent count). */
+	chip?: (row: T) => ReactNode;
 	pages: NavigationPages<T>;
 	ready: boolean;
 	rowKey: (row: T) => string;
@@ -342,7 +355,14 @@ export function PageList<T>({
 								onPress={() => open(item)}
 								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
 							>
-								<Copy>{title(item)}</Copy>
+								{chip?.(item) ? (
+									<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+										<Copy>{title(item)}</Copy>
+										{chip(item)}
+									</View>
+								) : (
+									<Copy>{title(item)}</Copy>
+								)}
 								<Copy muted>{detail(item)}</Copy>
 							</Pressable>
 							{actions && organization(item, depth) ? (
@@ -611,7 +631,8 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 								}
 					}
 					childRows={(row) => row.children ?? []}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					omitted={(row) => row.omitted_descendants ?? 0}
+					chip={sessionSubagentChip}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) =>
 						`${row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state}${row.branch ? ` · ${row.branch}` : ""}`
@@ -652,15 +673,17 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					{belongs ? activeProfile?.name : "Disconnected hub"}
 					{location.params.tier ? ` · ${location.params.tier}` : ""}
 				</Copy>
+				{location.revealRef !== location.ref ? <Copy muted>Showing the parent of this subagent</Copy> : null}
 			</View>
 			{pages ? (
 				<PageList
 					pages={pages}
 					ready={state === "ready"}
-					revealRef={location.ref}
+					revealRef={location.revealRef}
 					rowKey={sessionRef}
 					childRows={sessionChildren}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					omitted={(row) => row.omitted_descendants ?? 0}
+					chip={sessionSubagentChip}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty="No sessions in this location."

@@ -11,6 +11,7 @@ import {
 	liveBands,
 	liveSummary,
 	stateWord,
+	subagentChip,
 	summaryText,
 	taskLine,
 	usualPlace,
@@ -313,26 +314,43 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	});
 
 	it("says what a working session is doing with what the row carries", () => {
-		const one = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		const one = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		expect(workingActivity(one)).toBe("Waiting on 1 subagent");
-		const three = row("s", {
-			state: "active",
-			children: [
-				row("c1", { state: "active" }),
-				row("c2", { state: "active" }),
-				row("c3", { state: "active" }),
-				row("c4", { state: "idle" }),
-			],
-		});
+		const three = row("s", { state: "active", subagents: { running: 3, failed: 0, done: 0 } });
 		expect(workingActivity(three)).toBe("Waiting on 3 subagents");
-		expect(workingActivity({ ...three, more_subagents: 12 })).toBe("Waiting on 3 subagents (+12 more)");
 		const running = row("s", {
 			state: "active",
 			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
 		});
 		expect(workingActivity(running)).toBe("Running go test ./agent/...");
+		// A settled tally (no running) leaves the command or Working to say it.
+		expect(workingActivity(row("s", { state: "active", subagents: { running: 0, failed: 1, done: 11 } }))).toBe(
+			"Working",
+		);
 		expect(workingActivity(row("s", { state: "active" }))).toBe("Working");
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
+	});
+
+	it("builds the subagent chip from a live root's tally", () => {
+		expect(subagentChip(row("s", { state: "active" }))).toBeNull();
+		// Only a live root carries a tally (D6): a past row's shows nothing.
+		expect(
+			subagentChip(row("s", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } })),
+		).toBeNull();
+		expect(subagentChip(row("s", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }))).toEqual({
+			text: "2 running",
+			failed: false,
+		});
+		expect(subagentChip(row("s", { state: "active", subagents: { running: 0, failed: 3, done: 4 } }))).toEqual({
+			text: "3 failed",
+			failed: true,
+		});
+		expect(subagentChip(row("s", { state: "active", subagents: { running: 2, failed: 3, done: 1 } }))).toEqual({
+			text: "2 running · 3 failed",
+			failed: true,
+		});
+		// A done-only tally is history, as the web rail's chip reads it too.
+		expect(subagentChip(row("s", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }))).toBeNull();
 	});
 });
 
@@ -340,13 +358,12 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 	const minutes = [0, 0, 0, 0, 0, 0, 0];
 	const working = row("s", { state: "active" });
 
-	it("trusts the activity read's subagent tally over the row's own children", () => {
-		// The row's children say nothing is running, but the activity read
-		// (every depth, S3's eventual replacement for the children guess) says
-		// otherwise - and activity wins.
-		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+	it("trusts the activity read's subagent tally over the row's own tally", () => {
+		// The row's own tally is a fallback the read replaces: the read (every
+		// depth, S3) says what is really running, and activity wins.
+		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		const activity = { ref: "s", minutes, runningSubagents: 3 };
-		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({
+		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual({
 			text: "Waiting on 3 subagents",
 		});
 		expect(whyLine({ row: working, state: "working" }, { ...activity, runningSubagents: 1 }, 0)).toEqual({
@@ -384,17 +401,17 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("never lets a stale children-based subagent guess override an activity read of zero", () => {
-		// Without S5 data, this row would read "Waiting on 1 subagent" (children
-		// count) - once a real read says zero are running, that must win.
-		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+	it("never lets a stale own-tally subagent guess override an activity read of zero", () => {
+		// Without S5 data, this row would read "Waiting on 1 subagent" (its own
+		// tally) - once a real read says zero are running, that must win.
+		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		const activity = { ref: "s", minutes, runningSubagents: 0 };
-		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual({ text: "Working" });
 	});
 
-	it("keeps the pre-S5 fallback (the row's own children and jobs) when there is no activity read at all", () => {
-		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
-		expect(whyLine({ row: withChild, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
+	it("keeps the pre-S5 fallback (the row's own tally and jobs) when there is no activity read at all", () => {
+		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
+		expect(whyLine({ row: stale, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
 	});
 });
 

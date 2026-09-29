@@ -210,17 +210,38 @@ describe("a Board row (spec 7.2)", () => {
 		expect(unread.root.findByType(PulseMeter).props.perMinute).toBeUndefined();
 	});
 
-	it("says what a working row's activity read says in place of the children guess", () => {
+	it("says what a working row's activity read says in place of the row's own tally", () => {
 		const busy = item("working", {
 			state: "active",
-			children: [row({ ref: "local:child", state: "active" })],
-			more_subagents: 4,
+			subagents: { running: 1, failed: 0, done: 0 },
 		});
 		const guessed = mount({ item: busy });
-		expect(textWith(guessed, "Waiting on 1 subagent (+4 more)")).toHaveLength(1);
+		expect(textWith(guessed, "Waiting on 1 subagent")).toHaveLength(1);
 		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
 		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
-		expect(textWith(read, "Waiting on 1 subagent (+4 more)")).toEqual([]);
+		expect(textWith(read, "Waiting on 1 subagent")).toEqual([]);
+	});
+
+	it("chips a live root's subagent tally, with a failure in the danger ink", () => {
+		const running = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }),
+		});
+		expect(textWith(running, "2 running")).toHaveLength(1);
+		expect(running.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+		expect(pressable(running).props.accessibilityLabel).toContain("2 running");
+
+		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
+		const chipText = textWith(failed, "3 failed")[0];
+		expect(styleOf(chipText)).toMatchObject({ color: palette.dangerInk });
+
+		// A done-only tally is history (as the web rail's chip reads it), and a
+		// past row carries no tally at all (D6): neither shows a chip.
+		for (const settled of [
+			item("working", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }),
+			item("working", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } }),
+		]) {
+			expect(mount({ item: settled }).root.findAll((node) => node.props.testID === "subagent-chip")).toEqual([]);
+		}
 	});
 
 	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
@@ -277,11 +298,11 @@ describe("a Board row (spec 7.2)", () => {
 			item: item("working", {
 				state: "active",
 				updated_at: minutesAgo(60),
-				children: [row({ ref: "local:child", state: "active" })],
+				subagents: { running: 1, failed: 0, done: 0 },
 			}),
 		});
 		expect(pressable(working).props.accessibilityLabel).toBe(
-			"Fix Endless Provider Retry Loop, Working, Waiting on 1 subagent, 1 hour",
+			"Fix Endless Provider Retry Loop, Working, Waiting on 1 subagent, 1 running, 1 hour",
 		);
 		const idle = mount({ variant: "quiet", item: item("idle", { state: "idle", updated_at: minutesAgo(3 * 1440) }) });
 		expect(pressable(idle).props.accessibilityLabel).toBe("Fix Endless Provider Retry Loop, Idle, 3 days");

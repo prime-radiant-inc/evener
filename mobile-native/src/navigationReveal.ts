@@ -9,6 +9,11 @@ import type { NavigationPages } from "./navigationPages";
 
 export interface SessionLocation {
 	ref: string;
+	/** The page row to scroll to and highlight. The location's own ref for a
+	 * top-level session, the owning row (its nearest non-subagent ancestor) for
+	 * a subagent: the hub answers a subagent's location with ref = the subagent
+	 * and top_level_ref = that row. */
+	revealRef: string;
 	title: string;
 	params: Omit<NavigationReadParams, "representationVersion">;
 }
@@ -34,11 +39,15 @@ export async function locateSession(
 	}
 	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
 		throw new Error("This session could not be located. Try again.");
+	// A subagent's location names the row that owns it in top_level_ref (D5); a
+	// top-level session is its own row.
+	const revealRef = location.top_level ? ref : location.top_level_ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");
 		return {
 			ref,
+			revealRef,
 			title: location.session.project || "Project",
 			params: {
 				resource: "project_page",
@@ -50,12 +59,14 @@ export async function locateSession(
 	if (location.pin_section_id)
 		return {
 			ref,
+			revealRef,
 			title: "Pinned sessions",
 			params: { resource: "pin_section", sectionId: location.pin_section_id },
 		};
 	const section = location.tier === "needs_you" ? "needs_you" : "live";
 	return {
 		ref,
+		revealRef,
 		title: section === "needs_you" ? "Needs you" : "Live sessions",
 		params: { resource: "section", section },
 	};
