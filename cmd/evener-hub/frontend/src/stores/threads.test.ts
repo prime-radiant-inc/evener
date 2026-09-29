@@ -11242,6 +11242,120 @@ test("the queued-non-send projection read blocks the foldable predicate", async 
   expect(resumeOnlyLocalModel(ref)).toBe(false);
 });
 
+// The merely-resumable snapshot the three tests below drive: ResumeRequired with
+// no send capability, and optionally the hub's foldable bit. A ref that is not
+// foldable is the one whose fence a status fold must NOT clear - the hub stamped
+// ResumeRequired for a cause whose turn/start it still refuses.
+function resumeOnlySnapshot(ref: string, foldable = false): ThreadReadResponse {
+  return readResponse(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...CAPABILITIES, send: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      ...(foldable ? { resumeOnlyFoldable: true } : {}),
+      queue: { revision: 0 },
+    },
+  });
+}
+
+// RoboRev Medium (round 13): the off-shut-down clear ends only the
+// merely-resumable window a genuinely resume-only snapshot opened. A ref that
+// was never resume-only - a restart-required daemon, an unconfirmed force-stop
+// exit, connection recovery - carries no resumeOnlyFoldable bit, so a status
+// fold off the shut-down set is not evidence the hub resumed it. Clearing that
+// ref's recovery obligation would admit mutations the hub still rejects.
+test("an off-shut-down status fold keeps the fence for a ref that was never resume-only", async () => {
+  const ref = "local:not-resume-only-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    // No foldable bit: the hub stamped ResumeRequired for a cause whose
+    // turn/start it still refuses, so this fold is no evidence it resumed.
+    resumeOnlySnapshot(ref),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+  // The bit was never set, so the fold is not evidence the hub resumed it: the
+  // recovery obligation the snapshot armed must survive.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+});
+
+// RoboRev Medium (round 13): a status fold must not drop a fence an in-flight
+// Stop this page started owns. The Stop's group holds the obligation on purpose
+// until its RPC settles, and the hub holds Stopping > 0 (refusing even
+// turn/start) for that whole window, so the off-shut-down clear skips it.
+test("an off-shut-down status fold leaves a stop-owned fence armed", async () => {
+  const ref = "local:stop-owned-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => resumeOnlySnapshot(ref, true));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  const stop = deferred<void>();
+  fake.on("evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  await flushUntil(() => threadsStore.getState().stoppingRefs.has(ref));
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  // The stop group still owns the obligation: the fold did not drop its fence.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+
+  stop.resolve();
+  await pending;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 13): the resumeOnlyFoldable bit is the PREVIOUS
+// connection's answer (applyThreadResumeRequirement stamped it on a snapshot
+// that connection produced). After the connection generation changes the hub's
+// connection-recovery fence can refuse a folded turn/start on the new
+// connection, so the retained bit must not fold a send. A connection change
+// invalidates it (invalidateHeldHistoriesForReconnect, the store's single
+// reconnect hook), and only a fresh read on the current connection re-stamps
+// folding.
+test("a connection generation change invalidates a retained resumeOnlyFoldable bit", async () => {
+  const ref = "local:resume-only-reconnect";
+  const snapshot = (threadRef: string) => resumeOnlySnapshot(threadRef, true);
+  const first = connectFakeClient("ready");
+  first.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  await threadsStore.getState().ensureThread(ref);
+  await flushPendingTurnsProjectionForTests();
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // The connection that produced the snapshot is replaced by a fresh one.
+  const next = new FakeClient("ready");
+  next.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  connectionStore.getState().connect(next);
+
+  // Synchronously after the rewire the outgoing connection's bit is gone: no
+  // folded send is admitted from a bit the previous connection produced.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+
+  // A fresh read on the current connection, still carrying the bit, restores
+  // folding.
+  await waitFor(() => expect(resumeOnlyLocalModel(ref)).toBe(true));
+});
+
 // RoboRev Medium (round 8): an ATTEMPTED non-send row survives a force stop
 // (cancelUnattemptedMutations keeps attempted rows) and still parks at the
 // target's FIFO. The method-aware dispatcher parks any non-turn/start head of a

@@ -1977,14 +1977,18 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 //
 //   - the hub bit must be true; an older or non-local snapshot that never
 //     carried it is not this shape.
-//   - the status must still be shut down (SHUT_DOWN_STATUSES: ended, closed,
-//     notLoaded). The bit is stamped by a snapshot hydration and the
-//     thread/status/changed branch keeps ...model, so a bit folded onto a
-//     still-shut-down snapshot can survive a frame that moved the session to
-//     active (the folded send's own resume, a reconnect, an externally
-//     initiated Stop). On a live status the hub would no longer admit the
-//     folded turn/start, and normal routing (turn/queue behind the running
-//     turn) is what the composer must offer instead.
+//   - no status clause: the hub's admission is status-independent
+//     (sessionActionRecoveryError / resumeOnlyFoldable read no status), so a
+//     live snapshot the hub legitimately stamped foldable - a daemon another
+//     controller started under a confirmed force-stop obligation - is admitted
+//     and folds. A status clause here would hide the folded send from a
+//     snapshot the hub would happily admit, silently falling back to the old
+//     explicit-Resume step the fold exists to remove. The stale bit a shut-down
+//     snapshot leaves behind is defended against where it is written, not here:
+//     the off-shut-down transition clears it (settleResumeOnlyOffShutdown) and
+//     a connection-generation change invalidates it
+//     (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
+//     has ended cannot mis-route a send.
 //   - signals.uncertainMessages must be false: while delivery-uncertain rows
 //     exist the hub's explicit Resume still runs reconciliation, so the send is
 //     not the whole story and the Resume affordance stays.
@@ -2011,13 +2015,12 @@ export interface ResumeOnlySignals {
 
 export function isResumeOnlyLocal(
   ref: string,
-  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status">,
+  model: Pick<ThreadModel, "resumeOnlyFoldable">,
   signals: ResumeOnlySignals = {},
 ): boolean {
   return (
     ref.startsWith("local:") &&
     model.resumeOnlyFoldable === true &&
-    SHUT_DOWN_STATUSES.has(model.status.type) &&
     signals.uncertainMessages !== true &&
     signals.stopInFlight !== true &&
     signals.queuedNonSend !== true
@@ -2785,18 +2788,32 @@ function applyToMap(
 // was stamped for has started, so the snapshot's resumeOnlyFoldable bit must
 // not outlive the status that carried it. The bit is written ONLY by a snapshot
 // hydration (reducer.ts's threadFields), while the thread/status/changed branch
-// keeps ...model, so without this a stale bit rides a live status - the
-// predicate guards on the status too, but the bit itself belongs to the
-// snapshot, not to every later frame. The ref is reported so the caller clears
-// the recovery obligation the same snapshot armed. Only the off-set direction
-// counts: a fold onto the set (or within it) keeps the window, and the reverse
-// transition is a shutdown, not a resume.
+// keeps ...model, so without this a stale bit would ride a live status. The
+// predicate reads no status of its own, so this is where a bit whose shut-down
+// snapshot has ended is cleared - the bit belongs to the snapshot, not to every
+// later frame. The ref is reported so the caller clears the recovery obligation
+// the same snapshot armed. Only the off-set direction counts: a fold onto the
+// set (or within it) keeps the window, and the reverse transition is a shutdown,
+// not a resume.
 function settleResumeOnlyOffShutdown(previous: ThreadModel, updated: ThreadModel, endedRefs: string[]): ThreadModel {
   if (!SHUT_DOWN_STATUSES.has(previous.status.type) || SHUT_DOWN_STATUSES.has(updated.status.type)) {
     return updated;
   }
-  endedRefs.push(updated.ref);
-  return updated.resumeOnlyFoldable === true ? { ...updated, resumeOnlyFoldable: false } : updated;
+  // Only a model that genuinely carried the snapshot's resume-only shape ends
+  // here. A ref that was never resume-only - a restart-required daemon, an
+  // unconfirmed force-stop exit, connection recovery - keeps both its bit
+  // (already false) and its recovery obligation: an off-shut-down status fold
+  // alone is not evidence the hub resumed it, so clearing that ref's fence
+  // would admit mutations the hub still rejects.
+  if (previous.resumeOnlyFoldable !== true) {
+    return updated;
+  }
+  // A Stop this page started still owns the ref's obligation until its RPC
+  // settles (the hub holds Stopping > 0, refusing even turn/start, for that
+  // whole window), so the ref is not reported for the obligation clear. Its bit
+  // still clears with the snapshot.
+  if (!activeStops.has(updated.ref)) endedRefs.push(updated.ref);
+  return invalidateResumeOnlyForReconnect(updated);
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -2918,7 +2935,9 @@ function handleNotification(n: AnyNotification): void {
   // snapshot armed is stale now, and leaving it armed would fence a session the
   // hub has resumed (stillFenced keeps Send and Queue off until a fresh read
   // clears it). Clear it here, in the same step the model's stale
-  // resumeOnlyFoldable bit was cleared, so the composer routes normally.
+  // resumeOnlyFoldable bit was cleared, so the composer routes normally. The
+  // fold withholds a ref a Stop this page started still owns (see
+  // settleResumeOnlyOffShutdown), so every reported ref is this clear's to make.
   if (endedThreadsResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
     const endedRefs = new Set([...endedThreadsResumeOnly, ...endedWatchedResumeOnly]);
     threadsStore.setState((state) => {
@@ -3453,14 +3472,32 @@ function detachClient(): void {
 // reconnect's re-read goes out, so that read always replaces whole history
 // rather than merging by version. A no-op the first time a client ever
 // connects: nothing is tracked yet.
+//
+// The same connection change also invalidates the resumeOnlyFoldable bit: it
+// is the PREVIOUS connection's answer (applyThreadResumeRequirement stamped it
+// on a snapshot that connection produced), and the hub's connection-recovery
+// fence can refuse a folded turn/start on the new connection. Clearing it here
+// - the store's single connection-generation hook - is what keeps a send from
+// folding from a bit the current connection has not re-stamped; a fresh read
+// on the current connection restores folding.
 function invalidateHeldHistoriesForReconnect(): void {
   const { threads, watchedThreads } = threadsStore.getState();
   for (const [ref, model] of threads) {
-    if (model.history) putThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putThreadModel(ref, next);
   }
   for (const [ref, model] of watchedThreads) {
-    if (model.history) putWatchedThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putWatchedThreadModel(ref, next);
   }
+}
+
+// Clears the retained resumeOnlyFoldable bit: the outgoing connection's answer
+// on a reconnect, and the shut-down snapshot a status fold ended. A model with
+// an absent or already-false bit is returned in place, so neither caller writes
+// for the sessions that were not foldable.
+function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
+  return model.resumeOnlyFoldable === true ? { ...model, resumeOnlyFoldable: false } : model;
 }
 
 // The single reactive trigger for rewireClient: every connectionStore

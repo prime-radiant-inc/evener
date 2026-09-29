@@ -3364,15 +3364,16 @@ test("a merely-resumable stopped local session offers Send and sends turn/start"
   expect(calls[0]?.params).toMatchObject({ ref, input: [{ type: "text", text: "omt" }] });
 });
 
-// RoboRev Medium (round 12): resumeOnlyFoldable is stamped by a snapshot
+// RoboRev Medium (round 13): resumeOnlyFoldable is stamped by a snapshot
 // hydration and the thread/status/changed branch keeps ...model, so a stale bit
-// can outlive the shut-down snapshot it described. Once a folded send's own
-// resume (or a reconnect, or an external Stop) moves the session to active,
-// availabilityFor must NOT take the resume-only branch - the hub no longer
-// admits a folded turn/start - and normal routing queues behind the running
-// turn. The stale bit AND the recovery obligation the snapshot armed both clear
-// on the transition; otherwise the fence keeps Send and Queue off.
-test("a stale resumeOnlyFoldable bit on a live status routes like a normal active session", async () => {
+// could outlive the shut-down snapshot it described. The hub's resume-only
+// admission is status-independent, so the defence is not a status gate in the
+// predicate: the store clears the stale bit - and the recovery obligation the
+// snapshot armed - off the shut-down transition (settleResumeOnlyOffShutdown).
+// Once the session moves to active, the bit is gone, so availabilityFor routes
+// normally (Queue behind the running turn) rather than folding; otherwise the
+// fence would keep Send and Queue off.
+test("a stale resumeOnlyFoldable bit is cleared off its shut-down snapshot, routing like a normal active session", async () => {
   const user = userEvent.setup();
   const ref = "local:stale-foldable";
   const fake = await mountComposer(ref, {

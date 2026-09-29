@@ -1655,3 +1655,71 @@ func TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited(t *testing.T
 		})
 	}
 }
+
+// TestRetirementAdmissionAdmitsResumeOnlySend is RoboRev's round-13 Medium at
+// its source: retirementAdmissionRecoveryError re-checks an already-admitted
+// turn/start's fences, so it must apply the SAME resume-only carve-out the
+// send-side admission applies (sessionAdmitsResumeRequired), not refuse on
+// state.ResumeRequired alone. The request context and its identity carry the
+// marker; a request without it and a Stop drain keep their fence.
+func TestRetirementAdmissionAdmitsResumeOnlySend(t *testing.T) {
+	cfg := resumeOnlyRecoveryConfig(t)
+	const id = "retirement-resume-only-admission"
+	stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+	ref := "local:" + id
+	epoch := sessionRecoveryState(cfg, ref, "").Epoch
+
+	turnCtx := admitSessionConnection(admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+		appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref, ClientMutationID: "send"})), cfg)
+	if err := retirementAdmissionRecoveryError(turnCtx, cfg, ref, "", epoch); err != nil {
+		t.Fatalf("retirement admission refused an admitted resume-only send: %v", err)
+	}
+
+	// A request that is not the admitted turn/start carries no marker: the
+	// resume-only fence still refuses it.
+	bare := admitSessionConnection(t.Context(), cfg)
+	if err := retirementAdmissionRecoveryError(bare, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("retirement admission = %v, want the resume-required refusal without the turn/start marker", err)
+	}
+
+	// A Stop begun after admission keeps the refusal, marker or not.
+	finish := cfg.ResumeLocks.BeginForceStop([]string{id})
+	t.Cleanup(func() { finish.Finish(false) })
+	if err := retirementAdmissionRecoveryError(turnCtx, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("retirement admission = %v, want the resume-required refusal during a Stop drain", err)
+	}
+}
+
+// TestRetirementResumeAdmitsResumeOnlyFoldableSend drives the whole retirement
+// retry for a send the hub admitted under the resume-only carve-out: the
+// session sits under ResumeRequired with a confirmed force-stop exit while the
+// daemon that owns it is still live and now returns the typed retiring error.
+// Before the fix retirementAdmissionRecoveryError refused this send with the
+// resume-required fence, so mutationResumeFailureError parked it as a blocked
+// mutation instead of delivering it. With the carve-out applied on the
+// retirement path too, the send resumes the session and reaches the
+// replacement daemon.
+func TestRetirementResumeAdmitsResumeOnlyFoldableSend(t *testing.T) {
+	f := newRetirementResumeFixture(t, retirementResumeOptions{})
+	stageResumeOnlyFenceConfirmedExit(t, f.locks, f.sessionID)
+	client := f.dial(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	done := f.startAsync(ctx, client, "resume-only-retirement", "resume and deliver")
+	f.awaitWaitBehindOwner(ctx, t, done)
+	f.confirmExit(t)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("admitting the send under the resume-only fence: %v", result.err)
+	}
+	if result.resp.Turn.ID == "" {
+		t.Fatalf("turn/start under the resume-only fence returned no turn: %+v", result.resp)
+	}
+	if got := f.launches.Load(); got != 1 {
+		t.Fatalf("replacement launches = %d, want 1", got)
+	}
+	if got := f.accepted.Load(); got != 1 {
+		t.Fatalf("accepted turns = %d, want 1 (the prompt must reach the replacement)", got)
+	}
+}

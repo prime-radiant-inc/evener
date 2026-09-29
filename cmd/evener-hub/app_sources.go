@@ -298,10 +298,15 @@ func sessionResumeRequiredError() error {
 	return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
 }
 
-func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
-	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
-		return err
-	}
+// sessionStateRecoveryError is the recovery fence a session's own state puts on
+// an action: a Stop drain, a resume-only obligation the request was not
+// admitted through (sessionAdmitsResumeRequired carries that admission), and a
+// stale admission epoch. It is the shared body of the two re-checks that differ
+// only in whether the connection-sequence fence also applies -
+// sessionActionRecoveryError for a fresh action, retirementAdmissionRecoveryError
+// for an already-admitted one still in flight - so the carve-out and its
+// refusal exist in exactly one place.
+func sessionStateRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
 	state := sessionRecoveryState(cfg, ref, threadID)
 	if state.Stopping > 0 || (state.ResumeRequired && (!state.ExitConfirmed || !sessionAdmitsResumeRequired(ctx, ref, threadID))) {
 		return sessionResumeRequiredError()
@@ -310,6 +315,13 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery canceled this pending action; submit it again")}
 	}
 	return nil
+}
+
+func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
+	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
+		return err
+	}
+	return sessionStateRecoveryError(ctx, cfg, ref, threadID, epoch)
 }
 
 // sessionAdmitsResumeRequired reports whether the request that carries ctx is a
