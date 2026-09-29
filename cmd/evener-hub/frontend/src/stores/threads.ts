@@ -2559,6 +2559,14 @@ function isStorageUnavailable(error: unknown): boolean {
 // clientMutationId, so a reply lost after the mutation applied replays as a
 // no-op on the retry instead of applying twice.
 const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
+// A dropped connection leaves the client "reconnecting", where a retry fired
+// now only meets the client's own synchronous not-ready rejection. Wait for a
+// ready client before the second attempt, bounded so a wedged hub cannot hang
+// the send: 10s is the durable-write watchdog's own scale, which the composer
+// already tolerates. The read paths never wait like this for a mutation because
+// a blind retry could land twice - but every attempt here reuses one
+// clientMutationId, so the daemon dedups them.
+const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. The client mints
@@ -2567,13 +2575,21 @@ const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
   const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  let target = client;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+      await request.call(target, intent.method, { ...intent.payload, clientMutationId });
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
-      await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
+      // A client closed for good can never become ready again, so surface at
+      // once rather than waiting out the bound.
+      if (target.state === "closed" || target.terminalReason !== null) throw mapConflict(err);
+      try {
+        target = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+      } catch {
+        throw mapConflict(err);
+      }
     }
   }
 }
