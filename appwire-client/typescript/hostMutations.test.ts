@@ -4,6 +4,8 @@ import {
   committedMutationRow,
   createHostMutations,
   ErrorStaleEntry,
+  HOST_ENTRY_FIELD_ORDER,
+  HOST_ENTRY_FIELD_TEXT,
   HOST_GATE_TIMEOUT_MS,
   type HostMutationPair,
   rootsFromText,
@@ -157,5 +159,22 @@ describe("the roots field", () => {
   test("writes one root per line, and nothing for none", () => {
     expect(rootsToText(["/srv/b", "/srv/a"])).toBe("/srv/b\n/srv/a");
     expect(rootsToText(undefined)).toBe("");
+  });
+});
+
+describe("the editable host fields", () => {
+  test("list every mutable HostEntry field under its wire spelling, in the dialog's order", () => {
+    expect(HOST_ENTRY_FIELD_ORDER).toEqual(["address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]);
+  });
+
+  test("name each field and say what it takes, as the web's Edit dialog does", () => {
+    expect(HOST_ENTRY_FIELD_TEXT.address).toEqual({
+      label: "SSH address",
+      help: "SSH destination, e.g. host.example or user@host.example.",
+    });
+    expect(HOST_ENTRY_FIELD_TEXT.roots).toEqual({
+      label: "Roots",
+      help: "Optional directories on the host to serve. One per line.",
+    });
   });
 });

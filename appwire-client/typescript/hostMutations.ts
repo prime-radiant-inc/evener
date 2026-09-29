@@ -173,6 +173,34 @@ export function createHostMutations(ports: HostMutationPorts): HostMutations {
   };
 }
 
+/** A host field an edit can change: every HostEntry field but the immutable
+ * name, under the wire's own spelling, which is the spelling a refusal's field
+ * uses, so a message lands on the input it names. */
+export type EditableHostField = Exclude<keyof HostEntry, "name">;
+
+/** The editable fields in the order the Edit form shows them. */
+export const HOST_ENTRY_FIELD_ORDER: readonly EditableHostField[] = [
+  "address",
+  "user",
+  "keyPath",
+  "evenerPath",
+  "configPath",
+  "addr",
+  "roots",
+];
+
+/** Each editable field's label and help line, shared by the web's Add/Edit
+ * dialog and the phone's Edit page. */
+export const HOST_ENTRY_FIELD_TEXT: Readonly<Record<EditableHostField, { label: string; help: string }>> = {
+  address: { label: "SSH address", help: "SSH destination, e.g. host.example or user@host.example." },
+  user: { label: "User", help: "Optional SSH user; leave empty when the address already names one." },
+  keyPath: { label: "Key path", help: "Optional SSH private-key path used when dialing this host." },
+  evenerPath: { label: "Evener path", help: "Optional path to the evener binary on the host, when it is not on PATH." },
+  configPath: { label: "Hub config path", help: "Optional path to the host's hub.toml, when it is not the default." },
+  addr: { label: "Hub address", help: "Optional listen address of the host's hub, when it is not the default." },
+  roots: { label: "Roots", help: "Optional directories on the host to serve. One per line." },
+};
+
 // rootsFromText parses a host's roots field: one root per line, trimmed, with
 // blank lines dropped — so a stray blank line is not an empty root the hub
 // refuses (hostreg's ErrEmptyRoot). The field is plain text rather than a
