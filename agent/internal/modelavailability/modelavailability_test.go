@@ -52,6 +52,32 @@ func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
 	}
 }
 
+// TestCaptureLaunchesNoFetchWhenTheBudgetIsAlreadySpent pins the callable
+// boundary's cancellation contract: once the budget is spent, Capture starts no
+// provider fetch, because a fetch launched into an exhausted context can only
+// begin work that Capture, having already given up, can never join.
+func TestCaptureLaunchesNoFetchWhenTheBudgetIsAlreadySpent(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	snapshot := Capture(parent, []string{"first", "second"}, "", func(context.Context, string) ([]string, error) {
+		calls.Add(1)
+		return []string{"model"}, nil
+	}, time.Hour)
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("fetch calls = %d, want none after the budget was spent", got)
+	}
+	if snapshot.Complete || len(snapshot.Choices) != 0 {
+		t.Fatalf("snapshot = %#v, want an incomplete empty snapshot", snapshot)
+	}
+	for _, provider := range []string{"first", "second"} {
+		if snapshot.Status[provider].Kind != StatusTimeout {
+			t.Fatalf("status[%s] = %#v, want timeout", provider, snapshot.Status[provider])
+		}
+	}
+}
+
 func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 	models := []string{
 		"safe",
