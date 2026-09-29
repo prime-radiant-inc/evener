@@ -13,7 +13,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import type { MutationOutboxOpenDiagnostic } from "./mutationOutboxIndexedDB";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError, warnOpenDiagnostic } from "./mutationOutboxIndexedDB";
-import { neverSettlingRequest } from "./testing/stalledIndexedDB";
+import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedDB";
 
 const DATABASE_NAME = "evener-mutation-outbox";
 // The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
@@ -65,24 +65,6 @@ function upgradableRequest(): AbandonableRequest {
     },
   });
   return request;
-}
-
-// One real macrotask hop, off the faked timers: fake-indexeddb delivers open and
-// versionchange events on such a task, which a timer advance does not reach.
-function nextRealTask(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(null);
-  });
-}
-
-async function settleRealTasks(ready: () => boolean): Promise<void> {
-  for (let i = 0; i < 20 && !ready(); i += 1) await nextRealTask();
 }
 
 afterEach(() => {
