@@ -11,6 +11,7 @@ import {
 	lineCount,
 	parseArgs,
 	prettyJSON,
+	readTranscriptEnvelope,
 	type ShellOutput,
 	shellOutput,
 	skillContext,
@@ -78,8 +79,9 @@ function shellNotes(run: ShellOutput): Evidence[] {
 }
 
 // What a tool's output shows, by its family: a command without its exit
-// footer, a fetched page's answer, a skill's instructions, an MCP or other
-// tool's JSON pretty-printed; anything else as the tool printed it.
+// footer, a fetched page's answer, a skill's instructions, a transcript a read
+// returned, an MCP or other tool's JSON pretty-printed; anything else as the
+// tool printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -103,6 +105,20 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			return loaded
 				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
 				: rawOutput(text);
+		}
+		case "transcript": {
+			// The transcript itself, as the web's body shows it, and how many
+			// turns the read's budget left out.
+			const envelope = readTranscriptEnvelope({ output: text });
+			if (envelope?.content === undefined) return rawOutput(text);
+			const evidence = rawOutput(envelope.content.replace(/\n+$/, ""));
+			const elided = envelope.elidedTurns ?? 0;
+			if (elided > 0)
+				evidence.push({
+					kind: "note",
+					text: `${elided} ${elided === 1 ? "turn" : "turns"} left out by the read's budget`,
+				});
+			return evidence;
 		}
 		case "mcp":
 		case "tool": {
