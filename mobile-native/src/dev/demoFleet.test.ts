@@ -228,6 +228,17 @@ describe("demo fleet subagent trees", () => {
 		expect(fuzz.children).toHaveLength(50);
 		expect(fuzz.omitted_descendants).toBe(467 - 50);
 	});
+
+	it("carries a live root's whole-tree subagent tally, past the children cap (S3)", () => {
+		const pr2138 = findRow(liveRows(fleet), "s-pr2138");
+		const tally = pr2138.subagents;
+		expect(tally).toBeDefined();
+		// The children cap keeps 50 top-level rows and omits 4 (above); the tally
+		// counts every depth, so it also counts the one nested subagent (55).
+		expect((tally?.running ?? 0) + (tally?.failed ?? 0) + (tally?.done ?? 0)).toBe(55);
+		expect(tally?.failed).toBe(2);
+		expect(tally?.running).toBeGreaterThan(0);
+	});
 });
 
 describe("demo fleet running jobs", () => {
