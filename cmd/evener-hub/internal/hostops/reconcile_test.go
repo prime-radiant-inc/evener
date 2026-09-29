@@ -127,27 +127,23 @@ func TestReconcileMirrorRollsBackATornStoreMirror(t *testing.T) {
 	}
 }
 
-// TestReconcileMirrorRollbackKeepsRecordsWithOpenSpawnIntents pins §3/§7's
-// fence against the rollback: the mirrored generation is discarded, but a
-// record whose spawn intent is still open must not be moved to interrupted —
-// its boundary may still hold the orphan, and the boot reap owns converging it.
-func TestReconcileMirrorRollbackKeepsRecordsWithOpenSpawnIntents(t *testing.T) {
+// TestReconcileMirrorRollbackMovesEveryInFlightRecord pins the rollback's
+// record transition: the mirrored generation is discarded and every in-flight
+// record for the name moves to interrupted with the torn-write note.
+func TestReconcileMirrorRollbackMovesEveryInFlightRecord(t *testing.T) {
 	store, _ := openTestStore(t)
 	if err := store.MirrorBoundaries(map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
 	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
-	fenced, err := store.Create(NewRecord{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	first, err := store.Create(NewRecord{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	plain, err := store.Create(NewRecord{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	second, err := store.Create(NewRecord{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-	if _, err := store.ArmSpawnIntent(fenced.ID, linuxIntent("n1")); err != nil {
-		t.Fatalf("ArmSpawnIntent: %v", err)
 	}
 
 	result, err := store.ReconcileMirror(MirrorView{
@@ -157,15 +153,15 @@ func TestReconcileMirrorRollbackKeepsRecordsWithOpenSpawnIntents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileMirror: %v", err)
 	}
-	if result.RecordsMoved != 1 {
-		t.Fatalf("RecordsMoved = %d, want only the record with no open intent", result.RecordsMoved)
+	if result.RecordsMoved != 2 {
+		t.Fatalf("RecordsMoved = %d, want both in-flight records moved", result.RecordsMoved)
 	}
-	stored, _ := store.Record(fenced.ID)
-	if stored.State != StatePending || len(stored.PendingSpawns) != 1 {
-		t.Fatalf("the fenced record = %q/%+v, want pending with its intent kept", stored.State, stored.PendingSpawns)
+	stored, _ := store.Record(first.ID)
+	if stored.State != StateInterrupted {
+		t.Fatalf("the first record's state = %q, want interrupted", stored.State)
 	}
-	if other, _ := store.Record(plain.ID); other.State != StateInterrupted {
-		t.Fatalf("the plain record's state = %q, want interrupted", other.State)
+	if other, _ := store.Record(second.ID); other.State != StateInterrupted {
+		t.Fatalf("the second record's state = %q, want interrupted", other.State)
 	}
 }
 

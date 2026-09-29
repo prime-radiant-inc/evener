@@ -49,11 +49,7 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 	// The controller's own build is installed now; the dev-identity question is
 	// settled for this Manager's lifetime (the same mark ensureOnce sets).
 	m.markDevDeployed(host.Name)
-	// The launch-contract re-read is a read-only §6 one-shot: it runs outside the
-	// operation's spawn scope, so the step's mutating commands stay the armed
-	// ones (the scope arms every spawn it is carried into, and the read-back
-	// must not be).
-	after, err := m.reReadLaunchContract(WithoutSpawnScope(deployCtx), host, facts)
+	after, err := m.reReadLaunchContract(deployCtx, host, facts)
 	if err != nil {
 		return "", facts, err
 	}
@@ -75,9 +71,6 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) error {
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
-	// The pre-restart running probe is a read-only §6 one-shot: it runs outside
-	// the operation's spawn scope, so only the restart's mutating commands are
-	// armed.
-	running, _ := m.probeRunningHub(WithoutSpawnScope(restartCtx), host)
+	running, _ := m.probeRunningHub(restartCtx, host)
 	return m.restartHub(restartCtx, host, facts, running)
 }

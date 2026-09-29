@@ -439,13 +439,6 @@ func (s *Store) ReconcileMirror(view MirrorView) (MirrorReconcileResult, error) 
 						// terminal-state rule requires.
 						continue
 					}
-					if len(record.PendingSpawns) > 0 {
-						// §3/§7: a record whose spawn intent is still open is
-						// fenced, not interrupted — the mirrored generation
-						// rollback must not drop the fence the local reap owns.
-						// The intent stays for the boot reap to converge.
-						continue
-					}
 					record.State = StateInterrupted
 					record.Result = &Result{OK: false, Message: TornWriteNote}
 					record.UpdatedAt = now

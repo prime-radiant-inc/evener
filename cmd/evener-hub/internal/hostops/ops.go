@@ -674,13 +674,6 @@ func (s *Store) interruptInFlight(note string) (int, error) {
 		if !record.State.InFlight() {
 			continue
 		}
-		// §3/§7: a record whose spawn intent is still open is fenced, not
-		// interrupted. A shutdown that moved it to `interrupted` would drop the
-		// fence while the boundary may still hold the orphan; the boot reap
-		// resolves the record instead, on evidence.
-		if len(record.PendingSpawns) > 0 {
-			continue
-		}
 		record.State = StateInterrupted
 		record.Result = &Result{OK: false, Message: note}
 		record.UpdatedAt = now

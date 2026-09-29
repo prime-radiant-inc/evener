@@ -10,11 +10,23 @@
 // Transparency is on.
 import { GlassView, isGlassEffectAPIAvailable } from "expo-glass-effect";
 import type { ReactNode } from "react";
-import { type StyleProp, useColorScheme, View, type ViewStyle } from "react-native";
+import { type StyleProp, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useReduceTransparency } from "../reduceMotion";
+import { useReduceTransparency } from "../accessibilitySettings";
 import { useColors } from "../ui";
 import { useKeyboardShown } from "../useKeyboardShown";
+
+/** Whether the device has the Liquid Glass API. expo-glass-effect reads its
+ * native module once per process and checks the API itself (iOS 26 betas
+ * lacked it); reading the module throws only for a binary built without it,
+ * which gets the opaque fill. */
+function systemGlassAvailable(): boolean {
+	try {
+		return isGlassEffectAPIAvailable();
+	} catch {
+		return false;
+	}
+}
 
 export function BarFrame({
 	children,
@@ -28,11 +40,10 @@ export function BarFrame({
 	testID?: string;
 }) {
 	const { palette } = useColors();
-	const scheme = useColorScheme() === "dark" ? "dark" : "light";
 	const { bottom } = useSafeAreaInsets();
 	const keyboardShown = useKeyboardShown();
 	const reduceTransparency = useReduceTransparency();
-	const glass = isGlassEffectAPIAvailable() && !reduceTransparency;
+	const glass = systemGlassAvailable() && !reduceTransparency;
 	// The screen's layout goes first, so it can't undo what the frame owns:
 	// the home indicator's room, the hairline and the fill.
 	const frame: StyleProp<ViewStyle> = [
@@ -45,7 +56,9 @@ export function BarFrame({
 		},
 	];
 	return glass ? (
-		<GlassView testID={testID} glassEffectStyle="regular" colorScheme={scheme} style={frame}>
+		// The glass follows the window's appearance, which the app's own light or
+		// dark choice sets (Appearance.setColorScheme), as its colors do.
+		<GlassView testID={testID} glassEffectStyle="regular" style={frame}>
 			{children}
 		</GlassView>
 	) : (

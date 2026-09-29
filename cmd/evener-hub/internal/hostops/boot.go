@@ -4,8 +4,7 @@ import "errors"
 
 // RecoverInterrupted is the boot pass of spec §7's interrupted transition: with
 // the store loaded and before it serves any request, every record still in
-// `pending`/`running` and carrying no open spawn intent transitions to
-// `interrupted` — a terminal unknown outcome
+// `pending`/`running` transitions to `interrupted` — a terminal unknown outcome
 // — with a note naming the crash. Each moved record is stamped with the value
 // the durable sequence advanced to for it, in stored order, and the whole pass
 // lands in one atomic write (spec §4 advances the sequence once per record the
@@ -16,12 +15,12 @@ import "errors"
 // call after a successful pass is a no-op.
 //
 // Two record families are deliberately not this pass's business. A record in
-// `orphan-unverified` is the one exception §7 names: only the fencing paths
-// resolve it, and only that resolution advances the sequence. An epoch-only
-// probe row — a persisted probe epoch with no token consumed and no worker
-// launched — is deleted silently rather than transitioned; it is a separate row
-// family owned by the probe path, with no deploy/restart kind, and no such row
-// can exist in this store's record schema.
+// `orphan-unverified` is the one exception §7 names: it is not in flight, so
+// this pass neither transitions it nor advances the sequence for it. An
+// epoch-only probe row — a persisted probe epoch with no token consumed and no
+// worker launched — is deleted silently rather than transitioned; it is a
+// separate row family owned by the probe path, with no deploy/restart kind, and
+// no such row can exist in this store's record schema.
 //
 // The returned count is how many records the pass moved, for the boot log.
 func (s *Store) RecoverInterrupted() (int, error) {
@@ -39,16 +38,6 @@ func (s *Store) RecoverInterrupted() (int, error) {
 	for i := range next.Records {
 		record := &next.Records[i]
 		if !record.State.InFlight() {
-			continue
-		}
-		// §3/§7: a record carrying an open `pending-spawn` intent is never
-		// boot's to move to `interrupted`. Its spawn may still be running, and
-		// §3's rule is that such a record stays fenced (and is marked
-		// `orphan-unverified` by the local reap, which runs before this pass)
-		// rather than being silently adopted as a terminal unknown outcome. The
-		// guard matters even though the reap runs first: a reap that could not
-		// write its verdict must not lose the fence to this later pass.
-		if len(record.PendingSpawns) > 0 {
 			continue
 		}
 		record.State = StateInterrupted

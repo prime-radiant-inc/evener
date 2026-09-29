@@ -13,15 +13,12 @@ package hub
 // probe — and refuses a browser-origin or forwarded request. It never forwards
 // onward to a third hub: the answer is this process's own state.
 //
-// FENCING BOUNDARY. §10 calls the running probe's write half a fully fenced
-// mutating step (lease takeover, bounded kill/wait, guard advance per the
-// crash-fencing spec §4). That execution belongs to the fencing slice (S17+,
-// after S4); this slice ships the epoch's persistence and validation — the
-// serving hub admits and persists the presented epoch before the write half and
-// refuses stale epochs without probing — and runs the write probe authorized by
-// that epoch under the caller's host gate. The fencing slice adds the
-// guard-file compare-and-advance and the takeover/kill/wait steps at the call
-// site this file's comments name.
+// EPOCH ADMISSION. The serving hub admits and persists the presented epoch
+// before the write half and refuses stale epochs without probing, then runs the
+// write probe authorized by that epoch under the caller's host gate. The
+// crash-fencing execution that once sat behind this boundary (the remote
+// guard-file compare-and-advance and the takeover/kill/wait steps) was removed
+// with the rest of the program (comp08).
 
 import (
 	"context"

@@ -92,8 +92,10 @@ const (
 	// StateInterrupted is a terminal unknown outcome: a crash left the record
 	// pending/running and boot moved it here (§7).
 	StateInterrupted State = "interrupted"
-	// StateOrphanUnverified is the durable per-record state the fencing paths
-	// create and only they resolve (spec §7).
+	// StateOrphanUnverified is the durable per-record state prior fencing builds
+	// left on an unresolved boundary (spec §7). This build neither creates nor
+	// resolves it: it is carried as data so a prior-build record — or a
+	// custody import — keeps its recorded state verbatim.
 	StateOrphanUnverified State = "orphan-unverified"
 )
 
@@ -108,9 +110,8 @@ func (s State) Valid() bool {
 
 // Terminal reports whether moving a record into s is one of the transitions
 // spec §4's state-transition sequence counts: the terminal states
-// `complete`/`failed`/`interrupted`, and the `orphan-unverified`→`interrupted`
-// resolution with them. StateOrphanUnverified is itself not terminal — only its
-// resolution advances the sequence — so boot leaves it alone (§7).
+// `complete`/`failed`/`interrupted`. StateOrphanUnverified is itself not
+// terminal, so boot leaves it alone (§7).
 func (s State) Terminal() bool {
 	switch s {
 	case StateComplete, StateFailed, StateInterrupted:
@@ -121,8 +122,7 @@ func (s State) Terminal() bool {
 
 // InFlight reports whether a state is one boot's interrupted transition owns: a
 // record still `pending`/`running` when the controller came up (spec §7). Every
-// other state is not boot's to move, and `orphan-unverified` in particular is
-// resolved only through the fencing paths.
+// other state is not boot's to move.
 func (s State) InFlight() bool { return s == StatePending || s == StateRunning }
 
 // ProgressEntry is one timestamped progress line on a record (spec §10). The
@@ -143,11 +143,9 @@ type Result struct {
 // §4's record schema. `CreatedAt`/`UpdatedAt` are display-only and never decide
 // a race: the state-transition sequence does.
 //
-// FencingEpoch and OrphanBoundary carry data whose shapes are defined by the
-// crash-fencing spec (§9) and never restated here, so the store keeps them
-// verbatim: the worker's fencing epoch, persisted before the first `running`
-// probe, and the per-member boundary array an `orphan-unverified` record
-// carries.
+// FencingEpoch carries data whose shape is defined by the deploy pipeline's
+// probe protocol (§10) and never restated here, so the store keeps it verbatim:
+// the worker's fencing epoch, persisted before the first `running` probe.
 type Record struct {
 	ID                string          `json:"id"`
 	ClientOperationID string          `json:"clientOperationId"`
@@ -157,31 +155,11 @@ type Record struct {
 	Generation        uint64          `json:"generation"`
 	IncarnationID     string          `json:"incarnationId"`
 	FencingEpoch      json.RawMessage `json:"fencingEpoch,omitempty"`
-	OrphanBoundary    json.RawMessage `json:"orphanBoundary,omitempty"`
-	// OrphanResolved is §5's resolution marker: true exactly on a record resolved
-	// through `orphan-resolve` (state `interrupted`, no boundary). It is what
-	// makes a resolved record's lost-response replay distinguishable from an
-	// ordinary boot-transitioned `interrupted` record, which carries no marker.
-	OrphanResolved bool `json:"orphanResolved,omitempty"`
-	// OrphanAttestation is §5's operator attestation, persisted on the resolved
-	// record beside the marker when the resolve presented one; nil otherwise.
-	OrphanAttestation *OrphanResolveAttestation `json:"attestation,omitempty"`
-	// PendingSpawns is crash-fencing §3's `pending-spawn` intent set: one entry
-	// per spawned subprocess whose ownership boundary the controller
-	// pre-created but has not yet proven clean. Each entry holds the per-spawn
-	// nonce, the pre-spawn boundary identity, and — once the launcher observed
-	// it — the spawned child's kernel-owned (pid, start time) instance marker.
-	// The intent is present exactly while it is open: it is written before the
-	// spawn, matched after the spawn, and dropped only by a clean local reap or
-	// by orphan-resolve (§3). An empty set marshals as absent, so a record
-	// carrying no open intent never keeps the key. See spawnintent.go for the
-	// lifecycle and the store APIs.
-	PendingSpawns []SpawnIntent   `json:"pendingSpawns,omitempty"`
-	Progress      []ProgressEntry `json:"progress,omitempty"`
-	Result        *Result         `json:"result,omitempty"`
-	CreatedAt     time.Time       `json:"createdAt"`
-	UpdatedAt     time.Time       `json:"updatedAt"`
-	HostRemoved   bool            `json:"hostRemoved"`
+	Progress          []ProgressEntry `json:"progress,omitempty"`
+	Result            *Result         `json:"result,omitempty"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
+	HostRemoved       bool            `json:"hostRemoved"`
 	// Sequence is the store's state-transition sequence value the record was
 	// stamped with when it entered a terminal state; 0 until then.
 	Sequence uint64 `json:"sequence,omitempty"`
@@ -299,9 +277,6 @@ func validateRecord(record Record) error {
 	if !utf8.Valid(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not valid UTF-8", ErrInvalidRecord, record.ID)
 	}
-	if !utf8.Valid(record.OrphanBoundary) {
-		return fmt.Errorf("%w: record %q carries an orphan boundary that is not valid UTF-8", ErrInvalidRecord, record.ID)
-	}
 	// The loader refuses a file that names any key twice, so the write path must
 	// refuse a raw field that does: writing one would brick the store on the next
 	// boot — the file the store just committed would fail its own load.
@@ -310,7 +285,6 @@ func validateRecord(record Record) error {
 		what string
 	}{
 		{record.FencingEpoch, "fencing epoch"},
-		{record.OrphanBoundary, "orphan boundary"},
 	} {
 		if err := validateRawFieldKeys(field.raw); err != nil {
 			return fmt.Errorf("%w: record %q carries a %s that names a key twice: %w",
@@ -319,58 +293,6 @@ func validateRecord(record Record) error {
 	}
 	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)
-	}
-	// Spec §4: "The `orphan-unverified` variant carries the per-member
-	// `BoundaryEntry[]` array" — present, and an array. Null, a scalar or an
-	// object is not a boundary this store ever wrote, and an empty array is a
-	// legitimate boundary, not a missing one: crash-fencing §5's clean rule reads
-	// a `local-markerless` boundary as clean only "when demonstrably empty", and
-	// §3 records that "an empty boundary is already clean". The fail-closed
-	// marker for a lost boundary is the `boundary-unavailable` entry (§9), never
-	// an absent array.
-	switch {
-	case record.State == StateOrphanUnverified && !jsonFieldIsArray(record.OrphanBoundary):
-		return fmt.Errorf("%w: orphan-unverified record %q carries no boundary array", ErrInvalidRecord, record.ID)
-	case record.State != StateOrphanUnverified && len(record.OrphanBoundary) > 0:
-		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
-	}
-	// §5's resolve marker and attestation: the marker is present exactly on a
-	// record resolved through `orphan-resolve` — state `interrupted`, nothing
-	// else — and the attestation is present only beside the marker. An open
-	// `orphan-unverified` record carrying either would read as resolved while
-	// its fence still stands; an ordinary interrupted record (the boot
-	// transition, the local reap's resolve) carries neither.
-	switch {
-	case record.OrphanResolved && record.State != StateInterrupted:
-		return fmt.Errorf("%w: record %q carries the orphanResolved marker in state %q", ErrInvalidRecord, record.ID, record.State)
-	case record.OrphanAttestation != nil && !record.OrphanResolved:
-		return fmt.Errorf("%w: record %q carries an orphan-resolve attestation without the resolved marker", ErrInvalidRecord, record.ID)
-	}
-	if record.OrphanAttestation != nil {
-		if err := validateOrphanResolveAttestation(*record.OrphanAttestation, record.ID); err != nil {
-			return fmt.Errorf("%w: record %q: %w", ErrInvalidRecord, record.ID, err)
-		}
-	}
-	// §3's pending-spawn intents are schema-checked like every other persisted
-	// value, in every state. The every-state rule is defensive: this build's API
-	// refuses to terminalize a record with an open intent (Store.Transition) and
-	// keeps such records out of compaction, so no API path produces a terminal
-	// record carrying one — but a hand-edited or pre-guard store file can, and
-	// the schema check is what keeps that shape from being loaded as if it were
-	// ordinary history.
-	if len(record.PendingSpawns) > MaxPendingSpawnsPerRecord {
-		return fmt.Errorf("%w: record %q carries %d pending-spawn intents, over the %d bound",
-			ErrInvalidRecord, record.ID, len(record.PendingSpawns), MaxPendingSpawnsPerRecord)
-	}
-	nonces := make(map[string]struct{}, len(record.PendingSpawns))
-	for _, intent := range record.PendingSpawns {
-		if err := validateSpawnIntent(intent); err != nil {
-			return fmt.Errorf("%w: record %q: %w", ErrInvalidRecord, record.ID, err)
-		}
-		if _, duplicate := nonces[intent.Nonce]; duplicate {
-			return fmt.Errorf("%w: record %q carries nonce %q twice", ErrInvalidRecord, record.ID, intent.Nonce)
-		}
-		nonces[intent.Nonce] = struct{}{}
 	}
 	for _, entry := range record.Progress {
 		if entry.TS.IsZero() || entry.Message == "" {
@@ -430,18 +352,6 @@ func jsonFieldIsObject(raw json.RawMessage) bool {
 	return !jsonFieldIsNull(raw) && json.Unmarshal(raw, &map[string]json.RawMessage{}) == nil
 }
 
-// jsonFieldIsArray reports whether a raw field carries a JSON array: the outer
-// form of §4's per-member `BoundaryEntry[]`. An empty array is an array — the
-// clean rule in crash-fencing §5 reads one as demonstrably empty — while an
-// absent field, the literal null, an object and a scalar are not arrays at all.
-func jsonFieldIsArray(raw json.RawMessage) bool {
-	if jsonFieldIsNull(raw) {
-		return false
-	}
-	var members []json.RawMessage
-	return json.Unmarshal(raw, &members) == nil
-}
-
 // jsonFieldIsNull reports whether a raw field is the JSON literal null. An
 // omitted field is empty raw bytes, which is a different thing: absent means
 // absent, and present-null is a value no writer of this store emits.
@@ -455,16 +365,6 @@ func cloneRecord(record Record) Record {
 	out := record
 	if record.FencingEpoch != nil {
 		out.FencingEpoch = append(json.RawMessage(nil), record.FencingEpoch...)
-	}
-	if record.OrphanBoundary != nil {
-		out.OrphanBoundary = append(json.RawMessage(nil), record.OrphanBoundary...)
-	}
-	if record.PendingSpawns != nil {
-		out.PendingSpawns = cloneSpawnIntents(record.PendingSpawns)
-	}
-	if record.OrphanAttestation != nil {
-		attestation := *record.OrphanAttestation
-		out.OrphanAttestation = &attestation
 	}
 	if record.Progress != nil {
 		out.Progress = append([]ProgressEntry(nil), record.Progress...)

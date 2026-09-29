@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -184,21 +183,12 @@ func TestQuarantineIsCustodyFirstAndNeverDeletesTheCorruptFile(t *testing.T) {
 		binding.Generation != 3 || binding.IncarnationID != "inc-h1" || binding.ClientOperationID != "op-h1" {
 		t.Fatalf("the fence import = %+v, want the custodial identity under its original id", binding)
 	}
-	wantBoundary := `[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}]`
-	if got := string(binding.OrphanBoundary); got != wantBoundary {
-		t.Fatalf("the fence import's boundary = %s, want the persisted boundary verbatim %s", got, wantBoundary)
-	}
 	ownership, ok := store.Record("00000000000000000003")
 	if !ok {
 		t.Fatalf("the ownership-only import %q is missing from the replacement store: %+v", "00000000000000000003", store.Records())
 	}
 	if ownership.State != StateOrphanUnverified || ownership.Host != "h2" || ownership.Kind != KindRestart {
 		t.Fatalf("the ownership-only import = %+v, want an orphan-unverified restart record for h2", ownership)
-	}
-	wantUnavailable := `[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":` +
-		fmt.Sprintf("%q", custodyPath) + `}]`
-	if got := string(ownership.OrphanBoundary); got != wantUnavailable {
-		t.Fatalf("the ownership-only import's boundary = %s, want the boundary-unavailable entry %s", got, wantUnavailable)
 	}
 
 	// Zero outstanding tokens, no mirrored boundaries, no history: the store
@@ -298,33 +288,10 @@ func TestQuarantineCustodySchema(t *testing.T) {
 	if len(fences) != 2 {
 		t.Fatalf("fences holds %d entries, want one per open orphan-unverified record\n%s", len(fences), top["fences"])
 	}
-	for i, fence := range fences {
+	for _, fence := range fences {
+		// The retired boundary/quarantine payload is never re-emitted.
 		sameKeySet(t, keysFromMap(fence), "recordId", "host", "kind", "clientOperationId",
-			"generation", "incarnationId", "quarantine", "boundary")
-		if i == 0 {
-			if boundary := compactJSON(t, fence["boundary"]); boundary != `[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}]` {
-				t.Fatalf("fence 0 boundary = %s, want the persisted boundary verbatim", boundary)
-			}
-			var quarantine bool
-			if err := json.Unmarshal(fence["quarantine"], &quarantine); err != nil {
-				t.Fatalf("fence quarantine: %v", err)
-			}
-			if quarantine {
-				t.Fatalf("the local-markerless fence reads quarantine = true, want false")
-			}
-		}
-		if i == 1 {
-			if boundary := compactJSON(t, fence["boundary"]); boundary != `[{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":4},"guardEpoch":9,"leaseEntries":[]}]` {
-				t.Fatalf("fence 1 boundary = %s, want the persisted remote-fencing boundary verbatim", boundary)
-			}
-			var quarantine bool
-			if err := json.Unmarshal(fence["quarantine"], &quarantine); err != nil {
-				t.Fatalf("fence quarantine: %v", err)
-			}
-			if !quarantine {
-				t.Fatalf("the remote-fencing fence reads quarantine = false, want true")
-			}
-		}
+			"generation", "incarnationId")
 	}
 
 	var ownerships []map[string]json.RawMessage
@@ -380,15 +347,11 @@ func TestQuarantineCustodySchema(t *testing.T) {
 
 // TestQuarantineFailsStartupWhenCustodyIsIncomplete pins §4's all-or-nothing
 // rule: any shortfall — an unparseable file, a record that fails validation, a
-// gap below the file's own allocator high-water mark, an unparseable fence
-// boundary, an invalid boundary mirror — refuses startup without renaming or
-// rewriting anything.
+// gap below the file's own allocator high-water mark, an invalid boundary
+// mirror — refuses startup without renaming or rewriting anything.
 func TestQuarantineFailsStartupWhenCustodyIsIncomplete(t *testing.T) {
 	record := `{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"deploy","state":"pending",` +
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
-	fence := `{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
-		`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-linux"}],` +
-		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
 	// Every fixture below is a store-level corruption — the strict decode
 	// succeeds and every record parses — whose custody snapshot is incomplete in
 	// exactly one way. The store-level corruption is what routes the file into
@@ -411,11 +374,6 @@ func TestQuarantineFailsStartupWhenCustodyIsIncomplete(t *testing.T) {
 		"gap below hwm": `{"version":1,"sequence":1,"allocatorHighWaterMark":3,"records":[` + record + `,` +
 			terminal("00000000000000000003", 2) + `]}`,
 		"residue above hwm": `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[` + record + `]}`,
-		// The fence's boundary is an array, so record-level validation passes,
-		// but no §9 variant describes `{"kind":"local-linux"}` with no ownership
-		// fields: the fence cannot be handed to a resolver.
-		"unparseable fence boundary": `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` + fence + `,` +
-			terminal("00000000000000000002", 2) + `]}`,
 		"invalid boundary mirror": `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` + record + `,` +
 			terminal("00000000000000000002", 2) + `],` +
 			`"boundaries":{"h9":{"generation":0,"incarnationId":"","presenceEpoch":0}}}`,
@@ -918,16 +876,6 @@ func keysFromMap(raw map[string]json.RawMessage) []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-// compactJSON renders one decoded raw value in the writer's compact form.
-func compactJSON(t *testing.T, raw json.RawMessage) string {
-	t.Helper()
-	var out bytes.Buffer
-	if err := json.Compact(&out, raw); err != nil {
-		t.Fatalf("Compact(%s): %v", raw, err)
-	}
-	return out.String()
 }
 
 // storeSnapshotForTest returns a copy of the store's in-memory state.
