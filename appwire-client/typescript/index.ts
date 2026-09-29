@@ -247,6 +247,18 @@ export {
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
+export {
+  createdWatchNote,
+  endReasonPhrase,
+  isRecognizedWatchResult,
+  isTerminalCatchup,
+  type JobWatchStep,
+  jobWatchOperation,
+  jobWatchSummary,
+  type TimerSpec,
+  timerSpec,
+  WATCH_DELIVERY_BUDGET,
+} from "./jobWatchSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";
 export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
@@ -677,6 +689,12 @@ export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
+export {
+  filterSummaryPhrase,
+  type WatchTriggerPhrases,
+  watchEventLabel,
+  watchTriggerPhrases,
+} from "./watchConditionPhrase";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,
