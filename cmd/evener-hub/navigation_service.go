@@ -750,6 +750,13 @@ func (s *NavigationService) waitFlight(ctx context.Context, flight *navigationBu
 	case <-ctx.Done():
 		return nil, navigationUnavailable(ctx.Err())
 	case <-flight.done:
+		// A caller canceled by the time the flight settled must observe its own
+		// cancellation, not the flight's success. When cancellation lands at the
+		// commit cutoff both arms above are ready, so the select is a coin flip;
+		// re-check to keep "canceled caller" deterministic.
+		if err := ctx.Err(); err != nil {
+			return nil, navigationUnavailable(err)
+		}
 		return flight, flight.err
 	}
 }
