@@ -46,8 +46,9 @@ expect:
   checks:
     - name: tests pass
       run: go test ./...
-    - name: existing tests kept
-      run: "! git diff $(git rev-list --max-parents=0 HEAD) -- tally/sum_test.go | grep -qE '^-([^-]|$)'"
+    - name: original tests pass
+      run: |
+        set -e; first=$(git rev-list --max-parents=0 HEAD); tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT; cp -R . "$tmp"; git show "$first:tally/sum_test.go" > "$tmp/tally/sum_test.go"; cd "$tmp"; go test ./...
 reference: |
   cat > tally/sum.go <<'EOF'
   package tally

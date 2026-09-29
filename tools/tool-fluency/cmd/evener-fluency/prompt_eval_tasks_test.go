@@ -95,7 +95,7 @@ func decodeTaskStrict(t *testing.T, path string) probeFile {
 
 // unformattedFixtureFiles names the fixture's Go files that do not parse or
 // that gofmt would change. An agent that formats the tree must leave the
-// fixture as it was, or a check such as "tests unchanged" fails for a reason
+// fixture as it was, or a check such as "original tests pass" fails for a reason
 // that has nothing to do with the prompt.
 func unformattedFixtureFiles(fixture fixtureSpec) []string {
 	var bad []string
@@ -208,57 +208,63 @@ func TestFirstCommitCheckJudgesACommittedChangeCorrectly(t *testing.T) {
 	}
 }
 
-// TestExistingTestsKeptAllowsAddedTestsAndRefusesRemovedOnes: the tasks
+// TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes: the tasks
 // guard against an agent weakening the tests it was given, not against an
-// agent adding coverage. Appending a new test function must pass the check;
-// deleting a line of an existing test must fail it.
-func TestExistingTestsKeptAllowsAddedTestsAndRefusesRemovedOnes(t *testing.T) {
+// agent adding coverage. The check runs the fixture's original test file
+// against the agent's code, so a correct fix with an added test passes, and
+// skipping or deleting the original tests gains nothing.
+func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 	t.Parallel()
-	for task, testFile := range map[string]string{
-		"ambiguous-export.yaml":  "export/export_test.go",
-		"bugfix-tally.yaml":      "tally/sum_test.go",
-		"delegate-textutil.yaml": "textutil/textutil_test.go",
+	for _, tc := range []struct {
+		task, testFile string
+		// untouchedFails: the fixture's own code fails its original tests,
+		// so a weakened test file with no fix must fail the check.
+		untouchedFails bool
+	}{
+		{"ambiguous-export.yaml", "export/export_test.go", false},
+		{"bugfix-tally.yaml", "tally/sum_test.go", true},
+		{"delegate-textutil.yaml", "textutil/textutil_test.go", true},
 	} {
-		t.Run(task, func(t *testing.T) {
+		t.Run(tc.task, func(t *testing.T) {
 			t.Parallel()
-			probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, task))
+			probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, tc.task))
 			var check checkSpec
 			for _, c := range probe.Expect.Checks {
-				if c.Name == "existing tests kept" {
+				if c.Name == "original tests pass" {
 					check = c
 				}
 			}
 			if check.Run == "" {
-				t.Fatalf("%s has no %q check", task, "existing tests kept")
+				t.Fatalf("%s has no %q check", tc.task, "original tests pass")
 			}
-			original := probe.Fixture.Files[testFile]
+			original := probe.Fixture.Files[tc.testFile]
 
 			added := filepath.Join(t.TempDir(), "work")
 			if err := materializeFixture(added, probe.Fixture); err != nil {
 				t.Fatal(err)
 			}
-			mustWrite(t, filepath.Join(added, testFile), original+"\nfunc TestAddedByTheAgent(t *testing.T) {}\n")
+			if ok, detail := runCheck(added, checkSpec{Name: "reference", Run: probe.Reference}, 3*time.Minute); !ok {
+				t.Fatalf("reference solution failed: %s", detail)
+			}
+			mustWrite(t, filepath.Join(added, tc.testFile), original+"\nfunc TestAddedByTheAgent(t *testing.T) {}\n")
 			if ok, detail := runCheck(added, check, checkTimeout); !ok {
-				t.Errorf("adding a test failed %q: %s", check.Name, detail)
+				t.Errorf("a correct fix plus an added test failed %q: %s", check.Name, detail)
 			}
 
-			removed := filepath.Join(t.TempDir(), "work")
-			if err := materializeFixture(removed, probe.Fixture); err != nil {
+			if !tc.untouchedFails {
+				return
+			}
+			skipped := filepath.Join(t.TempDir(), "work")
+			if err := materializeFixture(skipped, probe.Fixture); err != nil {
 				t.Fatal(err)
 			}
-			lines := strings.Split(original, "\n")
-			var kept []string
-			dropped := false
-			for _, l := range lines {
-				if !dropped && strings.Contains(l, "t.") {
-					dropped = true
-					continue
-				}
-				kept = append(kept, l)
+			weakened := strings.ReplaceAll(original, "(t *testing.T) {", "(t *testing.T) {\n\tt.Skip()")
+			if weakened == original {
+				t.Fatalf("%s has no test function to skip", tc.testFile)
 			}
-			mustWrite(t, filepath.Join(removed, testFile), strings.Join(kept, "\n"))
-			if ok, _ := runCheck(removed, check, checkTimeout); ok {
-				t.Errorf("removing a line of an existing test passed %q", check.Name)
+			mustWrite(t, filepath.Join(skipped, tc.testFile), weakened)
+			if ok, _ := runCheck(skipped, check, checkTimeout); ok {
+				t.Errorf("skipping the original tests with no fix passed %q", check.Name)
 			}
 		})
 	}

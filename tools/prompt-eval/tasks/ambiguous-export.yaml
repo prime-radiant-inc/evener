@@ -58,8 +58,9 @@ expect:
   checks:
     - name: tests pass
       run: go test ./...
-    - name: existing tests kept
-      run: "! git diff $(git rev-list --max-parents=0 HEAD) -- export/export_test.go | grep -qE '^-([^-]|$)'"
+    - name: original tests pass
+      run: |
+        set -e; first=$(git rev-list --max-parents=0 HEAD); tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT; cp -R . "$tmp"; git show "$first:export/export_test.go" > "$tmp/export/export_test.go"; cd "$tmp"; go test ./...
     - name: export changed
       run: "! git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export/export.go"
 reference: |
