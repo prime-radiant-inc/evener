@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -61,6 +62,34 @@ func runGit(ctx context.Context, repo string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// worktreeLocks holds one mutex per repo path. `git worktree add` and
+// `remove` scan and edit every admin directory under .git/worktrees/, so they
+// fail ("failed to read .git/worktrees/<name>/commondir", or a vanished admin
+// directory) when they overlap on one repo and see another call's half-written
+// or half-removed entry. Only this process runs them for a repo, so a
+// process-level lock is enough.
+var worktreeLocks sync.Map // repo path -> *sync.Mutex
+
+func lockWorktrees(repo string) (unlock func()) {
+	m, _ := worktreeLocks.LoadOrStore(filepath.Clean(repo), &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// addDetachedWorktree checks out sha into a new detached worktree at wt.
+func addDetachedWorktree(ctx context.Context, repo, wt, sha string) error {
+	defer lockWorktrees(repo)()
+	_, err := runGit(ctx, repo, "worktree", "add", "--detach", "--force", wt, sha)
+	return err
+}
+
+// removeWorktree deletes the worktree at wt, ignoring failure: it is cleanup.
+func removeWorktree(ctx context.Context, repo, wt string) {
+	defer lockWorktrees(repo)()
+	_, _ = runGit(ctx, repo, "worktree", "remove", "--force", wt)
 }
 
 // resolveManifestCommit resolves ref to a commit sha in repo. A ref that does
@@ -125,12 +154,10 @@ func buildVersionFromManifest(ctx context.Context, repo, cacheDir, sha, pkg stri
 	// carries a per-call unique suffix from MkdirTemp, so reuse it as the
 	// basename to keep each call's admin directory unique.
 	wt := filepath.Join(holder, filepath.Base(holder))
-	if _, err := runGit(ctx, repo, "worktree", "add", "--detach", "--force", wt, sha); err != nil {
+	if err := addDetachedWorktree(ctx, repo, wt, sha); err != nil {
 		return "", err
 	}
-	defer func() {
-		_, _ = runGit(ctx, repo, "worktree", "remove", "--force", wt)
-	}()
+	defer removeWorktree(ctx, repo, wt)
 
 	// os.CreateTemp allocates a unique name atomically, so two concurrent
 	// builds can never collide on it; the file itself is then removed so
