@@ -28,8 +28,12 @@ done
 
 func hookRepo(t *testing.T) string {
 	t.Helper()
+	// Ambient git config (templates, global excludes, a global hooksPath) must not
+	// reach these repos.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	repo := t.TempDir()
-	runIn(t, repo, "git", "init", "-q")
+	runIn(t, repo, "git", "init", "-q", "--template=")
 	runIn(t, repo, "git", "config", "user.email", "hook@example.com")
 	runIn(t, repo, "git", "config", "user.name", "Hook Test")
 	runIn(t, repo, "git", "config", "commit.gpgsign", "false")
@@ -328,8 +332,13 @@ func TestPreCommitHookFormatsWithTheRealFrontendBiome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Opt-in: the result depends on the installed Biome, which default tests
+	// must not.
+	if os.Getenv("EVENER_HOOKS_REAL_BIOME") != "1" {
+		t.Skip("set EVENER_HOOKS_REAL_BIOME=1 with the frontend install present to run the real formatter")
+	}
 	if _, err := os.Stat(biome); err != nil {
-		t.Skip("frontend install absent; run make test-web's preflight to enable this case")
+		t.Fatalf("EVENER_HOOKS_REAL_BIOME=1 but the frontend has no Biome install: %v", err)
 	}
 	frontendConfig, err := os.ReadFile("cmd/evener-hub/frontend/biome.jsonc")
 	if err != nil {

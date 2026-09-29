@@ -66,7 +66,7 @@ so formatting never reaches review as a finding.
   refuses to run when another `core.hooksPath` is set or another hook is
   installed in `.git/hooks`, since either would stop running.
 
-The tests for both scripts are in `hooks_test.go` (part of `make test`).
+The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER_HOOKS_REAL_BIOME=1 go test -run PreCommitHook .` also runs the hook against the real frontend Biome.
 
 ## Targets
 

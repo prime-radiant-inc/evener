@@ -20,7 +20,7 @@ esac
 current=$(git config --get core.hooksPath || true)
 if [ -n "$current" ] && [ "$current" != scripts/hooks ]; then
 	echo "install.sh: core.hooksPath is already '$current'; refusing to replace it." >&2
-	echo "  Fix: move those hooks into scripts/hooks, then: git config --unset core.hooksPath && make hooks" >&2
+	echo "  Fix: move those hooks into scripts/hooks, then: git config --unset core.hooksPath (add --global if it is set there) && make hooks" >&2
 	exit 1
 fi
 
