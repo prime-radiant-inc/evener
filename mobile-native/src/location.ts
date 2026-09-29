@@ -239,9 +239,9 @@ export function locationForRoute(
 	}
 	if (route.name === "Reader") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
-		const { sessionRef, path, reviewRef, reviewTitle, updatedAt } = route.params;
+		const { sessionRef, path, sessionTitle, updatedAt } = route.params;
 		const destination = { sessionRef, path, ...(typeof updatedAt === "string" ? { updatedAt } : {}) };
-		const session = { ref: reviewRef, title: reviewTitle };
+		const session = { ref: sessionRef, title: sessionTitle };
 		return reader(destination) && conversation(session)
 			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
 			: null;
@@ -281,8 +281,7 @@ export function restoredStack(location: SavedLocation | null) {
 			tier?: "current" | "recent" | "archived";
 			sessionRef?: string;
 			path?: string;
-			reviewRef?: string;
-			reviewTitle?: string;
+			sessionTitle?: string;
 			updatedAt?: string;
 		};
 	}[] = [{ name: "Hubs" }];
@@ -331,8 +330,7 @@ export function restoredStack(location: SavedLocation | null) {
 				hubId: location.hubId,
 				sessionRef: location.reader.sessionRef,
 				path: location.reader.path,
-				reviewRef: location.conversation.ref,
-				reviewTitle: location.conversation.title,
+				sessionTitle: location.conversation.title,
 				...(location.reader.updatedAt === undefined ? {} : { updatedAt: location.reader.updatedAt }),
 			},
 		});

@@ -61,7 +61,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -745,14 +744,14 @@ function sessionList(tree: ReturnType<typeof render>) {
 					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
 				}),
 			),
+		// As React Native does, the drag's end carries where it let go.
 		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() =>
-				list().props.onScroll({
-					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-				}),
-			);
-			act(() => list().props.onScrollEndDrag());
+			const event = {
+				nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			};
+			act(() => list().props.onScrollBeginDrag(event));
+			act(() => list().props.onScroll(event));
+			act(() => list().props.onScrollEndDrag(event));
 		},
 	};
 }
@@ -893,7 +892,11 @@ it("hides the chips only for the person's own drag, never for the app moving the
 	// A coast after the drag counts as the person's too.
 	act(() => session.list().props.onMomentumScrollBegin());
 	session.scroll(4010);
-	act(() => session.list().props.onMomentumScrollEnd());
+	act(() =>
+		session.list().props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 4010 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
 	expect(session.block().props.hidden).toBe(false);
 	tree.unmount();
 });

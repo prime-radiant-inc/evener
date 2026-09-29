@@ -78,7 +78,6 @@ vi.mock("react-native", async () => ({
 		addEventListener: () => ({ remove: () => {} }),
 	},
 	Image: "Image",
-	Keyboard: { dismiss: vi.fn() },
 	Linking: { openURL: vi.fn() },
 	RefreshControl: "RefreshControl",
 	StatusBar: "StatusBar",

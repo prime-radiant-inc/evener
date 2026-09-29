@@ -88,7 +88,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 					openDocument={(path) =>
 						sheet.finish(() => {
 							navigation.goBack();
-							navigation.navigate("Reader", { hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: host.title });
+							navigation.navigate("Reader", { hubId, sessionRef: ref, path, sessionTitle: host.title });
 						})
 					}
 				/>

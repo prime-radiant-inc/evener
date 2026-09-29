@@ -25,7 +25,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	async function withFleetHub(
 		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
-		options: { planRevised?: boolean } = {},
+		options: { planRevised?: boolean; long?: boolean } = {},
 	) {
 		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -107,6 +107,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			},
 			{ planRevised: true },
 		);
+	});
+
+	it("serves the long questions, approval and messages with EVENER_DEMO_LONG", async () => {
+		const AUDIT = `local:${demoSessionId("s-audit")}`;
+		const pendingCount = async (client: ReturnType<typeof createHubClient>) =>
+			(await client.request("thread/read", { ref: AUDIT, includeTurns: false })).thread.evener.pendingQuestion?.count;
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(4), { long: true });
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(2));
 	});
 });
 
@@ -1396,6 +1404,34 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("grows the working session by a finished step at a time on grow, for scroll checks", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands, growEveryMs: 5 });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-pr2138");
+		const items = async () =>
+			((await client.request("thread/read", { ref, includeTurns: true, subscribe: true })).thread.turns ?? []).flatMap(
+				(turn) => turn.items ?? [],
+			);
+		let resyncs = 0;
+		client.onNotification((notification) => {
+			if (notification.method === "evener/thread/resync") resyncs += 1;
+		});
+		try {
+			await client.connect();
+			const before = await items();
+			commands.write("grow\n");
+			await vi.waitFor(() => expect(resyncs).toBe(15));
+			const after = await items();
+			expect(after).toHaveLength(before.length + 15);
+			expect(after.filter((item) => item.id.startsWith("demo-grow-"))).toHaveLength(15);
+			expect(after.every((item, index) => index < before.length || item.status === "completed")).toBe(true);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -1404,7 +1440,7 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 			commands.write("dance\n");
 			await vi.waitFor(() =>
 				expect(info).toHaveBeenCalledWith(
-					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst",
+					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst, grow",
 				),
 			);
 		} finally {

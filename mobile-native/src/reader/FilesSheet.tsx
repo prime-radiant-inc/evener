@@ -27,8 +27,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 				hubId,
 				sessionRef: ref,
 				path,
-				reviewRef: ref,
-				reviewTitle: title,
+				sessionTitle: title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		});
