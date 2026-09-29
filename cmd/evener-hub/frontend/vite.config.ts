@@ -110,12 +110,19 @@ export default defineConfig({
       // last entry: the package's testing/hubWireFixtures.ts loads
       // authwire/responses.json through a `?raw` import, and Vitest's jsdom
       // suites transform that import through this server, which denies any
-      // file outside the allow list.
+      // file outside the allow list. The daemon's recorded notification frames
+      // (agent/testdata/notificationwire), its system events and steers
+      // (agent/testdata/systemeventwire) and its tool calls
+      // (agent/testdata/toolwire) reach the same suites the same way, through
+      // the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
         fs.realpathSync(path.join(__dirname, "node_modules")),
         appwirePackageDir,
         path.join(__dirname, "..", "testdata"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
       ],
     },
     proxy: {

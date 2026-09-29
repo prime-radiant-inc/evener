@@ -356,20 +356,18 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("[1]: %q", sessions[1].ID)
 	}
 
-	// Children of 01ACTIVE: subagent first, then the snapshotted original (fork).
+	// Children of 01ACTIVE: the snapshotted original (fork) only. The subagent
+	// has no row.
 	children := sessions[0].Children
-	if len(children) != 2 {
+	if len(children) != 1 {
 		t.Fatalf("children: %d", len(children))
 	}
-	if children[0].ID != "01SUB1" || children[0].Kind != "subagent" {
+	if children[0].ID != "01OLDORIG" || children[0].Kind != "fork" {
 		t.Errorf("[0]: %s/%s", children[0].ID, children[0].Kind)
 	}
-	if children[1].ID != "01OLDORIG" || children[1].Kind != "fork" {
-		t.Errorf("[1]: %s/%s", children[1].ID, children[1].Kind)
-	}
 	// Fork title includes the label.
-	if !strings.Contains(children[1].Title, "before TDD") {
-		t.Errorf("fork title missing label: %q", children[1].Title)
+	if !strings.Contains(children[0].Title, "before TDD") {
+		t.Errorf("fork title missing label: %q", children[0].Title)
 	}
 
 	// 01OTHER has no children
@@ -377,22 +375,16 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("01OTHER should have no children, got %d", len(sessions[1].Children))
 	}
 
-	// Live: 1 top-level row (01ACTIVE). 01SUB1 is a live subagent of 01ACTIVE,
-	// so it nests under it in the Live tier — the same foldout structure the
-	// Projects tier uses — rather than appearing as a flat, parentless row.
-	// 01OLDORIG is not live, so it is absent from the Live tier entirely.
+	// Live: 1 top-level row (01ACTIVE). 01SUB1 is a live subagent and has no
+	// row. 01OLDORIG is not live, so it is absent from the Live tier entirely.
 	if len(tree.Live) != 1 {
 		t.Fatalf("live: %d", len(tree.Live))
 	}
 	if tree.Live[0].ID != "01ACTIVE" {
 		t.Fatalf("live[0]: %q, want 01ACTIVE", tree.Live[0].ID)
 	}
-	liveChildren := tree.Live[0].Children
-	if len(liveChildren) != 1 || liveChildren[0].ID != "01SUB1" || liveChildren[0].Kind != "subagent" {
-		t.Fatalf("live[0] children = %#v, want one subagent child 01SUB1", liveChildren)
-	}
-	if liveChildren[0].State != "active" {
-		t.Errorf("live subagent state = %q, want active", liveChildren[0].State)
+	if liveChildren := tree.Live[0].Children; len(liveChildren) != 0 {
+		t.Fatalf("live[0] children = %#v, want none", liveChildren)
 	}
 
 	// Rollup state for the project: active (the most-attention live state).
@@ -420,8 +412,8 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 	}
 	project := tree.Projects[0]
 	sessions := allSessions(project)
-	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
-		t.Fatalf("sessions = %+v, want one parent with one child", sessions)
+	if len(sessions) != 1 || len(sessions[0].Children) != 0 {
+		t.Fatalf("sessions = %+v, want one parent with no children", sessions)
 	}
 	if sessions[0].State != "idle" {
 		t.Fatalf("parent state = %q, want idle", sessions[0].State)
@@ -429,30 +421,25 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 	// The child is listed (in-process, resumable) but the daemon carried no
 	// state for it. Liveness is not activity: an old daemon or a settled
 	// delegate with no carried state folds to idle, not active.
-	if sessions[0].Children[0].State != "idle" {
-		t.Fatalf("child state = %q, want idle (liveness is not activity)", sessions[0].Children[0].State)
-	}
 	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
 		t.Fatalf("project rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
 	}
 
 	tree = BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
 	project = tree.Projects[0]
-	sessions = allSessions(project)
-	if sessions[0].Children[0].State != "ended" || project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
-		t.Fatalf("stopped child projection = child %q rollup %q/%d expanded %v", sessions[0].Children[0].State, project.RollupState, project.RollupLive, project.Expanded)
+	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
+		t.Fatalf("stopped child projection = rollup %q/%d expanded %v", project.RollupState, project.RollupLive, project.Expanded)
 	}
 }
 
 // A live parent's RunningSubagentIDs is a liveness set: every non-closed
 // in-process descendant is listed, working or settled. When the daemon
 // carries the descendant's own projected status (RunningSubagentStates), the
-// tree must render THAT state — an idle delegate folds into the rail's
-// inactive list — instead of blanket "active". An ID with no carried state
-// (old daemon, legacy job discovery) must NOT read as active: liveness
-// alone is not activity, and a settled-but-resumable delegate that the
-// daemon failed to carry a state for would otherwise sit in the current
-// list forever, inflating the working count.
+// project rollup must use THAT state instead of blanket "active". An ID with
+// no carried state (old daemon, legacy job discovery) must NOT read as
+// active: liveness alone is not activity, and a settled-but-resumable
+// delegate that the daemon failed to carry a state for would otherwise keep
+// the project working forever, inflating the working count.
 func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -475,21 +462,8 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	}
 	project := tree.Projects[0]
 	sessions := allSessions(project)
-	if len(sessions) != 1 || len(sessions[0].Children) != 3 {
-		t.Fatalf("sessions = %+v, want one parent with three children", sessions)
-	}
-	states := map[string]string{}
-	for _, child := range sessions[0].Children {
-		states[child.ID] = child.State
-	}
-	if states["01IDLE"] != "idle" {
-		t.Errorf("idle-carried child state = %q, want idle", states["01IDLE"])
-	}
-	if states["01BUSY"] != "active" {
-		t.Errorf("active-carried child state = %q, want active", states["01BUSY"])
-	}
-	if states["01NOSTATE"] != "idle" {
-		t.Errorf("no-state child state = %q, want idle (liveness is not activity)", states["01NOSTATE"])
+	if len(sessions) != 1 || len(sessions[0].Children) != 0 {
+		t.Fatalf("sessions = %+v, want one parent with no children", sessions)
 	}
 	// One genuinely working child keeps the project live; the idle and
 	// no-state ones must not inflate the working count.
@@ -501,12 +475,6 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	live[0].RunningSubagentStates = map[string]string{"01IDLE": "idle", "01BUSY": "idle", "01NOSTATE": "idle"}
 	tree = BuildTreeAt(metas, live, nil, now)
 	project = tree.Projects[0]
-	sessions = allSessions(project)
-	for _, child := range sessions[0].Children {
-		if child.State != "idle" {
-			t.Errorf("all-idle child %s state = %q, want idle", child.ID, child.State)
-		}
-	}
 	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
 		t.Errorf("all-idle rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
 	}
@@ -1277,10 +1245,9 @@ func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
-	// mockup #10/#C rec: a run of same-titled idle sessions collapses to one
-	// cluster row; live/needs-you sessions stay un-clustered so signal isn't
-	// hidden behind a fold.
+func fuzzScenarioBuildTree_KeepsRepeatedTitlesAsPlainRows(t *testing.T) {
+	// Session titles are agentic and not expected to repeat, so equal titles
+	// are never folded: N ended same-titled sessions are N plain rows.
 	now := time.Now()
 	metas := []schema.SessionMeta{}
 	for i := range 5 {
@@ -1291,151 +1258,18 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
 		})
 	}
-	// A distinct singleton in the same project must not be swept into a cluster.
 	metas = append(metas, schema.SessionMeta{
 		ID: "01HAIKU", Name: "write a haiku", UpdatedAt: now.Add(-30 * time.Minute),
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"}})
 
-	proj := projectByName(t, buildTree(metas, nil), "evener-docs")
-	var clusters, singles int
-	for _, s := range allSessions(proj) {
-		if s.Kind == "cluster" {
-			clusters++
-			if s.ClusterCount != 5 {
-				t.Errorf("cluster count = %d, want 5", s.ClusterCount)
-			}
-			if len(s.Children) != 5 {
-				t.Errorf("cluster should hold its 5 members as children, got %d", len(s.Children))
-			}
-			if !strings.Contains(s.Title, "describe this image") {
-				t.Errorf("cluster title = %q, want the shared title", s.Title)
-			}
-		} else {
-			singles++
-		}
+	sessions := allSessions(projectByName(t, buildTree(metas, nil), "evener-docs"))
+	if len(sessions) != 6 {
+		t.Fatalf("sessions = %d, want 6 plain rows", len(sessions))
 	}
-	if clusters != 1 {
-		t.Errorf("clusters = %d, want 1", clusters)
-	}
-	if singles != 1 {
-		t.Errorf("singleton sessions = %d, want 1 (the haiku)", singles)
-	}
-}
-
-func TestBuildTreeDoesNotClusterSessionWithJobs(t *testing.T) {
-	now := time.Now()
-	metas := make([]schema.SessionMeta, 0, 4)
-	for i := range 4 {
-		metas = append(metas, schema.SessionMeta{
-			ID:        "01JOB" + string(rune('A'+i)),
-			Name:      "repeatable work",
-			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-jobs"},
-		})
-	}
-	tree := buildTree(metas, []LiveEntry{{
-		PID: 1, SessionID: metas[0].ID, Status: appwire.ThreadStatusIdle,
-		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
-	}})
-	project := projectByName(t, tree, "evener-jobs")
-	sessions := allSessions(project)
-	if len(sessions) != 4 {
-		t.Fatalf("sessions = %d, want four unclustered rows", len(sessions))
-	}
-	for _, session := range sessions {
-		if session.Kind == "cluster" {
-			t.Fatalf("session with active job was hidden in cluster %q", session.Title)
-		}
-	}
-}
-
-func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
-	// A live/needs-you member must keep all repeated-title sessions un-clustered
-	// so live signal is never hidden behind a fold.
-	now := time.Now()
-	metas := []schema.SessionMeta{}
-	for i := range 4 {
-		metas = append(metas, schema.SessionMeta{
-			ID:        "01DUP" + string(rune('A'+i)),
-			Name:      "describe this image",
-			UpdatedAt: now.Add(-time.Duration(i) * time.Minute),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
-		})
-	}
-	live := []LiveEntry{
-		{PID: 1, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
-	}
-	proj := projectByName(t, buildTree(metas, live), "evener-docs")
-	sessions := allSessions(proj)
 	for _, s := range sessions {
-		if s.Kind == "cluster" {
-			t.Fatalf("repeated titles must NOT cluster when a member is live: got cluster %q", s.Title)
+		if s.Kind != "session" || len(s.Children) != 0 {
+			t.Errorf("row %q kind=%q children=%d, want a plain session", s.ID, s.Kind, len(s.Children))
 		}
-	}
-	if len(sessions) != 4 {
-		t.Errorf("expected 4 un-clustered sessions, got %d", len(sessions))
-	}
-}
-
-// staleSubagentOfDeadParent builds a project whose parent session has ended
-// (it is not in the live map) while its subagent lingers there as entry, and
-// returns the subagent's row.
-func staleSubagentOfDeadParent(t *testing.T, entry LiveEntry) TreeNode {
-	t.Helper()
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: entry.SessionID, UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
-			IsSubagent: true, ParentSessionID: "01DEADP",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-	}
-	sessions := allSessions(projectByName(t, buildTree(metas, []LiveEntry{entry}), "evener"))
-	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
-		t.Fatalf("unexpected shape: %#v", sessions)
-	}
-	return sessions[0].Children[0]
-}
-
-func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
-	// A subagent that still reports "active" in the live map but whose parent
-	// session has ended must not keep spinning ⟳ forever — its state is clamped
-	// to "ended" so the dead session's children read as terminal.
-	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive})
-	if got := child.State; got != "ended" {
-		t.Errorf("stale subagent state = %q, want ended (parent is dead)", got)
-	}
-}
-
-// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval: a subagent row
-// under a parent that has ended is clamped to ended, and an ended row asks for
-// nothing, so the approval its stale live entry still carries goes with the
-// state: no flag, no tool, no target.
-func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
-	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
-	}})
-	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
-		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
-	}
-}
-
-func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		{ID: "01LIVEP", UpdatedAt: now, OriginalPrompt: "parent",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "01RUNSUB", UpdatedAt: now, OriginalPrompt: "sub",
-			IsSubagent: true, ParentSessionID: "01LIVEP",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-	}
-	live := []LiveEntry{
-		{PID: 1, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
-		{PID: 2, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
-	}
-	proj := projectByName(t, buildTree(metas, live), "evener")
-	if got := allSessions(proj)[0].Children[0].State; got != "active" {
-		t.Errorf("live subagent state = %q, want active (parent is live)", got)
 	}
 }
 
@@ -1468,8 +1302,8 @@ func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
 	metas := []schema.SessionMeta{
 		{ID: "root-a", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "root-b", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		// The newer duplicate is canonically retained, so dup remains a direct
-		// child of root-a and is not emitted again under root-b or top-level.
+		// The newer duplicate is canonically retained, so dup is a subagent and
+		// is not emitted under root-b or top-level.
 		{ID: "dup", ParentSessionID: "root-a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "dup", ParentSessionID: "root-b", UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
@@ -1490,15 +1324,15 @@ func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
 	for _, project := range append(append([]TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
 		top = append(top, allSessions(project)...)
 	}
-	if got := count(top, "dup"); got != 1 {
-		t.Fatalf("duplicate metadata ID emitted %d times, want once: %#v", got, tree)
+	if got := count(top, "dup"); got != 0 {
+		t.Fatalf("duplicate metadata ID emitted %d times, want none: %#v", got, tree)
 	}
-	if len(top) == 0 || len(top[0].Children) != 1 || top[0].Children[0].ID != "dup" {
-		t.Fatalf("canonical duplicate parentage = %#v, want root-a child", top)
+	if len(top) != 2 {
+		t.Fatalf("top-level rows = %#v, want root-a and root-b", top)
 	}
 }
 
-func TestBuildTree_GuardsMalformedSubagentLineage(t *testing.T) {
+func TestBuildTree_MalformedSubagentLineageTerminatesWithoutRows(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "root", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
@@ -1511,37 +1345,21 @@ func TestBuildTree_GuardsMalformedSubagentLineage(t *testing.T) {
 		{ID: "orphan", ParentSessionID: "missing", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 
-	tree := BuildTreeAt(metas, nil, nil, now)
+	// Live entries for the cycle members make the rollup walk their lineage.
+	live := []LiveEntry{
+		{PID: 1, SessionID: "a", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "b", Status: appwire.ThreadStatusActive},
+	}
+	tree := BuildTreeAt(metas, live, nil, now)
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("tree = %#v, want one current root", tree)
 	}
 	root := tree.Projects[0].Current[0]
-	if len(root.Children) != 1 || root.Children[0].ID != "a" {
-		t.Fatalf("root children = %#v, want one direct a", root.Children)
+	if len(root.Children) != 0 {
+		t.Fatalf("root children = %#v, want none: subagents have no rows", root.Children)
 	}
-	if len(root.Children[0].Children) != 1 || root.Children[0].Children[0].ID != "b" {
-		t.Fatalf("a children = %#v, want one direct b", root.Children[0].Children)
-	}
-	if got := root.Children[0].Children[0].Children; len(got) != 0 {
-		t.Fatalf("cycle should terminate at b, got children %#v", got)
-	}
-
-	var count func(TreeNode, string) int
-	count = func(node TreeNode, id string) int {
-		n := 0
-		if node.ID == id {
-			n++
-		}
-		for _, child := range node.Children {
-			n += count(child, id)
-		}
-		return n
-	}
-	if got := count(root, "a"); got != 1 {
-		t.Fatalf("malformed cycle duplicated a %d times", got)
-	}
-	if got := count(root, "orphan"); got != 0 {
-		t.Fatalf("orphan was hoisted into tree %d times", got)
+	if len(tree.Live) != 0 {
+		t.Fatalf("live = %#v, want no rows for the subagents", tree.Live)
 	}
 }
 
@@ -1662,7 +1480,7 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	total := maxSidebarSessionsPerTier + 7
 	metas := make([]schema.SessionMeta, 0, total)
 	for i := range total {
-		// Spread updated times so they don't cluster-fold (distinct titles too).
+		// Spread updated times (distinct titles too).
 		metas = append(metas, schema.SessionMeta{
 			ID:             fmt.Sprintf("01CUR%03d", i),
 			OriginalPrompt: fmt.Sprintf("current task %d", i),
@@ -2207,84 +2025,6 @@ func fuzzScenarioProjectArchiveDecisionUsesCanonicalID(t *testing.T) {
 	tree = BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, precedence, now, projects)
 	if len(tree.Projects) != 2 {
 		t.Fatalf("canonical unarchive should leave both active; got %+v", tree)
-	}
-}
-
-func fuzzScenarioTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	old := now.Add(-30 * 24 * time.Hour) // ended, clusterable
-	mk := func(id, title string) schema.SessionMeta {
-		return schema.SessionMeta{ID: id, Name: title, CreatedAt: old, UpdatedAt: old, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
-	}
-	metas := []schema.SessionMeta{
-		mk("01A", "alpha"), mk("01B", "alpha"), mk("01C", "alpha"),
-		mk("01D", "beta"), mk("01E", "beta"), mk("01F", "beta"),
-	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
-	var clusters []TreeNode
-	for _, p := range tree.ArchivedProjects {
-		for _, n := range append(append([]TreeNode{}, p.Archived...), p.Recent...) {
-			if n.Kind == "cluster" {
-				clusters = append(clusters, n)
-			}
-		}
-	}
-	if len(clusters) != 2 {
-		t.Fatalf("want 2 clusters, got %d", len(clusters))
-	}
-	if clusters[0].ID == "" || clusters[1].ID == "" || clusters[0].ID == clusters[1].ID {
-		t.Fatalf("clusters need distinct non-empty IDs: %q vs %q", clusters[0].ID, clusters[1].ID)
-	}
-	for _, c := range clusters {
-		if !strings.HasPrefix(c.ID, "cluster:") {
-			t.Fatalf("cluster ID must be cluster:<hex>, got %q", c.ID)
-		}
-	}
-}
-
-func fuzzScenarioSubagentChildrenCappedPerTier(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	parent := schema.SessionMeta{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
-	metas := []schema.SessionMeta{parent}
-	for i := range 60 {
-		metas = append(metas, schema.SessionMeta{
-			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
-			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
-		})
-	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
-	var subs int
-	for _, p := range tree.Projects {
-		for _, n := range p.Current {
-			if n.ID == "01P" {
-				subs = len(n.Children)
-			}
-		}
-	}
-	if subs != maxSidebarSessionsPerTier {
-		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
-	}
-	if got := tree.Projects[0].Current[0].MoreSubagents; got != 10 {
-		t.Fatalf("subagent overage = %d, want 10", got)
-	}
-}
-
-func TestSubagentChildrenCarryOverage(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	metas := []schema.SessionMeta{{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}}
-	for i := range 60 {
-		metas = append(metas, schema.SessionMeta{
-			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
-			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
-		})
-	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
-	parent := tree.Projects[0].Current[0]
-	if len(parent.Children) != maxSidebarSessionsPerTier {
-		t.Fatalf("children = %d, want %d", len(parent.Children), maxSidebarSessionsPerTier)
-	}
-	if got := parent.MoreSubagents; got != 10 {
-		t.Fatalf("subagent overage = %d, want 10", got)
 	}
 }
 

@@ -5,17 +5,24 @@
 //   (ruling 10);
 // - a question still waiting is left to the ask dock, which is the question
 //   while it is open;
-// - a time marker introduces the first turn, a turn that starts after ten
-//   quiet minutes, and a new day.
+// - a time marker introduces the first turn (once no older history is left
+//   to load), a turn that starts after ten quiet minutes, and a new day.
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	filePathOf,
 	type ItemModel,
+	mcpToolParts,
 	parseArgs,
 	parseAskUserQuestions,
-	str,
+	shellCommand,
+	skillName,
 	type ThreadModel,
+	taskListChanges,
+	type ToolFamily,
 	type TurnModel,
+	toolFamily,
+	words,
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
@@ -29,9 +36,9 @@ type TurnTimes = Pick<TurnModel, "id" | "startedAt" | "completedAt">;
 export const TIME_GAP_MS = 10 * 60_000;
 
 // A subagent and a question are items of their own (spec 8.2), never steps.
-const OWN_ROW_TOOLS = new Set(["delegate", "delegate_send", "ask_user"]);
+const OWN_ROW_TOOLS = new Set(["delegate", "ask_user"]);
 
-function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
+export function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
 	return row.kind === "activity" && row.family !== "reasoning" && !OWN_ROW_TOOLS.has(row.label);
 }
 
@@ -40,10 +47,21 @@ function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);
 }
 
+export interface SessionRowsOptions {
+	/** The zone that decides where a new day starts; the device's own when unset. */
+	timeZone?: string;
+	/** Older history is still to load above these rows. The first loaded turn
+	 * then gets no time marker: it would sit at index 0, and the page above
+	 * can remove it (its turn ended under ten minutes before), taking the
+	 * list's first key with it, which the list's position keeping needs to
+	 * find again. The marker appears once the history is whole. */
+	olderToLoad?: boolean;
+}
+
 export function sessionRows(
 	rows: readonly TimelineRow[],
 	turns: readonly TurnTimes[],
-	timeZone?: string,
+	{ timeZone, olderToLoad = false }: SessionRowsOptions = {},
 ): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
@@ -62,7 +80,8 @@ export function sessionRows(
 			// would appear. A turn is marked at most once.
 			if (!marked.has(turnId)) {
 				marked.add(turnId);
-				const marker = timeMarker(byId, turnId, lastTurn, timeZone);
+				const firstLoadedTurn = lastTurn === undefined;
+				const marker = olderToLoad && firstLoadedTurn ? null : timeMarker(byId, turnId, lastTurn, timeZone);
 				if (marker) out.push(marker);
 			}
 			// A run never spans a turn change, marked or not: an idle gap too
@@ -145,8 +164,8 @@ export function answerTo(model: Pick<ThreadModel, "turns"> | null, itemId: strin
 	return undefined;
 }
 
-/** The run that is still growing: the last run of the turn in progress. A
- * live run never folds (spec 8.2). */
+/** The run that is still growing: the last run of the turn in progress
+ * (spec 8.2). */
 export function liveRunId(rows: readonly TimelineRow[], activeTurnId: string | undefined): string | undefined {
 	if (activeTurnId === undefined) return undefined;
 	for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -265,9 +284,11 @@ export function timeMarkerText(at: number, now: number, timeZone?: string): stri
 }
 
 export interface RunPart {
-	/** The kind of step the part counts. A run has one part per family, so
-	 * this is the part's identity while its words change as the run grows. */
-	family: Family;
+	/** The part's identity while its words change as the run grows: its
+	 * family, or for an MCP server or a tool no summary covers, that server or
+	 * tool, since each gets a part of its own. */
+	key: string;
+	family: ToolFamily;
 	text: string;
 	/** Drawn after the text as "(2 failed)", in red ink even when folded. */
 	failed: number;
@@ -280,34 +301,39 @@ export interface RunSummary {
 	failed: number;
 }
 
-export type Family = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "other";
-
-const FAMILIES: Record<string, Family> = {
-	read_file: "read",
-	edit_file: "edit",
-	write_file: "edit",
-	apply_patch: "edit",
-	grep: "search",
-	glob: "search",
-	list_dir: "search",
-	web_fetch: "fetch",
-	web_search: "webSearch",
-	shell: "shell",
-};
-
 /** What a step acted on: the command for a shell step, else the file or path
- * it named. */
-export function stepTarget(label: string, argumentsJSON: string | undefined): string | undefined {
-	const args = parseArgs(argumentsJSON);
-	return FAMILIES[label] === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
+ * it named. `parsed` is the arguments already decoded, for a caller that read
+ * them itself. */
+export function stepTarget(
+	label: string,
+	argumentsJSON: string | undefined,
+	parsed?: Record<string, unknown>,
+): string | undefined {
+	const args = parsed ?? parseArgs(argumentsJSON);
+	if (toolFamily(label) === "shell") return shellCommand(args) || undefined;
+	return filePathOf(args);
+}
+
+/** What a step says it did: the words its row was built with (projectedRows
+ * reads them once from the whole step with the package's toolStepSummary),
+ * else its label. The one place a renderer reads a step's words from. */
+export function stepWords(step: Pick<RunStep, "label" | "detail">): string {
+	return step.detail.summary ?? step.label;
 }
 
 interface Group {
-	family: Family;
+	key: string;
+	family: ToolFamily;
+	/** What an MCP part or a tool part names: the server, or the tool, in words. */
+	name: string;
 	count: number;
 	failed: number;
-	programs: Set<string>;
+	/** The programs a shell part's commands ran, or the skills a skill part
+	 * activated. */
+	names: Set<string>;
 	unnamed: number;
+	/** Whether a task_list step in the part changed the list, not only read it. */
+	changedTasks: boolean;
 }
 
 // "go test ./agent/..." runs "go test"; "ls -la" runs "ls".
@@ -317,10 +343,33 @@ function programOf(command: string | undefined): string | undefined {
 	return second && /^[a-z][\w-]*$/i.test(second) ? `${first} ${second}` : first;
 }
 
+// A step's part: one per family, except that each tool no summary covers gets
+// its own ("used compact context once"). MCP tools share one part.
+function partOf(label: string): { key: string; family: ToolFamily; name: string } {
+	const family = toolFamily(label);
+	if (family === "tool") {
+		const name = words(label) || "a tool";
+		return { key: `tool:${name}`, family, name };
+	}
+	return { key: family, family, name: "" };
+}
+
+// What a step contributes to its part's words: the program a shell command
+// ran, the skill a skill step activated, or the server an MCP tool is on.
+function namedBy(family: ToolFamily, step: RunStep): string | undefined {
+	if (family === "shell") return programOf(stepTarget(step.label, step.detail.arguments));
+	if (family === "skill") return skillName({ argumentsJSON: step.detail.arguments }) || undefined;
+	if (family === "mcp") return mcpToolParts(step.label)?.server;
+	return undefined;
+}
+
 function partText(group: Group): string {
 	const n = group.count;
 	const plural = (one: string, many: string) => (n === 1 ? one : many);
 	const times = n === 1 ? "once" : `${n} times`;
+	// Named only when every step in the part is known and the same.
+	const [only] = [...group.names];
+	const oneName = group.names.size === 1 && group.unnamed === 0 ? only : undefined;
 	switch (group.family) {
 		case "read":
 			return `read ${n} ${plural("file", "files")}`;
@@ -332,15 +381,23 @@ function partText(group: Group): string {
 			return `fetched ${n} ${plural("page", "pages")}`;
 		case "webSearch":
 			return `searched the web ${times}`;
-		case "shell": {
-			// Named only when every command in the run is known and the same.
-			const [only] = [...group.programs];
-			return group.programs.size === 1 && group.unnamed === 0 && only
-				? `ran ${only}`
-				: `ran ${n} ${plural("command", "commands")}`;
-		}
-		default:
-			return `${n} other ${plural("step", "steps")}`;
+		case "shell":
+			return oneName ? `ran ${oneName}` : `ran ${n} ${plural("command", "commands")}`;
+		case "skill":
+			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
+		case "tasks":
+			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "transcript":
+			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
+		case "sessions":
+			return n === 1 ? "searched sessions" : `searched sessions ${n} times`;
+		case "worktree":
+			return `managed worktrees ${times}`;
+		case "mcp":
+			// One server reads by name; several read as how many MCP tools ran.
+			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
+		case "tool":
+			return `used ${group.name} ${times}`;
 	}
 }
 
@@ -360,23 +417,24 @@ function runDuration(steps: readonly RunStep[]): number | undefined {
 }
 
 export function runSummary(steps: readonly RunStep[]): RunSummary {
-	const groups = new Map<Family, Group>();
+	const groups = new Map<string, Group>();
 	let failed = 0;
 	for (const step of steps) {
-		const family = FAMILIES[step.label] ?? "other";
-		let group = groups.get(family);
+		const part = partOf(step.label);
+		let group = groups.get(part.key);
 		if (!group) {
-			group = { family, count: 0, failed: 0, programs: new Set(), unnamed: 0 };
-			groups.set(family, group);
+			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false };
+			groups.set(part.key, group);
 		}
 		group.count += 1;
 		if (step.state === "failed") {
 			group.failed += 1;
 			failed += 1;
 		}
-		if (family === "shell") {
-			const program = programOf(stepTarget(step.label, step.detail.arguments));
-			if (program) group.programs.add(program);
+		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
+			const name = namedBy(part.family, step);
+			if (name) group.names.add(name);
 			else group.unnamed += 1;
 		}
 	}
@@ -384,7 +442,12 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	return {
 		steps: steps.length,
 		...(durationMs === undefined ? {} : { durationMs }),
-		parts: [...groups.values()].map((group) => ({ family: group.family, text: partText(group), failed: group.failed })),
+		parts: [...groups.values()].map((group) => ({
+			key: group.key,
+			family: group.family,
+			text: partText(group),
+			failed: group.failed,
+		})),
 		failed,
 	};
 }

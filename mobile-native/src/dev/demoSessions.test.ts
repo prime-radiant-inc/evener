@@ -9,7 +9,7 @@ import type { ContentLevel } from "@evener/appwire-client";
 import { liveAsksFor, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
-import { configForLevel } from "../session/detailLevels.js";
+import { displayForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
@@ -25,8 +25,8 @@ import { DEMO_MODEL_LIST } from "./demoSetup.js";
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
 const sessions = createDemoSessions({ now: NOW });
 
-function threadOf(slug: string): Thread {
-	const thread = sessions.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+function threadOf(slug: string, from: Thread[] = sessions): Thread {
+	const thread = from.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
 	if (!thread) throw new Error(`no demo thread for ${slug}`);
 	return thread;
 }
@@ -35,12 +35,16 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 
 // One session as the Session screen sees it at a detail level: the store's
 // projection, then the screen's presentation and transcript rows.
-function open(slug: string, level: ContentLevel = "intent") {
-	const thread = threadOf(slug);
+function open(slug: string, level: ContentLevel = "intent", from: Thread[] = sessions) {
+	const thread = threadOf(slug, from);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
-	const config = configForLevel(level, null) ?? undefined;
+	const display = displayForLevel(level, null);
+	const config = display.config ?? undefined;
 	const conversation = projectConversation(model, liveAsksFor(model), config);
-	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	const presentation = projectNativeTranscript(conversation, config, {
+		justTheConversation: display.justTheConversation,
+	});
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
 	return { thread, model, conversation, rows };
 }
 
@@ -147,6 +151,38 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			}),
 		);
 	});
+
+	// A real delegate call settles as soon as its launch receipt returns, so a
+	// demo that gave the call its subagent's state would hide a row that reads
+	// the call instead of the subagent (the transcript audit's first gap).
+	it("settles every subagent call at launch with its receipt, as the hub does", () => {
+		const calls = sessions.flatMap((thread) =>
+			(thread.turns ?? []).flatMap((turn) => turn.items ?? []).filter((item) => item.toolName === "delegate"),
+		);
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) {
+			expect(call.status).toBe("completed");
+			expect(JSON.parse(call.output ?? "{}")).toMatchObject({
+				delegate_id: expect.any(String),
+				transcript_ref: expect.any(String),
+			});
+		}
+	});
+
+	it.each(["s-pr2138", "s-retry", "s-tasklist"])(
+		"reads each subagent row in %s at Intent by its subagent's own state, and can open it",
+		(slug) => {
+			const { model, rows } = open(slug);
+			const subagentRows = subagentsOf(rows);
+			expect(subagentRows.length).toBeGreaterThan(0);
+			for (const row of subagentRows) {
+				const delegate = model.delegates?.find((candidate) => candidate.originToolCallId === row.detail.callId);
+				const line = subagentLine(row, model.delegates, NOW);
+				expect(line.ref).toBe(delegate?.transcriptRef);
+				expect(line.stateText).toMatch(/^(running|failed|done) · \d+[smhd]/);
+			}
+		},
+	);
 
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");
@@ -372,5 +408,121 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			text: "Your note: Measure on magic-kingdom, not a laptop.",
 			links: "1 link",
 		});
+	});
+});
+
+// EVENER_DEMO_LONG: content longer than any frame, so a screenshot pass
+// exercises long questions, approvals and messages, and many rows.
+describe("the demo sessions with long content", () => {
+	const long = createDemoSessions({ now: NOW, long: true });
+	const longThread = (slug: string) => {
+		const thread = long.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+		if (!thread) throw new Error(`no demo thread for ${slug}`);
+		return thread;
+	};
+	const items = (thread: Thread) => (thread.turns ?? []).flatMap((turn) => turn.items ?? []);
+	const hydrated = (slug: string) => {
+		const thread = longThread(slug);
+		return hydrateThread({ thread }, thread.evener.ref, NOW);
+	};
+	const notifications = (thread: Thread) =>
+		items(thread).filter((item) => item.type === "steering" && item.steeringKind === "notification");
+
+	it("asks four questions, the first long, with five long options", () => {
+		const model = hydrated("s-audit");
+		const questions = [...liveAsksFor(model).values()].flat();
+		expect(questions).toHaveLength(4);
+		expect(questions[0]?.question.length).toBeGreaterThan(250);
+		expect(questions[0]?.why?.length).toBeGreaterThan(600);
+		expect(questions[0]?.options).toHaveLength(5);
+		expect(longThread("s-audit").evener.pendingQuestion).toMatchObject({ count: 4 });
+	});
+
+	it("asks to write to a deep path that may have partly run", () => {
+		expect(hydrated("s-mirror").pendingEscalations).toEqual([
+			expect.objectContaining({
+				deniedPath:
+					"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+				partiallyRan: true,
+			}),
+		]);
+	});
+
+	it("gives the working session a long message from each side, many steps and notifications", () => {
+		const shown = items(longThread("s-pr2138"));
+		const usual = items(threadOf("s-pr2138"));
+		expect(shown.length).toBeGreaterThan(usual.length + 24);
+		expect(shown.some((item) => item.type === "userMessage" && (item.text ?? "").length > 500)).toBe(true);
+		expect(shown.some((item) => item.type === "agentMessage" && (item.text ?? "").length > 1500)).toBe(true);
+		expect(notifications(longThread("s-pr2138"))).not.toHaveLength(0);
+	});
+
+	it("leaves every session's usual content alone without the flag", () => {
+		expect(notifications(threadOf("s-pr2138"))).toHaveLength(0);
+		expect(threadOf("s-audit").evener.pendingQuestion).toMatchObject({ count: 2 });
+	});
+});
+
+// One session replays the recorded wire corpora (agent/testdata/*wire), so
+// every tool family the phone summarizes can be seen and screenshotted in the
+// shapes the daemon sends.
+describe("the demo session with every tool family", () => {
+	const withTools = createDemoSessions({ now: NOW, toolFamilies: true });
+
+	it("is served only when asked for, leaving the mockup's fleet as it is", () => {
+		expect(sessions.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(false);
+		expect(withTools.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(true);
+	});
+
+	it("replays every recorded call and its result, with every family the phone summarizes", () => {
+		const { thread, rows } = open("s-tools", "tools", withTools);
+		const items = thread.turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const calls = items.filter((item) => item.type === "commandExecution");
+		const families = new Set(calls.map((call) => call.toolName));
+		for (const family of [
+			"shell",
+			"read_file",
+			"edit_file",
+			"web_fetch",
+			"use_skill",
+			"list_dir",
+			"task_list",
+			"delegate",
+		])
+			expect(families).toContain(family);
+		// Each announcement has its result beside it, sharing its callId.
+		const settledCalls = new Set(calls.filter((call) => call.status !== "inProgress").map((call) => call.callId));
+		expect(calls.filter((call) => !settledCalls.has(call.callId))).toEqual([]);
+		expect(items.some((item) => item.type === "systemMessage")).toBe(true);
+		expect(items.some((item) => item.type === "steering")).toBe(true);
+		expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
+		expect(runsOf(rows)).not.toEqual([]);
+	});
+
+	// The corpora are recorded apart, so a callId one reuses must not fold
+	// another's call into it: each callId names one call and its result.
+	it("gives each recorded call a callId of its own across the corpora", () => {
+		const items = threadOf("s-tools", withTools).turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const byCallId = new Map<string, string[]>();
+		for (const item of items)
+			if (item.type === "commandExecution" && item.callId)
+				byCallId.set(item.callId, [...(byCallId.get(item.callId) ?? []), item.id]);
+		const shared = [...byCallId].filter(
+			([, ids]) =>
+				ids.filter((id) => !id.startsWith("item_tool_result_")).length > 1 ||
+				ids.filter((id) => id.startsWith("item_tool_result_")).length > 1,
+		);
+		expect(shared).toEqual([]);
+	});
+
+	// The package folds a call and its result into one step by callId, as a
+	// reload serves them, so an edit keeps both its arguments and its output.
+	it("folds each recorded call with its result, as the phone reads a reloaded transcript", () => {
+		const { model } = open("s-tools", "tools", withTools);
+		const steps = model.turns.flatMap((turn) => turn.items).filter((item) => item.type === "commandExecution");
+		expect(new Set(steps.map((step) => step.callId)).size).toBe(steps.length);
+		const edit = steps.find((step) => step.toolName === "edit_file");
+		expect(edit?.argumentsJSON).toContain("old_string");
+		expect(edit?.output).toBe("edited agent/tree.go: 1 replacement");
 	});
 });

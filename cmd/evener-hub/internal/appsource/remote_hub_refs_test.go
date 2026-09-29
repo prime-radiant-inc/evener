@@ -31,6 +31,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		Rename:            true,
 		SkillInput:        true,
 		StopSubagent:      true,
+		PageBefore:        true,
 	}
 }
 
@@ -162,6 +163,15 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		{"SkillInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		// The source forwards a cursorless before to a remote thread now
+		// (#3176), but the hub does not advertise PageBefore for one yet, so
+		// the capability stays masked.
+		{"PageBefore", map[string]func() error{
+			"ListItemCandidates": func() error {
+				_, err := source.ListItemCandidates(ctx, appwire.ThreadTurnsListParams{Before: &appwire.ThreadItemPosition{Entry: 1}})
+				return err
+			},
 		}},
 	}
 

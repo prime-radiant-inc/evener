@@ -91,7 +91,9 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   is acknowledged, **not** closed, and no host-side restart-identity pin helper
   is planned — a `pidfd` is unreachable through the component's only host
   interface, `ssh <dest> <command>` (the crash-fencing `evener-fence` lease
-  wrapper is a fencing helper, not a restart-identity pin). Shipped and restored
+  wrapper an earlier revision named here was withdrawn with that program,
+  Jesse, 2026-09-29; comp08 passes 1–2 — it was a fencing helper, never a
+  restart-identity pin). Shipped and restored
   by #2450 reversing #2410: `restartHub` runs the guarded ad hoc path for the
   supervisorless branch (`restartBare` → `waitHealthy` → `clearPendingRestart`);
   the at-signal re-read is not implemented and the unverified-target refusal
@@ -122,6 +124,17 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   item 3"); actions refused until reconnect.
 - **Tenancy**: connect as the configured SSH user; a host's sessions seen by the
   controller are exactly that account's.
+- **Crash-fencing program: withdrawn (Jesse, 2026-09-29).** The crash-fencing
+  companion (08c) and everything it specified — orphan boundaries and the
+  verified-process kill path, fencing epochs and guards, leases, local reap,
+  takeover, the remote `evener-fence` helper, `orphan-resolve`, and the
+  helper-gated migration path — is withdrawn and removed ("two deploys at once
+  is on them"): comp08 passes 1–2 (`acd81e2517`, #3116, #3131) removed the
+  machinery, and pass 3 deletes the spec. What stays is the deploy pipeline the
+  program was layered on: the operation pipeline and its store, the per-host
+  gate, dedup and idempotency, remnants with `teardown-retry`/`teardown-recover`
+  (attestations recorded, unattributed), the custody quarantine, and the probe
+  epoch.
 
 ## 3. Leverage in the current code
 
@@ -477,7 +490,8 @@ implementing — several have landed without their entry being re-marked.
   requirement — no atomic form is reachable through this component's only host
   interface (`ssh <dest> <command>`), and no host-side restart-identity pin
   helper is specified, installed, or invoked (the crash-fencing `evener-fence`
-  lease wrapper is a fencing helper, not a restart-identity pin). The residual check-then-act window in the ad hoc path
+  lease wrapper an earlier revision named here was withdrawn with that program,
+  Jesse, 2026-09-29; comp08 passes 1–2). The residual check-then-act window in the ad hoc path
   remains: the re-read narrows it and does not close it. The refusal rule
   stands, never a fallback to a bare unguarded `kill`: an identity field that
   cannot be re-read refuses `ErrRestart` with no signal, while a supervisor label

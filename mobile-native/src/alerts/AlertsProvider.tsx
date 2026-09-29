@@ -28,7 +28,7 @@ const realClock: AlertTimer = {
 };
 
 export function AlertsProvider({ children }: { children: ReactNode }) {
-	const { client, state, activeProfile } = useConnection();
+	const { client, state, activeProfile, profiles } = useConnection();
 	const hubId = activeProfile?.id ?? null;
 	const [center] = useState(() => new AlertCenter(realClock, haptic));
 	const [feed] = useState(() => new AlertFeed(center));
@@ -67,6 +67,15 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 		noticesByKey.current = new Map();
 		reportRoutes(routes.current);
 	}, [center, hubId, reportRoutes]);
+
+	// A removed hub took its New session draft with it, so a failed start's
+	// alert for it would open nothing: it goes with the hub (#3104).
+	const savedHubs = useRef<ReadonlySet<string>>(new Set());
+	useEffect(() => {
+		const now = new Set(profiles.map((profile) => profile.id));
+		for (const id of savedHubs.current) if (!now.has(id)) center.startFailureSeen(id);
+		savedHubs.current = now;
+	}, [center, profiles]);
 
 	// One controller per client object (ruling 2). A new client (a return
 	// from the background, another hub, or a closed connection dialed again)

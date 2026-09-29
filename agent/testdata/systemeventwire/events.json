@@ -1,0 +1,371 @@
+{
+  "note": "System events and daemon steers, each projected the way history (or the live overlay, for plugin_loaded and context_compaction) reaches the wire, and a failed turn as a reload groups it.",
+  "items": [
+    {
+      "case": "tool-repair",
+      "note": "A NOTICE entry for a tool call the repair engine corrected before it ran (session_tools.go recordNotice).",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_tool_repair_1",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 1,
+        "text": "Fixed the shell call: removed the unrecognized \"timeout\" field.",
+        "description": "Tool call repaired",
+        "status": "completed",
+        "eventKind": "tool_repair"
+      }
+    },
+    {
+      "case": "compaction-summary",
+      "note": "A summary turn: description Context summary, the whole summary as markdown text.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_compaction_1",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 1,
+        "text": "# Summary\n\nThe settle pass now waits for the drain.\n\n- Fixed the race in `tree.go`.\n- Next: run the race detector.",
+        "description": "Context summary",
+        "status": "completed",
+        "eventKind": "compaction"
+      }
+    },
+    {
+      "case": "compaction-checkpoint",
+      "note": "A checkpoint turn: description Context checkpoint, the checkpoint as markdown text.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_compaction_1",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 1,
+        "text": "# Summary\n\nThe settle pass now waits for the drain.\n\n- Fixed the race in `tree.go`.\n- Next: run the race detector.",
+        "description": "Context checkpoint",
+        "status": "completed",
+        "eventKind": "compaction"
+      }
+    },
+    {
+      "case": "plugin-loaded",
+      "note": "A named plugin load: the summary rides the description, text is empty, and raw.pluginLoaded carries the name and counts.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_plugin-loaded",
+        "turnId": "turn_1",
+        "description": "Loaded plugin superpowers (12 skills, 2 agents, 1 MCP servers)",
+        "status": "completed",
+        "raw": {
+          "pluginLoaded": {
+            "name": "superpowers",
+            "skillCount": 12,
+            "agentCount": 2,
+            "mcpCount": 1
+          }
+        },
+        "eventKind": "plugin_loaded"
+      }
+    },
+    {
+      "case": "plugin-loaded-unnamed",
+      "note": "A plugin load with no name.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_plugin-loaded-unnamed",
+        "turnId": "turn_1",
+        "description": "Loaded plugin (3 skills, 0 agents, 0 MCP servers)",
+        "status": "completed",
+        "raw": {
+          "pluginLoaded": {
+            "name": "",
+            "skillCount": 3,
+            "agentCount": 0,
+            "mcpCount": 0
+          }
+        },
+        "eventKind": "plugin_loaded"
+      }
+    },
+    {
+      "case": "context-compaction",
+      "note": "A compaction pass with turn and token counts: raw.compaction carries the numbers.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_context-compaction",
+        "turnId": "turn_1",
+        "text": "Layer: summary\nTurns: 40 -\u003e 5\nEstimated tokens: 412000 -\u003e 38000",
+        "description": "Context compaction",
+        "status": "completed",
+        "raw": {
+          "compaction": {
+            "layer": "summary",
+            "turns_before": 40,
+            "turns_after": 5,
+            "est_tokens_before": 412000,
+            "est_tokens_after": 38000
+          }
+        },
+        "eventKind": "context_compaction"
+      }
+    },
+    {
+      "case": "context-compaction-turns",
+      "note": "A compaction pass that counted turns but no tokens.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_context-compaction-turns",
+        "turnId": "turn_1",
+        "text": "Layer: trim\nTurns: 40 -\u003e 5",
+        "description": "Context compaction",
+        "status": "completed",
+        "raw": {
+          "compaction": {
+            "layer": "trim",
+            "turns_before": 40,
+            "turns_after": 5
+          }
+        },
+        "eventKind": "context_compaction"
+      }
+    },
+    {
+      "case": "context-compaction-bare",
+      "note": "A compaction pass with no numbers: no raw.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_context-compaction-bare",
+        "turnId": "turn_1",
+        "text": "Context compaction ran",
+        "description": "Context compaction",
+        "status": "completed",
+        "eventKind": "context_compaction"
+      }
+    },
+    {
+      "case": "steer-hook-context",
+      "note": "Context a hook supplied (wrapHookContext).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003eRemember to run make lint before pushing.\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "hook-context"
+      }
+    },
+    {
+      "case": "steer-precompact-hook",
+      "note": "Context a PreCompact hook supplied before the history was compacted (runPreCompactHook).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003eKeep the open PR number: #3149.\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "precompact-hook"
+      }
+    },
+    {
+      "case": "steer-compact-nudge",
+      "note": "The low-headroom nudge (selfCompactNudge).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "You are running low on context-window headroom. If you are at or near a clean stopping point, call the `compact_context` tool now to fold older history into a summary checkpoint and free headroom — include a note_to_self with the exact details that must survive (and optional compaction_instructions). If you don't, an automatic compaction will run without your steering.",
+        "status": "completed",
+        "steeringKind": "compact-nudge"
+      }
+    },
+    {
+      "case": "steer-no-tool-calls",
+      "note": "The retry steer after an empty response (session_tool_round.go's first empty-response text, copied: it is inline there).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "Your previous response was empty. Please continue working on the task.",
+        "status": "completed",
+        "steeringKind": "no-tool-calls"
+      }
+    },
+    {
+      "case": "steer-loop-detected",
+      "note": "The failure-loop intervention (failureLoopIntervention).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "Every one of the last 3 tool calls failed, and they repeat the same pattern: shell. Repeating a failing call cannot make it succeed. The most recent failure was:\n\nexit status 1\n\nStop. Either change the arguments, or take a different approach to the goal.",
+        "status": "completed",
+        "steeringKind": "loop-detected"
+      }
+    },
+    {
+      "case": "steer-provider-failure",
+      "note": "The steer after a provider failure (composeFailureSteering's content-filter text).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "The provider blocked this response under its content policy. Nothing was delivered or saved.",
+        "status": "completed",
+        "steeringKind": "provider-failure"
+      }
+    },
+    {
+      "case": "steer-transcript-pointer",
+      "note": "The pointer to the pre-compaction transcript (session_compaction.go, inline there; abridged).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003eIf you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly.\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "transcript-pointer"
+      }
+    },
+    {
+      "case": "steer-current-task",
+      "note": "The current task (formatCurrentTaskSteering).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003e\n\u003cCURRENT-TASK id=\"3\"\u003e\n\u003cTITLE\u003eFix race\u003c/TITLE\u003e\n\u003c/CURRENT-TASK\u003e\nCall your next tool: use task_list to mark task 3 as done when this step is complete.\n\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "current-task"
+      }
+    },
+    {
+      "case": "steer-task-list",
+      "note": "The full task list after a compaction (taskReminderFull's kind; the text is abridged).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003e\nTasks:\n- #3 Fix race (in progress)\n\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "task-list"
+      }
+    },
+    {
+      "case": "steer-task-nudge",
+      "note": "The one-time task_list suggestion (taskReminderNudge).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "\u003cSYSTEM-REMINDER\u003e\nYou have a task_list tool available for organizing multi-step work. Consider creating a task list to track your progress.\n\u003c/SYSTEM-REMINDER\u003e",
+        "status": "completed",
+        "steeringKind": "task-nudge"
+      }
+    },
+    {
+      "case": "steer-note-handoff",
+      "note": "The agent's note to itself, carried across a compaction (renderNoteHandoff).",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "Here's your note to yourself from before compaction:\nNext: run the race detector on tree.go.",
+        "status": "completed",
+        "steeringKind": "note-handoff"
+      }
+    }
+  ],
+  "failed_turn": {
+    "id": "turn_2",
+    "items": [
+      {
+        "type": "userMessage",
+        "id": "item_user_1",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:0",
+        "position": {
+          "entry": 0,
+          "item": 0
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 1,
+        "text": "Go on",
+        "status": "completed",
+        "startedAt": 1790625600000
+      },
+      {
+        "type": "systemMessage",
+        "id": "item_turn_failure_2",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:1",
+        "position": {
+          "entry": 0,
+          "item": 1
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 2,
+        "text": "Provider exploded: 529 overloaded",
+        "description": "Turn failed",
+        "error": "Provider exploded: 529 overloaded",
+        "status": "failed",
+        "eventKind": "error"
+      }
+    ],
+    "itemsView": "full",
+    "status": "failed",
+    "error": {
+      "message": "Provider exploded: 529 overloaded",
+      "source": "evener",
+      "title": "Evener error",
+      "hint": "Check the Evener session log and daemon state."
+    },
+    "startedAt": 1790625600000
+  },
+  "failed_turn_with_other_error": {
+    "id": "turn_2",
+    "items": [
+      {
+        "type": "userMessage",
+        "id": "item_user_1",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:0",
+        "position": {
+          "entry": 0,
+          "item": 0
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 1,
+        "text": "Go on",
+        "status": "completed",
+        "startedAt": 1790625600000
+      },
+      {
+        "type": "systemMessage",
+        "id": "notice_error_1",
+        "turnId": "turn_2",
+        "text": "MCP server github disconnected",
+        "description": "Evener error",
+        "status": "completed",
+        "eventKind": "error"
+      },
+      {
+        "type": "systemMessage",
+        "id": "item_turn_failure_2",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:1",
+        "position": {
+          "entry": 0,
+          "item": 1
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 2,
+        "text": "Provider exploded: 529 overloaded",
+        "description": "Turn failed",
+        "error": "Provider exploded: 529 overloaded",
+        "status": "failed",
+        "eventKind": "error"
+      }
+    ],
+    "itemsView": "full",
+    "status": "failed",
+    "error": {
+      "message": "Provider exploded: 529 overloaded",
+      "source": "evener",
+      "title": "Evener error",
+      "hint": "Check the Evener session log and daemon state."
+    },
+    "startedAt": 1790625600000
+  }
+}

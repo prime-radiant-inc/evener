@@ -775,6 +775,11 @@ func remoteItemPagingKey(sourceID, threadID string) string {
 // page mints (or continues) a controller-owned identity, and the remote cursor
 // is retained behind it.
 func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
@@ -793,12 +798,20 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
+	// ApplyBefore spends a before that rode a cursor, so a before still set here
+	// is cursorless: forward it and let the remote hub mint its own cursor at
+	// that boundary (#3176). The page it returns is joined to the retained
+	// window below, so other viewers' cursors survive it.
+	remote.Before = params.Before
 
 	if params.Cursor == "" {
 		remote.Cursor = ""
 		candidates, native, history, err := s.remoteItemPage(ctx, remote)
 		if err != nil {
-			return ItemCandidateResult{}, err
+			return ItemCandidateResult{}, remoteCursorlessBeforeRefusal(params, err)
+		}
+		if params.Before != nil {
+			return s.recordRemoteBeforePage(key, *params.Before, candidates, native, history)
 		}
 		if err := validateRemotePageCursor(native, candidates); err != nil {
 			return ItemCandidateResult{}, err
@@ -1144,6 +1157,21 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 // negative when a is older, zero when equal, positive when newer.
 func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
+}
+
+// remoteCandidatesBefore keeps only the candidates strictly older than before,
+// for clipping a remote before page to the boundary it was fetched with.
+func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
+	// Allocate rather than reuse the backing array: the caller still reads the
+	// original page for the contradiction check, and aliasing the two would let
+	// the clip overwrite it.
+	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if remotePositionCompare(candidate.Position, before) < 0 {
+			older = append(older, candidate)
+		}
+	}
+	return older
 }
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
@@ -1569,6 +1597,104 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
+}
+
+// recordRemoteBeforePage joins a cursorless-before page to the retained window
+// (#3176). The page is the continuation below the boundary the client named, so
+// it is recorded exactly as a cursor-fetched continuation is, with
+// from=&before so the page's observed run joins any recorded run that covers
+// the boundary: the retained identity is kept whenever the page merges without
+// contradiction, so other viewers' cursors survive, and only a real rewrite
+// rotates it.
+//
+// Two edges the cursor path does not meet are handled here. The page is clipped
+// to strictly older than before, so an inclusive remote cannot have the boundary
+// item retained or served as older; but the contradiction check runs on the
+// unclipped page first, so a boundary item re-reported with changed contents is
+// still seen as the rewrite it is. And a page whose boundary is not covered by a
+// retained run starts a run of its own: its own exhaustion says nothing about the
+// region between it and the retained window, so it must not overwrite the
+// retained continuation cursor or claim the window reached the thread's bottom.
+func (s *RemoteHubSource) recordRemoteBeforePage(
+	key string,
+	before appwire.ThreadItemPosition,
+	page []appitempaging.TranscriptItemCandidate,
+	native string,
+	history HistoryIdentity,
+) (ItemCandidateResult, error) {
+	state, hasState := s.itemPaging.peek(key)
+	compatible := true
+	if hasState {
+		_, compatible = remoteMergeCandidates(state.candidates, page)
+	}
+	if len(page) == 0 {
+		// Nothing precedes the boundary: an empty page, answered exhausted. It
+		// carries no continuation, so the retained state — and the cursor other
+		// viewers hold into it — is left exactly as it was.
+		if err := validateRemotePageCursor(native, page); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		if hasState {
+			return ItemCandidateResult{Identity: state.identity, Exhausted: true, History: history}, nil
+		}
+		return ItemCandidateResult{Identity: s.mintRemoteItemIdentity(key), Exhausted: true, History: history}, nil
+	}
+	older := remoteCandidatesBefore(page, before)
+	if len(older) == 0 {
+		// Only the boundary item came back. Nothing is served, but a contradiction
+		// on that item is still a rewrite under the retained identity: rotate so
+		// cursors that pinned the replaced history fail closed.
+		if hasState && !compatible {
+			s.itemPaging.put(key, remoteItemPagingState{identity: s.mintRemoteItemIdentity(key)})
+		}
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	if err := validateRemotePageCursor(native, older); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if hasState && compatible {
+		if remoteSpanContaining(state.spans, before) < 0 && native == "" {
+			// The page starts a run of its own and is exhausted on its own; its
+			// emptiness says nothing about the region between it and the retained
+			// window. Keep the retained cursor cached for the window it belongs to,
+			// but answer this page exhausted: nothing continues below it.
+			result, err := s.recordRemoteItemPage(key, state.identity, older, state.native, history, state.head, state.hasHead, &before)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+			result.Exhausted = true
+			result.Candidates.OlderCursor = ""
+			return result, nil
+		}
+		return s.recordRemoteItemPage(key, state.identity, older, native, history, state.head, state.hasHead, &before)
+	}
+	identity := s.mintRemoteItemIdentity(key)
+	head, hasHead := remoteItemPageHead(older)
+	return s.recordRemoteItemPage(key, identity, older, native, history, head, hasHead, &before)
+}
+
+// remoteCursorlessBeforeRefusal maps a remote hub's refusal of a cursorless
+// before back to the refusal a cursorless before got before this source could
+// forward one. A hub older than the before field decodes the request without
+// it, so its cursor is empty: it refuses because a cursor or before is
+// required, or, under strict decoding, because the before field is unknown.
+// Only those two shapes are rewritten; any other failure — including a newer
+// hub's unrelated invalid-params refusal — passes through unchanged, so this
+// rewrite never masks a real error.
+func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err error) error {
+	if params.Before == nil {
+		return err
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		return err
+	}
+	missingCursor := strings.Contains(wireErr.Message, "cursor or before is required")
+	unknownField := strings.Contains(wireErr.Message, `unknown field "before"`)
+	if !missingCursor && !unknownField {
+		return err
+	}
+	return appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
 }
 
 // AdminCall forwards one hub-scoped admin RPC to this remote host's hub over

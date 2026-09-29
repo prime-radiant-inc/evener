@@ -626,9 +626,10 @@ type ErrorData struct {
 	Recorded bool `json:"recorded,omitempty"`
 }
 
-// ErrorCause describes a structured root cause for an EventError. Today the
-// only Kind is "provider" (HTTP failure from an LLM adapter); additional
-// kinds can be added as further consumers need typed dispatch (kata ts0x).
+// ErrorCause describes a structured root cause for an EventError. Consumers
+// typed-branch on Kind rather than substring-matching the message (kata ts0x).
+// Kinds include "provider" (HTTP failure from an LLM adapter) and
+// "signInRequired" (the user must sign in to a provider instance again).
 type ErrorCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`

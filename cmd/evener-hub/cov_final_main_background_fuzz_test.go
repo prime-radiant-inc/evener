@@ -60,12 +60,12 @@ func FuzzFinalMainBackground(f *testing.F) {
 			startHubPluginMaintenance(context.Background(), Config{PluginAutoUpgrade: true}, web, func(fn func()) { go fn() })
 			<-started
 		case 5:
-			runFinalBackgroundLoops(t, root, past, roster)
+			runFinalBackgroundLoops(t, root)
 		}
 	})
 }
 
-func runFinalBackgroundLoops(t *testing.T, root string, past *hubcore.PastIndex, roster *hubcore.Roster) {
+func runFinalBackgroundLoops(t *testing.T, root string) {
 	t.Helper()
 	ticks := make(chan time.Time)
 	hubTicker = func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }
@@ -76,7 +76,7 @@ func runFinalBackgroundLoops(t *testing.T, root string, past *hubcore.PastIndex,
 	poke := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		watchHubAttention(ctx, poke, archive, past, roster, web)
+		watchHubAttention(ctx, poke, archive, web)
 		close(done)
 	}()
 	ticks <- time.Time{}

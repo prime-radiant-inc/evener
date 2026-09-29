@@ -6,14 +6,14 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, AppState, Pressable, Text, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { fonts } from "./design/tokens";
+import { AppState, Text, TextInput, View } from "react-native";
+import { fonts, scaledType, space, uiType } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
-import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
+import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
+import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
-import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
+import { Spinner } from "./sheet/Spinner";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
 const OPEN_FAILED = "Could not open the sign-in page.";
@@ -117,236 +117,230 @@ export function ProviderSignInSheet({
 		</Text>
 	);
 	return (
-		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
-				<Header title={`Sign in to ${name}`} close={authorized ? "Done" : "Cancel"} onClose={onClose} />
-				<SheetStatus />
-				<GroupedPage>
-					{state.phase === "idle" || state.phase === "starting" ? (
-						<ActivityIndicator accessibilityLabel="Starting sign-in" style={{ padding: 32 }} />
-					) : null}
-					{device && !waiting ? (
-						<Section>
-							{body(
-								"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
-							)}
-							<View
+		<ModalSheet
+			title={`Sign in to ${name}`}
+			onCancel={authorized ? undefined : onClose}
+			done={authorized ? { onPress: onClose } : undefined}
+			accessory={<SheetStatus />}
+			onRequestClose={onClose}
+		>
+			<GroupedPage>
+				{state.phase === "idle" || state.phase === "starting" ? <Spinner label="Starting sign-in" /> : null}
+				{device && !waiting ? (
+					// As the prototype draws it (hub.js 128-132): the code with Copy
+					// code beside it, the page's one call to action, and how long the
+					// code lasts. A poll's error or a failed copy or open lands in a
+					// footer right under it.
+					<Section followedBy={state.error || localError ? "footer" : undefined}>
+						{body(
+							"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
+						)}
+						<View
+							style={{
+								flexDirection: "row",
+								// At the largest text sizes Copy code moves under the code.
+								flexWrap: "wrap",
+								alignItems: "center",
+								justifyContent: "space-between",
+								gap: 12,
+								borderRadius: 12,
+								paddingHorizontal: 16,
+								paddingVertical: 14,
+								backgroundColor: palette.surface,
+							}}
+						>
+							<Text
+								selectable
+								allowFontScaling={allowFontScaling}
 								style={{
-									flexDirection: "row",
-									alignItems: "center",
-									justifyContent: "space-between",
-									gap: 12,
-									borderRadius: 12,
-									paddingHorizontal: 16,
-									paddingVertical: 14,
-									backgroundColor: palette.surface,
+									color: palette.inkHi,
+									fontFamily: fonts.mono,
+									fontWeight: "600",
+									fontSize: 26 * scale,
+									letterSpacing: 2,
+									flexShrink: 1,
 								}}
 							>
-								<Text
-									selectable
-									allowFontScaling={allowFontScaling}
-									style={{
-										color: palette.inkHi,
-										fontFamily: fonts.mono,
-										fontWeight: "600",
-										fontSize: 26 * scale,
-										letterSpacing: 2,
-										flexShrink: 1,
-									}}
-								>
-									{device.userCode}
-								</Text>
-								<Action
-									onPress={() => {
-										setLocalError(null);
-										void copy(device.flowId, device.userCode);
-									}}
-								>
-									{copiedFlow === device.flowId ? "Code copied" : "Copy code"}
-								</Action>
-							</View>
-							<Action
-								tone="primary"
+								{device.userCode}
+							</Text>
+							<Button
+								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+								onPress={() => {
+									setLocalError(null);
+									void copy(device.flowId, device.userCode);
+								}}
+							/>
+						</View>
+						<Button
+							label="Open sign-in page"
+							primary
+							onPress={() => {
+								void openDevicePage();
+							}}
+						/>
+						{/* The hub drops a device flow after hubAuthFlowTTL, 15 minutes
+						    (app_auth.go); the provider's code expires in about that time. */}
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ color: palette.inkLow, ...scaledType(uiType.footnote, scale) }}
+						>
+							The code expires in 15 minutes.
+						</Text>
+					</Section>
+				) : null}
+				{device && waiting ? (
+					<>
+						<Section centered followedBy="group">
+							{/* After a failed poll nothing is being waited on: the next
+							    check is the person's (Check again, below). */}
+							{state.error ? null : statement("Waiting for you to finish signing in…")}
+							{/* The code stays selectable, and copyable, in case the
+							    automatic copy failed. */}
+							{body(
+								<>
+									Your code is{" "}
+									<Text selectable style={{ fontFamily: fonts.mono }}>
+										{device.userCode}
+									</Text>
+									.
+								</>,
+							)}
+						</Section>
+						<Group>
+							<Row
+								label="Open sign-in page"
+								tone="accent"
 								onPress={() => {
 									void openDevicePage();
 								}}
-							>
-								Open sign-in page
-							</Action>
+							/>
+							<Row
+								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+								tone="accent"
+								onPress={() => {
+									setLocalError(null);
+									void copy(device.flowId, device.userCode);
+								}}
+							/>
+						</Group>
+					</>
+				) : null}
+				{device && state.error ? (
+					<>
+						<GroupFooter tone="danger">{state.error}</GroupFooter>
+						<Group>
+							<Row
+								label="Check again"
+								tone="accent"
+								disabled={!connected || state.busy}
+								onPress={() => {
+									void flow.retryPoll();
+								}}
+							/>
+						</Group>
+					</>
+				) : null}
+				{state.phase === "browser" && state.browser ? (
+					<>
+						<Section followedBy="group">
+							{body("Open the sign-in page and sign in, then paste the full redirect URL here.")}
 						</Section>
-					) : null}
-					{device && waiting ? (
-						<>
-							<Section centered>
-								{/* After a failed poll nothing is being waited on: the next
-								    check is the person's (Check again, below). */}
-								{state.error ? null : statement("Waiting for you to finish signing in…")}
-								{/* The code stays selectable, and copyable, in case the
-								    automatic copy failed. */}
-								{body(
-									<>
-										Your code is{" "}
-										<Text selectable style={{ fontFamily: fonts.mono }}>
-											{device.userCode}
-										</Text>
-										.
-									</>,
-								)}
-							</Section>
-							<Group>
-								<Row
-									label="Open sign-in page"
-									tone="accent"
-									onPress={() => {
-										void openDevicePage();
-									}}
-								/>
-								<Row
-									label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
-									tone="accent"
-									onPress={() => {
-										setLocalError(null);
-										void copy(device.flowId, device.userCode);
-									}}
-								/>
-							</Group>
-						</>
-					) : null}
-					{device && state.error ? (
-						<>
-							<GroupFooter tone="danger">{state.error}</GroupFooter>
-							<Group>
-								<Row
-									label="Check again"
-									tone="accent"
-									disabled={!connected || state.busy}
-									onPress={() => {
-										void flow.retryPoll();
-									}}
-								/>
-							</Group>
-						</>
-					) : null}
-					{state.phase === "browser" && state.browser ? (
-						<>
-							<Section>{body("Open the sign-in page and sign in, then paste the full redirect URL here.")}</Section>
-							<Group>
-								<Row
-									label="Open sign-in page"
-									tone="accent"
-									onPress={() => {
-										setLocalError(null);
-										if (state.browser) void open(state.browser.url);
-									}}
-								/>
-							</Group>
-							<View style={{ height: 20 }} />
-							<Group>
-								<TextInput
-									accessibilityLabel="Redirect URL"
-									placeholder="Paste the redirect URL"
-									placeholderTextColor={palette.inkLow}
-									allowFontScaling={allowFontScaling}
-									value={redirect}
-									onChangeText={setRedirect}
-									autoCapitalize="none"
-									autoCorrect={false}
-									editable={!state.busy}
-									style={{
-										color: palette.inkHi,
-										fontSize: 17 * scale,
-										minHeight: 44,
-										paddingHorizontal: 16,
-										paddingVertical: 11,
-									}}
-								/>
-								<Row
-									label="Finish sign-in"
-									tone="accent"
-									disabled={!connected || state.busy || !redirect.trim()}
-									onPress={() => {
-										const value = redirect;
-										setRedirect("");
-										void flow.complete(value);
-									}}
-								/>
-							</Group>
-							{state.error ? <GroupFooter tone="danger">{state.error}</GroupFooter> : null}
-						</>
-					) : null}
-					{state.phase === "expired" || state.phase === "error" ? (
-						<>
-							{/* An expired code's flow error sends you to check the status by
-							 * hand, a step the sheet no longer has, so it says what happened. */}
-							{state.phase === "expired" ? (
-								<Section>{statement("The code expired.")}</Section>
-							) : state.error ? (
-								<Section>{statement(state.error)}</Section>
-							) : null}
-							<Group>
-								<Row label="Start again" tone="accent" disabled={!connected || state.busy} onPress={startAgain} />
-							</Group>
-						</>
-					) : null}
-					{authorized ? (
-						<Section centered>
-							<SymbolView name="checkmark" tintColor={palette.aliveInk} size={34} />
-							{statement(`Signed in to ${name}`)}
-							{body("Sessions using it can continue.")}
-						</Section>
-					) : null}
-					{localError ? <GroupFooter tone="danger">{localError}</GroupFooter> : null}
-				</GroupedPage>
-			</SafeAreaView>
-		</HoldingModal>
+						<Group>
+							<Row
+								label="Open sign-in page"
+								tone="accent"
+								onPress={() => {
+									setLocalError(null);
+									if (state.browser) void open(state.browser.url);
+								}}
+							/>
+						</Group>
+						<Group>
+							<TextInput
+								accessibilityLabel="Redirect URL"
+								placeholder="Paste the redirect URL"
+								placeholderTextColor={palette.inkLow}
+								allowFontScaling={allowFontScaling}
+								value={redirect}
+								onChangeText={setRedirect}
+								autoCapitalize="none"
+								autoCorrect={false}
+								editable={!state.busy}
+								style={{
+									color: palette.inkHi,
+									fontSize: 17 * scale,
+									minHeight: 44,
+									paddingHorizontal: 16,
+									paddingVertical: 11,
+								}}
+							/>
+							<Row
+								label="Finish sign-in"
+								tone="accent"
+								disabled={!connected || state.busy || !redirect.trim()}
+								onPress={() => {
+									const value = redirect;
+									setRedirect("");
+									void flow.complete(value);
+								}}
+							/>
+						</Group>
+						{state.error ? <GroupFooter tone="danger">{state.error}</GroupFooter> : null}
+					</>
+				) : null}
+				{state.phase === "expired" || state.phase === "error" ? (
+					<>
+						{/* An expired code's flow error sends you to check the status by
+						 * hand, a step the sheet no longer has, so it says what happened. */}
+						{state.phase === "expired" ? (
+							<Section followedBy="group">{statement("The code expired.")}</Section>
+						) : state.error ? (
+							<Section followedBy="group">{statement(state.error)}</Section>
+						) : null}
+						<Group>
+							<Row label="Start again" tone="accent" disabled={!connected || state.busy} onPress={startAgain} />
+						</Group>
+					</>
+				) : null}
+				{authorized ? (
+					<Section centered>
+						<SymbolView name="checkmark" tintColor={palette.aliveInk} size={34} />
+						{statement(`Signed in to ${name}`)}
+						{body("Sessions using it can continue.")}
+					</Section>
+				) : null}
+				{localError ? <GroupFooter tone="danger">{localError}</GroupFooter> : null}
+			</GroupedPage>
+		</ModalSheet>
 	);
 }
 
-/** A stretch of the sheet outside any group: its prose, the code, a button. */
-function Section({ children, centered = false }: { children: ReactNode; centered?: boolean }) {
+/** A stretch of the sheet outside any group: its prose, the code, a button.
+ * What follows it may bring its own space: a group its 16pt, so over one the
+ * bottom padding is only what's left; a footer its own top padding, so over
+ * one the stretch adds none. */
+function Section({
+	children,
+	centered = false,
+	followedBy,
+}: {
+	children: ReactNode;
+	centered?: boolean;
+	followedBy?: "group" | "footer";
+}) {
+	const edge = centered ? 28 : 16;
 	return (
 		<View
+			testID="sign-in-stretch"
 			style={{
 				paddingHorizontal: 20,
-				paddingVertical: centered ? 28 : 16,
+				paddingTop: edge,
+				paddingBottom: followedBy === "group" ? edge - space.groupGap : followedBy === "footer" ? 0 : edge,
 				gap: centered ? 8 : 16,
 				alignItems: centered ? "center" : "stretch",
 			}}
 		>
 			{children}
-		</View>
-	);
-}
-
-/** The sheet's header: Cancel, or Done once signed in, and the title. */
-function Header({ title, close, onClose }: { title: string; close: "Cancel" | "Done"; onClose(): void }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View style={{ flexDirection: "row", alignItems: "center", minHeight: 44, paddingHorizontal: 16 }}>
-			<View style={{ flex: 1, alignItems: "flex-start" }}>
-				<Pressable accessibilityRole="button" accessibilityLabel={close} hitSlop={8} onPress={onClose}>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{
-							color: palette.accentInk,
-							fontSize: 17 * scale,
-							fontWeight: close === "Done" ? "600" : "400",
-						}}
-					>
-						{close}
-					</Text>
-				</Pressable>
-			</View>
-			<Text
-				accessibilityRole="header"
-				allowFontScaling={allowFontScaling}
-				numberOfLines={1}
-				style={{ flex: 2, textAlign: "center", color: palette.inkHi, fontSize: 17 * scale, fontWeight: "600" }}
-			>
-				{title}
-			</Text>
-			<View style={{ flex: 1 }} />
 		</View>
 	);
 }

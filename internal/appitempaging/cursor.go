@@ -110,3 +110,35 @@ func decodeCursor(encoded string) (transcriptItemCursorV1, error) {
 func validIdentity(identity CursorIdentity) bool {
 	return utf8.ValidString(identity.ThreadRef) && utf8.ValidString(identity.Incarnation) && strings.TrimSpace(identity.ThreadRef) != "" && strings.TrimSpace(identity.Incarnation) != "" && identity.ProjectionVersion != 0
 }
+
+// ApplyBefore spends a thread/turns/list request's Before when it comes with a
+// cursor: it rebases the cursor onto that boundary, keeping the cursor's
+// identity fence, and clears Before so nothing downstream applies it twice.
+// Without Before, or without a cursor to rebase, the params pass through
+// unchanged; a cursorless Before is the source's to take (Boundary).
+func ApplyBefore(params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListParams, error) {
+	if params.Before == nil || params.Cursor == "" {
+		return params, nil
+	}
+	cursor, err := RebaseCursor(params.Cursor, *params.Before)
+	if err != nil {
+		return params, err
+	}
+	params.Cursor = cursor
+	params.Before = nil
+	return params, nil
+}
+
+// Boundary is where a thread/turns/list request's page ends: its cursor's
+// boundary, checked against the identity the source pages under, or, with no
+// cursor, its Before position taken under that identity (the thread's
+// current one). No client fence is needed for the latter: the page's response
+// names its snapshot, so a client paging a thread that was reset since its
+// read sees another incarnation and discards the page, and a boundary that
+// names no transcript item is stale like any other.
+func Boundary(params appwire.ThreadTurnsListParams, identity CursorIdentity) (appwire.ThreadItemPosition, error) {
+	if params.Cursor == "" && params.Before != nil {
+		return *params.Before, nil
+	}
+	return DecodeCursor(params.Cursor, identity)
+}

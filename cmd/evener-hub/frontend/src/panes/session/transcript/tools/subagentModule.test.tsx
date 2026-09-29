@@ -1453,7 +1453,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
   // frozen "running" spawn output.
   await waitFor(() => expect(row.dataset.kind).toBe("done"));
   const stats = within(row).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("↑41k ↓6k");
+  expect(stats.textContent).toContain("↑41.2K ↓6.1K");
   expect(stats.textContent).toContain("22m00s");
 });
 

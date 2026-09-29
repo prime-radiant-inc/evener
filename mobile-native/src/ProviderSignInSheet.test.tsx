@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignIn.testkit";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { palettes } from "./design/tokens";
+import { Button } from "./sheet/Grouped";
 
 // What the sheet's native edges saw, in order: the clipboard write and the
 // in-app browser opening, so a test can tell which came first.
@@ -91,11 +93,6 @@ afterEach(() => {
 	flows = [];
 	vi.useRealTimers();
 });
-
-const flush = () =>
-	act(async () => {
-		await vi.advanceTimersByTimeAsync(0);
-	});
 
 async function mount(answers: Answers, options: { connected?: boolean; start?: boolean } = {}) {
 	const kit = boundary(answering(answers), PROVIDER);
@@ -313,7 +310,12 @@ it("shows a failed start's message and starts again from Start again", async () 
 		},
 	});
 	const text = renderedText(tree);
-	expect(text).toContain("Sign-in could not be started. Check the connection before trying again.");
+	// What happened, and the one thing to do, never a guess at the connection
+	// (spec 5): the status line speaks for the connection.
+	// The sheet's title already names the provider; the message never
+	// repeats the instance's id.
+	expect(text).toContain("The hub couldn't start signing in. Start again.");
+	expect(text).not.toContain("connection");
 	expect(text).not.toMatch(NO_OLD_CONTROLS);
 	await press(tree, "Start again");
 	expect(authCalls(calls).map((call) => call.method)).toEqual(["evener/auth/device/start", "evener/auth/device/start"]);
@@ -407,8 +409,83 @@ it("disables Check again while not connected", async () => {
 	expect(pressable(tree, "Check again")?.props.disabled).toBe(true);
 });
 
+it("has the shared header: Cancel while signing in, Done once signed in", async () => {
+	const waiting = await mount(deviceFlow);
+	expect(waiting.tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(`Sign in to ${PROVIDER}`);
+	expect(pressable(waiting.tree, "Cancel")).toBeDefined();
+	expect(pressable(waiting.tree, "Done")).toBeUndefined();
+	const { tree } = await mount({
+		...deviceFlow,
+		"evener/auth/device/poll": () => ({ state: "authorized", status: authorizedStatus }),
+	});
+	await press(tree, "Open sign-in page");
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(2000);
+	});
+	expect(pressable(tree, "Done")).toBeDefined();
+	expect(pressable(tree, "Cancel")).toBeUndefined();
+});
+
+it("keeps a stretch's bottom space unless a group or a footer follows it", async () => {
+	const sectionOf = (tree: ReactTestRenderer, text: string) => {
+		let node = tree.root.find((candidate) => String(candidate.type) === "Text" && textOf(candidate) === text);
+		while (node.parent && node.props.testID !== "sign-in-stretch") node = node.parent;
+		return node.props.style;
+	};
+	const { tree } = await mount({
+		...deviceFlow,
+		"evener/auth/device/poll": () => ({ state: "authorized", status: authorizedStatus }),
+	});
+	// Before the page opens: the explanation and its buttons end the sheet.
+	expect(sectionOf(tree, "Open sign-in page").paddingBottom).toBe(16);
+	await press(tree, "Open sign-in page");
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(2000);
+	});
+	// Signed in: the confirmation ends the sheet.
+	expect(sectionOf(tree, "Sessions using it can continue.").paddingBottom).toBe(28);
+	// While waiting, the code's stretch sits over the Open and Copy group,
+	// whose own 16pt makes up the rest of the 28.
+	const waiting = await mount(deviceFlow);
+	await press(waiting.tree, "Open sign-in page");
+	expect(sectionOf(waiting.tree, "Waiting for you to finish signing in…").paddingBottom).toBe(12);
+	// A page that couldn't open: the explanation sits over the error footer,
+	// whose own top padding is the gap.
+	edges.openFails = true;
+	try {
+		const failed = await mount(deviceFlow);
+		await press(failed.tree, "Open sign-in page");
+		expect(renderedText(failed.tree)).toContain("Could not open the sign-in page.");
+		expect(sectionOf(failed.tree, "Open sign-in page").paddingBottom).toBe(0);
+	} finally {
+		edges.openFails = false;
+	}
+});
+
 it("Cancel closes the sheet", async () => {
 	const { tree, onClose } = await mount(deviceFlow);
 	await press(tree, "Cancel");
 	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("offers the code's page as the one call to action, with Copy code beside the code, as the prototype does (audit L5)", async () => {
+	const { tree } = await mount(deviceFlow);
+	const buttons = tree.root.findAll((node) => node.type === Button);
+	expect(buttons.map((node) => [node.props.label, node.props.primary ?? false])).toEqual([
+		["Copy code", false],
+		["Open sign-in page", true],
+	]);
+	// The hub drops a device flow after hubAuthFlowTTL (app_auth.go); the
+	// prototype sets the line in ink-low at 13.
+	const expiry = tree.root.find(
+		(node) => String(node.type) === "Text" && node.props.children === "The code expires in 15 minutes.",
+	);
+	expect(Object.assign({}, ...[expiry.props.style].flat())).toMatchObject({
+		color: palettes.light.inkLow,
+		fontSize: 13,
+	});
+	// At the largest text sizes Copy code moves under the code rather than
+	// pushing past the box.
+	const box = tree.root.find((node) => node.type === Button && node.props.label === "Copy code").parent;
+	expect(box?.props.style).toMatchObject({ flexWrap: "wrap" });
 });

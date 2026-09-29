@@ -9,7 +9,7 @@
 // randomness, like every host API the package touches. Pure logic.
 
 import type { AppwireClientLike } from "./clientLike";
-import { WireError } from "./errors";
+import { HostMutationOutcomeError, WireError } from "./errors";
 import type { HostEntry, HostRow, MethodTypes, RemovedRow } from "./types.gen";
 
 // HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
@@ -80,29 +80,34 @@ export type HostMutationResult = MethodTypes["evener/host/add"]["result"];
  * needs forward repair through `evener/host/teardown-retry` with the
  * `remnantId` it carries; a `collision-dropped` arm names a foreign hub.toml
  * edit that won the race, so nothing the caller asked for landed; and a
- * keyless add's `ambiguous` arm claims no commit at all. Each throws, naming
- * what happened, so the caller's failure path runs instead of its success path. */
+ * keyless add's `ambiguous` arm claims no commit at all. Each throws a
+ * HostMutationOutcomeError carrying the arm, naming what happened, so the
+ * caller's failure path runs instead of its success path and can still tell
+ * the arm apart. */
 export function committedMutationRow(result: HostMutationResult, method: string): HostRow {
   // The generated interfaces carry `outcome: string` rather than a literal
   // union, so the arms are narrowed by the fields only one of them declares —
   // the same discriminator the union's registration pins, read structurally.
   if ("observedRow" in result) {
-    throw new Error(
+    throw new HostMutationOutcomeError(
       `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
+      "ambiguous",
     );
   }
   if ("droppedEntry" in result) {
-    throw new Error(
+    throw new HostMutationOutcomeError(
       `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
+      "collision-dropped",
     );
   }
   if ("seam" in result) {
-    throw new Error(
+    throw new HostMutationOutcomeError(
       `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
+      "committed-with-teardown-failure",
     );
   }
   if (!("host" in result)) {
-    throw new Error(`${method}: the response carries no arm this client knows`);
+    throw new HostMutationOutcomeError(`${method}: the response carries no arm this client knows`, "unknown");
   }
   return result.host as HostRow;
 }
@@ -216,6 +221,19 @@ export const HOST_ENTRY_FIELD_TEXT: Readonly<Record<EditableHostField, { label: 
   configPath: { label: "Hub config path", help: "Optional path to the host's hub.toml, when it is not the default." },
   addr: { label: "Hub address", help: "Optional listen address of the host's hub, when it is not the default." },
   roots: { label: "Roots", help: "Optional directories on the host to serve. One per line." },
+};
+
+/** What each optional field means while it's empty, as the hub's ssh dial
+ * treats it (sshconn/runner.go): a placeholder, where the address, the one
+ * required field, has none. */
+export const HOST_ENTRY_FIELD_WHEN_EMPTY: Readonly<Partial<Record<EditableHostField, string>>> = {
+  user: "From the address or SSH config",
+  keyPath: "From your SSH config",
+  evenerPath: "evener on PATH",
+  configPath: "The default hub.toml",
+  addr: "The default address",
+  // Multiline: the placeholder also says how to enter several.
+  roots: "No project roots. One per line.",
 };
 
 // rootsFromText parses a host's roots field: one root per line, trimmed, with

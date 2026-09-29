@@ -8,13 +8,12 @@ import { useEffect } from "react";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
 import { hostStatus, systemLabel, versionDriftTag } from "../hosts/hostStatus";
-import { liveSessionsText } from "../hosts/liveCounts";
+import { LOCAL_HOST, liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
+import { hubConnectionWord } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen } from "./useHostsOnScreen";
-
-const LOCAL_HOST = "local";
 
 export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "Hosts">) {
 	const { hubId, hubName, ready } = useHubSheet();
@@ -28,14 +27,21 @@ export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoute
 		navigation.setParams({ focus: undefined });
 	}, [focus, hubId, navigation]);
 	if (!state?.rows) return <HostsNotListed hubName={hubName} error={loadError} />;
-	const ownLine = ready
-		? `Connected · ${liveSessionsText(liveCount(LOCAL_HOST), false)}`
-		: (connectionLine ?? "Connecting…");
+	// The hub's own machine is as reachable as the hub, in the Hubs page's words.
+	const word = hubConnectionWord(ready, connectionLine);
+	const ownLine = ready ? `${word} · ${liveSessionsText(liveCount(LOCAL_HOST), false)}` : word;
 	return (
 		<GroupedPage>
 			<SheetStatus />
 			<Group>
-				<Row icon="server.rack" label={hubName} sub={ownLine} value={hubVersion} />
+				<Row
+					icon="server.rack"
+					label={hubName}
+					sub={ownLine}
+					value={hubVersion}
+					chevron
+					onPress={() => navigation.navigate("OwnHost", { hubId })}
+				/>
 				{state.rows.map((row) => {
 					const status = hostStatus(row, state.connecting.has(row.name));
 					const sub = [status.word, systemLabel(row), liveSessionsText(liveCount(row.name), !row.attached)]

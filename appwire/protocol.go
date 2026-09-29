@@ -134,31 +134,6 @@ var MethodResultArms = map[string][]any{
 	},
 }
 
-// FieldUnion is one field-union registration: the union type that fields
-// declare, plus its arms.
-type FieldUnion struct {
-	// Union is the union's zero value; its type is the one fields declare.
-	Union any
-	// Arms are the union's arms, one named Go struct each.
-	Arms []any
-}
-
-// FieldUnions is the union registration for named union types that appear as
-// *fields* rather than as a method's whole result: the generators spell such a
-// field's type as the union over the arms and emit each arm as its own type —
-// the union type itself has no interface of its own, exactly as
-// MethodResultArms spells a union result (crash-fencing spec 08c §9's
-// `BoundaryEntry`). A type absent here that appears as a field renders as a
-// single interface, which is only correct for a non-union struct.
-var FieldUnions = []FieldUnion{
-	// Crash-fencing spec 08c §9's five-variant boundary union: the kind
-	// discriminator selects the arm, and every arm is its own wire shape.
-	{Union: BoundaryEntry{}, Arms: []any{
-		BoundaryEntryLocalLinux{}, BoundaryEntryLocalDarwin{}, BoundaryEntryLocalMarkerless{},
-		BoundaryEntryRemoteFencing{}, BoundaryEntryUnavailable{},
-	}},
-}
-
 // NotificationSpec is one server→client notification: the wire name, the Go
 // payload type (zero value), and a one-line summary of when it fires.
 type NotificationSpec struct {
@@ -177,7 +152,7 @@ var Methods = []MethodSpec{
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
-	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor."},
+	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both."},
 	{MethodThreadTurnItemsList, ThreadTurnItemsListParams{}, ThreadTurnItemsListResponse{}, ScopeUnimplemented, "Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router."},
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
@@ -226,6 +201,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
 	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived."},
+	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the catalog and key name the project, and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation."},
 	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
 	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
@@ -292,7 +268,6 @@ var Methods = []MethodSpec{
 	{MethodEvenerHostUpdate, HostUpdateParams{}, HostMutationResult{}, ScopeHub, "Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union."},
 	{MethodEvenerHostTeardownRetry, HostTeardownRetryParams{}, HostTeardownRetryResult{}, ScopeHub, "Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal."},
 	{MethodEvenerHostTeardownRecover, HostTeardownRecoverParams{}, HostTeardownRecoverResult{}, ScopeHub, "Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write."},
-	{MethodEvenerHostOrphanResolve, HostOrphanResolveParams{}, OperationRecord{}, ScopeHub, "Resolves one orphan-unverified record by its opaque id (crash-fencing 08c §5): re-runs the persisted-boundary enumeration under the caller's session authentication, validates a present attestation (caller, record, boundary, freshness), and on a clean boundary transitions the record to interrupted with the orphanResolved marker and the attestation, clearing the record's boundary, every open pending-spawn intent and the per-host quarantine marker in one atomic store write. Members still present refuse transient-busy; an unknown id is typed not-found; a boundary-unavailable record resolves only with the attestation; a lost-response retry replays the persisted resolution."},
 	{MethodEvenerHostPlan, HostPlanParams{}, HostPlanResult{}, ScopeHub, "Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal."},
 	{MethodEvenerHostDeploy, HostDeployParams{}, HostDeployResponse{}, ScopeHub, "Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC."},
 	{MethodEvenerHostRestart, HostRestartParams{}, HostRestartResponse{}, ScopeHub, "Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC."},

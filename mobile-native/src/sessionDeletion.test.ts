@@ -86,6 +86,17 @@ describe("session deletion result", () => {
 	])("rejects malformed or contradictory results", (response) => {
 		expect(() => sessionDeletionResult(ref, response)).toThrow();
 	});
+	it("rejects a non-plain-object reply (the shared strict plain-object guard)", () => {
+		// A class instance carries the same own keys as the wire reply but its
+		// prototype is not Object.prototype. The shared isPlainObject guard
+		// rejects it; a private loose "non-null, non-array object" guard
+		// accepted it and decoded {kind: "deleted"}.
+		class ReplyStub {
+			deleted = [id];
+			skipped: string[] = [];
+		}
+		expect(() => sessionDeletionResult(ref, new ReplyStub())).toThrow();
+	});
 });
 describe("durable session deletion", () => {
 	it("requires an explicit exact-checkpoint allowance before a new attempt", async () => {

@@ -1,9 +1,9 @@
-import { usePreventRemove } from "@react-navigation/native";
+import { useFocusEffect, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Pressable, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { inactivePromptDependent, LaunchSettings } from "@evener/appwire-client";
+import { inactivePromptDependent, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "@evener/appwire-client";
 import type { LaunchConfigLayer, LaunchConfigLayerName, LaunchOption } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -11,11 +11,12 @@ import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
-import type { Routes } from "./screens";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { destructiveButton } from "./haptics";
+import { Spinner } from "./sheet/Spinner";
+import { confirmDiscard } from "./sheet/confirmDiscard";
 
-type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
+type Props = NativeStackScreenProps<HubRoutes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state } = useConnection();
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
@@ -69,12 +70,18 @@ function LaunchDefaults({
 	useEffect(() => {
 		void model.setConnection(client);
 	}, [model, client]);
+	// The page keeps itself current (principle 2): after a failed read, of
+	// the layer or of its effective values, it reads again each time the page
+	// comes back into view. The store never reads over an unsaved edit.
+	useFocusEffect(
+		useCallback(() => {
+			const { error, resolveError } = model.getSnapshot();
+			if (error || resolveError) void model.refresh();
+		}, [model]),
+	);
 	usePreventRemove(state.dirty || state.saving, ({ data }) => {
 		if (state.saving) return;
-		Alert.alert("Discard launch changes?", "Your unsaved changes will be lost.", [
-			{ text: "Keep editing", style: "cancel" },
-			destructiveButton("Discard", () => navigation.dispatch(data.action)),
-		]);
+		confirmDiscard(() => navigation.dispatch(data.action));
 	});
 	const options = (state.options ?? []).filter(
 		(option) =>
@@ -109,31 +116,24 @@ function LaunchDefaults({
 					>
 						Save defaults
 					</Action>
-					<Action
-						disabled={!client || state.loading || state.saving}
-						onPress={() => {
-							const reload = () => {
-								setNotice(null);
-								void model.refresh(true);
-							};
-							if (state.dirty)
-								Alert.alert("Reload launch defaults?", "This discards your unsaved changes.", [
-									{ text: "Cancel", style: "cancel" },
-									destructiveButton("Reload", () => reload()),
-								]);
-							else reload();
-						}}
-					>
-						Reload
-					</Action>
+					{state.dirty && state.changedElsewhere ? (
+						<Action
+							disabled={!client || state.loading || state.saving}
+							onPress={() =>
+								confirmDiscard(() => {
+									setNotice(null);
+									void model.refresh(true);
+								})
+							}
+						>
+							Discard changes
+						</Action>
+					) : null}
 				</View>
-				{state.loading && <ActivityIndicator accessibilityLabel="Loading launch defaults" />}
-				{state.saving && <ActivityIndicator accessibilityLabel="Saving launch defaults" />}
-				<ErrorMessage
-					message={
-						state.error ?? (state.changedElsewhere ? "Launch settings changed elsewhere. Reload before saving." : null)
-					}
-				/>
+				{state.loading && <Spinner label="Loading launch defaults" />}
+				{state.saving && <Spinner label="Saving launch defaults" />}
+				<ErrorMessage message={state.error} />
+				<ErrorMessage message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null} />
 				<ErrorMessage message={state.resolveError} />
 				{notice && <Copy>{notice}</Copy>}
 				{state.resolved?.diagnostics?.map((d) => (

@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import type { AlertPreferences } from "../alerts/alertCenter";
 import { alertPreferences } from "../alerts/nativeAlertPreferences";
-import { Group, GroupedPage, GroupFooter, GroupLabel, SwitchRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, SwitchRow } from "../sheet/Grouped";
 
 export function AlertsPage() {
 	const store = alertPreferences();
@@ -13,8 +13,7 @@ export function AlertsPage() {
 	const toggle = (key: keyof AlertPreferences) => (value: boolean) => store.set({ [key]: value });
 	return (
 		<GroupedPage>
-			<GroupLabel>Show a banner when</GroupLabel>
-			<Group>
+			<Group label="Show a banner when">
 				<SwitchRow label="A session fails" value={preferences.failures} onChange={toggle("failures")} />
 				<SwitchRow
 					label="A session asks a question or needs approval"

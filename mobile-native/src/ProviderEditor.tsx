@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { TextInput, View } from "react-native";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import {
 	isEndpointConflict,
 	type InstanceCreateParams,
@@ -8,8 +7,30 @@ import {
 	type ProviderDescriptor,
 } from "@evener/appwire-client";
 import type { LiveReadiness } from "./connectionDisplay";
-import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { space } from "./design/tokens";
+import { createProviderParams, draftChanged, editProviderParams, type ProviderDraft } from "./providerForm";
+import { type TextInput, View } from "react-native";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	Row,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
+import { guardLeave } from "./sheet/confirmDiscard";
+import { SearchField } from "./sheet/SearchField";
+import { UNCONFIRMED_CHANGE } from "./providers/providerCopy";
+import { Sheet } from "./sheet/Sheet";
+
+const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
+
+/** Runs `leave` if the editor may go now: never mid-save, and only after
+ * asking when there is an edit to lose. */
+export type LeaveGuard = (leave: () => void) => void;
 
 export function ProviderEditor({
 	instance,
@@ -21,6 +42,8 @@ export function ProviderEditor({
 	onSaved,
 	onEndpointConflict,
 	onCancel,
+	leaveGuard,
+	accessory,
 }: {
 	instance?: InstanceEntry;
 	providers: ProviderDescriptor[];
@@ -42,8 +65,12 @@ export function ProviderEditor({
 	onSaved(name: string): void;
 	onEndpointConflict(name: string): void;
 	onCancel(): void;
+	/** Where the editor hands the modal around it its leave check, so a swipe
+	 * down waits out a save and asks before an edit goes, as Cancel does. */
+	leaveGuard?: RefObject<LeaveGuard | null>;
+	/** Pinned under the title, such as the connection's status line. */
+	accessory?: ReactNode;
 }) {
-	const colors = useColors();
 	const alive = useRef(true);
 	useEffect(() => {
 		alive.current = true;
@@ -51,14 +78,15 @@ export function ProviderEditor({
 			alive.current = false;
 		};
 	}, []);
-	const [draft, setDraft] = useState<ProviderDraft>({
+	const [opened] = useState<ProviderDraft>(() => ({
 		name: instance?.name ?? "",
 		base: "",
 		baseUrl: instance?.baseUrl ?? "",
 		vars: {},
 		apiKeyEnv: "",
 		credentialHeader: "",
-	});
+	}));
+	const [draft, setDraft] = useState<ProviderDraft>(opened);
 	// The save's assertion belongs to the row this editor was OPENED on, not
 	// whatever it resolves to now: the screen this editor lives in survives
 	// reconnects behind a status line (hub/ProvidersPage), so a row another client
@@ -71,27 +99,21 @@ export function ProviderEditor({
 	// this editor's target row; a row the hub could not fingerprint at open
 	// asserts nothing, as before.
 	const assertedFingerprint = useRef(instance?.endpointFingerprint);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const [choosing, setChoosing] = useState(false);
 	const [query, setQuery] = useState("");
 	const [saving, setSaving] = useState(false);
 	const busy = disabled || saving;
-	function field(label: string, value: string, change: (value: string) => void) {
-		return (
-			<View key={label} style={{ gap: 4 }}>
-				<Copy>{label}</Copy>
-				<TextInput
-					accessibilityLabel={label}
-					value={value}
-					onChangeText={change}
-					editable={!busy}
-					autoCapitalize="none"
-					autoCorrect={false}
-					style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-				/>
-			</View>
-		);
-	}
+	// Leaving waits out a save in flight, and asks before an edit goes (spec
+	// 6); an editor still as it opened leaves at once.
+	const leaveEditor: LeaveGuard = (leave) => guardLeave({ busy: saving, dirty: draftChanged(opened, draft) }, leave);
+	useEffect(() => {
+		if (!leaveGuard) return;
+		leaveGuard.current = leaveEditor;
+		return () => {
+			leaveGuard.current = null;
+		};
+	});
 	async function save() {
 		// The invocation-time readiness guard, ahead of every state change: a
 		// save that cannot be sent bails before clearing the error slot or
@@ -124,7 +146,7 @@ export function ProviderEditor({
 				// A newer listing superseded this save's answer: the write may have
 				// landed on the host, but the store cannot confirm it, so the editor
 				// does not close reporting success.
-				if (alive.current) setError("Save could not be confirmed. Check the provider list before trying again.");
+				if (alive.current) setError(UNCONFIRMED_CHANGE);
 				return;
 			}
 			if (alive.current) onSaved(instance?.name ?? draft.name.trim());
@@ -138,81 +160,152 @@ export function ProviderEditor({
 					// is never shown.
 					onEndpointConflict(instance?.name ?? draft.name.trim());
 				} else {
-					setError("Save could not be confirmed. Check the provider list before trying again.");
+					setError(UNCONFIRMED_CHANGE);
 				}
 			}
 		} finally {
 			if (alive.current) setSaving(false);
 		}
 	}
+	const base = providers.find((provider) => provider.id === draft.base);
+	const baseName = base ? base.name || base.id : null;
+	const matches = providers.filter((provider) =>
+		`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+	);
+	const varFields = Object.entries(base?.vars ?? {}).sort(([a], [b]) => a.localeCompare(b));
+	// The form's fields in order, so each one's return key leads to the next
+	// and the last one's saves.
+	const order = instance
+		? ["baseUrl"]
+		: ["name", "baseUrl", ...varFields.map(([template]) => template), "apiKeyEnv", "credentialHeader"];
+	const inputs = useRef<Record<string, TextInput | null>>({});
+	function chain(key: string) {
+		const next = order[order.indexOf(key) + 1];
+		return {
+			ref: (input: TextInput | null) => {
+				inputs.current[key] = input;
+			},
+			returnKeyType: next ? ("next" as const) : ("done" as const),
+			onSubmitEditing: next ? () => inputs.current[next]?.focus() : () => void save(),
+		};
+	}
+	const incomplete = !instance && (!base || !draft.name.trim());
+	const page = useErrorInView(error);
 	return (
-		<View style={{ gap: 12 }}>
-			<Copy>{instance ? `Edit ${instance.name}` : "Add provider instance"}</Copy>
-			{!instance && (
-				<>
-					<Copy muted>Base provider</Copy>
-					<Action disabled={busy} expanded={choosing} onPress={() => setChoosing(!choosing)}>
-						{providers.find((provider) => provider.id === draft.base)?.name || draft.base || "Choose base provider"}
-					</Action>
-					{choosing && (
-						<>
-							{field("Find provider", query, setQuery)}
-							{providers
-								.filter((provider) =>
-									`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
-								)
-								.map((provider) => (
-									<Choice
-										key={provider.id}
-										label={provider.name || provider.id}
-										selected={draft.base === provider.id}
-										disabled={busy}
-										onPress={() => {
-											setDraft({ ...draft, base: provider.id, vars: {} });
-											setChoosing(false);
-											setQuery("");
-										}}
-									/>
-								))}
-						</>
-					)}
-					{field("Instance name", draft.name, (name) => setDraft({ ...draft, name }))}
-				</>
-			)}
-			{field("Base URL (optional)", draft.baseUrl, (baseUrl) => setDraft({ ...draft, baseUrl }))}
-			{instance?.baseUrl && !draft.baseUrl.trim() && <Copy>Resets the endpoint to the provider’s default.</Copy>}
-			{!instance && (
-				<>
-					{Object.entries(providers.find((provider) => provider.id === draft.base)?.vars ?? {})
-						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([template, environment]) =>
-							field(environment, draft.vars[template] ?? "", (value) =>
-								setDraft({ ...draft, vars: { ...draft.vars, [template]: value } }),
-							),
-						)}
-					{field("API key environment variable (optional)", draft.apiKeyEnv, (apiKeyEnv) =>
-						setDraft({ ...draft, apiKeyEnv }),
-					)}
-					{field("Credential header (optional)", draft.credentialHeader, (credentialHeader) =>
-						setDraft({ ...draft, credentialHeader }),
-					)}
-					<Copy muted>Use a $VARIABLE reference in credential headers. Store API keys from the instance details.</Copy>
-				</>
-			)}
-			<ErrorMessage message={error} />
-			<View style={[styles.row, { flexWrap: "wrap" }]}>
-				<Action
-					disabled={busy}
-					onPress={() => {
-						void save();
-					}}
-				>
-					{saving ? "Saving…" : "Save instance"}
-				</Action>
-				<Action disabled={saving} onPress={onCancel}>
-					Cancel
-				</Action>
-			</View>
-		</View>
+		<Sheet
+			title={instance ? `Edit ${instance.name}` : "Add provider"}
+			onCancel={() => leaveEditor(onCancel)}
+			cancelDisabled={saving}
+			done={{
+				label: saving ? "Saving…" : "Save",
+				disabled: busy || incomplete,
+				busy: saving,
+				onPress: () => void save(),
+			}}
+			accessory={accessory}
+		>
+			<GroupedPage scrollRef={page}>
+				<FormError error={error} />
+				{!instance && (
+					<>
+						<Group label="Base provider">
+							<Row
+								label={baseName ?? "Choose a provider"}
+								accessibilityLabel={baseName ? `Base provider, ${baseName}` : "Choose base provider"}
+								tone={baseName ? "normal" : "accent"}
+								chevron
+								disabled={busy}
+								onPress={() => setChoosing(!choosing)}
+							/>
+						</Group>
+						{choosing ? (
+							<>
+								<GroupGap />
+								<View style={{ marginHorizontal: space.margin }}>
+									<SearchField label="Find provider" value={query} onChangeText={setQuery} />
+								</View>
+								{matches.length > 0 ? (
+									<Group>
+										{matches.map((provider) => (
+											<Row
+												key={provider.id}
+												label={provider.name || provider.id}
+												checked={draft.base === provider.id}
+												disabled={busy}
+												onPress={() => {
+													setDraft({ ...draft, base: provider.id, vars: {} });
+													setChoosing(false);
+													setQuery("");
+												}}
+											/>
+										))}
+									</Group>
+								) : (
+									<GroupFooter>No providers match.</GroupFooter>
+								)}
+							</>
+						) : null}
+						<Group label="Name">
+							<TextFieldRow
+								label="Instance name"
+								value={draft.name}
+								onChangeText={(name) => setDraft({ ...draft, name })}
+								disabled={busy}
+								{...chain("name")}
+							/>
+						</Group>
+					</>
+				)}
+				<Group label="Base URL">
+					<TextFieldRow
+						label="Base URL"
+						value={draft.baseUrl}
+						onChangeText={(baseUrl) => setDraft({ ...draft, baseUrl })}
+						disabled={busy}
+						{...chain("baseUrl")}
+					/>
+				</Group>
+				<GroupFooter>
+					{instance?.baseUrl && !draft.baseUrl.trim()
+						? "Resets the endpoint to the provider’s default."
+						: "Optional. Empty uses the provider’s default."}
+				</GroupFooter>
+				{!instance && (
+					<>
+						{varFields.map(([template, environment]) => (
+							<Group key={template} label={environment} machineLabel>
+								<TextFieldRow
+									label={environment}
+									value={draft.vars[template] ?? ""}
+									onChangeText={(value) => setDraft({ ...draft, vars: { ...draft.vars, [template]: value } })}
+									disabled={busy}
+									{...chain(template)}
+								/>
+							</Group>
+						))}
+						<Group label="API key variable">
+							<TextFieldRow
+								label="API key environment variable"
+								value={draft.apiKeyEnv}
+								onChangeText={(apiKeyEnv) => setDraft({ ...draft, apiKeyEnv })}
+								disabled={busy}
+								{...chain("apiKeyEnv")}
+							/>
+						</Group>
+						<GroupFooter>Optional.</GroupFooter>
+						<Group label="Credential header">
+							<TextFieldRow
+								label="Credential header"
+								value={draft.credentialHeader}
+								onChangeText={(credentialHeader) => setDraft({ ...draft, credentialHeader })}
+								disabled={busy}
+								{...chain("credentialHeader")}
+							/>
+						</Group>
+						<GroupFooter>{CREDENTIAL_HEADER_HELP}</GroupFooter>
+					</>
+				)}
+			</GroupedPage>
+		</Sheet>
 	);
 }

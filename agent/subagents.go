@@ -352,6 +352,16 @@ func (s *Session) recordEnvironmentOwnership(env execenv.ExecutionEnvironment, o
 // tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
 // No owner is left to hand anything to, so its owned scratch goes with it.
 func disposeUnadoptedSubagentSession(sess *Session) {
+	// The delegation's durable artifacts directory is created at creation, so a
+	// child disposed before it was ever adopted must take its artifacts with it;
+	// the transcript and metadata are left for the resumability evidence the
+	// teardown below preserves. This runs before the teardown closes the event
+	// stream, so a cleanup failure can still be surfaced as a warning.
+	if sess != nil {
+		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
+			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+		}
+	}
 	teardownChildSession(context.Background(), sess, disposeChildScratch)
 }
 

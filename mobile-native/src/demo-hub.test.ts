@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { WebSocketLike } from "@evener/appwire-client";
+import type { NavigationReadParams, WebSocketLike } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
@@ -25,7 +25,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	async function withFleetHub(
 		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
-		options: { planRevised?: boolean } = {},
+		options: { planRevised?: boolean; long?: boolean } = {},
 	) {
 		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -107,6 +107,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			},
 			{ planRevised: true },
 		);
+	});
+
+	it("serves the long questions, approval and messages with EVENER_DEMO_LONG", async () => {
+		const AUDIT = `local:${demoSessionId("s-audit")}`;
+		const pendingCount = async (client: ReturnType<typeof createHubClient>) =>
+			(await client.request("thread/read", { ref: AUDIT, includeTurns: false })).thread.evener.pendingQuestion?.count;
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(4), { long: true });
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(2));
 	});
 });
 
@@ -389,6 +397,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toBeUndefined();
 			expect(handshake.features.auth).toBe(false);
+			expect(handshake.features.transcriptDisplaySettings).toBe(false);
 			await expect(
 				client.request("evener/navigation/read", {
 					representationVersion: 2,
@@ -414,6 +423,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
 			expect(handshake.features.auth).toBe(true);
+			expect(handshake.features.transcriptDisplaySettings).toBe(true);
 			const manifest = await client.request("evener/navigation/read", {
 				representationVersion: 2,
 				resource: "manifest",
@@ -467,6 +477,46 @@ describe("native demonstration hub's redesign fleet", () => {
 		}
 	});
 
+	it("stays up when a client leaves while its start is held", async () => {
+		const hub = await createDemoHub(0, undefined, {}, { startDelaySeconds: 0.2 });
+		const first = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const second = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await first.connect();
+			void first.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" }).catch(() => {});
+			first.close();
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			// The hub still answers another client after the held reply's moment passed.
+			await second.connect();
+			expect(await second.request("evener/projects/recent", {})).toBeDefined();
+		} finally {
+			second.close();
+			await hub.close();
+		}
+	});
+
+	it("answers thread/start late with startDelaySeconds, so the sheet can be swiped away first", async () => {
+		const hub = await createDemoHub(0, undefined, {}, { startDelaySeconds: 0.3 });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const began = Date.now();
+			const order: string[] = [];
+			const starting = client
+				.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" })
+				.then((started) => (order.push("start"), started));
+			// Every other method answers while the start is still held.
+			await client.request("evener/projects/recent", {}).then(() => order.push("recent"));
+			const started = await starting;
+			expect(order).toEqual(["recent", "start"]);
+			expect(Date.now() - began).toBeGreaterThanOrEqual(300);
+			expect(started.thread.evener.ref).toBe("demo:created-1");
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("marks paradise-park's manifest source offline when the fleet starts with offlineHost", async () => {
 		const hub = await createDemoHub(0, undefined, { offlineHost: true });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -513,7 +563,10 @@ describe("native demonstration hub's redesign fleet", () => {
 				resource: "section",
 				section: "needs_you",
 			});
-			expect(needsYou.revision).toBe(payload.targets[0]?.revision);
+			const needsYouTarget = payload.targets.find(
+				(target) => target.kind === "section" && target.section === "needs_you",
+			);
+			expect(needsYou.revision).toBe(needsYouTarget?.revision);
 			const entities = (needsYou.data as { entities: { value: { session_id?: string } }[] }).entities;
 			expect(entities.map((entity) => entity.value.session_id)).toContain(demoSessionId("s-gateway"));
 		} finally {
@@ -534,6 +587,36 @@ describe("native demonstration hub's redesign fleet", () => {
 			expect(handshake.navigation?.sequence).toBe(1);
 		} finally {
 			client.close();
+			await hub.close();
+		}
+	});
+
+	it("keeps notifying the other clients when one socket fails mid-broadcast", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const dropping = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const listening = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const invalidated = navigationInvalidated(listening);
+		// The first socket the broadcast reaches throws, as a socket that goes
+		// away mid-send does; the rest must still get the notification.
+		const originalSend = WebSocket.prototype.send;
+		let dropped = false;
+		WebSocket.prototype.send = function (this: WebSocket, ...args: unknown[]) {
+			const [data] = args;
+			if (!dropped && typeof data === "string" && data.includes("evener/navigation/invalidated")) {
+				dropped = true;
+				throw new Error("socket is gone");
+			}
+			return (originalSend as (...sendArgs: unknown[]) => void).apply(this, args);
+		} as unknown as typeof WebSocket.prototype.send;
+		try {
+			await dropping.connect();
+			await listening.connect();
+			expect(() => hub.askQuestion()).not.toThrow();
+			expect(await invalidated).toMatchObject({ sequence: 1 });
+		} finally {
+			WebSocket.prototype.send = originalSend;
+			dropping.close();
+			listening.close();
 			await hub.close();
 		}
 	});
@@ -792,9 +875,9 @@ describe("native demonstration hub's fleet sessions", () => {
 			if (!turn?.startedAt) throw new Error("the stopped turn needs its start");
 			expect(turn.status).toBe("interrupted");
 			expect(turn.items?.filter((item) => item.status === "inProgress")).toEqual([]);
+			// Its subagent calls settled when their launch receipts returned, so
+			// only the step still running is interrupted.
 			expect(turn.items?.filter((item) => item.status === "interrupted").map((item) => item.toolName)).toEqual([
-				"delegate",
-				"delegate",
 				"shell",
 			]);
 			expect(turn.completedAt).toBeGreaterThanOrEqual(turn.startedAt);
@@ -966,6 +1049,46 @@ describe("native demonstration hub's fleet sessions", () => {
 			expect(working.status.type).toBe("active");
 			expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
 			expect(working.activeTurnStartedAt).toBeDefined();
+		});
+	});
+
+	it("moves a fleet session's Board row with its turn, out of Working on Stop and back on send", async () => {
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-pr2138");
+			const rowState = async (resource: { resource: string; section?: string; sectionId?: string }) => {
+				const read = await client.request("evener/navigation/read", {
+					representationVersion: 2,
+					...resource,
+				} as NavigationReadParams);
+				const entities = (read.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;
+				return entities.find((entity) => entity.value.session_id === demoSessionId("s-pr2138"))?.value.state;
+			};
+			const liveState = () => rowState({ resource: "section", section: "live" });
+			// s-pr2138 is pinned in the release section, whose rows carry the
+			// same state, so its turn reaches that section too.
+			const pinnedState = () => rowState({ resource: "pin_section", sectionId: "release" });
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const expectedInstanceId = thread.evener.instanceId ?? "";
+			expect(await liveState()).toBe("active");
+			expect(await pinnedState()).toBe("active");
+			const stopped = navigationInvalidated(client);
+			await client.request("turn/interrupt", { ref, expectedInstanceId, clientMutationId: "stop-pr2138" });
+			const stoppedPayload = (await stopped) as { targets: { kind: string; sectionId?: string }[] };
+			expect(stoppedPayload.targets).toEqual(
+				expect.arrayContaining([expect.objectContaining({ kind: "pin_section", sectionId: "release" })]),
+			);
+			expect(await liveState()).toBe("idle");
+			expect(await pinnedState()).toBe("idle");
+			const restarted = navigationInvalidated(client);
+			await client.request("turn/start", {
+				ref,
+				expectedInstanceId,
+				clientMutationId: "start-pr2138",
+				input: [{ type: "text", text: "Keep going" }],
+			});
+			await restarted;
+			expect(await liveState()).toBe("active");
+			expect(await pinnedState()).toBe("active");
 		});
 	});
 
@@ -1323,6 +1446,99 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("grows the working session by a finished step at a time on grow, for scroll checks", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands, growEveryMs: 5 });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-pr2138");
+		const items = async () =>
+			((await client.request("thread/read", { ref, includeTurns: true, subscribe: true })).thread.turns ?? []).flatMap(
+				(turn) => turn.items ?? [],
+			);
+		let resyncs = 0;
+		client.onNotification((notification) => {
+			if (notification.method === "evener/thread/resync") resyncs += 1;
+		});
+		try {
+			await client.connect();
+			const before = await items();
+			commands.write("grow\n");
+			await vi.waitFor(() => expect(resyncs).toBe(15));
+			const after = await items();
+			expect(after).toHaveLength(before.length + 15);
+			expect(after.filter((item) => item.id.startsWith("demo-grow-"))).toHaveLength(15);
+			expect(after.every((item, index) => index < before.length || item.status === "completed")).toBe(true);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("pages Get PR 2138's older history by item with EVENER_DEMO_FLEET_OLDER", async () => {
+		const hub = await createDemoHub(0, undefined, { olderHistory: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-pr2138");
+		const ids = (turns: { items?: { id: string }[] }[] | undefined) =>
+			(turns ?? []).flatMap((turn) => (turn.items ?? []).map((item) => item.id));
+		try {
+			await client.connect();
+			const full = await client.request("thread/read", { ref, includeTurns: true });
+			const all = ids(full.thread.turns);
+			expect(all.filter((id) => id.startsWith("demo-older-"))).toHaveLength(15 * 7);
+			const first = await client.request("thread/read", { ref, includeTurns: true, itemLimit: 40 });
+			const seen = ids(first.thread.turns);
+			expect(seen).toEqual(all.slice(-40));
+			let cursor = first.olderCursor;
+			const pages: string[][] = [];
+			while (cursor) {
+				const page = await client.request("thread/turns/list", { ref, cursor, itemLimit: 40 });
+				pages.unshift(ids(page.data));
+				cursor = page.nextCursor;
+			}
+			expect([...pages.flat(), ...seen]).toEqual(all);
+			// A page that starts inside a turn says so.
+			const partial = await client.request("thread/read", { ref, includeTurns: true, itemLimit: 3 });
+			expect(partial.thread.turns?.[0]).toMatchObject({ hasEarlierItems: true });
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("says an unknown session is unknown, with or without EVENER_DEMO_FLEET_OLDER", async () => {
+		for (const options of [{}, { olderHistory: true }]) {
+			const hub = await createDemoHub(0, undefined, options);
+			const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+			try {
+				await client.connect();
+				await expect(
+					client.request("thread/read", { ref: "local:nobody", includeTurns: true, itemLimit: 40 }),
+				).rejects.toThrow("Unknown demonstration session");
+			} finally {
+				client.close();
+				await hub.close();
+			}
+		}
+	});
+
+	it("serves the whole history, with no cursor, without EVENER_DEMO_FLEET_OLDER", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const read = await client.request("thread/read", {
+				ref: fleetSessionRef("s-pr2138"),
+				includeTurns: true,
+				itemLimit: 3,
+			});
+			expect(read.olderCursor).toBeUndefined();
+			expect(read.thread.turns?.flatMap((turn) => turn.items ?? []).length).toBeGreaterThan(3);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -1331,7 +1547,7 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 			commands.write("dance\n");
 			await vi.waitFor(() =>
 				expect(info).toHaveBeenCalledWith(
-					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst",
+					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst, grow",
 				),
 			);
 		} finally {

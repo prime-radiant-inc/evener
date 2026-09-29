@@ -38,9 +38,9 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
 			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`,
-		// A running record carrying its fencing epoch and an orphan-unverified
-		// record carrying its boundary: the pass moves the first and must leave
-		// the second alone (spec §7's one exception).
+		// A running record carrying its fencing epoch and a prior-build
+		// orphan-unverified record: the pass moves the first and must leave the
+		// second alone (spec §7's one exception).
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"boot-1","opSeq":3},"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
 			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"orphan-unverified","generation":7,"incarnationId":"inc-2","orphanBoundary":[{"host":"h2","kind":"local-linux"}],"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false}]}`,
@@ -61,22 +61,22 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"1","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
-		// An orphan-unverified record whose boundary reads as null, and a store
-		// whose two terminal records share one sequence stamp: the fail-closed
-		// shapes the fencing and race-scan paths depend on.
+		// A prior-build orphan-unverified record whose retired boundary reads as
+		// null — a shape this build must still load — and a store whose two
+		// terminal records share one sequence stamp, the race-scan corruption.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":null}]}`,
 		// A record that arrived with offset timestamps (§8 converts them at write
-		// time) and an orphan whose boundary is legitimately empty (§5's
-		// demonstrably-empty clean rule): both are accepted shapes.
+		// time) and a prior-build orphan whose retired boundary is empty: both are
+		// accepted shapes.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
-		// A fencing-quarantine marker naming the orphan-unverified record its
-		// host carries (the accepted shape), and two markers this writer never
-		// produces: one naming a record that is not orphan-unverified, and one
-		// carrying a key the marker schema does not define.
+		// Prior-build fencing-quarantine markers and boundaries in three shapes
+		// (the marker naming the orphan its host carries, one naming a running
+		// record, and one carrying an extra key): all decoded for tolerance, none
+		// re-emitted.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +

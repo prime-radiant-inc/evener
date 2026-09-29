@@ -1311,6 +1311,8 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		Rename:            true,
 		SkillInput:        true,
 		Queue:             true,
+		// The hub pages the saved transcript from a before position itself.
+		PageBefore: true,
 		// Steer and Interrupt stay false: they act on a turn that is already
 		// running, which a cold exited session does not have. Queue does not need
 		// one — the hub resumes for it and the queued message runs as the next
@@ -1972,5 +1974,46 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 	}
 	if fullFlushed != pagedFlushed {
 		t.Errorf("full read flushed Text = %q, paged read flushed Text = %q, want equal", fullFlushed, pagedFlushed)
+	}
+}
+
+// A saved transcript pages before a boundary with no cursor the same as with
+// the cursor that points there.
+func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5})
+	if !found || err != nil {
+		t.Fatalf("latest saved page: found=%v err=%v", found, err)
+	}
+	items := flattenTestItems(latest.Data)
+	if len(items) == 0 || items[0].Position == nil || latest.NextCursor == "" {
+		t.Fatalf("latest saved page = %+v, want positioned items and a cursor", latest)
+	}
+	withCursor, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Cursor: latest.NextCursor})
+	if err != nil {
+		t.Fatalf("saved page with a cursor: %v", err)
+	}
+	cursorless, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: items[0].Position})
+	if err != nil {
+		t.Fatalf("saved page before the latest page's first item: %v", err)
+	}
+	ids := func(page appwire.ThreadTurnsListResponse) []string {
+		var out []string
+		for _, item := range flattenTestItems(page.Data) {
+			out = append(out, item.ID)
+		}
+		return out
+	}
+	if got, want := ids(cursorless), ids(withCursor); len(want) == 0 || !slicesEqual(got, want) {
+		t.Fatalf("cursorless saved page = %v, want the cursor's page %v", got, want)
+	}
+	future := &appwire.ThreadItemPosition{Entry: items[0].Position.Entry + 10_000}
+	_, _, err = pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: future})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("saved page before a future position: error = %T %v, want a stale cursor", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("saved page before a future position: error data = %#v, want stale cursor", wireErr.Data)
 	}
 }

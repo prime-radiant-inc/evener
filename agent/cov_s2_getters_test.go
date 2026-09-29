@@ -12,7 +12,7 @@ import (
 
 func TestS2Cov_SessionAccessors(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := realTempDirForTest(t)
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 
 	if sess.StateDir() != dir {

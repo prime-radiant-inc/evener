@@ -35,7 +35,7 @@
 // anonymous casts.
 
 import { create } from "zustand";
-import type { AnyNotification, ThreadCapabilities } from "@evener/appwire-client";
+import type { AnyNotification } from "@evener/appwire-client";
 import {
 	deriveOpenTaskCount,
 	projectDelegateEntry,

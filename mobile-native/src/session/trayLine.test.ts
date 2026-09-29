@@ -1,5 +1,6 @@
 import type { EvenerDelegateInfo, ItemModel, ModelRetryState, TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { subagentTally } from "./sessionState";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 
 const NOW = Date.UTC(2026, 8, 26, 14, 0, 0);
@@ -19,7 +20,8 @@ const delegate = (status: string, n: number): EvenerDelegateInfo => ({
 	rootSessionId: "root",
 	childSessionId: `child-${n}`,
 	transcriptRef: `local:child-${n}`,
-	type: "subagent",
+	// Every EvenerDelegateInfo the hub sends is the stable "delegate" shape.
+	type: "delegate",
 	lifecycle: status,
 	phase: status,
 	status,
@@ -68,6 +70,43 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([reading])] }), NOW)?.text).toBe("Reading agent/retirement_test.go · 5s");
 	});
 
+	// A step with no intent says what it is doing in the step's own words'
+	// live form (the package's toolStepProgress), never its raw tool name.
+	it("says a running step with no intent in words, never its tool's name", () => {
+		const step = (toolName: string, args: Record<string, unknown>) =>
+			item({ toolName, argumentsJSON: JSON.stringify(args), status: "inProgress", startedAt: ago(5_000) });
+		const text = (running: ReturnType<typeof item>) => trayLine(session({ turns: [turn([running])] }), NOW)?.text;
+		expect(text(step("read_file", { file_path: "agent/tree.go" }))).toBe("Reading agent/tree.go · 5s");
+		expect(text(step("github__create_issue", { title: "x" }))).toBe("Using github: create issue · 5s");
+		expect(text(step("compact_context", {}))).toBe("Using compact context · 5s");
+		expect(text(step("shell", {}))).toBe("Running a command · 5s");
+	});
+
+	// A shell call whose command is missing or named otherwise still says its
+	// intent, as the web's row does, rather than a bare "Running a command".
+	it("keeps a command-less shell step's intent", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ description: "run the audit" }),
+			description: "Run the audit",
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		expect(trayLine(session({ turns: [turn([running])] }), NOW)?.text).toBe("Run the audit · 5s");
+	});
+
+	it("leaves out a running command's cd to the session's own directory", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ command: "cd /repo && make test" }),
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		expect(trayLine({ ...session({ turns: [turn([running])] }), cwd: "/repo" }, NOW)?.text).toBe(
+			"Running make test · 5s",
+		);
+	});
+
 	it("says Thinking with a token estimate and no clock", () => {
 		const thought = item({ type: "reasoning", text: "x".repeat(4_800), status: "inProgress" });
 		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");
@@ -95,9 +134,22 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
 	});
 
+	// The tray counts what the Subagents list, its chip and the transcript row
+	// call running (subagentState), so the four never disagree.
+	it("counts the subagents the list counts as running", () => {
+		// Resumable with no ended run, so not terminal: running. An idle
+		// subagent whose run ended is terminal on the wire.
+		const idle = { ...delegate("idle", 2), resumable: true };
+		const stopped = { ...delegate("stopped", 3), terminal: true, outcome: "stopped" };
+		const failed = { ...delegate("failed", 4), terminal: true, outcome: "failed" };
+		const delegates = [delegate("running", 1), idle, stopped, failed];
+		expect(subagentTally(delegates).running).toBe(2);
+		expect(trayLine(session({ delegates }), NOW)?.text).toBe("Waiting on 2 subagents");
+	});
+
 	it("waits on subagents when nothing else runs, or when the step waits on them", () => {
 		const running = Array.from({ length: 12 }, (_, n) => delegate("running", n));
-		const finished = delegate("completed", 99);
+		const finished = { ...delegate("completed", 99), terminal: true, outcome: "completed" };
 		expect(trayLine(session({ delegates: [...running, finished] }), NOW)?.text).toBe("Waiting on 12 subagents");
 		expect(trayLine(session({ delegates: [delegate("running", 1)] }), NOW)?.text).toBe("Waiting on 1 subagent");
 		const watching = item({ toolName: "job_watch", description: "Watching the jobs", status: "inProgress" });

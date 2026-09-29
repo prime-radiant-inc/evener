@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -178,6 +179,195 @@ func TestRenderPacketShowsTheMessageTheAppShows(t *testing.T) {
 	packet := renderPacket(tr)
 	if !strings.Contains(packet, "Short note.") || strings.Contains(packet, "Structured body.") {
 		t.Errorf("packet = %q, want the shown message and not the structured body", packet)
+	}
+}
+
+// TestRenderPacketShowsTheFullDelegateBrief: a blind reader judging
+// delegation cannot see how work was split and briefed if a delegate call
+// renders as an 80-byte argument preview. The delegate's prompt must appear
+// in full, the way a message to the user does.
+func TestRenderPacketShowsTheFullDelegateBrief(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	brief := strings.Repeat("Investigate the billing retry path in depth and report back with evidence. ", 3) + "MARKER-a91f7c"
+	args, err := json.Marshal(map[string]any{"prompt": brief, "agent_type": "general-purpose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate", string(args))),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, brief) {
+		t.Errorf("packet cut the delegate brief short:\n%s", packet)
+	}
+	if !strings.Contains(packet, "→ delegate") {
+		t.Errorf("packet missing the delegate header:\n%s", packet)
+	}
+}
+
+// TestRenderPacketShowsTheFullDelegateSendMessage: delegate_send's message is
+// a follow-up brief just as much as delegate's prompt, and must not be cut to
+// a preview either.
+func TestRenderPacketShowsTheFullDelegateSendMessage(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	message := strings.Repeat("Here is additional context the delegate will need to finish the job. ", 3) + "MARKER-3d02be"
+	args, err := json.Marshal(map[string]any{"to": "dlg_child1", "message": message})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate_send", string(args))),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, message) {
+		t.Errorf("packet cut the delegate_send message short:\n%s", packet)
+	}
+	if !strings.Contains(packet, "→ delegate_send") {
+		t.Errorf("packet missing the delegate_send header:\n%s", packet)
+	}
+}
+
+// TestRenderPacketShowsDelegateSendRecipient: delegate_send's `to` argument
+// says which delegate or caller a follow-up went to; a blind reader needs
+// that alongside the full message, not just the bare "delegate_send" name.
+func TestRenderPacketShowsDelegateSendRecipient(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	args, err := json.Marshal(map[string]any{"to": "dlg_child1", "message": "Please also check the Delta Payments contract."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate_send", string(args))),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, "→ delegate_send to dlg_child1") {
+		t.Errorf("packet missing the delegate_send recipient:\n%s", packet)
+	}
+}
+
+// TestRenderPacketShowsTheFullBriefForEachTaskListStep: a delegate call can
+// seed a multi-step plan in task_list instead of a single prompt; each step's
+// own prompt is a brief too and must appear whole.
+func TestRenderPacketShowsTheFullBriefForEachTaskListStep(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	step1 := strings.Repeat("Read every contract in contracts/ and note the termination clause. ", 2) + "MARKER-STEP1-6b2f"
+	step2 := strings.Repeat("Read the remaining contracts and note the renewal clause. ", 2) + "MARKER-STEP2-9ae4"
+	args, err := json.Marshal(map[string]any{
+		"prompt": "Split the vendor contract review across two steps.",
+		"task_list": []map[string]any{
+			{"title": "First half", "prompt": step1},
+			{"title": "Second half", "prompt": step2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate", string(args))),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	for _, want := range []string{step1, step2} {
+		if !strings.Contains(packet, want) {
+			t.Errorf("packet cut a task_list step's brief short:\n%s", packet)
+		}
+	}
+}
+
+// TestWriteReviewPackMasksAPathInsideADelegateBrief: a delegate's prompt can
+// itself contain a path under the mask root (an agent naming the file it
+// wants the delegate to own, say). The packet now renders that prompt in
+// full rather than an 80-byte preview, so the path sits in more of the text;
+// the mask must still catch every occurrence.
+func TestWriteReviewPackMasksAPathInsideADelegateBrief(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cellDir := filepath.Join(root, "v1-A", "lunarouter-m")
+	base := filepath.Join(cellDir, "prose.bugfix-tally", "rep-01")
+	workDir, stateDir := filepath.Join(base, "work"), filepath.Join(base, "state")
+	rootMeta(t, stateDir, proseRootID)
+	brief := "Own " + filepath.Join(workDir, "tally", "sum.go") + " and fix the loop that skips the first value. MARKER-58f2a1"
+	args, err := json.Marshal(map[string]any{"prompt": brief})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate", string(args))),
+		assistantTurn(fluencyToolCall("communicate", `{"message":"`+reviewRunReport+`","end_turn":true}`)),
+	})
+	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: 1, Status: "passed", WorkDir: workDir, StateDir: stateDir}
+	if err := writeProbeResult(cellDir, res); err != nil {
+		t.Fatal(err)
+	}
+
+	packets := filepath.Join(t.TempDir(), "packets")
+	key, _, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
+	if err != nil {
+		t.Fatalf("writeReviewPack: %v", err)
+	}
+	if len(key) != 1 {
+		t.Fatalf("key = %+v, want one entry", key)
+	}
+	data, err := os.ReadFile(filepath.Join(packets, key[0].Packet))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, workDir) {
+		t.Errorf("packet's delegate brief leaked the work dir:\n%s", text)
+	}
+	if !strings.Contains(text, "MARKER-58f2a1") {
+		t.Errorf("packet lost the delegate brief:\n%s", text)
+	}
+}
+
+// TestRenderPacketLabelsHarnessSteering: a steering turn is only the person's
+// own words when its source is SteeringSourceUser. The harness's own reminder
+// (such as the bare-text nudge) is recorded as steering the person never saw,
+// so the blind reader must not read it as the user speaking.
+func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	harness := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("Send your report with the communicate tool.")}})
+	harness.SteeringKind = events.SteeringKindNoToolCalls
+	user := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("focus on the tests")}})
+	user.SteeringKind = events.SteeringKindHumanNote
+	user.SteeringSource = events.SteeringSourceUser
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{harness, user})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, "## Evener (not shown to the user)\n\nSend your report with the communicate tool.") {
+		t.Errorf("packet did not label harness steering as Evener's:\n%s", packet)
+	}
+	if !strings.Contains(packet, "## User\n\nfocus on the tests") {
+		t.Errorf("packet did not render user steering as the user's:\n%s", packet)
 	}
 }
 

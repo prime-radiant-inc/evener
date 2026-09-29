@@ -6,15 +6,16 @@
 import {
 	type ItemModel,
 	isActiveItem,
+	formatTokenCount,
 	type ModelRetryState,
-	parseArgs,
 	pendingTextJoined,
-	str,
 	type ThreadModel,
+	toolFamily,
+	toolStepProgress,
 } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import { subagentState } from "../subagents/subagentModel";
 import { PULSE_BARS } from "../board/pulse";
-import { compactCount, compactDuration } from "./format";
+import { compactDuration } from "./format";
 
 /** No frame for this long reads "Quiet": the web's threshold
  * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts). */
@@ -31,7 +32,11 @@ export interface TrayLine {
 export type TraySource = Pick<
 	ThreadModel,
 	"status" | "turns" | "activeTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
->;
+> & {
+	/** The session's directory, which a running command's leading cd to it
+	 * only repeats. */
+	cwd?: string;
+};
 
 interface Step {
 	text: string;
@@ -40,6 +45,10 @@ interface Step {
 	waitsOnSubagents: boolean;
 }
 
+// The steps that wait on subagents while they run: delegating, sending to a
+// subagent (delegate_send can wait for its reply, max_wait_ms), and watching
+// or reading jobs. delegate_send is an ordinary step in the transcript's runs,
+// but while it is open the tray still says what it waits on.
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
 export function trayLine(session: TraySource, now: number): TrayLine | null {
@@ -97,22 +106,33 @@ function currentStep(session: TraySource): Step | null {
 	for (let index = turn.items.length - 1; index >= 0; index -= 1) {
 		const item = turn.items[index];
 		if (!item || !isActiveItem(item, turn.status)) continue;
-		const step = stepFor(item);
+		const step = stepFor(item, session.cwd);
 		if (step) return step;
 	}
 	return null;
 }
 
-function stepFor(item: ItemModel): Step | null {
+// What toolStepProgress says for a shell call that names no command.
+const RUNNING_A_COMMAND = "Running a command";
+
+function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
-		return { text: tokens > 0 ? `Thinking… · ${compactCount(tokens)} tokens` : "Thinking…", waitsOnSubagents: false };
+		return {
+			text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…",
+			waitsOnSubagents: false,
+		};
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
-	const command = item.toolName === "shell" ? str(parseArgs(item.argumentsJSON), "command") : undefined;
-	const firstLine = command?.split("\n")[0]?.trim();
-	const text = firstLine ? `Running ${firstLine}` : item.description?.trim() || `Running ${item.toolName ?? "a step"}`;
+	// What the step is doing in the words its summary will use, live
+	// ("Reading agent/tree.go", "Running go test ./..."), never its tool's
+	// name. A command says itself; any other step, and a shell call with no
+	// command to name, says its intent first.
+	const progress = toolStepProgress(item, { cwd });
+	const intent = item.description?.trim();
+	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
+	const text = namesCommand ? progress : intent || progress;
 	return { text, startedAt: timeOf(item.startedAt), waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? "") };
 }
 
@@ -130,7 +150,7 @@ function thinkingTokens(item: ItemModel): number {
 }
 
 function runningSubagents(session: TraySource): number {
-	return (session.delegates ?? []).filter((delegate) => projectDelegateEntry(delegate).tone === "running").length;
+	return (session.delegates ?? []).filter((delegate) => subagentState(delegate) === "running").length;
 }
 
 function timeOf(value: string | undefined): number | undefined {

@@ -69,7 +69,7 @@ it("a start from a replaced connection's listing is refused and reads as not sta
 	connect(replacement.client);
 	await flow.start();
 	expect(flow.getSnapshot().phase).toBe("error");
-	expect(flow.getSnapshot().error).toContain("could not be started");
+	expect(flow.getSnapshot().error).toContain("couldn't start signing in");
 	expect(authCalls(replacement.calls)).toEqual([]);
 	flow.dispose();
 });
@@ -244,7 +244,7 @@ it("does not publish late authorization after disposal", async () => {
 });
 it("retains the device flow across a hub connection replacement", async () => {
 	vi.useFakeTimers();
-	const { flow, calls, store, connect } = boundary();
+	const { flow, calls, connect } = boundary();
 	await flow.start();
 	connect(null);
 	await vi.advanceTimersByTimeAsync(10000);
@@ -280,7 +280,7 @@ it("does not accept a late poll from the disconnected client", async () => {
 	flow.dispose();
 });
 it("keeps browser continuation across reconnect without replaying completion", async () => {
-	const { flow, io, store, connect } = boundary();
+	const { flow, io, connect } = boundary();
 	io.request = async (method) =>
 		method === "evener/auth/device/start"
 			? { ...device, fallback: true }
@@ -468,7 +468,7 @@ it("restores the device timer after a read outlasts the polling interval", async
 
 it("does not let a stale rejected poll poison a newly started flow", async () => {
 	vi.useFakeTimers();
-	const { flow, io, store, connect } = boundary();
+	const { flow, io, connect } = boundary();
 	await flow.start();
 	let reject!: (reason: unknown) => void;
 	io.request = async () =>

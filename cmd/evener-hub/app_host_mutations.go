@@ -284,14 +284,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
-	// §8's orphan fence, beside the remnant fence and under the same lock: the
-	// quarantine form wins where the marker is present, and an open
-	// orphan-unverified record refuses transient busy — a new incarnation never
-	// starts while the old boundary is unverified.
-	if err := m.orphanAdmissionRefusal(entry.Name); err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, err
-	}
 	// The keyless read-after-unknown path: "a keyless `add` retry that observes
 	// a matching listed row (the listed entry hash equals the intended entry)
 	// returns the explicit ambiguous outcome ... instead of claiming the
@@ -683,12 +675,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
-	// §8's orphan fence, the remnant fence's sibling: no lifecycle or mutation
-	// work for a name whose orphan boundary is still unverified.
-	if err := m.orphanAdmissionRefusal(name); err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, err
-	}
 	before, ok := m.cfg.hosts.Get(name)
 	if !ok {
 		m.cfg.mu.Unlock()
@@ -958,12 +944,6 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// not-found (spec §6: "The remnant fence takes precedence over the
 	// tombstone not-found rule").
 	if err := m.remnantRefusal(name); err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, err
-	}
-	// §8's orphan fence, the remnant fence's sibling: no lifecycle or mutation
-	// work for a name whose orphan boundary is still unverified.
-	if err := m.orphanAdmissionRefusal(name); err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}

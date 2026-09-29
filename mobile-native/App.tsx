@@ -10,6 +10,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AlertBannerHost } from "./src/alerts/AlertBannerHost";
 import { AlertsProvider } from "./src/alerts/AlertsProvider";
@@ -22,9 +23,6 @@ import { displayPreferences, followAppearanceChoice } from "./src/display/native
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
-import { HubSettingsScreen } from "./src/HubSettingsScreen";
-import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
-import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
@@ -78,20 +76,23 @@ followAppearanceChoice();
 
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
-	// everything, and it fills the screen.
+	// everything, and it fills the screen. The keyboard controller reports the
+	// keyboard's frames to what moves with it (the Session's composer).
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
-			<SafeAreaProvider>
-				<DisplayProvider value={displayPreferences}>
-					<ConnectionProvider>
-						<NativePreferencesProvider>
-							<AlertsProvider>
-								<Navigation />
-							</AlertsProvider>
-						</NativePreferencesProvider>
-					</ConnectionProvider>
-				</DisplayProvider>
-			</SafeAreaProvider>
+			<KeyboardProvider>
+				<SafeAreaProvider>
+					<DisplayProvider value={displayPreferences}>
+						<ConnectionProvider>
+							<NativePreferencesProvider>
+								<AlertsProvider>
+									<Navigation />
+								</AlertsProvider>
+							</NativePreferencesProvider>
+						</ConnectionProvider>
+					</DisplayProvider>
+				</SafeAreaProvider>
+			</KeyboardProvider>
 		</GestureHandlerRootView>
 	);
 }
@@ -205,26 +206,6 @@ function Navigation() {
 						name="PinAssignment"
 						component={PinAssignmentScreen}
 						options={{ title: "Pin session" }}
-					/>
-					<Stack.Screen
-						name="LaunchSettings"
-						component={LaunchSettingsScreen}
-						options={({ route }) => ({
-							title:
-								route.params.projectCwd === undefined
-									? "Launch defaults"
-									: "Project launch settings",
-						})}
-					/>
-					<Stack.Screen
-						name="KeybindingPreferences"
-						component={KeybindingPreferencesScreen}
-						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="HubSettings"
-						component={HubSettingsScreen}
-						options={{ title: "Hub settings" }}
 					/>
 					<Stack.Screen
 						name="SessionLocation"

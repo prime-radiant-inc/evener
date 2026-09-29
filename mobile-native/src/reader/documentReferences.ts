@@ -88,8 +88,9 @@ function namedFiles(markdown: string): readonly string[] {
  * link targets that name a file inside the session's folder. A name needs a
  * directory ("docs/plan.md") unless the session wrote that file, so a passing
  * "README.md" never becomes a chip for a file that isn't there. Fenced code
- * is code, not a reference. */
-export function messageDocuments(markdown: string, cwd: string, written: ReadonlyMap<string, string>): string[] {
+ * is code, not a reference. `written` is the paths the session wrote, whatever
+ * their write time. */
+export function messageDocuments(markdown: string, cwd: string, written: ReadonlySet<string>): string[] {
 	const paths: string[] = [];
 	for (const file of namedFiles(markdown)) {
 		const path = documentPath(file, cwd);
@@ -159,17 +160,26 @@ export function fileWrites(turns: readonly TurnModel[], cwd: string): Map<string
 	return writes;
 }
 
+/** The paths the session wrote inside its folder, with or without a write time:
+ * a bare file name in a message becomes a chip only for one of these. */
+export function writtenPaths(turns: readonly TurnModel[], cwd: string): Set<string> {
+	const paths = new Set<string>();
+	for (const turn of turns) for (const item of turn.items) for (const path of writtenFiles(item, cwd)) paths.add(path);
+	return paths;
+}
+
 /** Every document the session named in its messages or wrote, each once, in
  * the order it first appeared, with its newest write. */
 export function documentReferences(turns: readonly TurnModel[], cwd: string): DocumentReference[] {
 	const writes = fileWrites(turns, cwd);
+	const written = writtenPaths(turns, cwd);
 	const order: string[] = [];
 	const add = (path: string) => {
 		if (!order.includes(path)) order.push(path);
 	};
 	for (const turn of turns)
 		for (const item of turn.items) {
-			if (item.type === "agentMessage") for (const path of messageDocuments(item.text, cwd, writes)) add(path);
+			if (item.type === "agentMessage") for (const path of messageDocuments(item.text, cwd, written)) add(path);
 			else for (const path of writtenFiles(item, cwd)) add(path);
 		}
 	return order.map((path) => {

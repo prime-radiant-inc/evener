@@ -26,7 +26,9 @@ export type RecoveryGhostRow = Pick<
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
 	| { kind: "pending"; clientMutationId: string }
-	| { kind: "draft" }
+	// A draft that stands in for a matched outbox row carries that row's id, so
+	// its Discard can clear both (the draft's uncertainty and the row).
+	| { kind: "draft"; clientMutationId?: string }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -127,7 +129,9 @@ export function ghosts(
 			caption: sending && !connected ? WAITING_TO_SEND : CAPTIONS[state],
 			buttons: sending ? [] : confirmButtons,
 			menu: sending ? [] : ["edit"],
-			origin: { kind: "draft" },
+			// The outbox row this ghost stands in for, when there is one: Discard
+			// must clear both, or the row returns as its own ghost.
+			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
 		});
 	}
 	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));
@@ -241,4 +245,26 @@ export function shownGhosts(all: readonly Ghost[]): { shown: Ghost[]; moreQueued
 		shown.push(ghost);
 	}
 	return { shown, moreQueued: Math.max(0, queued - SHOWN_QUEUED) };
+}
+
+/** The queue as one line while you type (spec 8.5): its count, "2 queued" or
+ * "1 held", and with one message, what you can do to it now. */
+export interface QueueFold {
+	label: string;
+	act: { ghost: Ghost; action: "steerNow" | "sendNow" } | null;
+}
+
+/** Folds the queued ghosts into one line and keeps every other ghost, which
+ * is about something you may need to act on now. Nothing folds when nothing
+ * is queued. */
+export function foldQueue(all: readonly Ghost[]): { fold: QueueFold | null; rest: Ghost[] } {
+	const queued = all.filter((ghost) => ghost.origin.kind === "queue");
+	const rest = all.filter((ghost) => ghost.origin.kind !== "queue");
+	const [first] = queued;
+	if (first === undefined) return { fold: null, rest };
+	// A queue is held or queued as a whole (queueGhosts).
+	const label = `${queued.length} ${first.state === "held" ? "held" : "queued"}`;
+	const action = first.buttons.find((button) => button === "steerNow" || button === "sendNow");
+	const act = queued.length === 1 && action !== undefined ? { ghost: first, action } : null;
+	return { fold: { label, act }, rest };
 }

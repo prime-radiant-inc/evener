@@ -250,11 +250,12 @@ type NavigationSubagentTally struct {
 const NavigationFailureCrashed = "crashed"
 
 // NavigationFailure says why a Failed row failed (S1c): the failure's headline
-// ("Provider error", "Usage limit reached") and its cause's kind ("provider",
-// "transcript_failed_closed", or the hub's own NavigationFailureCrashed), the
-// provider it came from and its HTTP status, from which a client composes the
-// row's why line ("codex-jesse-fsck.com sign-in expired (401)"). It never
-// carries the failure's message, which can quote a provider's error body.
+// ("Provider error", "Usage limit reached", "Sign-in required") and its cause's
+// kind ("provider", "signInRequired", "transcript_failed_closed", or the hub's
+// own NavigationFailureCrashed), the provider it came from and its HTTP status,
+// from which a client composes the row's why line ("codex-jesse-fsck.com
+// sign-in expired (401)"). It never carries the failure's message, which can
+// quote a provider's error body.
 type NavigationFailure struct {
 	Title     string `json:"title,omitempty"`
 	CauseKind string `json:"cause_kind,omitempty"`
@@ -275,19 +276,18 @@ type NavigationQuestion struct {
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref          string `json:"ref"`
-	HostID       string `json:"host_id"`
-	SessionID    string `json:"session_id"`
-	Title        string `json:"title"`
-	Project      string `json:"project"`
-	State        string `json:"state"`
-	Kind         string `json:"kind"`
-	Branch       string `json:"branch,omitempty"`
-	ClusterCount int    `json:"cluster_count,omitempty"`
-	Favorite     bool   `json:"favorite,omitempty"`
-	Rename       bool   `json:"rename,omitempty"`
-	Live         bool   `json:"live"`
-	AskPending   bool   `json:"ask_pending,omitempty"`
+	Ref        string `json:"ref"`
+	HostID     string `json:"host_id"`
+	SessionID  string `json:"session_id"`
+	Title      string `json:"title"`
+	Project    string `json:"project"`
+	State      string `json:"state"`
+	Kind       string `json:"kind"`
+	Branch     string `json:"branch,omitempty"`
+	Favorite   bool   `json:"favorite,omitempty"`
+	Rename     bool   `json:"rename,omitempty"`
+	Live       bool   `json:"live"`
+	AskPending bool   `json:"ask_pending,omitempty"`
 	// ApprovalPending is true while the session is blocked on a sandbox
 	// escalation a human must allow or deny (M7). The row keeps its real State
 	// ("active": the escalation blocks mid-turn); the flag says why the session

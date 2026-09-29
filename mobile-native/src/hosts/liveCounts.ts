@@ -6,6 +6,9 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { NavigationPages } from "../navigationPages";
 
+/** The host_id a live session on the hub's own machine carries. */
+export const LOCAL_HOST = "local";
+
 export function liveCountsByHost(
 	rows: readonly Pick<NavigationSessionSummary, "host_id">[],
 ): ReadonlyMap<string, number> {

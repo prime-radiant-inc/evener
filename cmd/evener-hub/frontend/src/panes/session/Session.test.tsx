@@ -2510,8 +2510,8 @@ test("a dormant live session renders an idle drain in the live-edge row", async 
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
   expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
@@ -2551,8 +2551,8 @@ test("a restart-required session renders no held ghost for a seeded hold", async
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2607,8 +2607,8 @@ test("a dormant session's last held departure still announces its outcome", asyn
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
 
   // The departure: Stop cancels the ref's non-attempted rows - the entry
@@ -2617,8 +2617,8 @@ test("a dormant session's last held departure still announces its outcome", asyn
   await act(async () => {
     await mutationStorage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
@@ -2662,8 +2662,8 @@ test("a resume-required live session renders no held ghost", async () => {
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2706,8 +2706,8 @@ test("a recovery-fenced live session renders no held ghost", async () => {
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2892,8 +2892,8 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     const answerSteer = await act(() => steerSent.promise);
     await act(async () => {
       answerSteer();
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
     expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
     // ...and never RESETS it either: the last observed value is still the
@@ -3201,8 +3201,8 @@ test("explicit Resume follows the returned identity through transcript and new s
     await Promise.all(hydration.mock.results.map((result) => result.value));
     await Promise.all(refresh.mock.results.map((result) => result.value));
     await readyDiscovery;
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
     // The Force stop above owns this row now: it was never attempted (the
     // seed wrote blockedUnknown directly onto an undispatched record), so the
@@ -3647,8 +3647,8 @@ test.each(["notLoaded", "active", "idle"])(
       mutationId = await seedPendingSend();
       await mutationStorage.markUnknown(mutationId, "blockedUnknown");
       await refreshPendingTurnsProjection("ref_a");
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
     let announceRead: (() => void) | undefined;
     const readHeld = new Promise<void>((resolve) => {
@@ -3967,25 +3967,25 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
-      await flushPendingTurnsProjectionForTests();
       // The blocked write's store publications re-render the session; they
       // land inside this act() rather than after it.
       await blockedWritten;
     });
+    await flushPendingTurnsProjectionForTests();
     expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
       await reconciled;
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(reads).toBeGreaterThan(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4000);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("preserve this uncertain message");
     expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
@@ -4053,8 +4053,8 @@ test.each(["pending", "failed"])(
       await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
-        await flushPendingTurnsProjectionForTests();
       });
+      await flushPendingTurnsProjectionForTests();
       await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
         await act(async () => rejectRead(blocked()));
@@ -4076,8 +4076,8 @@ test.each(["pending", "failed"])(
       expect(refresh).toHaveBeenCalledWith(ref);
       await act(async () => {
         await Promise.all(refresh.mock.results.map((result) => result.value));
-        await flushPendingTurnsProjectionForTests();
       });
+      await flushPendingTurnsProjectionForTests();
       expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("continue the saved conversation");
     } finally {
       await act(async () => rejectRead(blocked()));

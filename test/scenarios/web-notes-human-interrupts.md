@@ -5,7 +5,7 @@ surface. `notes/human/set` (`appwire/types.go:810-824`,
 `agent/session_notes_rpc.go:SetHumanNote`) stores the note, emits
 `evener/notes/updated`, and injects a steer that interrupts the running turn;
 the projector labels the steering divider `Human note`
-(`SteeringItem.tsx:69`, kind `human-note` on the wire); the Notes panel's
+(`appwire-client/typescript/steeringLabels.ts:44`, kind `human-note` on the wire); the Notes panel's
 Shared notes section renders it (`NotesPanel.tsx:165-261`); and a fresh
 live read carries the note (the Task 7 I1 gap — fixed by the envelope
 projection in `server/thread_envelope.go` + `server/appwire_runtime.go`,
@@ -34,7 +34,8 @@ work. It exercises four things in one run:
 - **The divider label comes from the wire, not the prose** — the steering
   kind `events.SteeringKindHumanNote` is persisted at acceptance, and the
   transcript divider renders `System steered: Human note`
-  (`SteeringItem.tsx:69,202-203`) without guessing from the note's prose.
+  (`SteeringItem.tsx:118-122`, label from `steeringLabels.ts:44`) without
+  guessing from the note's prose.
 - **Rejoin carries the note** — the live envelope seeds `HumanNote` from
   `SessionMeta()` and the root commit path patches it from
   `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_runtime.go`),
@@ -176,12 +177,12 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
 
 5. **[browser] Read the labelled steering divider.** The daemon-originated
    human-note steer renders as the collapsible divider
-   `[data-testid="steering-item"]` (`SteeringItem.tsx:111`) — NOT as a
+   `[data-testid="steering-item"]` (`SteeringItem.tsx:77`) — NOT as a
    `user-message-item`: that shape is for steers the human typed themselves
    (see `web-steer-live-turn.md`'s Sharp edges; selecting on
    `user-message-item` here finds nothing and reads as a regression). Its
-   summary reads `System steered: Human note` (`:202-203` with
-   `KIND_LABELS["human-note"]`, `:69`).
+   summary reads `System steered: Human note` (`:118-122` with
+   `steeringLabel("human-note")`, `steeringLabels.ts:44`).
    ```javascript
    (() => {
      const items = [...document.querySelectorAll('[data-testid="steering-item"]')];
@@ -295,7 +296,7 @@ above is what keeps this run's sessions out of them.
 - **A human-note steer is `[data-testid="steering-item"]`, not
   `user-message-item`.** The divider is for *daemon*-originated steering
   (labelled `System steered: Human note`); a steer the human typed themselves
-  reuses `UserMessageView` instead (`SteeringItem.tsx:148`). This is the
+  reuses `UserMessageView` instead (`SteeringItem.tsx:127`). This is the
   mirror image of `web-steer-live-turn.md`'s Sharp edges — each card's
   selector is the other's falsification trap.
 - **`expectedInstanceId` is the session id, not the ref.** It is the `local:`

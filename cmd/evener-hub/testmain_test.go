@@ -48,6 +48,11 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
 		os.Exit(2)
 	}
+	// A slow navigation build must not write a stats line to stderr from a test
+	// that did not ask for it; tests asserting the line set WebConfig.Logf.
+	navigationStatsLogfFor = func(cfg hubcore.WebConfig) func(string, ...any) {
+		return cfg.Logf
+	}
 	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
 	// Refuse to start when a default root still resolves outside the throwaway
 	// env: every test from here on would otherwise read and write the

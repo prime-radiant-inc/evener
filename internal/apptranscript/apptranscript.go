@@ -809,6 +809,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
+								CallID: part.ToolResult.ToolCallID,
 								Text:   msg,
 								Status: appwire.TurnStatusCompleted,
 							})
@@ -826,6 +827,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
+								CallID: part.ToolResult.ToolCallID,
 								Text:   communicateRawFallbackText(rawArgs),
 								Status: appwire.TurnStatusCompleted,
 							})
@@ -1321,8 +1323,13 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 		maxLineBytes = 128 << 20
 	}
 	reader := bufio.NewReaderSize(f, 64*1024)
-	var header transcript.Header
-	headerRead := false
+	if err := ctx.Err(); err != nil {
+		return transcript.Header{}, err
+	}
+	header, err := transcript.ReadHeader(ctx, reader, maxLineBytes)
+	if err != nil {
+		return transcript.Header{}, err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return transcript.Header{}, err
@@ -1338,14 +1345,6 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 		if len(line) == 0 {
 			continue
 		}
-		if !headerRead {
-			header, err = transcript.DecodeHeader(line)
-			if err != nil {
-				return transcript.Header{}, fmt.Errorf("parse transcript header: %w", err)
-			}
-			headerRead = true
-			continue
-		}
 		if _, err := transcript.DecodeEntry(line); err != nil {
 			return transcript.Header{}, fmt.Errorf("parse transcript entry: %w", err)
 		}
@@ -1354,9 +1353,6 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 				return transcript.Header{}, err
 			}
 		}
-	}
-	if !headerRead {
-		return transcript.Header{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return header, nil
 }

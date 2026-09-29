@@ -3,9 +3,7 @@ package hub
 import (
 	"testing"
 
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // TestUniqueStringsEmpty covers the empty input path.
@@ -167,112 +165,5 @@ func TestFavoriteRemoteOwnershipsEmptySource(t *testing.T) {
 	ownerships := favoriteRemoteOwnerships(threads)
 	if len(ownerships) != 1 {
 		t.Fatalf("expected 1 ownership, got %d", len(ownerships))
-	}
-}
-
-// TestFavoriteLineageQualitiesEmpty covers the empty input path.
-func TestFavoriteLineageQualitiesEmpty(t *testing.T) {
-	qualities := favoriteLineageQualities(nil)
-	if len(qualities) != 0 {
-		t.Fatalf("nil input should return empty, got %v", qualities)
-	}
-}
-
-// TestFavoriteLineageQualitiesSingleSession covers a single session with no
-// parent.
-func TestFavoriteLineageQualitiesSingleSession(t *testing.T) {
-	metas := []schema.SessionMeta{{ID: "s1", Model: "model1"}}
-	qualities := favoriteLineageQualities(metas)
-	if qualities["s1"] != hubcore.FavoriteAuthorityComplete {
-		t.Fatalf("single session should be complete, got %v", qualities["s1"])
-	}
-}
-
-// TestFavoriteLineageQualitiesSubagentNoParent covers the path where a
-// subagent has no parent (line 1372-1373).
-func TestFavoriteLineageQualitiesSubagentNoParent(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "s1", IsSubagent: true},
-	}
-	qualities := favoriteLineageQualities(metas)
-	if qualities["s1"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("subagent with no parent should be incomplete, got %v", qualities["s1"])
-	}
-}
-
-// TestFavoriteLineageQualitiesParentSelfReference covers the path where a
-// session's ParentSessionID is itself (line 1376).
-func TestFavoriteLineageQualitiesParentSelfReference(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "s1", ParentSessionID: "s1"},
-	}
-	qualities := favoriteLineageQualities(metas)
-	if qualities["s1"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("self-referencing parent should be incomplete, got %v", qualities["s1"])
-	}
-}
-
-// TestFavoriteLineageQualitiesParentNotFound covers the path where the parent
-// ID doesn't appear in the metas (byID != 1, line 1376).
-func TestFavoriteLineageQualitiesParentNotFound(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "s1", ParentSessionID: "nonexistent"},
-	}
-	qualities := favoriteLineageQualities(metas)
-	if qualities["s1"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("parent not found should be incomplete, got %v", qualities["s1"])
-	}
-}
-
-// TestFavoriteLineageQualitiesMultipleChildrenSameParent covers the path
-// where a parent has multiple children from different sessions (line 1382-1386).
-func TestFavoriteLineageQualitiesMultipleChildrenSameParent(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "parent", Model: "m"},
-		{ID: "child1", ParentSessionID: "parent"},
-		{ID: "child2", ParentSessionID: "parent"},
-	}
-	qualities := favoriteLineageQualities(metas)
-	// Parent has children from two different sessions → incomplete
-	if qualities["parent"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("parent with multiple child sessions should be incomplete, got %v", qualities["parent"])
-	}
-	if qualities["child1"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("child1 should be incomplete, got %v", qualities["child1"])
-	}
-	if qualities["child2"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("child2 should be incomplete, got %v", qualities["child2"])
-	}
-}
-
-// TestFavoriteLineageQualitiesCycleDetection covers the cycle detection path
-// (lines 1396-1401).
-func TestFavoriteLineageQualitiesCycleDetection(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "a", ParentSessionID: "b"},
-		{ID: "b", ParentSessionID: "a"},
-	}
-	qualities := favoriteLineageQualities(metas)
-	if qualities["a"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("cycle member 'a' should be incomplete, got %v", qualities["a"])
-	}
-	if qualities["b"] != hubcore.FavoriteAuthorityIncomplete {
-		t.Fatalf("cycle member 'b' should be incomplete, got %v", qualities["b"])
-	}
-}
-
-// TestFavoriteLineageQualitiesEmptyIDSkipped covers the path where meta.ID is
-// empty (lines 1354, 1369).
-func TestFavoriteLineageQualitiesEmptyIDSkipped(t *testing.T) {
-	metas := []schema.SessionMeta{
-		{ID: "", Model: "m"},
-		{ID: "s1"},
-	}
-	qualities := favoriteLineageQualities(metas)
-	if _, ok := qualities[""]; ok {
-		t.Fatal("empty ID should be skipped")
-	}
-	if qualities["s1"] != hubcore.FavoriteAuthorityComplete {
-		t.Fatalf("s1 should be complete, got %v", qualities["s1"])
 	}
 }

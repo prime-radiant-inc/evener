@@ -19,87 +19,39 @@
 // heuristic looks only inside the FINAL bracketed segment (never the command's
 // own stdout/stderr body) to keep false positives unlikely.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { parseArgs, str, trailingBracketFooter } from "@evener/appwire-client";
+import {
+  type ItemModel,
+  parseArgs,
+  shellCommand,
+  shellOutput,
+  shellSummary,
+  stripRedundantCd,
+} from "@evener/appwire-client";
 import { useRef } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
-import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
+import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 
 const TAIL_MAX_CHARS = 8000;
 
-function shellCommand(args: Record<string, unknown>): string {
-  return str(args, "command") ?? str(args, "cmd") ?? "";
-}
+// shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
+// toolSummaries.
 
-// stripRedundantCd removes the literal "cd <cwd> && " prefix models
-// habitually prepend even though the daemon already runs every command in
-// the session cwd. Literal match only — a cd anywhere else is information
-// and stays. Display-only: argumentsJSON is never modified.
-export function stripRedundantCd(command: string, cwd: string | undefined): string {
-  if (cwd === undefined || cwd === "") return command;
-  const prefix = `cd ${cwd} && `;
-  if (!command.startsWith(prefix)) return command;
-  const rest = command.slice(prefix.length);
-  return rest === "" ? command : rest;
-}
-
-// A second, differently-shaped trailer for the "buffered" execution
-// environment fallback (used when the env doesn't support streaming,
-// agent/session_tools_shell.go's runBufferedShell): no StateResult/
-// brackets at all, just a bare "exit_code=N duration_ms=N timed_out=bool"
-// line.
-const BUFFERED_EXIT_CODE_RE = /\bexit_code=(-?\d+)\b/;
-
-// parseShellExitCode reads "exit <N>" out of the trailing "[... exit <N>
-// ...]" footer formatShellResult appends (the common, streaming-execenv
-// path), falling back to the buffered-execenv trailer above. This is the
-// old-daemon fallback used only when the typed ItemModel.exitCode is absent —
-// see this file's own header. Returns undefined for a backgrounded/still-
-// running command (no trailer of either shape yet).
-function parseShellExitCode(output: string): number | undefined {
-  const footer = trailingBracketFooter(output);
-  if (footer !== undefined) {
-    const bracketed = /\bexit (-?\d+)\b/.exec(footer);
-    if (bracketed) return Number(bracketed[1]);
-  }
-  const buffered = BUFFERED_EXIT_CODE_RE.exec(output);
-  return buffered ? Number(buffered[1]) : undefined;
-}
+// The exit code a command's footer states comes from @evener/appwire-client's
+// shellOutput, the one reader of the shell tool's tail (the bracketed
+// "[… exit N …]" footer, or the buffered environment's exit_code= trailer),
+// which the phone reads too. It reads only the tail, never an "exit_code="
+// token a command echoed mid-stream.
 
 // shellExitCode is the descriptor's single exit-code source: the typed wire
-// field (ItemModel.exitCode) first, the output-footer text heuristic only as
-// the old-daemon fallback. `??` (not `||`) so a real typed 0 stays 0 rather
+// field (ItemModel.exitCode) first, the output's footer only as the
+// old-daemon fallback. `??` (not `||`) so a real typed 0 stays 0 rather
 // than falling through to the text scan.
 function shellExitCode(item: ItemModel): number | undefined {
-  return item.exitCode ?? parseShellExitCode(item.output ?? "");
-}
-
-// The buffered-env trailer's exact full-line shape (agent/session_tools_
-// shell.go's runBufferedShell ends the output in this bare line).
-const BUFFERED_TRAILER_RE = /\bexit_code=(-?\d+) duration_ms=\d+ timed_out=(?:true|false)$/;
-
-// exitTrailerCode reads the output's own TERMINAL exit trailer, shape-aware:
-// the daemon's bracketed "[… exit N …]" final segment (trailingBracketFooter
-// already returns only the last bracketed segment), or the buffered-env
-// trailer as the output's final non-empty line. Never a bare "exit_code=N"
-// token echoed mid-stream by the command's own stdout (a test runner printing
-// that string is not a trailer), which parseShellExitCode's whole-output
-// fallback scan accepts - this stricter read exists for the body's
-// synthesized-footer gate below, where a false positive would suppress the
-// number's only authoritative copy.
-function exitTrailerCode(output: string): number | undefined {
-  const footer = trailingBracketFooter(output);
-  if (footer !== undefined) {
-    const bracketed = /\bexit (-?\d+)\b/.exec(footer);
-    if (bracketed) return Number(bracketed[1]);
-  }
-  const finalLine = output.trimEnd().split("\n").pop() ?? "";
-  const buffered = BUFFERED_TRAILER_RE.exec(finalLine);
-  return buffered ? Number(buffered[1]) : undefined;
+  return item.exitCode ?? shellOutput(item.output ?? "").exitCode;
 }
 
 // The row summary owns collapsed command presentation. The expanded body owns
@@ -135,7 +87,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   // trailer that disagrees leaves the authoritative typed footer standing
   // beside the verbatim raw text.
   const exitFooter =
-    item.exitCode !== undefined && item.exitCode >= 0 && exitTrailerCode(output) !== item.exitCode
+    item.exitCode !== undefined && item.exitCode >= 0 && shellOutput(output).exitCode !== item.exitCode
       ? `[exit ${item.exitCode}]`
       : undefined;
   const renderedOutput =
@@ -204,10 +156,7 @@ registerToolRenderer({
   // captured output itself (agent/session_tools_shell.go) — and when the
   // output carries no trailer of either shape, the body synthesizes the typed
   // code's line instead (see ShellBodyContent's exitFooter).
-  summary(item: ItemModel, ctx?: ToolSummaryContext) {
-    const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
-    return `Ran ${command}`;
-  },
+  summary: shellSummary,
   body: ShellBody,
   failed: nonzeroExit,
   // The row summary IS the raw one-line command; the expanded body renders

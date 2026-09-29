@@ -45,10 +45,11 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // For a local session the guard chain below (session/path presence, cwd
 // containment) runs before the format check, so a raw and a non-raw request
 // reject the same out-of-cwd or unknown-session input identically — only a
-// fully valid request reaches the format gate, where a raw request is served
-// (writeDocFileRaw) and anything else is refused. A host-qualified session
-// checks the format first, so the host is never asked for a request this route
-// would refuse.
+// contained path reaches the format gate, where a raw request is served
+// (writeDocFileRaw) and anything else is refused. The format gate runs before
+// the file is read and hashed, so a request the route would refuse never pays
+// for the read. A host-qualified session checks the format first, so the host
+// is never asked for a request this route would refuse.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -84,7 +85,9 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := readSessionDocument(cwd, rel)
+	// Resolve before the format gate so raw and non-raw reject the same
+	// out-of-cwd or missing path identically; the gate precedes the read.
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
 	if err != nil {
 		// A path that escapes the cwd, or that doesn't resolve, is refused.
 		// 403 for an escape attempt; 404 for a missing file.
@@ -98,6 +101,12 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Query().Get("format") != "raw" {
 		http.Error(w, "format=raw required", http.StatusBadRequest)
+		return
+	}
+
+	doc, err := readDocFile(cwd, abs)
+	if err != nil {
+		http.NotFound(w, r)
 		return
 	}
 	writeDocFileRaw(w, r, doc)
@@ -133,7 +142,7 @@ func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumen
 }
 
 // readSessionDocument reads the document rel names inside a session's working
-// directory cwd, for both /doc/file and evener/session/document. It fails with
+// directory cwd, for evener/session/document. It fails with
 // fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
 // any other failure means the document cannot be read.
 func readSessionDocument(cwd, rel string) (docFileRead, error) {
@@ -182,7 +191,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, _, ok := readOutputImageFile(abs)
+	data, _, ok := readOutputImageInRoot(cwd, abs)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -294,15 +303,21 @@ func readDocFile(root, abs string) (docFileRead, error) {
 
 // openDocInRoot opens abs for reading through an os.Root at root, which
 // refuses any path, symlinks included, that resolves outside root at the
-// moment of the open. abs is the symlink-resolved path ResolveInRoot returned,
-// so it is expressed relative to the symlink-resolved root. docOpenNonblock
-// keeps the open from waiting on a FIFO; a regular file reads the same.
+// moment of the open. Both root and abs are symlink-resolved before the
+// relative path is taken, so an abs expressed in terms of an unresolved root
+// (on macOS t.TempDir sits under /var, a symlink to /private/var) is still
+// expressed relative to the resolved root. docOpenNonblock keeps the open from
+// waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(realRoot, abs)
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(realRoot, realAbs)
 	if err != nil {
 		return nil, err
 	}

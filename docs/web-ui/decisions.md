@@ -429,7 +429,8 @@ titles). The magnitude-rollup badge belongs to **Alt A's own description**, and
 the "you are here" selected-row treatment sits in the mockup's shared CSS block
 and applies to all four alternatives — neither is D's, and D's one original idea
 (the cross-project "Needs you" tier) is credited under topic 11 where it
-belongs. Shipped `c16f8178f`.
+belongs. Shipped `c16f8178f`. Title clustering (C) has since been removed:
+session titles are agentic and do not repeat, so every session is its own row.
 
 Verdict **superseded** for Alt A: `docs/superpowers/plans/2026-07-23-webui-ux-round2.md`
 records the decision to keep Live, Pinned, Projects, Archived and Test runs, and

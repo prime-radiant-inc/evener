@@ -25,9 +25,12 @@ vi.mock("react-native-safe-area-context", () => ({
 // The other native edges App's imports reach. Only the loading view renders,
 // so each factory returns just what its importers read as they load, and
 // vitest throws if anything reads another export.
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({}));
 vi.mock("@react-navigation/elements", () => ({}));
-vi.mock("@react-navigation/native", () => ({ createNavigationContainerRef: () => ({ getRootState: () => undefined }) }));
+vi.mock("@react-navigation/native", () => ({
+	createNavigationContainerRef: () => ({ getRootState: () => undefined }),
+}));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
 vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-camera", () => ({}));
@@ -46,7 +49,8 @@ vi.mock("expo-web-browser", () => ({}));
 const connection = vi.hoisted(() => ({ value: { loading: true } as Record<string, unknown> }));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,
-	useConnection: () => connection.value,
+	// The phone's saved hubs, which the alerts read to retire a removed hub's.
+	useConnection: () => ({ profiles: [], ...connection.value }),
 }));
 const outbox = vi.hoisted(() => ({ bind: vi.fn() }));
 vi.mock("./src/outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
@@ -54,15 +58,22 @@ vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
 }));
 
-it("roots the whole app in a full-screen GestureHandlerRootView", () => {
+// The keyboard controller reports the keyboard's frames to the screens
+// that move with it (the Session's composer), so it wraps the whole app.
+it("roots the whole app in a full-screen GestureHandlerRootView, under the keyboard controller", () => {
 	const root = render(<App />).toJSON();
 	expect(root).toMatchObject({
 		type: "GestureHandlerRootView",
 		props: { style: { flex: 1 } },
 		children: [
 			{
-				type: "View",
-				children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+				type: "KeyboardProvider",
+				children: [
+					{
+						type: "View",
+						children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+					},
+				],
 			},
 		],
 	});

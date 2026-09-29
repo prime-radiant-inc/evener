@@ -90,7 +90,7 @@ no router (reserved).
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
-| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor. |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both. |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -139,6 +139,7 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the catalog and key name the project, and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -205,7 +206,6 @@ no router (reserved).
 | `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
-| `evener/host/orphan-resolve` | hub | `HostOrphanResolveParams` | `OperationRecord` | Resolves one orphan-unverified record by its opaque id (crash-fencing 08c §5): re-runs the persisted-boundary enumeration under the caller's session authentication, validates a present attestation (caller, record, boundary, freshness), and on a clean boundary transitions the record to interrupted with the orphanResolved marker and the attestation, clearing the record's boundary, every open pending-spawn intent and the per-host quarantine marker in one atomic store write. Members still present refuse transient-busy; an unknown id is typed not-found; a boundary-unavailable record resolves only with the attestation; a lost-response retry replays the persisted resolution. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
 | `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
@@ -333,6 +333,25 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `ok` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `ArchivedListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `catalog` | `string` |  |  |
+| `projectKey` | `string` |  |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+
+
+### `ArchivedListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `jsontext.Value` |  |  |
+| `nextCursor` | `string` | yes |  |
+| `total` | `int` |  |  |
 
 
 ### `AttentionChangedPayload`
@@ -974,14 +993,6 @@ _(no fields)_
 | `incarnationId` | `string` | yes |  |
 | `hostBoundaries` | `map[string]interface {}` | yes |  |
 | `nextCursor` | `string` | yes |  |
-
-
-### `HostOrphanResolveParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `id` | `string` |  |  |
-| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
 
 
 ### `HostPlan`
@@ -1876,9 +1887,6 @@ _(no fields)_
 | `incarnationId` | `string` |  |  |
 | `kind` | `string` |  |  |
 | `state` | `appwire.OperationState` |  |  |
-| `orphanBoundary` | `*[]appwire.BoundaryEntry` | yes |  |
-| `orphanResolved` | `bool` | yes |  |
-| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
 | `progress` | `[]appwire.OperationProgressEntry` | yes |  |
 | `result` | `*appwire.OperationResult` | yes |  |
 | `createdAt` | `string` |  |  |
@@ -2666,6 +2674,7 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `before` | `*appwire.ThreadItemPosition` | yes |  |
 
 
 ### `ThreadTurnsListResponse`

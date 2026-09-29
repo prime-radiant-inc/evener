@@ -3,7 +3,9 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText, renderHook } from "../renderNative.testkit";
+import { composerFocusedAs, keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
+import type { ComposerFocus } from "./composerFocus";
+import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -19,6 +21,7 @@ vi.mock("../ConnectionProvider", () => ({
 const palette = paletteFor("light");
 
 afterEach(() => {
+	keyboard.reset();
 	vi.restoreAllMocks();
 });
 
@@ -49,8 +52,11 @@ function header(
 		status?: string | null;
 		chips?: readonly ContextChip[];
 		hidden?: boolean;
+		composerFocus?: ComposerFocus;
 		onChip?: (kind: ChipKind) => void;
 		find?: ReactNode;
+		notes?: ReactNode;
+		glassTop?: number;
 	} = {},
 ) {
 	return (
@@ -58,6 +64,9 @@ function header(
 			status={over.status ?? null}
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
+			composerFocus={over.composerFocus ?? composerFocusedAs(false)}
+			notes={over.notes}
+			glassTop={over.glassTop}
 			onChip={over.onChip ?? (() => {})}
 			find={over.find}
 		/>
@@ -68,7 +77,8 @@ const chipButtons = (tree: ReactTestRenderer) => tree.root.findAll((node) => nod
 const textNode = (tree: ReactTestRenderer, text: string) =>
 	tree.root.find((node) => node.type === ("Text" as never) && [node.props.children].flat()[0] === text);
 /** The chips row: the element whose transform hides it. */
-const chipsRow = (tree: ReactTestRenderer) => tree.root.find((node) => node.type === ("Animated.View" as never));
+const chipsRow = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.type === ("Animated.View" as never) && node.props.onLayout !== undefined);
 const translateY = (row: ReactTestInstance) => (row.props.style.transform[0].translateY as { value: number }).value;
 
 async function flushReduceMotion() {
@@ -115,6 +125,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 		expect(
 			textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint,
 		).toBeUndefined();
+	});
+
+	it("leaves the connection status unannounced: it is ambient and changes often (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(header({ status: "Reconnecting…", chips: [goal] }));
+		act(() => tree.update(header({ status: "Offline · updated 3m ago", chips: [goal] })));
+		expect(announce).not.toHaveBeenCalled();
 	});
 });
 
@@ -258,6 +276,58 @@ describe("hiding on scroll (spec 8.1)", () => {
 		expect(translateY(chipsRow(tree))).toBe(0);
 	});
 
+	// Slid away behind the nav bar, the row is out of VoiceOver's reach too,
+	// or it would read chips no one can see.
+	it("hides the slid-away row from VoiceOver, and gives it back when it returns", async () => {
+		const tree = render(header({ chips: [goal] }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
+		act(() => tree.update(header({ chips: [goal], hidden: true })));
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: true,
+			importantForAccessibility: "no-hide-descendants",
+		});
+		act(() => tree.update(header({ chips: [goal] })));
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
+	});
+
+	it("keeps the find bar in VoiceOver's reach while hidden, since it never slides away", async () => {
+		const tree = render(header({ chips: [goal], find: <FindStandIn />, hidden: true }));
+		await flushReduceMotion();
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
+	});
+
+	// While you type in the composer the chips and note step aside too; the
+	// header reads the keyboard itself, so the keyboard coming and going
+	// re-renders it alone.
+	it("slides the row away while the keyboard is up for the composer, and back when it lowers", async () => {
+		const tree = render(header({ chips: [goal], composerFocus: composerFocusedAs(true) }));
+		await flushReduceMotion();
+		measured(tree);
+		act(() => keyboard.show());
+		expect(translateY(chipsRow(tree))).toBe(-48);
+		act(() => keyboard.hide());
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+
+	it("keeps the row while the keyboard is up for something other than the composer", async () => {
+		const tree = render(header({ chips: [goal], composerFocus: composerFocusedAs(false) }));
+		await flushReduceMotion();
+		measured(tree);
+		act(() => keyboard.show());
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+
 	it("jumps with no animation under Reduce Motion", async () => {
 		vi.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(true);
 		const timing = vi.spyOn(Animated, "timing");
@@ -323,8 +393,18 @@ describe("hiding on scroll (spec 8.1)", () => {
 	});
 });
 
-it("renders nothing with no chips and no status", () => {
-	expect(render(header()).toJSON()).toBeNull();
+it("shows nothing with no chips and no status, its empty panel still floating for the screen to measure", () => {
+	// The screen keeps the list clear of the panel's measured height, so the
+	// panel stays mounted, empty, to report it going to nothing.
+	const panel = render(header()).toJSON();
+	expect(panel).toMatchObject({ type: "View", children: null });
+	expect(Array.isArray(panel)).toBe(false);
+	expect(panel && !Array.isArray(panel) && panel.props.style).toEqual({
+		position: "absolute",
+		top: 0,
+		left: 0,
+		right: 0,
+	});
 });
 
 it("never says Reconnect, Connected or Refresh", () => {
@@ -337,4 +417,107 @@ it("never says Reconnect, Connected or Refresh", () => {
 			expect(said).not.toMatch(/Reconnect\b|Connected|Refresh/);
 		}
 	}
+});
+
+// Where the nav bar is the system's glass, one glass spans the bar and the
+// rows under it (the iOS pattern for a bar with a search field or segmented
+// control): the header starts at the screen's top, leaves the bar its room,
+// and draws its rows clear on the glass. The glass shrinks back to the bar as
+// the rows slide away, moving with them.
+describe("under the nav bar's glass (spec 16.3)", () => {
+	const glass = (tree: ReactTestRenderer) => tree.root.findAll((node) => String(node.type) === "GlassView");
+	const glassSlide = (tree: ReactTestRenderer) => {
+		const [layer] = glass(tree);
+		if (!layer?.parent) throw new Error("no glass");
+		return translateY(layer.parent);
+	};
+	const barRoom = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "nav-bar-room").props.style.height;
+	const preview = { glyph: "person" as const, text: "Your note" };
+	const statusLine = (tree: ReactTestRenderer) => {
+		const line = textNode(tree, "Reconnecting…").parent;
+		if (!line) throw new Error("no status line");
+		return line;
+	};
+	const measured = (tree: ReactTestRenderer) =>
+		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 48, x: 0, y: 64 } } }));
+
+	it("spans one glass from the screen's top through the rows, and draws the rows clear on it", async () => {
+		const tree = render(
+			header({
+				chips: [goal],
+				status: "Reconnecting…",
+				notes: <NotesBar preview={preview} onPress={() => {}} onGlass />,
+				glassTop: 64,
+			}),
+		);
+		await flushReduceMotion();
+		expect(glass(tree)).toHaveLength(1);
+		expect(glass(tree)[0]?.props.glassEffectStyle).toBe("regular");
+		expect(barRoom(tree)).toBe(64);
+		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		expect(chipsFill).toBe("transparent");
+		expect(statusLine(tree).props.style.backgroundColor).toBe("transparent");
+		const note = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Your note",
+		)[0];
+		expect(note?.props.style({ pressed: false }).backgroundColor).toBe("transparent");
+	});
+
+	it("shrinks the glass back to the bar as the rows slide away", async () => {
+		const tree = render(header({ chips: [goal], glassTop: 64 }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(glassSlide(tree)).toBe(0);
+		act(() => tree.update(header({ chips: [goal], glassTop: 64, hidden: true })));
+		expect(glassSlide(tree)).toBe(-48);
+		expect(translateY(chipsRow(tree))).toBe(-48);
+	});
+
+	// With every row gone while they're slid away, nothing is left to slide:
+	// the glass comes back down to cover the bar, with no clear band under it.
+	it("brings the glass back to the bar when the rows go while slid away", async () => {
+		const tree = render(header({ chips: [goal], glassTop: 64, hidden: true }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(glassSlide(tree)).toBe(-48);
+		act(() => tree.update(header({ glassTop: 64, hidden: true })));
+		expect(glassSlide(tree)).toBe(0);
+	});
+
+	it("still draws the glass behind the bar with no rows under it", () => {
+		const tree = render(header({ glassTop: 64 }));
+		expect(glass(tree)).toHaveLength(1);
+		expect(barRoom(tree)).toBe(64);
+	});
+
+	// The fade fades into the page color, which on the glass would paint an
+	// opaque band over it; there the chips just run under the glass's edge,
+	// as a horizontal scroll does anywhere on iOS. Off the glass it stays.
+	it("fades overflowing chips into the page, and not on the glass", () => {
+		const fades = (glassTop?: number) => {
+			const tree = render(header({ chips: [goal], glassTop }));
+			const row = tree.root.find((node) => node.props.testID === "chips-row");
+			const scroller = row.findAll((node) => node.props.horizontal === true)[0];
+			act(() => scroller?.props.onLayout({ nativeEvent: { layout: { width: 300, height: 48, x: 0, y: 0 } } }));
+			act(() => scroller?.props.onContentSizeChange(500, 48));
+			return tree.root.findAll((node) => node.props.testID === "chips-fade").length;
+		};
+		expect(fades()).toBe(1);
+		expect(fades(64)).toBe(0);
+	});
+
+	it("clips its sliding rows once, at their own top", () => {
+		const tree = render(header({ chips: [goal], glassTop: 64 }));
+		const clips = tree.root.findAll((node) => node.props.style?.overflow === "hidden");
+		expect(clips).toHaveLength(1);
+		expect(clips[0]?.findAll((node) => node.props.testID === "chips-row")).toHaveLength(1);
+	});
+
+	it("keeps the opaque page fill, and no glass, without it", () => {
+		const tree = render(header({ chips: [goal] }));
+		expect(glass(tree)).toEqual([]);
+		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		expect(chipsFill).toBe(paletteFor("light").page);
+	});
 });

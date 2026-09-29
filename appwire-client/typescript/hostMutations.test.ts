@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { WireError } from "./errors";
+import { HostMutationOutcomeError, WireError } from "./errors";
 import {
   committedMutationRow,
   createHostMutations,
@@ -7,6 +7,7 @@ import {
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
   type HostMutationPair,
   hostChangedSinceOpened,
@@ -190,6 +191,26 @@ describe("committed mutation rows (registry spec 08 §11)", () => {
   ])("refuses %s as a success", (_name, result, message) => {
     expect(() => committedMutationRow(result as never, "evener/host/update")).toThrow(message);
   });
+
+  test.each([
+    ["an ambiguous keyless add", { outcome: "ambiguous", observedRow: row("alpha") }, "ambiguous"],
+    ["a dropped collision", { outcome: "collision-dropped", droppedEntry: {} }, "collision-dropped"],
+    [
+      "a teardown failure",
+      { outcome: "committed-with-teardown-failure", seam: "rebind", remnantId: "r1" },
+      "committed-with-teardown-failure",
+    ],
+    ["an unknown arm", { outcome: "later" }, "unknown"],
+  ])("refuses %s as a typed error carrying its arm", (_name, result, outcome) => {
+    let thrown: unknown;
+    try {
+      committedMutationRow(result as never, "evener/host/update");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(HostMutationOutcomeError);
+    expect((thrown as HostMutationOutcomeError).outcome).toBe(outcome);
+  });
 });
 
 describe("the roots field", () => {
@@ -206,6 +227,19 @@ describe("the roots field", () => {
 describe("the editable host fields", () => {
   test("list every mutable HostEntry field under its wire spelling, in the dialog's order", () => {
     expect(HOST_ENTRY_FIELD_ORDER).toEqual(["address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]);
+  });
+
+  test("say what each optional field means while it's empty, as the hub's ssh dial treats it", () => {
+    // sshconn/runner.go: no user is added to the address, no -i without a key
+    // path, `evener` when no path is set, and no --config or --addr flags.
+    expect(HOST_ENTRY_FIELD_WHEN_EMPTY).toEqual({
+      user: "From the address or SSH config",
+      keyPath: "From your SSH config",
+      evenerPath: "evener on PATH",
+      configPath: "The default hub.toml",
+      addr: "The default address",
+      roots: "No project roots. One per line.",
+    });
   });
 
   test("name each field and say what it takes, as the web's Edit dialog does", () => {

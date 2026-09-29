@@ -67,8 +67,7 @@ const PARAMS = {
 	hubId: "studio",
 	sessionRef: "local:fix",
 	path: PATH,
-	reviewRef: "local:fix",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 };
 
 const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({

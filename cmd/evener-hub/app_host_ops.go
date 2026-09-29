@@ -260,13 +260,6 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	if !ok {
 		return appwire.HostPlanResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
-	// §8's admission fence, before anything else is done for the name: a
-	// quarantined host refuses with the fencing-failure form, and a host holding
-	// an open orphan-unverified record refuses transient busy — neither may
-	// reach a refresh, a probe, or a mint.
-	if err := m.orphanAdmissionRefusal(name); err != nil {
-		return appwire.HostPlanResult{}, err
-	}
 	// The local attachment answer is resolved first so every arm this handler can
 	// emit reports it truthfully — including the controller-dirty refusal, which
 	// is about this hub but still tells a client whether its host is attached: a
@@ -454,7 +447,7 @@ func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpo
 		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no fencible probe epoch can be bound")
+		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no probe epoch can be bound")
 	}
 	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
 		Host:          entry.Name,
@@ -814,10 +807,7 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 
 // operationRecordWire renders one stored record as §10's OperationRecord. The
 // `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
-// tombstone; `orphanBoundary` is the §9 per-member union present exactly on an
-// `orphan-unverified` record (an explicit `[]` when verified empty), and
-// `orphanResolved`/`attestation` are §5's resolved-record marker and the
-// operator attestation persisted beside it.
+// tombstone.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
 	state, err := operationWireState(record.State)
 	if err != nil {
@@ -835,31 +825,6 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		UpdatedAt:         record.UpdatedAt.Format(time.RFC3339),
 		HostRemoved:       record.HostRemoved,
 		Compacted:         record.Compacted,
-	}
-	if record.State == hostops.StateOrphanUnverified {
-		entries, err := decodeOrphanBoundary(record.OrphanBoundary)
-		if err != nil {
-			return appwire.OperationRecord{}, fmt.Errorf("record %s carries an unreadable orphan boundary: %w", record.ID, err)
-		}
-		if entries == nil {
-			// The wire spelling of a verified-empty boundary is an explicit `[]`,
-			// never null: normalize a nil decode so the pointer always renders the
-			// array §9's presence rule requires.
-			entries = []appwire.BoundaryEntry{}
-		}
-		wire.OrphanBoundary = &entries
-	}
-	if record.OrphanResolved {
-		wire.OrphanResolved = true
-	}
-	if record.OrphanAttestation != nil {
-		wire.Attestation = &appwire.HostOrphanResolveAttestation{
-			Operator:    record.OrphanAttestation.Operator,
-			Statement:   record.OrphanAttestation.Statement,
-			RecordID:    record.OrphanAttestation.RecordID,
-			BoundaryRef: record.OrphanAttestation.BoundaryRef,
-			ObservedAt:  record.OrphanAttestation.ObservedAt,
-		}
 	}
 	for _, entry := range record.Progress {
 		wire.Progress = append(wire.Progress, appwire.OperationProgressEntry{

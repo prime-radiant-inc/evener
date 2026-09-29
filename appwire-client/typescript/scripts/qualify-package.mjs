@@ -119,6 +119,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.parseSteeringNotifications('<delegate-notification delegate_id="dlg_1">{"kind":"reported","message":"Done."}</delegate-notification>')[0].notification.message, "Done.");
 assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
@@ -138,9 +139,9 @@ assert.deepEqual(
   client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
   { stop: false, steer: false, drain: true, drainQueue: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
 );
-assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatTokenCount(41200), "41.2K");
 assert.equal(client.formatDurationMs(1500), "1.5s");
-assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatCharCount(2500), "2.5K chars");
 assert.equal(client.formatClockTime(undefined), undefined);
 assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
 assert.equal(client.formatElapsed(65000), "1m05s");
@@ -205,8 +206,8 @@ assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
 assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
 assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
 assert.equal(client.formatCost(catalogEntry), null);
-assert.equal(client.contextWindowLabel(catalogEntry), "200k");
-assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.contextWindowLabel(catalogEntry), "200K");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200K");
 assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
 const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
 assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
@@ -550,7 +551,7 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
       // sources and no needs-you rows, and the row age formatter is pure),
-      // hostGrouping (a cluster sits under its newest member's host).
+      // hostGrouping (a project's hosts come from its rows).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -584,7 +585,7 @@ assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
-assert.equal(client.sessionGroupHostId({ kind: "cluster", host_id: "cluster", children: [{ host_id: "devbox" }] }), "devbox");
+assert.deepEqual(client.projectHostIds(undefined, [{ host_id: "devbox" }]), ["devbox"]);
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
@@ -637,17 +638,17 @@ Promise.all([
     // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
+const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient, createHubWriteGate());
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
-const plugins: PluginsStore = createPluginsStore(pluginsClient);
+const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
 const revision: ListRevision = createListRevision(); void plugins; void revision;
 const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
 const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
-      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
-const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
@@ -655,9 +656,9 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplacesStore = client.createMarketplacesStore(offline);
+const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
 assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
-const pluginsStore = client.createPluginsStore(offline);
+const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");

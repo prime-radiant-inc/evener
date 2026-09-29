@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { TextProps } from "react-native";
 import { Platform, Pressable, StyleSheet, Text, useColorScheme, useWindowDimensions } from "react-native";
-import { paletteFor } from "./design/tokens";
+import { type Palette, paletteFor } from "./design/tokens";
 import { useReadingType } from "./display/displayContext";
 
 /** The app's colors: the redesign palette (src/design/tokens.ts) under the
@@ -37,6 +37,19 @@ export function useTextScale(): number {
 /** Pairs with useTextScale: on iOS the text is sized by the scale itself, so
  * the platform must not scale it a second time. */
 export const allowFontScaling = Platform.OS !== "ios";
+
+/** A search field's shared look: a rounded inset field whose value reads at
+ * the UI size. */
+export function searchFieldStyle(palette: Palette, scale: number) {
+	return {
+		minHeight: 36,
+		paddingHorizontal: 12,
+		borderRadius: 10,
+		backgroundColor: palette.inset,
+		color: palette.inkHi,
+		fontSize: 17 * scale,
+	};
+}
 
 export function Action({
 	children,

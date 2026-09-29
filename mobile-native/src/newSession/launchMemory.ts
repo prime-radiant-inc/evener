@@ -2,7 +2,7 @@
 // sessions were started with, so New session opens on the newest one (spec
 // 11; recipes are deferred). It is per hub, because a
 // setup names that hub's hosts and folders.
-import type { LaunchConfigLayer } from "@evener/appwire-client";
+import { isPlainObject, type LaunchConfigLayer } from "@evener/appwire-client";
 import { readJson, removeKeys } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
@@ -15,9 +15,7 @@ export const historyKey = (hubId: string) => `evener.native.launch-history.${hub
 export const HISTORY_LIMIT = 50;
 
 function record(value: unknown): Record<string, unknown> | null {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: null;
+	return isPlainObject(value) ? value : null;
 }
 
 /** A stored setup this build can read, or null. Unknown override fields are

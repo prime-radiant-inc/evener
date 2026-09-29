@@ -7,6 +7,7 @@ import {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -104,6 +105,26 @@ describe("transcript display config", () => {
     expect(contentSummary(custom.content)).toBe("Custom");
   });
 
+  test("contentVectorForConfig reads the preset vector or the custom one (the one lookup web and native share)", () => {
+    for (const level of LEVELS)
+      expect(contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level }))).toEqual(
+        presetContent(level),
+      );
+    const config = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
+    expect(contentVectorForConfig(config)).toMatchObject({
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
+  });
+
   test("normalizes named presets and retains non-preset Custom vectors", () => {
     expect(normalizeContent({ kind: "preset", level: "intent" })).toEqual({ kind: "preset", level: "intent" });
     expect(
@@ -192,6 +213,19 @@ describe("transcript display config", () => {
       }),
     ).toBeUndefined();
     expect(fromWireConfig({ ...wire, advanced: { ...wire.advanced, hookExits: undefined } })).toBeUndefined();
+  });
+
+  test("rejects a non-plain-object wire value (the shared strict plain-object guard)", () => {
+    // A class instance carries the same own keys as a wire config but its
+    // prototype is not Object.prototype. The shared isPlainObject guard rejects
+    // it; a private loose "non-null, non-array object" guard accepted it.
+    const wire = toWireConfig(shippedDefaults.desktop.config);
+    class WireConfigStub {
+      version = wire.version;
+      content = wire.content;
+      advanced = wire.advanced;
+    }
+    expect(fromWireConfig(new WireConfigStub())).toBeUndefined();
   });
 
   test("fromWireDefault accepts future top-level fields", () => {

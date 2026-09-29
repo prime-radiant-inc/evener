@@ -97,6 +97,13 @@ it("lists only live results in the Live scope", () => {
 	expect(textWith(tree, "SESSIONS · 2")).toBeTruthy();
 });
 
+it("sizes result rows like the Board rows they mirror: a session a signal row, a project a quiet one", () => {
+	const sessions = resultRows(mount().tree);
+	expect(sessions.map((row) => flatten(row.props.style).minHeight)).toEqual([64, 64, 64]);
+	const projects = projectRows(mount({ projects: [evener] }).tree);
+	expect(projects.map((row) => flatten(row.props.style).minHeight)).toEqual([48]);
+});
+
 it("offers the All and Live scopes, marking the one chosen", () => {
 	const { tree, props } = mount({ scope: "live" });
 	const all = labelled(tree, "All");

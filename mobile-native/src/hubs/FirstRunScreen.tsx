@@ -9,7 +9,7 @@ import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useConnection } from "../ConnectionProvider";
 import type { Routes } from "../screens";
-import { Group, GroupedPage, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { AddHub, type How } from "./AddHub";
 
@@ -27,7 +27,6 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 	if (how)
 		return (
 			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
-				<GroupGap />
 				<Group>
 					<Row label="Back" tone="accent" onPress={() => setHow(null)} />
 				</Group>
@@ -53,19 +52,16 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 						In Evener on your computer, open Settings, then Mobile app.
 					</Text>
 				</View>
-				<GroupGap />
 				<Group>
 					<Row icon="qrcode.viewfinder" label="Scan pairing code" chevron onPress={() => setHow("scan")} />
 					<Row icon="doc.on.clipboard" label="Paste pairing link" chevron onPress={() => setHow("paste")} />
 				</Group>
-				<GroupGap />
 				<Group>
 					<Row icon="keyboard" label="Enter the address" chevron onPress={() => setHow("address")} />
 				</Group>
 				{profiles.length > 0 ? (
 					<>
-						<GroupLabel>Saved hubs</GroupLabel>
-						<Group>
+						<Group label="Saved hubs">
 							{profiles.map((profile) => (
 								<Row
 									key={profile.id}

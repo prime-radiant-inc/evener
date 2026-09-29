@@ -12,12 +12,14 @@ import {
 	delegateModel,
 	delegateTiming,
 	firstLine,
+	formatTokenCount,
+	isActivityFailure,
 	isFailedDelegateOutcome,
 	isTurnContainer,
 	jobIsFailed,
 	plainQuoteLine,
 } from "@evener/appwire-client";
-import { compactCount, compactDuration } from "../session/format";
+import { compactDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";
@@ -41,41 +43,65 @@ export interface SubagentRow {
 	order: number;
 }
 
-const STOPPED_OUTCOMES = new Set(["stopped", "cancelled"]);
 const STATE_WORDS: Record<SubagentState, string> = { running: "Running", failed: "Failed", done: "Done" };
+
+// A parent's stop settles a run or a command as stopped, and the user's as
+// cancelled (agent/internal/delegatestore and jobstore record.go).
+const STOPPED_STATUSES: ReadonlySet<string> = new Set(["stopped", "cancelled"]);
+
+/** True when a stop, the parent's or the user's, is what ended a run or a
+ * command. */
+export function isStoppedStatus(status: string | undefined): boolean {
+	return STOPPED_STATUSES.has(status ?? "");
+}
+
+/** The delegate fields the state rule reads. The Subagents list passes its
+ * ActivityDelegate (turns included); the Session chip passes an
+ * EvenerDelegateInfo, which is always the stable "delegate" shape and so
+ * carries no turns. `subagentState` is the one classifier for both. */
+export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "status" | "turns">;
 
 /** Running, failed or done, as the hub's job counts are (active, failed,
  * completed; agent/jobs_activity.go aggregateActivity): the subagent's own
  * outcome, never its children's (ruling 4). A stable delegate runs until its
  * run is terminal; a turn container (the wire allows one, though the daemon
  * builds none today) is read by its turns. */
-export function subagentState(delegate: ActivityDelegate): SubagentState {
+export function subagentState(delegate: SubagentStateSource): SubagentState {
 	if (isTurnContainer(delegate)) {
 		const turns = delegate.turns ?? [];
 		if (turns.some((turn) => !turn.terminal)) return "running";
 		return turns.some(jobIsFailed) ? "failed" : "done";
 	}
 	if (delegate.terminal !== true) return "running";
-	return isFailedDelegateOutcome(delegate.outcome) ? "failed" : "done";
+	// The daemon sets an outcome with every terminal run; a record with only a
+	// status still reads by that status.
+	const failed =
+		delegate.outcome === undefined
+			? isActivityFailure(undefined, delegate.status)
+			: isFailedDelegateOutcome(delegate.outcome);
+	return failed ? "failed" : "done";
+}
+
+/** A subagent that is done because a stop ended it, which says Stopped (its
+ * outcome, or else its status, names the stop). The one rule for the
+ * Subagents list's rows and the transcript's subagent row. */
+export function endedInStop(delegate: SubagentStateSource): boolean {
+	return subagentState(delegate) === "done" && isStoppedStatus(delegate.outcome ?? delegate.status);
 }
 
 export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
 
-// A command the job system stopped ends as stopped or cancelled
-// (agent/internal/jobstore/record.go).
-const STOPPED_JOB_STATUSES = new Set(["stopped", "cancelled"]);
-
 /** How many runs in the subagent's subtree, its own included, ended in a
  * stop: its subagents' runs and the commands they ran. For PR 3's stop
- * request ("Stopped at your request"); a row's own "Stopped" is its own
- * outcome (ruling 4). */
+ * request ("Stopped at your request"). Its own run counts by `endedInStop`,
+ * the rule its row's "Stopped" reads (ruling 4). */
 export function subtreeStops(delegate: ActivityDelegate): number {
-	const own = delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "") ? 1 : 0;
+	const own = endedInStop(delegate) ? 1 : 0;
 	return (delegate.child?.entries ?? []).reduce((count, entry) => {
 		if (entry.kind === "delegate") return count + subtreeStops(entry.delegate);
-		return count + (entry.job.terminal && STOPPED_JOB_STATUSES.has(entry.job.status) ? 1 : 0);
+		return count + (entry.job.terminal && isStoppedStatus(entry.job.status) ? 1 : 0);
 	}, own);
 }
 
@@ -112,7 +138,7 @@ export function flattenSubagents(tree: ActivityTree): SubagentRow[] {
 				ref: delegate.childRef,
 				title,
 				state,
-				stopped: state === "done" && STOPPED_OUTCOMES.has(delegate.outcome ?? ""),
+				stopped: endedInStop(delegate),
 				active: delegateHasActiveWork(delegate),
 				...(parentTitle === undefined ? {} : { parentTitle }),
 				delegate,
@@ -280,7 +306,7 @@ export function subagentLastLine(
 	const branch = row.delegate.worktree?.branch.trim();
 	if (branch) line.branch = branch;
 	const usage = row.delegate.usage;
-	if (usage) line.tokens = `${compactCount(usage.totalTokens ?? usage.inputTokens + usage.outputTokens)} tokens`;
+	if (usage) line.tokens = `${formatTokenCount(usage.totalTokens ?? usage.inputTokens + usage.outputTokens)} tokens`;
 	return Object.keys(line).length > 0 ? line : null;
 }
 

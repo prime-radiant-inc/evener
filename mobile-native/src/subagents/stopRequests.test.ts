@@ -1,17 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityDelegate } from "@evener/appwire-client";
-import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { forgetStopRequests, StopRequests } from "./stopRequests";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const session = (ref: string, delegates: ActivityDelegate[]) => ({
 	kind: "session" as const,
 	sessionId: ref,

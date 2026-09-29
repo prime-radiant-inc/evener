@@ -2,6 +2,7 @@ import { createHubUpdateController, WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
+import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
@@ -89,8 +90,27 @@ it("puts the hub's own machine first, named after the hub, with its live session
 	const page = await mount(fleet);
 	const own = page.row("magic-kingdom");
 	expect(own?.props.accessibilityLabel).toBe("magic-kingdom, Connected · 2 live, 0.9.412");
-	expect(own?.props.accessibilityRole).toBeUndefined();
 	expect(renderedText(page.tree)).toContain("0.9.412");
+	page.dispose();
+});
+
+it("words the hub's own machine the way the Hubs page words the hub", async () => {
+	// Connected but too old for this app: the connection line speaks while
+	// the connection still reads as ready.
+	status.line = UPDATE_NEEDED;
+	const page = await mount(scriptedFleet([], [liveSession("local:a", "local")]));
+	expect(page.row("magic-kingdom")?.props.accessibilityLabel).toBe("magic-kingdom, Update needed · 1 live, 0.9.412");
+	page.dispose();
+});
+
+it("opens the hub's own machine like any other host (audit M1)", async () => {
+	const page = await mount(scriptedFleet([hostRow("paradise-park")]));
+	const own = page.row("magic-kingdom");
+	expect(own?.props.accessibilityRole).toBe("button");
+	const chevrons = own?.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "chevron.right");
+	expect(chevrons).toHaveLength(1);
+	act(() => own?.props.onPress());
+	expect(page.navigation.navigate).toHaveBeenCalledWith("OwnHost", { hubId: "hub-1" });
 	page.dispose();
 });
 
@@ -175,10 +195,11 @@ it("reads the live sessions again when the connection comes back", async () => {
 	page.dispose();
 });
 
-it("says it is connecting before the hub has listed its hosts", async () => {
+it("waits quietly, connected, before the hub has listed its hosts (spec 14)", async () => {
 	const fleet = scriptedFleet([]);
 	fleet.client.request = (() => new Promise(() => {})) as never;
 	const page = await mount(fleet);
-	expect(renderedText(page.tree)).toContain("Connecting to magic-kingdom…");
+	expect(renderedText(page.tree)).not.toContain("Connecting");
+	expect(page.tree.root.findAllByProps({ accessibilityLabel: "Loading hosts" })).not.toHaveLength(0);
 	page.dispose();
 });

@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"database/sql"
@@ -440,22 +439,16 @@ func candidateItems(candidates []appitempaging.TranscriptItemCandidate) []appwir
 	return items
 }
 
-// checkTranscriptHeader reads only a transcript's first line and returns
-// transcript.ErrUnsupportedFormat (wrapped) unless it is a format-2 header.
+// checkTranscriptHeader reads the transcript's leading header line (skipping
+// blank lines) and returns transcript.ErrUnsupportedFormat (wrapped) unless it
+// is a format-2 header.
 func checkTranscriptHeader(transcriptPath string) error {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	line, complete, _, err := transcript.ReadLine(bufio.NewReader(f), 128<<20)
-	if err != nil {
-		return err
-	}
-	if !complete {
-		return fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-	}
-	_, err = transcript.DecodeHeader(bytes.TrimSpace(line))
+	_, err = transcript.ReadHeader(context.Background(), bufio.NewReader(f), 128<<20)
 	return err
 }
 

@@ -14,42 +14,15 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
-	it("restores a shortcut editor's unfinished text in its original hub", () => {
+	it("restores a saved shortcuts location, which is no longer a place, to that hub's Board", () => {
 		const disk = storage();
-		const repository = new LocationRepository(disk);
 		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
-		repository.save(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio"));
-		const saved = new LocationRepository(disk).read(["studio"]);
-		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
-		// The Hub's MORE row opens the shortcuts from the Board, so the editor
-		// reopens over the Board, with no Hub settings screen under it.
-		expect(restoredStack(saved).routes).toEqual([
-			{ name: "Hubs" },
-			{ name: "Sessions" },
-			{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
-		]);
-		expect(new LocationRepository(disk).read(["other"])).toBeNull();
-	});
-	it("rejects malformed and mixed shortcut destinations", () => {
-		const disk = storage();
-		const repository = new LocationRepository(disk);
-		for (const keybindings of [
-			{ editor: { actionId: "", chord: "" } },
-			{ editor: { actionId: "a", chord: null } },
-			true,
-		]) {
+		for (const keybindings of [{ editor }, {}, true]) {
 			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", keybindings }));
-			expect(repository.read(["studio"])).toBeNull();
+			const saved = new LocationRepository(disk).read(["studio"]);
+			expect(saved).toEqual({ hubId: "studio" });
+			expect(restoredStack(saved).routes).toEqual([{ name: "Hubs" }, { name: "Sessions" }]);
 		}
-		disk.setItemSync(
-			"evener.last-location",
-			JSON.stringify({
-				hubId: "studio",
-				keybindings: {},
-				projects: { archived: false },
-			}),
-		);
-		expect(repository.read(["studio"])).toBeNull();
 	});
 	it("restores project filters and the exact project tier after restart", () => {
 		for (const archived of [false, true])
@@ -434,15 +407,14 @@ describe("last mobile location", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle.md",
-			reviewRef: "local:coord",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Fix race",
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		};
 		repository.save(locationForRoute({ name: "Reader", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({
 			hubId: "studio",
-			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
+			conversation: { ref: "local:fix", title: "Fix race" },
 			reader: {
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle.md",
@@ -451,7 +423,7 @@ describe("last mobile location", () => {
 		});
 		expect(restoredStack(saved).routes.slice(-3)).toEqual([
 			{ name: "Sessions" },
-			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ name: "Reader", params },
 		]);
 	});
@@ -498,6 +470,26 @@ describe("last mobile location", () => {
 		expect(
 			locationForRoute(
 				{ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } },
+				"studio",
+			),
+		).toBeNull();
+	});
+
+	it("refuses Reader params that predate the single-ref route", () => {
+		// A pre-#2871 Reader named its session twice; the route now takes one ref
+		// and its title, so these params have no sessionTitle and are rejected.
+		expect(
+			locationForRoute(
+				{
+					name: "Reader",
+					params: {
+						hubId: "studio",
+						sessionRef: "local:fix",
+						path: "a.md",
+						reviewRef: "local:fix",
+						reviewTitle: "Fix race",
+					},
+				},
 				"studio",
 			),
 		).toBeNull();

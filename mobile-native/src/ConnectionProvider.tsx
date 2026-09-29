@@ -17,6 +17,7 @@ import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 import { forgetDocumentSummaries } from "./reader/documentSummaries";
 import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
+import { forgetCreationForHub, releaseCreations } from "./newSession/creations";
 import { forgetLaunchMemoryForHub } from "./newSession/nativeLaunchMemory";
 import { forgetStopRequestsForHub } from "./subagents/nativeStopRequests";
 import { forgetSubagentTrees } from "./subagents/subagentTree";
@@ -77,6 +78,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		state: visibleState,
 		fatal,
 	} = useHubConnection(repository, activeId, activeOrigin, foreground, attempt, setError);
+	// A New session start bound to a client the connection has left (another
+	// hub, a new connection, or none after disconnecting) is let go, so it
+	// reads as uncertain rather than starting forever (#3104).
+	useEffect(() => releaseCreations(client), [client]);
 	// The status clock (spec 14): fed every change in hub, liveness and
 	// foreground, read by useConnectionStatusText wherever a status shows.
 	const [clock] = useState(() => new ConnectionClock());
@@ -130,6 +135,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						forgetDocumentSummaries,
 						forgetSubagentTrees,
 						forgetLaunchMemoryForHub,
+						forgetCreationForHub,
 						forgetStopRequestsForHub,
 					]);
 				},

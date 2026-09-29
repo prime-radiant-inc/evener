@@ -6,22 +6,25 @@
 // (ruling 18).
 import { StackActions, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
+import { useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
+import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { ImageAttachments } from "../ImageAttachments";
 import { ImageSelection } from "../imageSelection";
 import { nativeImagePicker } from "../nativeImagePicker";
 import { creationModel, startedSetup } from "../newSession";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, RowValue, Segmented } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue, Segmented } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../../../mobile/src/services/newSession";
 import { effortLabel, knownAccess, projectName } from "./launchSetup";
+import { formFront, showForm } from "./formFront";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
@@ -38,7 +41,7 @@ const readBranch = (service: NewSessionService, host: string, cwd: string) => se
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
+	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -67,6 +70,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				? { sub: "Couldn't list this host's plugins", subTone: "danger" }
 				: { value: "…" };
 	const access = knownAccess(form.launchOverrides.sandbox, launchDefaults);
+	const startMayRepeat = form.startMayRepeat();
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
@@ -77,33 +81,68 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		pluginIssues: pluginsChosen.issues,
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
+		startMayRepeat,
 	});
+	const offerAlert = useOfferAlert();
+	const startFailureSeen = useStartFailureSeen(hubId);
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
+	useEffect(() => showForm(store, { navigation, latest }), [store, navigation]);
+	// Whenever this form is in front, it shows the store's own error, so an
+	// alert saying the same goes.
+	useFocusEffect(startFailureSeen);
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
 	const start = useCallback(async () => {
 		if (!latest.current.ready || latest.current.blocked || imageSelection.getSnapshot().busy) return;
 		const submittedClient = latest.current.client;
 		const setup = startedSetup(store.getState());
 		const outcome = await store.getState().submit();
-		if (outcome.status !== "created") return;
+		// A removed hub's start has no one left to tell.
+		if (store.getState().retired) return;
+		// The form in front now: this one, or a sheet reopened while the start
+		// was on its way, whether or not the hub is reachable from it.
+		const front = formFront(store);
+		const inFront = !!front && front.navigation.isFocused();
+		if (outcome.status !== "created") {
+			// A form in front shows the store's error itself; else an alert says
+			// it. With no error there is nothing to say: nothing was started.
+			// Uncertain only while a start of this very draft may exist, the same
+			// measure Start holds on: a changed draft's failure is a plain one.
+			const { error, startMayRepeat } = store.getState();
+			if (inFront || !error) return;
+			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: startMayRepeat() });
+			return;
+		}
 		try {
 			memory.recordStart(setup, Date.now());
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) return;
-		navigation.getParent()?.dispatch(
+		// Only a form in front, on the connection the start went out on, can
+		// open the session.
+		if (!front || !inFront || !front.latest.current.ready || front.latest.current.client !== submittedClient) {
+			// The session exists but this sheet can no longer open it: say so
+			// where the person is, so it isn't started twice (#3048).
+			offerAlert({
+				kind: "started",
+				ref: outcome.thread.evener.ref,
+				title: outcome.thread.name || "New session",
+				why: null,
+			});
+			return;
+		}
+		front.navigation.getParent()?.dispatch(
 			StackActions.replace("Conversation", {
 				hubId: outcome.hubId,
 				ref: outcome.thread.evener.ref,
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, navigation, imageSelection]);
+	}, [store, hubId, hubName, memory, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
-		const { prompt, images } = store.getState();
-		if (!prompt.trim() && images.length === 0) {
+		const { prompt, images, submitting } = store.getState();
+		// A draft whose start is on its way can't be discarded: Cancel only closes.
+		if (submitting || (!prompt.trim() && images.length === 0)) {
 			close();
 			return;
 		}
@@ -116,13 +155,16 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		]);
 	}, [store, close]);
 	const blocked = block !== null;
+	const starting = form.submitting;
 	useLayoutEffect(() => {
 		navigation.setOptions({
 			title: "New session",
 			headerLeft: () => <HeaderButton label="Cancel" onPress={cancel} />,
-			headerRight: () => <HeaderButton label="Start" strong disabled={blocked} onPress={() => void start()} />,
+			headerRight: () => (
+				<HeaderButton label={starting ? "Starting…" : "Start"} strong disabled={blocked} onPress={() => void start()} />
+			),
 		});
-	}, [navigation, cancel, start, blocked]);
+	}, [navigation, cancel, start, blocked, starting]);
 
 	const editable = form.storageLoaded && !form.submitting;
 	const levels = model?.reasoningEffortLevels ?? [];
@@ -131,9 +173,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			<GroupGap />
 			<Group>
-				<View style={{ paddingHorizontal: 16, paddingVertical: 11, gap: 8 }}>
+				<View style={{ paddingHorizontal: space.rowInset, paddingVertical: space.rowPadding, gap: 8 }}>
 					<TextInput
 						accessibilityLabel="What should the agent do?"
 						placeholder="What should the agent do?"
@@ -191,8 +232,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					</Group>
 				</>
 			) : null}
-			<GroupLabel>Where</GroupLabel>
-			<Group>
+			<Group label="Where">
 				<Row
 					icon="server.rack"
 					label="Host"
@@ -215,8 +255,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				{branch ? <Row icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
-			<GroupLabel>Agent</GroupLabel>
-			<Group>
+			<Group label="Agent">
 				<Row
 					icon="cpu"
 					label="Model"

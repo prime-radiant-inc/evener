@@ -15,7 +15,7 @@ import {
 	tick,
 } from "../board/navigationHubTestUtils";
 import { render } from "../renderNative.testkit";
-import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS } from "./alertCenter";
+import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS, sessionRef } from "./alertCenter";
 import { alertPreferences } from "./nativeAlertPreferences";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
@@ -23,18 +23,20 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connectio
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
 import { AlertsProvider } from "./AlertsProvider";
-import { useAlertSnapshot, useHeldAlertCount, useHoldAlerts, useReportRoutes } from "./alertsContext";
+import { useAlertSnapshot, useHeldAlertCount, useHoldAlerts, useOfferAlert, useReportRoutes } from "./alertsContext";
 
 type Routes = Parameters<ReturnType<typeof useReportRoutes>>[0];
 const probe = {
 	snapshot: null as AlertSnapshot | null,
 	held: 0,
 	report: null as null | ((routes: Routes) => void),
+	offer: null as null | ReturnType<typeof useOfferAlert>,
 };
 function Probe({ quiet }: { quiet: boolean }) {
 	probe.snapshot = useAlertSnapshot();
 	probe.held = useHeldAlertCount();
 	probe.report = useReportRoutes();
+	probe.offer = useOfferAlert();
 	useHoldAlerts(quiet, "quiet");
 	return null;
 }
@@ -45,8 +47,18 @@ const failed = (ref: string): NavigationSessionSummary =>
 	({ ...session(ref), state: "errored" }) as NavigationSessionSummary;
 const sources = [{ id: "laptop", label: "Laptop", kind: "local", online: true }];
 
-function connect(client: Hub["client"] | null, state = "ready", hubId = "hub-1") {
-	harness.connection = { client, state, activeProfile: client || hubId ? { id: hubId, name: hubId } : null };
+/** The phone's saved hubs, unless a test removes one. */
+const savedHubs = () => [
+	{ id: "hub-1", name: "hub-1" },
+	{ id: "hub-2", name: "hub-2" },
+];
+function connect(client: Hub["client"] | null, state = "ready", hubId = "hub-1", profiles = savedHubs()) {
+	harness.connection = {
+		client,
+		state,
+		activeProfile: client || hubId ? { id: hubId, name: hubId } : null,
+		profiles,
+	};
 }
 let mounted: ReturnType<typeof render> | null = null;
 function mount() {
@@ -88,7 +100,9 @@ async function needsYouNow(hub: Hub, sequence: number, rows: NavigationSessionSu
 	});
 }
 const shownRefs = () =>
-	probe.snapshot?.banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref)) ?? [];
+	probe.snapshot?.banner?.alerts.map(
+		(alert) => sessionRef(alert) ?? (alert.kind === "notice" ? alert.key : alert.kind),
+	) ?? [];
 
 beforeEach(() => {
 	alertPreferences().set(DEFAULT_ALERT_PREFERENCES);
@@ -260,4 +274,32 @@ it("starts over for another hub, and reports the screen again for it", async () 
 	// session with the same ref.
 	await needsYouNow(second, 1, [asking("local:a")]);
 	expect(shownRefs()).toEqual(["local:a"]);
+});
+
+it("drops a removed hub's failed start, so no banner is left that can open nothing (#3104)", async () => {
+	const hub = boundary();
+	connect(hub.client, "ready", "hub-1");
+	const { rerender } = mount();
+	await firstReads(hub);
+	act(() => {
+		probe.offer?.({ kind: "startFailed", hubId: "hub-1", hubName: "hub-1", uncertain: false });
+		probe.offer?.({ kind: "startFailed", hubId: "hub-2", hubName: "hub-2", uncertain: false });
+	});
+	// The active hub's shows; the other follows it.
+	expect(probe.snapshot?.banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "hub-1", uncertain: false },
+	]);
+	// The active hub is removed; the phone moves to the other one.
+	const other = boundary();
+	connect(other.client, "ready", "hub-2", [{ id: "hub-2", name: "hub-2" }]);
+	rerender();
+	await firstReads(other);
+	expect(probe.snapshot?.banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-2", hubName: "hub-2", uncertain: false },
+	]);
+	// And the other one, not active, is removed too.
+	connect(other.client, "ready", "hub-2", []);
+	rerender();
+	expect(probe.snapshot).toMatchObject({ banner: null });
+	expect(probe.held).toBe(0);
 });

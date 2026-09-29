@@ -503,7 +503,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 
 func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
 	t.Helper()
-	stateDir := t.TempDir()
+	stateDir := realTempDirForTest(t)
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()

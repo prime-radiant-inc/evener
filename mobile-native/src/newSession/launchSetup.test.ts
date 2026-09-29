@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	seedFromSession,
 	accessOf,
 	knownAccess,
 	effortLabel,
@@ -77,6 +78,22 @@ describe("changing host (ruling 17)", () => {
 		});
 	});
 
+	it("names two folders of one name by the shortest ends of their paths that tell them apart", () => {
+		expect(moveToHost("/src/work/evener", "paradise-park", false, ["/src/oss/evener"])).toEqual({
+			cwd: "/src/oss/evener",
+			note: "work/evener isn't on paradise-park, so the project changed to oss/evener.",
+		});
+		// Paths that differ only at their first folder are given whole.
+		expect(moveToHost("/home/jesse/git/evener", "paradise-park", false, ["/Users/jesse/git/evener"])).toEqual({
+			cwd: "/Users/jesse/git/evener",
+			note: "/home/jesse/git/evener isn't on paradise-park, so the project changed to /Users/jesse/git/evener.",
+		});
+		// One path the end of the other: both are given whole.
+		expect(moveToHost("/a/evener", "paradise-park", false, ["/b/a/evener"]).note).toBe(
+			"/a/evener isn't on paradise-park, so the project changed to /b/a/evener.",
+		);
+	});
+
 	it("asks for a project when the host remembers none", () => {
 		expect(moveToHost("/home/jesse/git/evener", "paradise-park", false, [])).toEqual({
 			cwd: "",
@@ -139,6 +156,26 @@ describe("from the form and from a session", () => {
 			model: { provider: "lunaroute", model: "glm-5.3-vision" },
 			effort: "high",
 			overrides: { sandbox: "restricted" },
+		});
+	});
+
+	it("reads a session as a seed for New session like this (ruling 24)", () => {
+		expect(
+			seedFromSession("paradise-park:thread-9", {
+				cwd: "/Users/jesse/git/evener",
+				modelProvider: "lunaroute/glm-5.3-vision",
+				reasoningEffort: "high",
+			}),
+		).toEqual({
+			host: "paradise-park",
+			cwd: "/Users/jesse/git/evener",
+			model: "lunaroute/glm-5.3-vision",
+			effort: "high",
+		});
+		// A session with no model or effort of its own leaves the sheet's.
+		expect(seedFromSession("local:thread-1", { cwd: "/tmp", modelProvider: "" })).toEqual({
+			host: "local",
+			cwd: "/tmp",
 		});
 	});
 

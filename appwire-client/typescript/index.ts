@@ -72,8 +72,14 @@ export type {
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
-export type { RejectableFile } from "./attachmentLimits";
-export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
+export {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
@@ -120,6 +126,8 @@ export {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  endpointMoved,
+  endpointUncheckable,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -177,6 +185,7 @@ export {
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
+  HostMutationOutcomeError,
   HUB_UNREACHABLE_MESSAGE,
   hostFieldError,
   isHubLaunchError,
@@ -208,6 +217,7 @@ export {
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
   hostChangedSinceOpened,
   rootsFromText,
@@ -312,7 +322,7 @@ export type {
   LaunchConfigStoreState,
   LaunchSettingsState,
 } from "./launchConfig";
-export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
+export { createLaunchConfigStore, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
@@ -444,6 +454,25 @@ export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSch
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export {
+  isSuppressedSteeringKind,
+  type LabelledSteeringKind,
+  STEERING_KIND_LABELS,
+  steeringLabel,
+} from "./steeringLabels";
+export {
+  decodeNotificationEntities,
+  escapeNotificationEntities,
+  isNotificationRemnant,
+  isValidTranscriptRef,
+  type NotificationOutcome,
+  type NotificationTone,
+  type ParsedNotification,
+  parseSteeringNotifications,
+  type SteeringFragment,
+  steeringNotificationFragments,
+  stripSystemReminder,
+} from "./steeringNotifications";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -465,10 +494,21 @@ export {
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
+export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
+export {
+  freshNotes,
+  type MutationTouch,
+  mutationRows,
+  SUMMARY_MARK,
+  type TaskListStep,
+  type TouchedRow,
+  taskMutationRecap,
+  taskMutationSummary,
+} from "./taskListStep";
 export { absoluteTime, relativeTime } from "./taskListTime";
 export type {
   PanelLoadFailure,
@@ -505,6 +545,38 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
+export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
+export {
+  applyPatchSummary,
+  BINARY_PAYLOAD_HEADER,
+  editFileSummary,
+  fallbackToolSummary,
+  filePathArg,
+  filePathOf,
+  globSummary,
+  grepSummary,
+  listDirSummary,
+  mcpToolParts,
+  readFileSummary,
+  shellCommand,
+  shellSummary,
+  skillName,
+  stripRedundantCd,
+  type ToolFamily,
+  type ToolStep,
+  type ToolSummaryContext,
+  taskListChanges,
+  toolFamily,
+  toolStepProgress,
+  toolStepSummary,
+  useSkillSummary,
+  webFetchByteCount,
+  webFetchSummary,
+  webSearchResultLines,
+  webSearchSummary,
+  words,
+  writeFileSummary,
+} from "./toolSummaries";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -532,6 +604,7 @@ export {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -579,7 +652,15 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export {
+  findSessionsSummary,
+  readTranscriptEnvelope,
+  readTranscriptSummary,
+  type TranscriptEnvelope,
+  type TranscriptStep,
+  turns,
+} from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
@@ -609,3 +690,4 @@ export {
   watchNextFireLabel,
   watchTitle,
 } from "./watchText";
+export { type WorktreeStep, worktreeMessage, worktreeSummary } from "./worktreeSteps";

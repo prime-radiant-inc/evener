@@ -125,7 +125,7 @@ it("dots a document you haven't opened, and one written after your last read, an
 	const leave = (path: string, updatedAt: string) =>
 		memory.left(
 			{ sessionRef: "local:fix", path },
-			{ title: "x", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix race", updatedAt },
+			{ title: "x", blocks: [], position: null, sessionTitle: "Fix race", updatedAt },
 		);
 	const written = ago(1);
 	leave(PLAN, ago(10));
@@ -150,8 +150,7 @@ it("opens a document in the Reader over the session, after the sheet goes", asyn
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path: PLAN,
-		reviewRef: "local:fix",
-		reviewTitle: "Fix race",
+		sessionTitle: "Fix race",
 		updatedAt,
 	});
 });

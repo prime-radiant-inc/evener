@@ -78,26 +78,3 @@ func fuzzScenarioBuildTree_EveryRowCarriesTheTurnEndedTime(t *testing.T) {
 		t.Fatalf("ended session's row = %+v (found %v), want no turn end", endedRow, found)
 	}
 }
-
-// fuzzScenarioBuildTree_DoesNotClusterLiveIdleRepeatedTitles: live sessions
-// never fold, idle ones included, so a live session that finished a turn you
-// have not seen keeps its own row (S4 ruling 16).
-func fuzzScenarioBuildTree_DoesNotClusterLiveIdleRepeatedTitles(t *testing.T) {
-	now := time.Now()
-	var metas []schema.SessionMeta
-	var live []LiveEntry
-	for i := range 3 {
-		id := "01IDLE" + string(rune('A'+i))
-		metas = append(metas, schema.SessionMeta{ID: id, Name: "describe this image", UpdatedAt: now.Add(-time.Duration(i) * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"}})
-		live = append(live, LiveEntry{PID: i + 1, SessionID: id, Status: appwire.ThreadStatusIdle})
-	}
-	sessions := allSessions(projectByName(t, buildTree(metas, live), "evener-docs"))
-	for _, s := range sessions {
-		if s.Kind == "cluster" {
-			t.Fatalf("live idle sessions folded into cluster %q", s.Title)
-		}
-	}
-	if len(sessions) != 3 {
-		t.Fatalf("sessions = %d, want 3 unfolded rows", len(sessions))
-	}
-}

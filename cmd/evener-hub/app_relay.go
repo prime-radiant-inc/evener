@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,6 +300,31 @@ func stampResyncTarget(notification appwire.Notification, threadID, ref string) 
 // stampForkCapability adds the hub-owned action to an existing capability
 // update. Other permissions and fields remain the daemon's current values.
 func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
+	return patchStatusCapabilities(notification, func(status appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
+		if allowFork && !hubForkRecoveryFenced(appwire.Thread{Status: status}) {
+			capabilities["forkFromTurn"] = json.RawMessage("true")
+		} else {
+			// Clear a stale daemon value as well as refusing to add the action. The
+			// notification is the client's authoritative status transition.
+			capabilities["forkFromTurn"] = json.RawMessage("false")
+		}
+	})
+}
+
+// stampPageBeforeCapability sets the hub's pageBefore answer (hubPagesBefore)
+// on a capability update, which carries the daemon's set, and the daemon never
+// names it. Without it a client reading the frame's set would lose the answer
+// at the thread's first status change.
+func stampPageBeforeCapability(notification appwire.Notification, pageBefore bool) appwire.Notification {
+	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
+		capabilities["pageBefore"] = json.RawMessage(strconv.FormatBool(pageBefore))
+	})
+}
+
+// patchStatusCapabilities edits a thread/status/changed frame's capability
+// update in place, keeping every other field as the daemon sent it. Any other
+// frame, or one with no capability update, passes through unchanged.
+func patchStatusCapabilities(notification appwire.Notification, patch func(appwire.ThreadStatus, map[string]json.RawMessage)) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
@@ -313,14 +339,7 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 	if err := json.Unmarshal(notification.Params, &raw); err != nil {
 		return notification
 	}
-	fenced := hubForkRecoveryFenced(appwire.Thread{Status: params.Status})
-	if allowFork && !fenced {
-		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
-	} else {
-		// Clear a stale daemon value as well as refusing to add the action. The
-		// notification is the client's authoritative status transition.
-		params.Capabilities["forkFromTurn"] = json.RawMessage("false")
-	}
+	patch(params.Status, params.Capabilities)
 	encoded, err := json.Marshal(params.Capabilities)
 	if err != nil {
 		return notification
@@ -742,6 +761,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
 						notification = stampClosedThreadCapabilities(notification, ownsFork)
 						notification = stampForkCapability(notification, ownsFork)
+						notification = stampPageBeforeCapability(notification, hubPagesBefore(cfg, target.thread.Evener.Ref))
 					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {

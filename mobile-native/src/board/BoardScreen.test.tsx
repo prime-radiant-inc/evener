@@ -32,12 +32,14 @@ import {
 	screenConnection,
 	swipeableCalls,
 	swipeRowFully,
+	systemGlass,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { SearchResults } from "./SearchResults";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
@@ -60,6 +62,8 @@ const harness = vi.hoisted(() => ({
 	sqlite: new Map<string, unknown>(),
 	/** What AccessibilityInfo says of Reduce Motion. */
 	reduceMotion: false,
+	/** Dynamic Type's scale, as useWindowDimensions reports it. */
+	fontScale: 1,
 	/** AppState's change listeners. */
 	appState: new Set<(state: string) => void>(),
 	announce: vi.fn(),
@@ -71,11 +75,10 @@ vi.mock("react-native", async () => {
 		...native,
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
-		Keyboard: { dismiss: () => {} },
 		AccessibilityInfo: {
+			...native.AccessibilityInfo,
 			announceForAccessibility: (...args: unknown[]) => harness.announce(...args),
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
-			addEventListener: () => ({ remove: () => {} }),
 		},
 		AppState: {
 			addEventListener: (_type: string, listener: (state: string) => void) => {
@@ -83,9 +86,11 @@ vi.mock("react-native", async () => {
 				return { remove: () => harness.appState.delete(listener) };
 			},
 		},
+		useWindowDimensions: () => ({ fontScale: harness.fontScale, scale: 2, width: 390, height: 844 }),
 	};
 });
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
+vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -164,6 +169,7 @@ beforeEach(() => {
 	harness.focused = true;
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
+	harness.fontScale = 1;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -177,6 +183,7 @@ const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
 	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	vi.useRealTimers();
+	systemGlass.reset();
 });
 
 // Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
@@ -645,6 +652,49 @@ async function mountWithInstances(nav: Navigation) {
 /** The Board's scroller, not the chips' horizontal one. */
 const boardScroller = (tree: ReactTestRenderer) =>
 	tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+
+/** Lays the Board's toolbar out `height` tall; the toolbar is the bar
+ * itself, laid over the Board's end. */
+function layOutToolbar(tree: ReactTestRenderer, height: number) {
+	const flat = (node: ReactTestInstance) => Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+	const toolbar = tree.root.find((node) => node.props.testID === "board-toolbar" && String(node.type) === "View");
+	expect(flat(toolbar)).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0, borderTopWidth: 0.5 });
+	act(() => toolbar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 700, width: 390, height } } }));
+	const toastSlot = tree.root.find((node) => node.props.testID === "board-toast" && String(node.type) === "View");
+	return { scroller: boardScroller(tree), toastBottom: flat(toastSlot).bottom };
+}
+
+it("runs the Board under its toolbar, insetting its end by the toolbar and floating the toast above it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const { scroller, toastBottom } = layOutToolbar(tree, 84);
+	expect(scroller.props.contentInset).toEqual({ bottom: 84 });
+	expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 });
+	expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+	expect(toastBottom).toBe(84 + 10);
+	act(() => tree.unmount());
+});
+
+it("pads the Board's end by its toolbar on Android, which has no content inset", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	Platform.OS = "android";
+	try {
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub(fleet).client, "ready");
+		const tree = await mount(navigation());
+		const { scroller, toastBottom } = layOutToolbar(tree, 84);
+		expect(scroller.props.contentInset).toBeUndefined();
+		expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 + 84 });
+		expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+		expect(toastBottom).toBe(84 + 10);
+		act(() => tree.unmount());
+	} finally {
+		Platform.OS = "ios";
+	}
+});
 
 it("keeps the chips fixed above the Board's scroller, and jumps a chip's section to the top", async () => {
 	const id = hubId();
@@ -1259,6 +1309,119 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	await settle();
 	expect(fake.searches).toEqual(["ship"]);
 	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	act(() => tree.unmount());
+});
+
+it("doesn't search while the Board is out of view, and asks again when it returns", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A pushed screen covers the Board: a reconnect must not send the query.
+	harness.stack = screenOverBoard;
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	// Back in view, the field's query asks again.
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship", "ship"]);
+	act(() => tree.unmount());
+});
+
+it("gives the search field a 44pt touch target while it still draws 36pt", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const row = tree.root.find((node) => node.props.testID === "search-field");
+	expect(row.props.style.height).toBe(52);
+	// The visible pill is still the stock 36pt.
+	const pill = row.findAll((node) => node.type === ("View" as never) && node.props.style?.position === "absolute")[0];
+	expect(pill?.props.style.height).toBe(36);
+	// The input's own row is the target, so a slop wouldn't be clipped away.
+	const input = row.find(
+		(node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions",
+	);
+	expect(input.parent?.props.style.height).toBeGreaterThanOrEqual(44);
+	act(() => tree.unmount());
+});
+
+it("re-tucks the search field when Dynamic Type changes its height", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	expect(height).toBe(70);
+	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
+	act(() => tree.unmount());
+});
+
+it("leaves a field the reader revealed or scrolled past where it is on a Dynamic Type change", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	const scrollToY = (y: number) =>
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: { contentOffset: { x: 0, y }, layoutMeasurement: { width: 390, height: 700 } },
+			}),
+		);
+	// Revealed by pulling down, without focusing.
+	scrollToY(0);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	// Scrolled down the list.
+	scrollToY(400);
+	harness.fontScale = 1;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps one search through a sheet over the Board, without re-asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A sheet over the Board is still the Board (ruling 28): the binding holds,
+	// so closing it asks nothing again.
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
 
@@ -2105,9 +2268,7 @@ const migrating = session("local:migrate", { title: "Migrate schema", state: "ac
 const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
 const busyFleet: Fleet = {
 	...fleet,
-	live: [
-		[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished],
-	],
+	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, finished]],
 };
 const workingTitles = (tree: ReactTestRenderer) =>
 	tree.root
@@ -2435,6 +2596,24 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	rerender(tree, nav);
 	expect(noticeTexts(tree)[0]).toBe(INCOMPATIBLE_TEXT);
 	expect(noticeTexts(tree)).toHaveLength(4);
+	act(() => tree.unmount());
+});
+
+it("hides notice actions while the hub is out of reach, keeping the notice rows", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(troubledFleet()).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
+	// Ruling 21: the Board's hub-facing actions show only while connected.
+	connect(id, null, "closed");
+	rerender(tree, nav);
+	expect(noticeTexts(tree)).toEqual([
+		"openai sign-in expired",
+		"Studio Mac is offline · 2 sessions",
+		"superpowers is broken",
+	]);
 	act(() => tree.unmount());
 });
 
@@ -2788,6 +2967,43 @@ it("scrolls to a project from search that was already unfolded", async () => {
 	layOutAt(projectSection(tree, "projects"), 900, 400);
 	layOutAt(revealTarget(tree), 60, 48);
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls a project row taller than the viewport to its top, never past it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	await revealFromSearch(tree);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	// The row is taller than the 600pt viewport, so there is nowhere to sit it
+	// a third of the way down: the Board shows its top.
+	layOutAt(revealTarget(tree), 60, 700);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60, animated: true });
+	act(() => tree.unmount());
+});
+
+it("stays in search when a tapped project is no longer in the loaded catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("even");
+	// The catalog goes stale between the result's render and the tap: the
+	// project is no longer loaded, so there is nothing to reveal.
+	act(() => tree.root.findByType(SearchResults).props.onOpenProject({ key: "gone", name: "Gone" }));
+	expect(hasCancel(tree)).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -4083,6 +4299,23 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 });
 
+it("keeps the row menu's row while the list is held, even once the read drops it", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	// Opening the menu from the row holds the list (ruling 22).
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	const ref = `local:${SESSION_ID}`;
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
+	// A later read no longer has the row, but the held list keeps showing it,
+	// so the menu that is about it must still resolve one.
+	shape.live = [[swipeFinished, swipePark]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hasRow(tree, "Refactor parser")).toBe(true);
+	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
+});
+
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const shape = swipeFleet();
@@ -4912,8 +5145,7 @@ function leaveDocument(id: string, leftMinutesAgo: number) {
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
 			title: "Fix the settle/drain race",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race",
+			sessionTitle: "Fix race",
 			progress: 0.62,
 			leftAt: Date.now() - leftMinutesAgo * 60_000,
 		}),
@@ -4945,8 +5177,7 @@ it("offers to continue a document you left in the last two hours, under the noti
 				hubId: id,
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle-race.md",
-				reviewRef: "local:fix",
-				reviewTitle: "Fix race",
+				sessionTitle: "Fix race",
 			},
 		],
 	]);
@@ -4981,4 +5212,195 @@ it("drops the Continue reading row when its two hours run out, even on an idle B
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+// Where the device has Liquid Glass (iOS 26 and later), one glass spans the
+// nav bar and the section chips under it (spec 16.3), as on the Session: the
+// Board scrolls under both, its content inset by them, and every scroll it
+// makes itself lands clear of them. Elsewhere, and while Reduce Transparency
+// is on, the bar is opaque and the chips sit above the scroller as before.
+describe("the nav bar's glass (spec 16.3)", () => {
+	const glassBlock = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "board-header" && String(node.type) === "View");
+	const measureGlass = (tree: ReactTestRenderer, height: number) =>
+		act(() => glassBlock(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+	const fieldHeight = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	/** A Board on the glass, measured with the bar's room and a 48pt chip row. */
+	async function mountOnGlass(shape: Fleet = { ...fleet, catalogs: { projects: [evenerProject()] } }) {
+		systemGlass.available = true;
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const fake = hub(shape);
+		connect(id, fake.client, "ready");
+		const nav = navigation();
+		const mounted = await mountWithInstances(nav);
+		await act(async () => {});
+		measureGlass(mounted.tree, 64 + 48);
+		return { ...mounted, nav, fake };
+	}
+
+	it("runs the Board under one glass spanning the bar and the chips, and scrolls clear of it", async () => {
+		systemGlass.available = true;
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+		const nav = navigation();
+		const { tree, scrollTo } = await mountWithInstances(nav);
+		await act(async () => {});
+		expect(headerOptions(nav)).toMatchObject({
+			headerTransparent: true,
+			headerStyle: { backgroundColor: "transparent" },
+			scrollEdgeEffects: { top: "hidden" },
+		});
+		// The chips sit on the glass, clear, below the bar's room.
+		const block = glassBlock(tree);
+		expect(block.props.style).toMatchObject({ position: "absolute", top: 0, left: 0, right: 0 });
+		expect(block.findAll((node) => String(node.type) === "GlassView")).toHaveLength(1);
+		expect(block.find((node) => node.props.testID === "nav-bar-room").props.style.height).toBe(64);
+		expect(block.find((node) => node.props.testID === "chips").props.style.backgroundColor).toBe("transparent");
+		const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+		// Before the glass has measured, the Board is inset by the bar's room,
+		// and the field it keeps tucked stays tucked just under the glass.
+		expect(boardScroller(tree).props.contentInset).toMatchObject({ top: 64 });
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: height - 64, animated: false });
+		measureGlass(tree, 64 + 48);
+		expect(boardScroller(tree).props.contentInset).toMatchObject({ top: 112 });
+		expect(boardScroller(tree).props.scrollIndicatorInsets).toMatchObject({ top: 112 });
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: height - 112, animated: false });
+		// A chip's section lands just under the glass.
+		act(() =>
+			tree.root
+				.find((node) => node.props.testID === "project-section:projects" && node.props.onLayout)
+				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 752, width: 390, height: 48 } } }),
+		);
+		pressChip(tree, "Projects, 4 projects");
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 752 - 112, animated: true });
+		// Search brings the field down under the glass.
+		act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -112, animated: true });
+	});
+
+	it("keeps the opaque bar and the chips above the scroller without the glass, following Reduce Transparency", async () => {
+		// The Board as it is where the device has no glass.
+		const layoutOf = async () => {
+			const id = hubId();
+			adoptedAnHourAgo(id);
+			connect(id, hub(fleet).client, "ready");
+			const nav = navigation();
+			const tree = await mount(nav);
+			await act(async () => {});
+			const { contentOffset, contentInset, scrollIndicatorInsets, contentContainerStyle } = boardScroller(tree).props;
+			return {
+				nav,
+				tree,
+				layout: {
+					scroller: { contentOffset, contentInset, scrollIndicatorInsets, contentContainerStyle },
+					header: glassBlock(tree).props.style,
+					glass: glassBlock(tree).findAll((node) => String(node.type) === "GlassView").length,
+					chipsInScroller: boardScroller(tree).findAll((node) => node.props.testID === "chips").length,
+					chipsFill: tree.root.find((node) => node.props.testID === "chips").props.style.backgroundColor,
+				},
+			};
+		};
+		const withoutGlass = await layoutOf();
+		expect(withoutGlass.layout.glass).toBe(0);
+		expect(withoutGlass.layout.chipsInScroller).toBe(0);
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { nav, layout } = await layoutOf();
+		expect(headerOptions(nav)).toMatchObject({ headerTransparent: false, scrollEdgeEffects: { top: "automatic" } });
+		expect(layout).toEqual(withoutGlass.layout);
+	});
+
+	it("starts the Board just under a glass already known when it mounts", async () => {
+		// A Board already following Reduce Transparency makes it known to the
+		// next one from its first render.
+		const first = await mountOnGlass();
+		const { tree, scrollTo } = await mountOnGlass();
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 112, animated: false });
+		act(() => first.tree.unmount());
+	});
+
+	it("reads Live's next page by what shows below the glass", async () => {
+		const { tree, fake } = await mountOnGlass({
+			...fleet,
+			live: [[failing, working], [finished]],
+			catalogs: { projects: [evenerProject()] },
+		});
+		const scroller = boardScroller(tree);
+		act(() => {
+			scroller.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+			tree.root
+				.find((node) => node.props.testID === "live-block")
+				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 1600 } } });
+		});
+		await settle();
+		const scrollAt = (y: number) =>
+			act(() =>
+				scroller.props.onScroll({
+					nativeEvent: {
+						contentOffset: { x: 0, y },
+						contentSize: { width: 390, height: 1600 },
+						layoutMeasurement: { width: 390, height: 700 },
+					},
+				}),
+			);
+		// Below the glass shows 700 - 112 of the Board from 112 past the
+		// scroller's offset: two screens of that from 300 end short of Live's.
+		scrollAt(300);
+		await settle();
+		expect(liveReads(fake)).toEqual([0]);
+		scrollAt(312);
+		await settle();
+		expect(liveReads(fake)).toEqual([0, 2]);
+	});
+
+	it("lands Search's reveal under the glass the chips leave when search starts", async () => {
+		const { tree, nav, scrollTo } = await mountOnGlass();
+		act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -112, animated: true });
+		// The field's focus starts search, which hides the chips: the glass
+		// shrinks to the bar while the reveal is still under way.
+		searchField(tree).focus();
+		// The reveal is still under way, reporting where it has got to so far.
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: {
+					contentOffset: { x: 0, y: -40 },
+					contentSize: { width: 390, height: 1600 },
+					layoutMeasurement: { width: 390, height: 700 },
+				},
+			}),
+		);
+		measureGlass(tree, 64);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -64, animated: true });
+	});
+
+	it("tucks the field back under the glass on Cancel as the chips return", async () => {
+		const { tree, scrollTo } = await mountOnGlass();
+		searchField(tree).focus();
+		measureGlass(tree, 64);
+		listEvent(tree, "onMomentumScrollEnd");
+		searchField(tree).cancel();
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 64, animated: true });
+		measureGlass(tree, 64 + 48);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 112, animated: true });
+	});
+
+	it("reveals a project from search a third of the way down what shows below the glass", async () => {
+		const { tree, scrollTo } = await mountOnGlass({
+			...fleet,
+			catalogs: { projects: [evenerProject()] },
+			projectPages: { "evener:current": [localWork] },
+		});
+		layOutAt(boardScroller(tree), 0, 600);
+		await revealFromSearch(tree);
+		await settle();
+		// Leaving search brings the chips back to the glass.
+		measureGlass(tree, 64 + 48);
+		layOutAt(revealTarget(tree), 60, 48);
+		layOutAt(projectSection(tree, "projects"), 900, 400);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 112 - 48) - 112, animated: true });
+	});
 });

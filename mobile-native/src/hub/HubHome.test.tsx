@@ -239,7 +239,7 @@ it("says the hub is connected and lists its pages", async () => {
 	for (const label of ROWS) expect(find(label)).not.toBeNull();
 });
 
-it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
+it("opens today's screens inside the sheet, so Back returns to the Hub (audit M10)", async () => {
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Keyboard shortcuts", "KeybindingPreferences"],
@@ -248,13 +248,10 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	];
 	for (const [label, screen] of interim) {
 		press(label);
-		expect(root.dispatch).toHaveBeenLastCalledWith({
-			type: "REPLACE",
-			payload: { name: screen, params: { hubId: "hub-1" } },
-		});
+		expect(sheet.navigate).toHaveBeenLastCalledWith(screen, { hubId: "hub-1" });
 	}
+	expect(root.dispatch).not.toHaveBeenCalled();
 	expect(root.navigate).not.toHaveBeenCalled();
-	expect(sheet.navigate).not.toHaveBeenCalled();
 });
 
 /** A hub with `count` plugins installed, which can say its plugins changed. */
@@ -322,13 +319,13 @@ it("opens In-app alerts inside the sheet, between Display and Hubs", async () =>
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
 	status.line = "Reconnecting…";
-	const { tree, root, find, press } = await mount();
+	const { tree, sheet, find, press } = await mount();
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
-	// A row still leaving for today's screen works while the connection is down.
+	// A row opening today's screen still works while the connection is down.
 	press("Hub settings");
-	expect(root.dispatch).toHaveBeenCalledTimes(1);
+	expect(sheet.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: "hub-1" });
 });
 
 it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", async () => {
@@ -341,6 +338,16 @@ it("names this app's version in About", async () => {
 	const { tree } = await mount();
 	const about = tree.root.findByProps({ accessibilityLabel: "Evener for iPhone, 0.1.0 (5)" });
 	expect(about).toBeTruthy();
+});
+
+it("sets its status line as the prototype does: 14pt, 20pt in from the edge (audit L1)", async () => {
+	const { tree } = await mount({ check: UP_TO_DATE });
+	const line = tree.root.find(
+		(node) => String(node.type) === "Text" && node.props.children === "Connected · evener 0.9.412 · up to date",
+	);
+	expect(line.props.style).toMatchObject({ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 6 });
+	// At the prototype's 14: spec 16.2 names no role for this line.
+	expect(line.props.style).toMatchObject({ fontSize: 14 });
 });
 
 it("says the hub is up to date, and offers no update", async () => {

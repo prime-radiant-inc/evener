@@ -71,11 +71,14 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 			/>
 			<GroupFooter>For what agents write: messages, plans and documents.</GroupFooter>
 			{unsaved === "readingFont" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
-			<GroupLabel>Default detail level</GroupLabel>
 			{transcript?.support === "unsupported" ? (
-				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
+				<>
+					<GroupLabel>Default detail level</GroupLabel>
+					<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
+				</>
 			) : (
 				<>
+					{/* The row names the setting; a label above would say it twice. */}
 					<Group>
 						<Row
 							label="Default detail level"

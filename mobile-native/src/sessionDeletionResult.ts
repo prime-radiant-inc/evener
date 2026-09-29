@@ -1,11 +1,13 @@
+import { isPlainObject } from "@evener/appwire-client";
+
 export type SessionDeletionResult = { kind: "deleted" | "missing" } | { kind: "skipped"; reason: string };
 
 export function localSessionId(ref: string): string | null {
 	return /^local:([A-Za-z0-9]{22})$/.exec(ref)?.[1] ?? null;
 }
 function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("Invalid session deletion result.");
-	return value as Record<string, unknown>;
+	if (!isPlainObject(value)) throw Error("Invalid session deletion result.");
+	return value;
 }
 export function decodeSessionDeletionResult(value: unknown): SessionDeletionResult {
 	const result = record(value);

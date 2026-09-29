@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -80,7 +81,13 @@ type hubModel struct {
 	frames *hubFrameFeed
 	// dialHub opens a replacement connection after this one dies. A model
 	// without one reports the loss and tells the user to restart instead.
-	dialHub          hubDialer
+	dialHub hubDialer
+	// lifecycleCtx is owned by Run and canceled when the TUI exits. Reconnect
+	// backoff and dial work hang off it so a quit does not leave a retry to
+	// dial (and, with autostart on, launch a hub) after the model is gone. A
+	// nil value means no lifetime owner — models built outside Run, and tests,
+	// keep retrying as before.
+	lifecycleCtx     context.Context
 	connectionLost   bool
 	reconnectAttempt int
 	hubURL           string
@@ -375,6 +382,16 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 		client.SetPendingCoordinator(model.pending)
 	}
 	return model
+}
+
+// reconnectContext is the context reconnect work runs under. A model with no
+// lifetime owner dials and backs off under a background context, which is the
+// uncancelable behavior a bare model had before Run wired its own.
+func (m *hubModel) reconnectContext() context.Context {
+	if m.lifecycleCtx == nil {
+		return context.Background()
+	}
+	return m.lifecycleCtx
 }
 
 func newHubFilterInput() textinput.Model {

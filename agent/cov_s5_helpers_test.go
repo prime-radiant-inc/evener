@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -136,6 +137,27 @@ func TestS5Cov_ProviderCauseFromError(t *testing.T) {
 	cause := providerCauseFromError(le, "gpt-5")
 	if cause == nil || cause.Provider != "openai" || cause.Model != "gpt-5" || cause.Status != 429 {
 		t.Errorf("provider cause = %+v", cause)
+	}
+}
+
+// A sign-in ConfigurationError names its instance and classifies as
+// signInRequired, so a failed turn can say "<instance> sign-in expired" rather
+// than record no cause and read as a generic Evener configuration error (#2705).
+func TestS5Cov_ProviderCauseFromError_SignInRequired(t *testing.T) {
+	t.Parallel()
+	signIn := &llm.ConfigurationError{
+		Message:          `instance "openai-codex": openai login required`,
+		Cause:            llm.ErrSignInRequired,
+		ProviderInstance: "openai-codex",
+	}
+	// Wrapped: the client and transport may wrap the Apply error on the way up.
+	cause := providerCauseFromError(fmt.Errorf("dispatch: %w", signIn), "gpt-5")
+	if cause == nil || cause.Kind != "signInRequired" || cause.Provider != "openai-codex" {
+		t.Fatalf("sign-in cause = %+v", cause)
+	}
+	// A ConfigurationError without the sentinel stays "source unknown".
+	if providerCauseFromError(&llm.ConfigurationError{Message: "bad config", ProviderInstance: "x"}, "m") != nil {
+		t.Fatal("plain ConfigurationError must not produce a cause")
 	}
 }
 

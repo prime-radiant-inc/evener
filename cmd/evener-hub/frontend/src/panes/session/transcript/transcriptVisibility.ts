@@ -32,7 +32,7 @@ export const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
 // guarantees is never blank. Left unhandled, that made Session.tsx's own
 // EmptyTranscript unreachable for any real dormant session (kata bz2z): the
 // transcript branch rendered instead, with nothing in it to show but that
-// one collapsed "System prompt · Nk chars" disclosure - real information,
+// one collapsed "System prompt · NK chars" disclosure - real information,
 // but not a conversation, and not the invitation to start one. A
 // transcript whose only turn is the prelude counts as empty for exactly
 // the reason zero turns does: nothing has happened here yet that a user

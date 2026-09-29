@@ -36,23 +36,6 @@ var (
 	navigationTargetKindType = reflect.TypeFor[appwire.NavigationTargetKind]()
 )
 
-// fieldUnionArmTypes indexes appwire.FieldUnions by the union's reflect.Type,
-// so the registry and typeExpr can recognize a field-union type and spell it as
-// the union over its arms. A union type is registered by its own zero value;
-// the value's type is what a field declares.
-var fieldUnionArmTypes = func() map[reflect.Type][]reflect.Type {
-	unions := map[reflect.Type][]reflect.Type{}
-	for _, union := range appwire.FieldUnions {
-		unionType := reflect.TypeOf(union.Union)
-		arms := make([]reflect.Type, 0, len(union.Arms))
-		for _, arm := range union.Arms {
-			arms = append(arms, reflect.TypeOf(arm))
-		}
-		unions[unionType] = arms
-	}
-	return unions
-}()
-
 // isOpaqueStruct reports whether t is a struct-kind type the registry must
 // not walk into and independently register — today, only time.Time (its
 // fields are encoding/json-invisible implementation detail: unexported wall/
@@ -317,15 +300,6 @@ func writeFieldDoc(b *strings.Builder, doc string) {
 // this function's.
 func typeExpr(t reflect.Type) string {
 	switch {
-	case fieldUnionArmTypes[t] != nil:
-		// A registered field union renders as the union over its arm names; the
-		// union type itself is emitted only through those arms.
-		arms := fieldUnionArmTypes[t]
-		names := make([]string, 0, len(arms))
-		for _, arm := range arms {
-			names = append(names, arm.Name())
-		}
-		return strings.Join(names, " | ")
 	case t == threadItemEventKindType:
 		return "ThreadItemEventKind"
 	case t == navigationTargetKindType:
@@ -349,11 +323,6 @@ func typeExpr(t reflect.Type) string {
 			return "string" // []byte marshals as a base64 JSON string
 		}
 		elem := typeExpr(t.Elem())
-		if fieldUnionArmTypes[t.Elem()] != nil {
-			// A union inside an array needs its parentheses: `A | B[]` would bind
-			// as `A | (B[])`.
-			elem = "(" + elem + ")"
-		}
 		return elem + "[]"
 	case t.Kind() == reflect.Map:
 		return "Record<" + typeExpr(t.Key()) + ", " + typeExpr(t.Elem()) + ">"
@@ -442,16 +411,6 @@ func newRegistry() *registry {
 // fields to discover further nested named types transitively. t is nil for
 // a notification payload with no dedicated Go type.
 func (r *registry) addNamed(name string, t reflect.Type) {
-	if arms, union := fieldUnionArmTypes[t]; union {
-		// A registered field union is rendered as the union over its arms: emit
-		// each arm as its own interface and never emit the union type itself as a
-		// merged shape (its embedded pointers would flatten every variant's fields
-		// into one interface with no discriminator).
-		for _, arm := range arms {
-			r.addNamed(arm.Name(), arm)
-		}
-		return
-	}
 	if prev, ok := r.types[name]; ok {
 		if prev == t {
 			return

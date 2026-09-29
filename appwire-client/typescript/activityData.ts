@@ -45,7 +45,7 @@ export function isActivityFailure(outcome: string | undefined, status: string | 
 // command-outcome statuses, whose 23-char snake_case form ellipsizes
 // mid-word in the rail's narrow column and disagrees with the words the
 // notification card already ruled for them ("Command failed" /
-// "Command killed", steeringClassify's terminalJobTitle). Those two, and
+// "Command killed", steeringNotifications's terminalJobTitle). Those two, and
 // only those, render under the card's display words. A legacy pre-split
 // "failed" record joins them when its reason names the command's own
 // outcome, so durable history reads the same across every surface.

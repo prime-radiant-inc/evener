@@ -1,17 +1,21 @@
 // A step's evidence, open under its line in a run (spec 8.2): command output
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
-// with the web's add and delete washes, the file a write wrote, an error, and
-// the images the step produced.
+// with the web's add and delete washes, the file a write wrote, a task list,
+// an error, and the images the step produced.
+import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import { AnsiOutputLine } from "../AnsiOutputLine";
+import { MarkdownResponse } from "../MarkdownResponse";
+import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "../taskStatus";
 import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
+import { type ChecklistTask, EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
 import { LogViewer } from "./LogViewer";
+import { stepWords } from "./transcriptRows";
 
 type Palette = ReturnType<typeof useColors>["palette"];
 
@@ -79,6 +83,50 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 	);
 }
 
+// A task_list step's tasks as the Tasks sheet draws them, the note this call
+// added under its task: the first 40, as output shows its first 40 lines, then
+// the rest on request.
+function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const [all, setAll] = useState(false);
+	const shown = all ? tasks : tasks.slice(0, EVIDENCE_PREVIEW_LINES);
+	const showAll = `Show all ${tasks.length} tasks`;
+	return (
+		<View style={{ gap: 6 }}>
+			{shown.map((task) => (
+				<View key={task.id} style={{ gap: 2 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					>
+						{`${TASK_STATUS_GLYPH[task.status]} ${task.description}`}
+					</Text>
+					{task.note ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+						>
+							{task.note}
+						</Text>
+					) : null}
+				</View>
+			))}
+			{shown.length < tasks.length ? (
+				<Pressable accessibilityRole="button" accessibilityLabel={showAll} onPress={() => setAll(true)}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}
+					>
+						{showAll}
+					</Text>
+				</Pressable>
+			) : null}
+		</View>
+	);
+}
+
 function diffLineStyle(line: string, palette: Palette) {
 	if (line.startsWith("+++") || line.startsWith("---")) return { color: palette.inkLow };
 	if (line.startsWith("+")) return { color: palette.inkHi, backgroundColor: palette.diffAdd };
@@ -113,7 +161,7 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 	);
 }
 
-function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }) {
+export function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	switch (evidence.kind) {
@@ -130,6 +178,83 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 					{"Wrote "}
 					<Text style={{ ...machineText(scale), color: palette.inkMid }}>{evidence.path}</Text>
 				</Text>
+			);
+		case "exit":
+			return (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.dangerInk }}
+				>
+					{`Exited ${evidence.code}`}
+				</Text>
+			);
+		case "note":
+			return (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				>
+					{evidence.text}
+				</Text>
+			);
+		case "page":
+			return (
+				<View style={{ gap: 4 }}>
+					{evidence.url || evidence.bytes !== undefined ? (
+						<View style={{ flexDirection: "row", gap: 8, alignItems: "baseline" }}>
+							{evidence.url ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									numberOfLines={1}
+									style={{ ...machineText(scale), color: palette.inkMid, flexShrink: 1 }}
+								>
+									{evidence.url}
+								</Text>
+							) : null}
+							{evidence.bytes !== undefined ? (
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+								>
+									{formatByteCount(evidence.bytes)}
+								</Text>
+							) : null}
+						</View>
+					) : null}
+					<Text
+						allowFontScaling={allowFontScaling}
+						selectable
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					>
+						{evidence.text}
+					</Text>
+				</View>
+			);
+		case "markdown":
+			return (
+				<View style={{ gap: 4 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.inkHi }}
+					>
+						{evidence.title}
+					</Text>
+					<MarkdownResponse markdown={evidence.markdown} />
+				</View>
+			);
+		case "tasks":
+			return <Checklist tasks={evidence.tasks} />;
+		case "json":
+			return (
+				<View style={{ gap: 4 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+					>
+						{evidence.label}
+					</Text>
+					<Output text={evidence.text} lines={lineCount(evidence.text)} title={`${title}: ${evidence.label}`} />
+				</View>
 			);
 		case "error":
 			return (
@@ -164,11 +289,14 @@ export function StepEvidence({
 	evidence: readonly Evidence[];
 	hubId: string;
 }) {
-	const title = step.detail.description || step.label;
+	const title = step.detail.description || stepWords(step);
 	return (
 		<View style={{ gap: 8 }}>
-			{evidence.map((item) => (
-				<EvidenceView key={item.kind} evidence={item} title={title} />
+			{evidence.map((item, index) => (
+				// Two pieces can share a kind (a tool's arguments and result),
+				// and a step's evidence is a fixed list, so its place is its key.
+				// biome-ignore lint/suspicious/noArrayIndexKey: fixed list, see above
+				<EvidenceView key={`${item.kind}:${index}`} evidence={item} title={title} />
 			))}
 			{step.images?.length ? <TranscriptImages images={step.images} hubId={hubId} /> : null}
 		</View>

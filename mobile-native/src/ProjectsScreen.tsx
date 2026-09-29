@@ -1,7 +1,16 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, View } from "react-native";
+import {
+	type ReactElement,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
+import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -19,6 +28,7 @@ import {
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -60,10 +70,17 @@ export function PageList<T>({
 	organization,
 	organizationHubId,
 	revealRef,
+	chip,
+	chipLabel,
 }: {
 	header?: ReactElement;
 	organizationHubId?: string;
 	revealRef?: string;
+	/** A row's trailing chip, beside its title (the subagent count). */
+	chip?: (row: T) => ReactNode;
+	/** The chip's text, for the row's accessibilityLabel: a Pressable override
+	 * hides the chip's own text from VoiceOver. Undefined when there is none. */
+	chipLabel?: (row: T) => string | undefined;
 	pages: NavigationPages<T>;
 	ready: boolean;
 	rowKey: (row: T) => string;
@@ -158,24 +175,19 @@ export function PageList<T>({
 	access.current = { rowKey, childRows };
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
-	const [refreshing, setRefreshing] = useState(false);
 	const [loadingMore, setLoadingMore] = useState(false);
+	// iOS ignores accessibilityLiveRegion, so announce the longer list's arrival
+	// there; Android reads the polite region on its own, and announcing too would
+	// say it twice. loadingMore starts false, so the first render stays quiet (#2903).
+	useEffect(() => {
+		if (loadingMore && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility("Loading more…");
+	}, [loadingMore]);
 	const revealEpoch = useRef(revealRequest);
 	revealEpoch.current = revealRequest;
 	function refreshList() {
 		if (revealRef) setRevealRequest((value) => value + 1);
 		void actions?.reconcile();
 	}
-	const refreshPages = useCallback(async () => {
-		if (!ready) return;
-		setRefreshing(true);
-		try {
-			if (actions) await actions.reconcile();
-			else await pages.refresh();
-		} finally {
-			setRefreshing(false);
-		}
-	}, [actions, pages, ready]);
 	const requestMore = useCallback(
 		(allowError = false) => {
 			const current = pages.getSnapshot();
@@ -302,10 +314,6 @@ export function PageList<T>({
 				}}
 				data={rows}
 				keyExtractor={({ item }) => rowKey(item)}
-				refreshing={refreshing}
-				onRefresh={() => {
-					void refreshPages();
-				}}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}
@@ -345,13 +353,18 @@ export function PageList<T>({
 						<View style={styles.row}>
 							<Pressable
 								accessibilityRole="button"
-								accessibilityLabel={`Open ${title(item)}`}
+								accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
 								accessibilityState={{ selected: rowKey(item) === revealRef }}
 								disabled={!ready}
 								onPress={() => open(item)}
 								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
 							>
-								<Copy>{title(item)}</Copy>
+								<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+									<View style={{ flex: 1, minWidth: 0 }}>
+										<Copy>{title(item)}</Copy>
+									</View>
+									{chip?.(item)}
+								</View>
 								<Copy muted>{detail(item)}</Copy>
 							</Pressable>
 							{actions && organization(item, depth) ? (
@@ -620,7 +633,9 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 								}
 					}
 					childRows={(row) => row.children ?? []}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					omitted={(row) => row.omitted_descendants ?? 0}
+					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) =>
 						`${row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state}${row.branch ? ` · ${row.branch}` : ""}`
@@ -661,15 +676,20 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					{belongs ? activeProfile?.name : "Disconnected hub"}
 					{location.params.tier ? ` · ${location.params.tier}` : ""}
 				</Copy>
+				{(location.revealRef ?? location.ref) !== location.ref ? (
+					<Copy muted>Showing the row that owns this session</Copy>
+				) : null}
 			</View>
 			{pages ? (
 				<PageList
 					pages={pages}
 					ready={state === "ready"}
-					revealRef={location.ref}
+					revealRef={location.revealRef ?? location.ref}
 					rowKey={sessionRef}
 					childRows={sessionChildren}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					omitted={(row) => row.omitted_descendants ?? 0}
+					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty="No sessions in this location."

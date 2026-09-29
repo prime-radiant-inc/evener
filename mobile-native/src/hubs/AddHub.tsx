@@ -7,8 +7,8 @@ import { getStringAsync } from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
 import { AppState, Linking, Text, TextInput, type TextInputProps, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import { fonts } from "../design/tokens";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
+import { fonts, space, uiType } from "../design/tokens";
+import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type PairingTarget, pairingFrom, suggestedHubName } from "./pairing";
 
@@ -74,12 +74,10 @@ export function AddHub({
 	if (review)
 		return (
 			<GroupedPage>
-				<GroupLabel>Pair with</GroupLabel>
-				<Group>
+				<Group label="Pair with">
 					<MachineRow text={review.target.origin} />
 				</Group>
-				<GroupLabel>Name</GroupLabel>
-				<Group>
+				<Group label="Name">
 					<Field
 						label="Name"
 						value={review.name}
@@ -87,7 +85,6 @@ export function AddHub({
 						onChangeText={(name) => setReview({ ...review, name })}
 					/>
 				</Group>
-				<GroupGap />
 				<Group>
 					<Row
 						label={saving ? "Connecting…" : "Connect"}
@@ -213,8 +210,7 @@ function Paste({ onPairing }: { onPairing(target: PairingTarget): void }) {
 
 	return (
 		<GroupedPage>
-			<GroupLabel>Pairing link</GroupLabel>
-			<Group>
+			<Group label="Pairing link">
 				<Field
 					label="Pairing link"
 					value={link}
@@ -242,8 +238,7 @@ function Address({ onPairing }: { onPairing(target: PairingTarget): void }) {
 	const [token, setToken] = useState("");
 	return (
 		<GroupedPage>
-			<GroupLabel>Address</GroupLabel>
-			<Group>
+			<Group label="Address">
 				<Field
 					label="Address"
 					value={address}
@@ -252,11 +247,9 @@ function Address({ onPairing }: { onPairing(target: PairingTarget): void }) {
 					onChangeText={setAddress}
 				/>
 			</Group>
-			<GroupLabel>Token (optional)</GroupLabel>
-			<Group>
+			<Group label="Token (optional)">
 				<Field label="Token (optional)" value={token} secure onChangeText={setToken} />
 			</Group>
-			<GroupGap />
 			<Group>
 				<Row
 					label="Continue"
@@ -292,7 +285,12 @@ function Field({
 			autoCorrect={false}
 			secureTextEntry={secure}
 			placeholderTextColor={palette.inkLow}
-			style={{ minHeight: 44, paddingHorizontal: 16, color: palette.inkHi, fontSize: 17 * scale }}
+			style={{
+				minHeight: 44,
+				paddingHorizontal: space.rowInset,
+				color: palette.inkHi,
+				fontSize: uiType.listRow.fontSize * scale,
+			}}
 			{...input}
 		/>
 	);
@@ -303,7 +301,14 @@ function MachineRow({ text }: { text: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 16, paddingVertical: 11 }}>
+		<View
+			style={{
+				minHeight: 44,
+				justifyContent: "center",
+				paddingHorizontal: space.rowInset,
+				paddingVertical: space.rowPadding,
+			}}
+		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ color: palette.inkMid, fontFamily: fonts.mono, fontSize: 15 * scale, lineHeight: 20 * scale }}

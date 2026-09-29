@@ -3,7 +3,7 @@
 // Only native edges are mocked.
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { ActionSheetIOS, Platform } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
@@ -89,7 +89,7 @@ const mounted: ReactTestRenderer[] = [];
 
 /** The screen's side: a controller over a hub that saves and removes, and the
  * host it provides under the session's key. */
-function provide(current: Session, { removeFails = false } = {}) {
+function provide(current: Session, { removeThrows }: { removeThrows?: string } = {}) {
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const client = {
 		request: async (method: string, params: Record<string, unknown>) => {
@@ -99,7 +99,7 @@ function provide(current: Session, { removeFails = false } = {}) {
 					note: params.note,
 					receipt: { projectionState: "pending" },
 				} as unknown as NotesHumanSetResponse;
-			if (method === "urls/remove" && removeFails) throw new Error("hub unreachable");
+			if (method === "urls/remove" && removeThrows) throw new Error(removeThrows);
 			return {};
 		},
 	};
@@ -234,6 +234,20 @@ describe("your note (spec 8.8)", () => {
 		expect(renderedText(tree)).toContain("Saves in 10 seconds, or when you close this.");
 	});
 
+	it("announces each change to the status line, since iOS ignores accessibilityLiveRegion (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		provide(session());
+		const tree = sheet();
+		// The standing explanation is the first render, not a change: quiet.
+		expect(announce).not.toHaveBeenCalled();
+		// Editing still shows the same explanation, so still nothing to say.
+		act(() => editor(tree)?.props.onChangeText("draft"));
+		expect(announce).not.toHaveBeenCalled();
+		act(() => editor(tree)?.props.onBlur());
+		expect(announce).toHaveBeenCalledWith("Saves in 10 seconds, or when you close this.");
+	});
+
 	it("says the agent is told when the agent is working", () => {
 		provide(session({ status: { type: "active" } as ThreadModel["status"] }));
 		expect(renderedText(sheet())).toContain("Your note stays on this session. The agent is told when it changes.");
@@ -332,8 +346,7 @@ describe("links", () => {
 			hubId: HUB,
 			sessionRef: REF,
 			path: "docs/plan.md",
-			reviewRef: REF,
-			reviewTitle: "Fix race",
+			sessionTitle: "Fix race",
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
 		expect(browser.openBrowserAsync).not.toHaveBeenCalled();
@@ -400,12 +413,45 @@ describe("links", () => {
 	});
 
 	it("says so in the sheet when a link couldn't be removed", async () => {
-		provide(session({ sessionUrls: [web] }), { removeFails: true });
+		provide(session({ sessionUrls: [web] }), { removeThrows: "hub unreachable" });
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
 		await flush();
 		expect(renderedText(tree)).toContain("Couldn't remove that link.");
+	});
+
+	it("drops a link the hub already removed, rather than leaving it listed (RoboRev #2769)", async () => {
+		const { requests } = provide(session({ sessionUrls: [web] }), { removeThrows: 'no URL entry with id "u1"' });
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await flush();
+		expect(requests.filter((request) => request.method === "urls/remove")).toHaveLength(1);
+		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(renderedText(tree)).not.toContain("example.com");
+		expect(symbols(tree)).toEqual([]);
+	});
+
+	it("stops hiding an id the session no longer lists, so a re-added link shows (RoboRev #2769)", async () => {
+		provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await flush();
+		expect(symbols(tree)).toEqual([]);
+		const removedOwner = owner;
+		// The hub re-reads with the row gone, then lists it again.
+		act(() => {
+			provide(session({ sessionUrls: [] }));
+		});
+		const emptyOwner = owner;
+		act(() => {
+			provide(session({ sessionUrls: [web] }));
+		});
+		expect(symbols(tree)).toEqual(["globe"]);
+		notesHosts.release(sheetKey(HUB, REF), removedOwner);
+		notesHosts.release(sheetKey(HUB, REF), emptyOwner);
 	});
 
 	it("removes a link on a full swipe left, with the same toast as its menu (spec 8.8)", async () => {

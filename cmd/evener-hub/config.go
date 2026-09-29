@@ -453,6 +453,17 @@ func decodeConfig(name, data string) (Config, error) {
 	if decodeErr != nil {
 		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
 	}
+	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
+	// fields (the type documents them) so a hub.toml the bootstrap build wrote
+	// still loads: the reserved-record rule below refuses a reserved field this
+	// build does not decode, and the removed first-contact caller persisted those
+	// keys. Drop them from the loaded document here, so no in-memory record
+	// carries them and every rewrite derived from this config re-emits the
+	// record without them — the next write drops the keys, rather than the
+	// preservation rule keeping them alive forever.
+	for hostName, record := range cfg.HostRecords {
+		cfg.HostRecords[hostName] = record.withoutRetiredFencingFields()
+	}
 	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
 	// integer as a nanosecond count without error, so `daemon_idle_timeout =
 	// 3600` (plausible shorthand for one hour) would silently arm a 3.6µs idle

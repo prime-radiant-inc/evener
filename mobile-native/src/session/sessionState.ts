@@ -3,7 +3,7 @@
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
 import type { EvenerDelegateInfo, ThreadModel } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import { subagentState } from "../subagents/subagentModel";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration } from "./format";
 
@@ -67,15 +67,13 @@ export interface SubagentTally {
 
 /** Running, failed or done, as the hub's job counts are (spec 9), over the
  * subagents this session has loaded: S3's fallback until the hub tallies the
- * whole tree. */
+ * whole tree. Classified by the Subagents list's own `subagentState`, so the
+ * chip's "N failed" and the list's failures never disagree (issue #2684). */
 export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
 	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
 	for (const delegate of delegates ?? []) {
 		tally.total += 1;
-		const tone = projectDelegateEntry(delegate).tone;
-		if (tone === "running") tally.running += 1;
-		else if (tone === "failed") tally.failed += 1;
-		else tally.done += 1;
+		tally[subagentState(delegate)] += 1;
 	}
 	return tally;
 }

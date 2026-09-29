@@ -1,10 +1,15 @@
 // The command catalog: the plugin and user-global slash commands a hub offers
-// (evener/command/list), read once per connection and re-read when the hub
-// reports a plugin change, plus the per-session view of it - the commands a
-// session's loaded plugins can run, merged with the skills its diagnostics
-// advertise - which is what a composer's slash menu shows. Both are
-// framework-free store factories (frameworkFreeStore.ts); each app builds the
-// instances it wires to its view layer. Pure logic - no DOM, no React.
+// (evener/command/list), re-read when the hub reports a plugin change, plus
+// the per-session view of it - the commands a session's loaded plugins can
+// run, merged with the skills its diagnostics advertise - which is what a
+// composer's slash menu shows. Both are framework-free store factories
+// (frameworkFreeStore.ts); each app builds the instances it wires to its view
+// layer. Pure logic - no DOM, no React.
+//
+// The port is Pick<AppwireClient, "request" | "onNotification">, so a catalog
+// cannot observe connections itself: the FIRST read per connection ("read
+// once per connection") is the host's to trigger - the web app's
+// stores/commandCatalog.ts does it on every ready, client-wired transition.
 //
 // createCommandCatalog is the hub-wide catalog, unfiltered, for a host that
 // already holds each session's diagnostics and projects the catalog through

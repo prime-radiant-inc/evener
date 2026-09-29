@@ -552,3 +552,127 @@ func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T)
 		t.Fatalf("seeded turns %v do not carry the persisted reserved id %q", turnIDs(seeded), reserved)
 	}
 }
+
+// A client talking to the daemon directly can send before too: the page ends
+// just before it, the cursor keeping its identity fence.
+func TestAppWireTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_before",
+		schema.NewTurn(schema.TurnUserInput, llm.User("a")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("b")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("c")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("d")),
+	)
+	srv := st.srv
+	wide, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:th_before", IncludeTurns: true, ItemLimit: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var boundary *appwire.ThreadItemPosition
+	for _, turn := range wide.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.Text == "c" {
+				boundary = item.Position
+			}
+		}
+	}
+	if boundary == nil {
+		t.Fatalf("wide read has no positioned c: %+v", wide.Thread.Turns)
+	}
+	latest, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:th_before", IncludeTurns: true, ItemLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := func(before *appwire.ThreadItemPosition) string {
+		t.Helper()
+		older, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: "local:th_before", Cursor: latest.OlderCursor, ItemLimit: 1, Before: before,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(older.Data) != 1 || len(older.Data[0].Items) != 1 {
+			t.Fatalf("older page = %+v, want one item", older.Data)
+		}
+		return older.Data[0].Items[0].Text
+	}
+	if got := page(boundary); got != "b" {
+		t.Fatalf("page before c = %q, want b", got)
+	}
+	if got := page(nil); got != "c" {
+		t.Fatalf("page without before = %q, want c", got)
+	}
+	// Without a cursor the daemon mints one from the thread's identity.
+	cursorless, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:th_before", ItemLimit: 1, Before: boundary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cursorless.Data) != 1 || len(cursorless.Data[0].Items) != 1 || cursorless.Data[0].Items[0].Text != "b" {
+		t.Fatalf("cursorless page before c = %+v, want b", cursorless.Data)
+	}
+	_, err = srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:th_before", ItemLimit: 1, Before: &appwire.ThreadItemPosition{Entry: boundary.Entry + 10_000},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("cursorless page before a future position: error = %T %v, want a wire error", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.HistoryReadErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("cursorless page before a future position: error data = %#v, want stale cursor", wireErr.Data)
+	}
+}
+
+// A before inside a compacted region pages what the transcript still holds
+// there: compaction adds a summary entry, and the entries it summarized keep
+// their positions.
+func TestAppWireTurnsListBeforeInsideACompactedRegion(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_compacted",
+		schema.NewTurn(schema.TurnUserInput, llm.User("a")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("b")),
+		schema.Turn{Kind: schema.TurnSummary, Message: llm.Assistant("summary of a and b")},
+		schema.NewTurn(schema.TurnUserInput, llm.User("c")),
+	)
+	srv := st.srv
+	wide, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:th_compacted", IncludeTurns: true, ItemLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := map[string]*appwire.ThreadItemPosition{}
+	for _, turn := range wide.Thread.Turns {
+		for _, item := range turn.Items {
+			key := item.Text
+			if item.EventKind == appwire.ThreadItemEventKindCompaction {
+				key = "summary"
+			}
+			positions[key] = item.Position
+		}
+	}
+	page := func(before string) []string {
+		t.Helper()
+		boundary := positions[before]
+		if boundary == nil {
+			t.Fatalf("no positioned %q in %+v", before, wide.Thread.Turns)
+		}
+		older, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: "local:th_compacted", ItemLimit: 1, Before: boundary,
+		})
+		if err != nil {
+			t.Fatalf("page before %s: %v", before, err)
+		}
+		var texts []string
+		for _, turn := range older.Data {
+			for _, item := range turn.Items {
+				texts = append(texts, item.Text)
+			}
+		}
+		return texts
+	}
+	// Inside the summarized region, and at the summary itself.
+	if got := page("b"); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("page before b = %v, want [a]", got)
+	}
+	if got := page("summary"); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("page before the summary = %v, want [b]", got)
+	}
+}

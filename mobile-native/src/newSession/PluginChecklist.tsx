@@ -13,7 +13,7 @@ import {
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import { useStore } from "zustand";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -82,12 +82,7 @@ export function PluginChecklist() {
 			))}
 			{groups.map((group) => (
 				<View key={group.marketplace ?? ""}>
-					{group.marketplace ? (
-						<GroupLabel machine>{group.marketplace}</GroupLabel>
-					) : (
-						<GroupLabel>Other plugins</GroupLabel>
-					)}
-					<Group>
+					<Group label={group.marketplace ?? "Other plugins"} machineLabel={Boolean(group.marketplace)}>
 						{group.plugins.map((plugin) => (
 							<PluginRow
 								key={plugin.name}

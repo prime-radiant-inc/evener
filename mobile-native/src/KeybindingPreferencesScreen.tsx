@@ -1,14 +1,6 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-	ActivityIndicator,
-	KeyboardAvoidingView,
-	Platform,
-	ScrollView,
-	TextInput,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -19,9 +11,10 @@ import {
 } from "./keybindingOfflineRecovery";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import type { Routes } from "./screens";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Spinner } from "./sheet/Spinner";
 
 function shortcutLabel(chord: string): string {
 	return chord.replaceAll("$mod", "Command / Control").replaceAll("Meta", "Command").replaceAll("Alt", "Option");
@@ -54,7 +47,7 @@ function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 export function KeybindingPreferencesScreen({
 	route,
 	navigation,
-}: NativeStackScreenProps<Routes, "KeybindingPreferences">) {
+}: NativeStackScreenProps<HubRoutes, "KeybindingPreferences">) {
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();
@@ -135,7 +128,7 @@ export function KeybindingPreferencesScreen({
 						turn the ? shortcut off.
 					</Copy>
 					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
-					{(!domain || domain.loading) && <ActivityIndicator accessibilityLabel="Loading keyboard shortcuts" />}
+					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
 					<ErrorMessage
 						message={
 							error ??

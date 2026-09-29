@@ -95,7 +95,12 @@ func runWith(cfg runConfig) int {
 		return 1
 	}
 
-	ctx := context.Background()
+	// Run owns this context. Reconnect backoff and dialing hang off it, so
+	// quitting the TUI cancels an in-flight retry instead of letting it dial
+	// (and, with autostart on, launch a hub) after the model is gone. A hub that
+	// was already launched is a detached child and is not tied to this context.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	hubConfig := hubstart.HubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
@@ -138,6 +143,7 @@ func runWith(cfg runConfig) int {
 	defer resetTerminalBg()
 
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
+	m.lifecycleCtx = ctx
 	m.frames = frames
 	m.dialHub = func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
 		replacement, frames, err := dialHub(ctx)

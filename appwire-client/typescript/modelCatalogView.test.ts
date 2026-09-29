@@ -106,13 +106,16 @@ describe("contextWindowLabel", () => {
     expect(contextWindowLabel(entry())).toBeNull();
   });
 
-  test("abbreviates thousands with k", () => {
-    expect(contextWindowLabel(entry({ contextWindow: 200000 }))).toBe("200k");
-    expect(contextWindowLabel(entry({ contextWindow: 128000 }))).toBe("128k");
+  test("abbreviates thousands with K", () => {
+    expect(contextWindowLabel(entry({ contextWindow: 200000 }))).toBe("200K");
+    expect(contextWindowLabel(entry({ contextWindow: 128000 }))).toBe("128K");
   });
 
   test("abbreviates millions with M", () => {
     expect(contextWindowLabel(entry({ contextWindow: 1000000 }))).toBe("1M");
+    // Rounded as every token count is, never 1.048576M.
+    expect(contextWindowLabel(entry({ contextWindow: 1_048_576 }))).toBe("1M");
+    expect(contextWindowLabel(entry({ contextWindow: 2_000_000 }))).toBe("2M");
   });
 
   test("leaves a small window bare", () => {

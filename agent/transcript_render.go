@@ -1306,6 +1306,7 @@ var jobResultKnownKeys = map[string]bool{
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
+	"artifacts_dir":       true, // stableDelegateCreateResult
 }
 
 var jobResultMetadataKeys = []string{
@@ -1344,6 +1345,7 @@ var jobResultMetadataKeys = []string{
 	"requested_model",
 	"resolved_profile_id",
 	"resolved_model",
+	"artifacts_dir",
 	"reasoning_effort",
 	"run_started_at",
 	"run_ended_at",

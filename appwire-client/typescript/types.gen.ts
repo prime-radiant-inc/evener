@@ -73,6 +73,19 @@ export interface ArchiveResponse {
   navigation: NavigationMutation;
 }
 
+export interface ArchivedListParams {
+  catalog: string;
+  projectKey: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ArchivedListResponse {
+  sessions: unknown;
+  nextCursor?: string;
+  total: number;
+}
+
 export interface AttentionChanged {
   threadId: string;
   title: string;
@@ -321,58 +334,6 @@ export interface AuthTestResponse {
   provider: string;
   status: string;
   message: string;
-}
-
-export interface BoundaryEntryLocalDarwin {
-  kind: string;
-  pgid: number;
-  sessionId: number;
-  pid: number;
-  startTime: string;
-  nonce: string;
-}
-
-export interface BoundaryEntryLocalLinux {
-  kind: string;
-  cgroupId: string;
-  nonce: string;
-  pid: number;
-  startTime: string;
-}
-
-export interface BoundaryEntryLocalMarkerless {
-  kind: string;
-  platform: string;
-  cgroupId?: string;
-  pgid?: number;
-  sessionId?: number;
-  nonce: string;
-}
-
-export interface BoundaryEntryRemoteFencing {
-  kind: string;
-  fencingEpoch: FencingEpoch;
-  guardEpoch: number;
-  leaseEntries: BoundaryLeaseEntry[];
-}
-
-export interface BoundaryEntryUnavailable {
-  kind: string;
-  reason: string;
-  custodyRef: string;
-}
-
-export interface BoundaryLeaseEntry {
-  command: string;
-  registeredAt: string;
-  ownership: BoundaryLeaseOwnership;
-}
-
-export interface BoundaryLeaseOwnership {
-  pid?: number;
-  pidStartTime?: string;
-  nonce?: string;
-  cgroupId?: string;
 }
 
 export interface Capabilities {
@@ -1259,19 +1220,6 @@ export interface HostOperationsResponse {
   incarnationId?: string;
   hostBoundaries?: Record<string, unknown>;
   nextCursor?: string;
-}
-
-export interface HostOrphanResolveAttestation {
-  operator: string;
-  statement: string;
-  recordId: string;
-  boundaryRef?: string;
-  observedAt: string;
-}
-
-export interface HostOrphanResolveParams {
-  id: string;
-  attestation?: HostOrphanResolveAttestation;
 }
 
 export interface HostPlan {
@@ -2460,7 +2408,6 @@ export interface NavigationSessionSummary {
   state: string;
   kind: string;
   branch?: string;
-  cluster_count?: number;
   favorite?: boolean;
   rename?: boolean;
   live: boolean;
@@ -2693,9 +2640,6 @@ export interface OperationRecord {
   incarnationId: string;
   kind: string;
   state: string;
-  orphanBoundary?: (BoundaryEntryLocalLinux | BoundaryEntryLocalDarwin | BoundaryEntryLocalMarkerless | BoundaryEntryRemoteFencing | BoundaryEntryUnavailable)[];
-  orphanResolved?: boolean;
-  attestation?: HostOrphanResolveAttestation;
   progress?: OperationProgressEntry[];
   result?: OperationResult;
   createdAt: string;
@@ -3540,6 +3484,15 @@ export interface ThreadCapabilities {
    * that owns the tree.
    */
   stopSubagent?: boolean;
+  /**
+   * PageBefore advertises that thread/turns/list pages this thread from a
+   * before position, with or without a cursor: a client that trimmed rows
+   * from the top of its window can page them back. The hub answers for its
+   * own local and saved threads. A thread on another host stays masked until
+   * the hub can join such a page to its remote paging window (#3176); an
+   * older hub never sends it.
+   */
+  pageBefore?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -4055,6 +4008,14 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  /**
+   * Before, when set, ends the page just before this position. With a
+   * Cursor it moves the cursor's boundary, keeping the cursor's identity
+   * fence; with none the source mints a cursor there under the thread's
+   * current identity. A client that dropped rows from the top of its window
+   * names the oldest row it kept and pages the dropped rows back.
+   */
+  before?: ThreadItemPosition;
 }
 
 export interface ThreadTurnsListResponse {
@@ -4410,6 +4371,7 @@ export const METHOD_NAMES = [
   "evener/session-pin/unpin",
   "evener/session/seen/set",
   "evener/search",
+  "evener/archived/list",
   "evener/activity/read",
   "evener/notices/list",
   "evener/harnesses/list",
@@ -4476,7 +4438,6 @@ export const METHOD_NAMES = [
   "evener/host/update",
   "evener/host/teardown-retry",
   "evener/host/teardown-recover",
-  "evener/host/orphan-resolve",
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
@@ -4635,6 +4596,7 @@ export interface MethodTypes {
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
   "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
+  "evener/archived/list": { params: ArchivedListParams; result: ArchivedListResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
   "evener/notices/list": { params: EmptyParams; result: NoticesListResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
@@ -4701,7 +4663,6 @@ export interface MethodTypes {
   "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
   "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
-  "evener/host/orphan-resolve": { params: HostOrphanResolveParams; result: OperationRecord };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };

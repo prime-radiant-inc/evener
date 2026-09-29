@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -194,5 +195,110 @@ func fuzzScenarioBuildTree_NoApprovalDetailWithoutTheFlag(t *testing.T) {
 		if row.ApprovalPending || row.ApprovalTool != "" || row.ApprovalTarget != "" {
 			t.Fatalf("%s row approval = %v %q %q, want no approval detail without the flag", name, row.ApprovalPending, row.ApprovalTool, row.ApprovalTarget)
 		}
+	}
+}
+
+// fuzzScenarioBuildTree_EveryRowCarriesEveryLiveFact: every live-derived row
+// field - Ref, State, the ask and approval flags with their detail, the
+// question, the failure, dormancy, jobs, watches, tasks, the subagent tally,
+// the turn end, the last message and the model - resolves through one helper
+// (tree.go's liveFieldsFor) for all three builders: buildNode (the Live and
+// project rows), the meta-less Live leaf, and the NeedsYou node. This pins
+// that the builders cannot drift apart as a new live fact lands; before #2506
+// each builder copied the facts by hand, so a miss showed up only when an
+// agreement scenario happened to cover that field.
+func fuzzScenarioBuildTree_EveryRowCarriesEveryLiveFact(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	cards := []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"}}
+	question := &appwire.PendingQuestion{Question: "Keep the implied options?", Options: []string{"Drop them", "Keep them"}, Count: 2}
+	failure := &appwire.ThreadFailure{Title: "Provider error", Cause: &appwire.DiagnosticCause{Kind: "provider"}}
+	metas := []schema.SessionMeta{{ID: "01FULL", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []LiveEntry{
+		{
+			WorkspaceRef:       "local:01FULL",
+			PID:                1,
+			SessionID:          "01FULL",
+			Status:             appwire.ThreadStatusSystemError,
+			PendingAsk:         true,
+			PendingQuestion:    question,
+			PendingEscalation:  true,
+			PendingEscalations: cards,
+			Failure:            failure,
+			RunningJobs:        []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "running"}},
+			CompletedJobs:      []appwire.EvenerJobInfo{{JobID: "job_done", JobType: "shell", Status: "done"}},
+			Watches:            []appwire.EvenerWatchInfo{{ID: "watch_1", Source: "self", Active: true}},
+			Tasks:              &appwire.TaskAggregate{Total: 3, Done: 1, Remaining: 2},
+			Subagents:          appwire.SubagentTally{Running: 2, Failed: 1, Done: 57},
+			LastTurnEndedAt:    now.Add(-time.Hour),
+			LastMessage:        "the agent's last words",
+			CurrentModel:       "gpt-oss",
+		},
+		// A live-only session the past index has not caught up with: the
+		// meta-less Live leaf and its NeedsYou node must agree on the same
+		// facts.
+		{
+			WorkspaceRef:       "local:01LEAF",
+			PID:                2,
+			SessionID:          "01LEAF",
+			Status:             appwire.ThreadStatusSystemError,
+			PendingEscalation:  true,
+			PendingEscalations: cards,
+			RunningJobs:        []appwire.EvenerJobInfo{{JobID: "job_leaf", JobType: "shell", Status: "running"}},
+			Watches:            []appwire.EvenerWatchInfo{{ID: "watch_leaf", Source: "self", Active: true}},
+			Subagents:          appwire.SubagentTally{Done: 4},
+			LastMessage:        "leaf last words",
+			CurrentModel:       "gpt-oss-leaf",
+		},
+	}
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+
+	// Zero the fields no builder derives from the live roster, leaving only the
+	// live-derived ones that must agree across tiers.
+	liveFields := func(n TreeNode) TreeNode {
+		n.ID, n.Title, n.Project, n.Branch, n.Kind = "", "", "", "", ""
+		n.CreatedAt, n.UpdatedAt, n.Age = time.Time{}, time.Time{}, ""
+		n.Children = nil
+		return n
+	}
+
+	fullLive, inFullLive, fullProject, inFullProject := liveAndProjectRowsFor(tree, "01FULL")
+	leaf, inLeaf, _, _ := liveAndProjectRowsFor(tree, "01LEAF")
+	needsByID := map[string]TreeNode{}
+	for _, n := range tree.NeedsYou {
+		needsByID[n.ID] = n
+	}
+	fullNeeds, okFullNeeds := needsByID["01FULL"]
+	leafNeeds, okLeafNeeds := needsByID["01LEAF"]
+	if !inFullLive || !inFullProject || !inLeaf {
+		t.Fatalf("rows missing: full live=%v project=%v leaf=%v", inFullLive, inFullProject, inLeaf)
+	}
+	if !okFullNeeds || !okLeafNeeds {
+		t.Fatalf("NeedsYou missing a row: full=%v leaf=%v (tier=%+v)", okFullNeeds, okLeafNeeds, tree.NeedsYou)
+	}
+
+	for _, pair := range []struct {
+		name string
+		a, b TreeNode
+	}{
+		{"Live vs project", fullLive, fullProject},
+		{"Live vs NeedsYou", fullLive, fullNeeds},
+		{"project vs NeedsYou", fullProject, fullNeeds},
+		{"meta-less leaf vs NeedsYou", leaf, leafNeeds},
+	} {
+		if !reflect.DeepEqual(liveFields(pair.a), liveFields(pair.b)) {
+			t.Errorf("%s disagree on live-derived fields:\n a=%+v\n b=%+v",
+				pair.name, liveFields(pair.a), liveFields(pair.b))
+		}
+	}
+
+	// Guard against the agreement passing because every row is empty: the
+	// fixture's facts must actually reach the rows.
+	if fullNeeds.Ref != "local:01FULL" || fullNeeds.Failure == nil || fullNeeds.Question == nil ||
+		fullNeeds.ApprovalTool != "write_file" || fullNeeds.ApprovalTarget != "/home/me/sites/docs/index.md" ||
+		len(fullNeeds.RunningJobs) == 0 || len(fullNeeds.CompletedJobs) == 0 || len(fullNeeds.Watches) == 0 ||
+		fullNeeds.Tasks == nil || fullNeeds.Subagents == (appwire.SubagentTally{}) ||
+		fullNeeds.TurnEndedAt.IsZero() || fullNeeds.LastMessage == "" || fullNeeds.Model == "" ||
+		fullNeeds.State != "errored" || !fullNeeds.AskPending || !fullNeeds.ApprovalPending {
+		t.Errorf("NeedsYou row dropped a live fact: %+v", fullNeeds)
 	}
 }

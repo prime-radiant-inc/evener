@@ -279,4 +279,49 @@ describe("editing and removing a host (spec 12)", () => {
 		await removal;
 		expect(hosts.getSnapshot().rows).toEqual([]);
 	});
+
+	it("re-reads after an edit's non-commit arm, so a committed teardown failure appears", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic")] });
+		await read;
+
+		const edit = hosts.update("attic", { address: "attic.lan" }, { generation: 1, incarnationId: "incarnation-1" });
+		await settle();
+		h.take("evener/host/update").resolve({
+			outcome: "committed-with-teardown-failure",
+			seam: "rebind",
+			remnantId: "r1",
+			host: { ...row("attic"), address: "attic.lan" },
+		});
+		await settle();
+		// The non-commit arm rejects, but the controller still re-reads the rows.
+		expect(h.count("evener/host/list")).toBe(1);
+		h.take("evener/host/list").resolve({ hosts: [{ ...row("attic"), address: "attic.lan", openRemnantId: "r1" }] });
+		await expect(edit).rejects.toThrow(/remnantId r1/);
+		expect(hosts.getSnapshot().rows?.[0]?.openRemnantId).toBe("r1");
+	});
+
+	it("re-reads after a removal's non-commit arm, so a committed removal appears", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic"), row("studio")] });
+		await read;
+
+		const removal = hosts.remove("attic");
+		await settle();
+		h.take("evener/host/remove").resolve({
+			outcome: "committed-with-teardown-failure",
+			seam: "rebind",
+			remnantId: "r1",
+			host: { ...row("attic"), removed: true },
+		});
+		await settle();
+		expect(h.count("evener/host/list")).toBe(1);
+		h.take("evener/host/list").resolve({ hosts: [row("studio")] });
+		await expect(removal).rejects.toThrow(/remnantId r1/);
+		expect(hosts.getSnapshot().rows?.map((candidate) => candidate.name)).toEqual(["studio"]);
+	});
 });

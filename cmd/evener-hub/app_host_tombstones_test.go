@@ -235,7 +235,11 @@ func TestHostTombstoneRemovalWritesOneAtomicRecord(t *testing.T) {
 // removal timestamp intact.
 func TestHostTombstonesSurviveRestart(t *testing.T) {
 	f := newUpdateFixture(t)
-	removedAt := time.Date(2026, 9, 22, 8, 30, 0, 0, time.UTC)
+	// The removal instant is relative to now, not a fixed date: the restart
+	// below boots a manager on the real clock, so a hard-coded instant
+	// eventually falls past the 7-day retention and boot prunes the tombstone
+	// this test means to watch survive (the sibling collision test's pattern).
+	removedAt := time.Now().UTC().Add(-2 * time.Hour)
 	f.m.cfg.now = func() time.Time { return removedAt }
 	f.m.cfg.lastGoodThreads = func(sourceID string) []appwire.Thread {
 		return retainedTestRows(sourceID, 2, 2000)

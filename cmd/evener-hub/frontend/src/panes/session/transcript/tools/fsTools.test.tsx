@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./fsTools";
 import type { ItemModel } from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -20,9 +21,7 @@ test("read_file: summary leads with the target path and a derived line range", (
 
 test("read_file: falls back to `path` when `file_path` is absent", () => {
   const d = toolRendererFor("read_file");
-  expect(d.summary(item({ toolName: "read_file", argumentsJSON: JSON.stringify({ path: "b.ts" }) }))).toBe(
-    "Read b.ts · lines 1",
-  );
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: JSON.stringify({ path: "b.ts" }) }))).toBe("Read b.ts");
 });
 
 test("read_file: an explicit offset/limit wins over the output's own newline count", () => {
@@ -39,10 +38,10 @@ test("read_file: a non-positive offset defaults to 1", () => {
   expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "x" }))).toBe("Read a.ts · lines 1");
 });
 
-test("read_file: no derivable count renders a bare start line, not a range", () => {
+test("read_file: no derivable count (no limit, no output yet) says no lines at all", () => {
   const d = toolRendererFor("read_file");
   const args = JSON.stringify({ file_path: "a.ts" });
-  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "" }))).toBe("Read a.ts · lines 1");
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "" }))).toBe("Read a.ts");
 });
 
 test("read_file: body renders the output text", () => {
@@ -182,7 +181,7 @@ test("grep: summary composes pattern, path, and hit count", () => {
 test("grep: path defaults to the cwd marker when absent", () => {
   const d = toolRendererFor("grep");
   const args = JSON.stringify({ pattern: "x" });
-  expect(d.summary(item({ toolName: "grep", argumentsJSON: args, output: "" }))).toBe('Searched "x" in . · 0 hits');
+  expect(d.summary(item({ toolName: "grep", argumentsJSON: args, output: "" }))).toBe('Searched "x" in .');
 });
 
 test("grep: a glob_filter is appended in parens when present", () => {
@@ -220,9 +219,17 @@ test("list_dir: summary composes path and entry count", () => {
 test("list_dir: path defaults to the cwd marker, and a pattern arg is parenthesized", () => {
   const d = toolRendererFor("list_dir");
   const args = JSON.stringify({ pattern: "*.css" });
-  expect(d.summary(item({ toolName: "list_dir", argumentsJSON: args, output: "" }))).toBe(
-    "Listed . (*.css) · 0 entries",
-  );
+  expect(d.summary(item({ toolName: "list_dir", argumentsJSON: args, output: "" }))).toBe("Listed . (*.css)");
+});
+
+// The body's pre keeps a tab as a tab: its white-space is pre-wrap and it
+// sets no tab-size, so the browser draws it to CSS's initial stop of 8
+// (#3317, where the phone had drawn it with no width).
+test("list_dir: the body keeps the recorded output's tabs for the browser to set", () => {
+  const Body = toolRendererFor("list_dir").body;
+  if (!Body) throw new Error("list_dir has no body");
+  const { container } = render(<Body item={toolWireStep("call_list_dir")} live={false} />);
+  expect(container.querySelector("pre")?.textContent).toContain("tree.go\t32");
 });
 
 test("list_directory aliases to the same descriptor as list_dir", () => {
@@ -242,7 +249,7 @@ test("glob: summary composes the pattern and match count", () => {
 test("glob: falls back to a `glob` arg key when `pattern` is absent", () => {
   const d = toolRendererFor("glob");
   const args = JSON.stringify({ glob: "*.ts" });
-  expect(d.summary(item({ toolName: "glob", argumentsJSON: args, output: "" }))).toBe("Matched *.ts · 0 matches");
+  expect(d.summary(item({ toolName: "glob", argumentsJSON: args, output: "" }))).toBe("Matched *.ts");
 });
 
 // --- shared cheap body ------------------------------------------------

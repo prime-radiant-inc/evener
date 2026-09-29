@@ -175,7 +175,7 @@ describe("open state", () => {
     const row = (await screen.findByText("Claude Sonnet 4.5")).closest("li");
     if (!row) throw new Error("expected the Sonnet option to render inside a listbox <li>");
 
-    expect(within(row).getByText("tools · vision · reasoning · $3 in · $15 out /Mtok · 200k")).toBeTruthy();
+    expect(within(row).getByText("tools · vision · reasoning · $3 in · $15 out /Mtok · 200K")).toBeTruthy();
   });
 
   test("there is no Cancel button", async () => {

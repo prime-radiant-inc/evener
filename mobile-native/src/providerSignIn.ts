@@ -168,7 +168,10 @@ export class ProviderSignIn {
 				this.publish({
 					phase: "error",
 					busy: false,
-					error: "Sign-in could not be started. Check the connection before trying again.",
+					// What happened and the one thing to do (spec 5). The sheet's title
+					// names the provider, and its status line says when the connection
+					// itself is down.
+					error: "The hub couldn't start signing in. Start again.",
 				});
 		}
 	};

@@ -1305,8 +1305,9 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      the host, and this component's only host interface is `ssh <dest>
      <command>` shell execution (`Runner`, §"SSH channel argv"); this series
      specifies, provisions, and invokes no host-side restart-identity pin
-     helper (the crash-fencing `evener-fence` lease wrapper is a fencing helper,
-     not a restart-identity pin). Under the
+     helper (the crash-fencing `evener-fence` lease wrapper an earlier revision
+     named here was withdrawn with that program, Jesse, 2026-09-29; comp08
+     passes 1–2). Under the
      withdrawn pin that is no longer a refusal: a **supervisorless** host
      restarts through the guarded verify-then-signal ad hoc path
      (shipped by #2450; implementation status, check 5). A

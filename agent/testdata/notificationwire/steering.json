@@ -1,0 +1,162 @@
+[
+  {
+    "case": "delegate-reported",
+    "note": "A named subagent communicated its report and finished. The body is the TerminalPacket JSON; message is a JSON string.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_1\" name=\"Fix race in tree settle\"\u003e{\"kind\":\"reported\",\"message\":\"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.\",\"metadata\":{\"outcome\":\"completed\",\"name\":\"Fix race in tree settle\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Fix race in tree settle\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:02:00Z\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-failed-unnamed",
+    "note": "A subagent with no name failed without reporting: kind terminal_error, metadata outcome failed, and no name attribute.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_1",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_2\"\u003e{\"kind\":\"terminal_error\",\"message\":\"go test exited 1 three times\",\"metadata\":{\"outcome\":\"failed\",\"reason\":\"failed\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:06:00Z\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-stopped",
+    "note": "A subagent the user stopped: kind terminal_error, metadata outcome cancelled.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_2",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_3\" name=\"Check drain ordering\"\u003e{\"kind\":\"terminal_error\",\"message\":\"Stopped by the user.\",\"metadata\":{\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"name\":\"Check drain ordering\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Check drain ordering\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:01:00Z\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-stopped-by-parent",
+    "note": "The packet a parent's stop settles when the run left none: kind terminal_error, metadata outcome stopped, reason stopped_by_parent.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_3",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_4\" name=\"Tail the hub log\"\u003e{\"kind\":\"terminal_error\",\"message\":\"stopped by parent\",\"metadata\":{\"outcome\":\"stopped\",\"reason\":\"stopped_by_parent\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-stopped-by-parent-mid-run",
+    "note": "A parent's stop that cancelled a run which left its own packet: the run loop's packet is carried, metadata outcome cancelled.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_4",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_6\" name=\"Index the docs\"\u003e{\"kind\":\"terminal_error\",\"message\":\"context canceled\",\"metadata\":{\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"name\":\"Index the docs\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Index the docs\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:01:00Z\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-exhausted",
+    "note": "A subagent that ran out of its turn budget: kind terminal_error, metadata outcome exhausted.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_5",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_5\" name=\"Sweep the flaky tests\"\u003e{\"kind\":\"terminal_error\",\"message\":\"max_turns exhausted at limit 40\",\"metadata\":{\"outcome\":\"exhausted\",\"reason\":\"turn_budget_exhausted\",\"name\":\"Sweep the flaky tests\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Sweep the flaky tests\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:14:00Z\",\"exhaustion_budget\":\"max_turns\",\"exhaustion_limit\":40,\"resumable\":false}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "delegate-quiet",
+    "note": "The quiet watchdog: a plain-text body with no packet and no name attribute.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_6",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_1\"\u003equiet for 10m; last activity: 2026-09-28T20:01:00Z\u003c/delegate-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "job-shell-completed",
+    "note": "A background shell job that exited 0, with its complete output as the excerpt.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_7",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_7\" event=\"completed\" job_type=\"shell\" description=\"\" status=\"completed\" reason=\"exit_zero\" intent=\"Run the agent tests\" output_bytes=\"41\" exit_code=\"0\" transcript_ref=\"job:job_7\"\u003e\nJob job_7 completed. Complete output below.\nexcerpt:\nok  \tprimeradiant.com/evener/agent\t12.3s\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  },
+  {
+    "case": "job-shell-failed",
+    "note": "A background shell job whose command exited 1.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_8",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_8\" event=\"command_exited_nonzero\" job_type=\"shell\" description=\"Race detector pass\" status=\"command_exited_nonzero\" reason=\"exit_nonzero\" intent=\"Run the tree tests under -race\" output_bytes=\"96\" exit_code=\"1\" transcript_ref=\"job:job_8\"\u003e\nJob job_8 command_exited_nonzero. Complete output below.\nexcerpt:\n--- FAIL: TestTreeSettle (0.02s)\n    tree_test.go:88: drain ran before settle\nFAIL\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  },
+  {
+    "case": "job-shell-killed",
+    "note": "A background shell job whose command a signal killed.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_9",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_11\" event=\"command_killed\" job_type=\"shell\" description=\"\" status=\"command_killed\" reason=\"killed_by_signal: SIGKILL\" intent=\"Serve the docs preview\" output_bytes=\"0\" exit_code=\"-1\" transcript_ref=\"job:job_11\"\u003e\nJob job_11 command_killed. Output is available through read_transcript(transcript_ref=\"job:job_11\") if needed.\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  },
+  {
+    "case": "job-shell-cancelled",
+    "note": "A background shell job that was cancelled.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_10",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_12\" event=\"cancelled\" job_type=\"shell\" description=\"\" status=\"cancelled\" reason=\"cancelled\" intent=\"Rebuild the fuzz corpus\" output_bytes=\"0\" transcript_ref=\"job:job_12\"\u003e\nJob job_12 cancelled. Output is available through read_transcript(transcript_ref=\"job:job_12\") if needed.\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  },
+  {
+    "case": "job-shell-attention",
+    "note": "A stable shell job a subagent started, delivered to its owner through the attention path: no steering kind.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_11",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_10\" event=\"completed\" job_type=\"shell\" description=\"\" status=\"completed\" reason=\"exit_zero\" intent=\"Run the settle tests\" output_bytes=\"0\" exit_code=\"0\" transcript_ref=\"job:job_10\"\u003e\nJob job_10 completed. Output is available through read_transcript(transcript_ref=\"job:job_10\") if needed.\n\u003c/job-notification\u003e",
+      "status": "completed"
+    }
+  },
+  {
+    "case": "job-pair",
+    "note": "Two notifications delivered in one steering turn, joined the way formatJobNotificationReminder joins them.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_12",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_9\" event=\"stopped\" job_type=\"shell\" description=\"\" status=\"stopped\" reason=\"stopped_by_parent\" intent=\"Tail the hub log\" output_bytes=\"0\" transcript_ref=\"job:job_9\"\u003e\nJob job_9 stopped. Output is available through read_transcript(transcript_ref=\"job:job_9\") if needed.\n\u003c/job-notification\u003e\n\u003cjob-notification job_id=\"\" event=\"watch\" job_type=\"watch\" description=\"\" status=\"watch\" reason=\"\" intent=\"\" output_bytes=\"0\" watch_id=\"watch_3\"\u003e\nTimer fired after 300s.\nNote: Check whether CI finished.\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  },
+  {
+    "case": "job-watch-send",
+    "note": "A watch's send frame delivered on its trigger.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_13",
+      "turnId": "turn_1",
+      "text": "\u003cjob-notification job_id=\"job_7\" event=\"watch_send\" delivery_id=\"wsd_1\" trigger=\"output_match: PASS\"\u003e\nCI finished: 3 checks passed.\n\u003c/job-notification\u003e",
+      "status": "completed",
+      "steeringKind": "notification"
+    }
+  }
+]

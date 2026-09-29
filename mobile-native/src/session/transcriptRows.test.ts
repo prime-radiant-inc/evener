@@ -138,7 +138,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u1", "turn_1"), user("u2", "turn_2"), user("u3", "turn_3"), user("u4", "turn_4")],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -151,13 +151,45 @@ describe("time markers", () => {
 		]);
 	});
 
-	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
+	it("splits a run at a marked turn boundary (the first turn of a whole history is marked)", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
+	});
+
+	it("leaves the first loaded turn unmarked while older history is still to load", () => {
+		const rows = sessionRows([user("u2", "turn_2"), user("u3", "turn_3")], turns, {
+			timeZone: "UTC",
+			olderToLoad: true,
+		});
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"u2",
+			"time:turn_3",
+			"u3",
+		]);
+	});
+
+	it("keeps the first row's key across an older page, with steps and a delegate_send among them", () => {
+		// Before: the latest page, with more above. After: the page above
+		// prepended. The first key before must still be in the list after, so
+		// the list can find where its window moved to.
+		const latest = [
+			user("u2", "turn_2"),
+			step("s2", "delegate_send", { turnId: "turn_2" }),
+			step("s3", "shell", { turnId: "turn_2" }),
+			user("u3", "turn_3"),
+		];
+		const before = sessionRows(latest, turns, { timeZone: "UTC", olderToLoad: true });
+		const after = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC", olderToLoad: true });
+		const first = before[0]?.id;
+		expect(first).toBeDefined();
+		expect(after.map((row) => row.id)).toContain(first);
+		// Once nothing older is left, the first turn gets its marker back.
+		const whole = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC" });
+		expect(whole[0]).toMatchObject({ kind: "time", turnId: "turn_1" });
 	});
 
 	// The reducer can seat a notice in the display turn that holds its recorded
@@ -179,7 +211,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u", "turn_1"), notice, reply("r", "turn_1")],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -197,7 +229,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_1" }), step("b", "grep", { turnId: "turn_2" })],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2", at(12, 8))],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "run"]);
 		expect(rows[1]?.kind === "run" && rows[1].steps.map((s) => s.id)).toEqual(["a"]);
@@ -288,9 +320,9 @@ describe("a run's one line", () => {
 			steps: 12,
 			durationMs: 480_000,
 			parts: [
-				{ family: "read", text: "read 6 files", failed: 0 },
-				{ family: "shell", text: "ran go test", failed: 2 },
-				{ family: "edit", text: "edited 3 files", failed: 0 },
+				{ key: "read", family: "read", text: "read 6 files", failed: 0 },
+				{ key: "shell", family: "shell", text: "ran go test", failed: 2 },
+				{ key: "edit", family: "edit", text: "edited 3 files", failed: 0 },
 			],
 			failed: 2,
 		});
@@ -300,12 +332,14 @@ describe("a run's one line", () => {
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
 		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
 		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
-		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
+		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
+			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
+		]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no
@@ -369,9 +403,71 @@ describe("a run's one line", () => {
 				step("a", "web_fetch"),
 				step("b", "task_list"),
 				step("c", "web_search"),
-				step("d", "use_skill"),
+				step("d", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "brainstorming" }) } }),
 			]).parts.map((part) => part.text),
-		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
+		).toEqual(["fetched 1 page", "checked the task list", "searched the web once", "used skill brainstorming"]);
+	});
+
+	// Never "N other steps": MCP tools share one part, which names their
+	// server when there is one, and each tool no summary covers gets a part
+	// of its own in words.
+	it("names the MCP tools and each tool no summary covers", () => {
+		expect(
+			runSummary([
+				step("a", "github__create_issue"),
+				step("b", "github__list_issues"),
+				step("c", "linear_app__list_issues"),
+				step("d", "compact_context"),
+				step("e", "compact_context"),
+				step("f", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "a" }) } }),
+				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
+			]).parts.map((part) => [part.key, part.text]),
+		).toEqual([
+			["mcp", "used 3 MCP tools"],
+			["tool:compact context", "used compact context 2 times"],
+			["skill", "used 2 skills"],
+		]);
+		expect(
+			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
+		).toEqual(["used github 2 times"]);
+	});
+
+	it("says a run updated the task list, or only checked it", () => {
+		const tasks = (id: string, args: Record<string, unknown>): RunStep =>
+			step(id, "task_list", { detail: { arguments: JSON.stringify(args) } });
+		const update = { update: [{ id: 1, status: "done" }] };
+		expect(runSummary([tasks("a", update)]).parts.map((part) => part.text)).toEqual(["updated the task list"]);
+		expect(runSummary([tasks("a", {}), tasks("b", {})]).parts.map((part) => part.text)).toEqual([
+			"checked the task list 2 times",
+		]);
+		// One change among the reads makes the part an update.
+		expect(runSummary([tasks("a", {}), tasks("b", update)]).parts.map((part) => part.text)).toEqual([
+			"updated the task list 2 times",
+		]);
+	});
+});
+
+describe("a run's transcript reads and session searches", () => {
+	const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+
+	it("counts the transcripts a run read", () => {
+		expect(texts([step("a", "read_transcript")])).toEqual(["read a transcript"]);
+		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual(["read 2 transcripts"]);
+	});
+
+	it("says how often a run searched sessions", () => {
+		expect(texts([step("a", "find_session_transcripts")])).toEqual(["searched sessions"]);
+		expect(texts([step("a", "find_session_transcripts"), step("b", "find_session_transcripts")])).toEqual([
+			"searched sessions 2 times",
+		]);
+	});
+});
+
+describe("a run's worktree steps", () => {
+	it("says how often a run managed worktrees", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "manage_worktree")])).toEqual(["managed worktrees once"]);
+		expect(texts([step("a", "manage_worktree"), step("b", "manage_worktree")])).toEqual(["managed worktrees 2 times"]);
 	});
 });
 

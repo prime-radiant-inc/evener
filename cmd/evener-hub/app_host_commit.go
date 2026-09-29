@@ -37,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -111,11 +110,6 @@ type hostCommitPlan struct {
 	Entry hostreg.Host
 	// Marker is the store's live marker row for this host once step (2) landed.
 	Marker HostStagedReceipt
-	// PriorProvisioning is the target name's bootstrap record as it stood before
-	// this mutation's staged write (crash-fencing §6): the staged write's
-	// liveness prune drops a removal's flags, and a compensation carries this
-	// value back so the restored live host keeps them.
-	PriorProvisioning hostfence.Provisioning
 	// lastFingerprint is the fingerprint of the bytes the mutation's own last
 	// write left on disk. The pre-write final check compares the file against
 	// it.
@@ -167,9 +161,6 @@ func stagedChange(plan *hostCommitPlan, marker HostStagedReceipt) hostPersistCha
 func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error {
 	marker := m.stagedMarker(plan, now)
 	entries, known := plan.Entries, plan.Known
-	// Capture the pre-mutation provisioning BEFORE the staged write prunes it: a
-	// compensation needs it to restore the flags of a rolled-back removal.
-	plan.PriorProvisioning = m.cfg.store.provisioningFor(plan.Name)
 	if err := m.persistHosts(entries, known, stagedChange(plan, marker)); err != nil {
 		return err
 	}
@@ -194,11 +185,6 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 func compensationChange(plan *hostCommitPlan) hostPersistChange {
 	return hostPersistChange{
 		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
-		// The rollback re-emits the target's pre-mutation bootstrap flags: the
-		// staged write's liveness prune dropped them from the store and the file
-		// no longer holds the name's record, so without this carry a failed
-		// removal leaves a live host reading as never-provisioned (§6:131).
-		carryProvisioning: map[string]hostfence.Provisioning{plan.Name: plan.PriorProvisioning},
 	}
 }
 

@@ -15,12 +15,15 @@ import { expect, it } from "vitest";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const ROOTS = ["mobile-native/src", "mobile/src"].map((root) => path.join(REPO, root));
-const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b/i;
+const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b|\btry again when connected\b/i;
 
 function productionFiles(dir: string): string[] {
 	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
 		const full = path.join(dir, entry.name);
-		if (entry.isDirectory()) return entry.name === "dev" ? [] : productionFiles(full);
+		// "generated" holds vendored bundle output (src/generated/mermaidPage.ts),
+		// not authored copy; its authored source (src/mermaidPageContent.ts) stays
+		// scanned. "dev" is the browser/CLI dev harnesses.
+		if (entry.isDirectory()) return entry.name === "dev" || entry.name === "generated" ? [] : productionFiles(full);
 		if (!/\.tsx?$/.test(entry.name) || /\.(test|testkit)\.tsx?$/.test(entry.name)) return [];
 		return [full];
 	});
@@ -72,6 +75,9 @@ it("reads the text a person sees, and nothing else", () => {
 		". Refresh to try again.",
 	]);
 	expect(asks("c.ts", `const c = { hint: "Pull down to retry" };`)).toEqual(["Pull down to retry"]);
+	expect(asks("j.ts", `const j = "Could not load models. Try again when connected.";`)).toEqual([
+		"Could not load models. Try again when connected.",
+	]);
 	expect(asks("d.ts", `const d = "Reconnecting…";`)).toEqual([]);
 	expect(asks("e.ts", `// Reconnect later\nconst e = reconcileAfterReconnect(refresh);`)).toEqual([]);
 	expect(asks("f.ts", `import { refresh } from "./refresh";\nconsole.warn("refresh failed");`)).toEqual([]);

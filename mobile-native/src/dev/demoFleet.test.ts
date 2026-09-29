@@ -51,6 +51,16 @@ function findRow(rows: NavigationSessionSummary[], slug: string): NavigationSess
 	return row;
 }
 
+describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
+	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
+		const row = findRow(liveRows(createDemoFleet({ now: STARTUP, toolFamilies: true })), "s-tools");
+		expect(row).toMatchObject({ title: "Show Every Tool Family" });
+		expect(liveRows(createDemoFleet({ now: STARTUP })).map((row) => row.session_id)).not.toContain(
+			demoSessionId("s-tools"),
+		);
+	});
+});
+
 describe("demo fleet manifest", () => {
 	it('reports the Live and needs-you counts the redesign spec\'s Board mockup shows (section 7.1: "Live 20 (4)")', () => {
 		const fleet = createDemoFleet({ now: STARTUP });
@@ -227,6 +237,17 @@ describe("demo fleet subagent trees", () => {
 		const fuzz = findRow(archived, "s-fuzz");
 		expect(fuzz.children).toHaveLength(50);
 		expect(fuzz.omitted_descendants).toBe(467 - 50);
+	});
+
+	it("carries a live root's whole-tree subagent tally, past the children cap (S3)", () => {
+		const pr2138 = findRow(liveRows(fleet), "s-pr2138");
+		const tally = pr2138.subagents;
+		expect(tally).toBeDefined();
+		// The children cap keeps 50 top-level rows and omits 4 (above); the tally
+		// counts every depth, so it also counts the one nested subagent (55).
+		expect((tally?.running ?? 0) + (tally?.failed ?? 0) + (tally?.done ?? 0)).toBe(55);
+		expect(tally?.failed).toBe(2);
+		expect(tally?.running).toBeGreaterThan(0);
 	});
 });
 
@@ -483,6 +504,13 @@ describe("demo fleet search, auth and plugins", () => {
 			version: "6.4.1",
 		});
 	});
+
+	it("dates each plugin in Unix seconds, as the hub does: installed 30 days ago, updated 1 day ago", () => {
+		const [first] = createDemoFleet({ now: STARTUP }).answerPluginList().plugins;
+		const startupSeconds = Math.floor(STARTUP / 1000);
+		expect(first?.installedAt).toBe(startupSeconds - 30 * 86400);
+		expect(first?.lastUpdated).toBe(startupSeconds - 86400);
+	});
 });
 
 describe("demo fleet error handling", () => {
@@ -678,7 +706,7 @@ describe("demo fleet empty option", () => {
 		expect(manifest.sections).toMatchObject({
 			live: { count: 0 },
 			needs_you: { count: 0 },
-			pin_sections: { count: 0 },
+			pin_sections: { count: 2 },
 		});
 		expect(manifest.catalogs).toMatchObject({
 			projects: { count: 0 },
@@ -699,9 +727,12 @@ describe("demo fleet empty option", () => {
 		expect(needsYou).toHaveLength(0);
 	});
 
-	it("has no pin sections", () => {
+	it("keeps both durable pin sections, with no rows pinned in them", () => {
 		const catalog = read(fleet, params({ resource: "pin_catalog", limit: 100 }));
-		expect(catalog.pin_sections).toEqual([]);
+		expect(catalog.pin_sections).toEqual([
+			{ id: "release", name: "Release", count: 0 },
+			{ id: "research", name: "Research", count: 0 },
+		]);
 	});
 
 	it("has no projects, archived projects or test-run projects in the catalogs", () => {
@@ -819,7 +850,9 @@ describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
 
 	it("changes nothing, and never throws, when a step's session isn't in the fleet", () => {
 		const empty = createDemoFleet({ now: STARTUP, empty: true });
-		expect(() => empty.step("question")).not.toThrow();
+		const payload = empty.step("question");
+		// No row changed, so the step bumps neither the sequence nor a target.
+		expect(payload).toEqual({ generationId: DEMO_FLEET_GENERATION, sequence: 0, targets: [] });
 		expect(liveRows(empty)).toEqual([]);
 	});
 

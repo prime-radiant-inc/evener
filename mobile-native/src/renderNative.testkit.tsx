@@ -13,11 +13,14 @@ import {
 	createElement,
 	type ForwardedRef,
 	forwardRef,
+	memo,
 	type ReactElement,
 	type ReactNode,
 	type Ref,
+	useEffect,
 	useImperativeHandle,
 	useRef,
+	useState,
 } from "react";
 import {
 	act,
@@ -25,13 +28,107 @@ import {
 	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
+	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
+import { expect, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ComposerFocus } from "./session/composerFocus";
+import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** The device's system glass and its accessibility settings, as the app
+ * reads them: whether the Liquid Glass API is there (expo-glass-effect's
+ * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
+ * Transparency, which a test turns on or off with setReduceTransparency. */
+export const systemGlass = (() => {
+	const listeners = new Set<(value: boolean) => void>();
+	let reduceTransparency = false;
+	let pendingAnswer: (() => void) | null = null;
+	return {
+		/** The next Reduce Transparency read waits until answerRead(). */
+		readPending: false,
+		/** Answers a read readPending held, with the current setting. */
+		answerRead() {
+			pendingAnswer?.();
+			pendingAnswer = null;
+		},
+		read(): Promise<boolean> {
+			if (!this.readPending) return Promise.resolve(reduceTransparency);
+			return new Promise((resolve) => {
+				pendingAnswer = () => resolve(reduceTransparency);
+			});
+		},
+		/** "throws" stands for a binary without the native module, where
+		 * reading it throws. */
+		available: false as boolean | "throws",
+		get reduceTransparency() {
+			return reduceTransparency;
+		},
+		listen(listener: (value: boolean) => void) {
+			listeners.add(listener);
+			return { remove: () => listeners.delete(listener) };
+		},
+		setReduceTransparency(value: boolean) {
+			reduceTransparency = value;
+			for (const listener of listeners) listener(value);
+		},
+		reset() {
+			this.available = false;
+			this.readPending = false;
+			pendingAnswer = null;
+			reduceTransparency = false;
+			listeners.clear();
+		},
+	};
+})();
+
+/** The software keyboard as React Native's Keyboard module reports it: a
+ * screen subscribes through Keyboard.addListener, and a test raises or lowers
+ * it with show() and hide(). */
+export const keyboard = (() => {
+	const listeners = new Map<string, Set<() => void>>();
+	const emit = (event: string) => {
+		for (const listener of listeners.get(event) ?? []) listener();
+	};
+	let visible = false;
+	return {
+		get visible() {
+			return visible;
+		},
+		/** How many listeners are subscribed to `event`. */
+		listening(event: string) {
+			return listeners.get(event)?.size ?? 0;
+		},
+		/** Lowers the keyboard and forgets every listener, so a mount a test
+		 * left behind can't carry keyboard state into the next test. */
+		reset() {
+			visible = false;
+			listeners.clear();
+		},
+		/** Sends one Keyboard event on its own, as a platform would. */
+		emit,
+		addListener(event: string, listener: () => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return { remove: () => set.delete(listener) };
+		},
+		show() {
+			visible = true;
+			emit("keyboardWillShow");
+			emit("keyboardDidShow");
+		},
+		hide() {
+			visible = false;
+			emit("keyboardWillHide");
+			emit("keyboardDidHide");
+		},
+	};
+})();
 
 /** The slice of the `react-native` module the Providers screen and ui.tsx
  * import, as inert host elements: a host string is a valid element type for
@@ -65,12 +162,31 @@ export function nativeModuleMock() {
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
+	type ListRowInfo = { item: unknown; index: number };
+	// A list's cell: VirtualizedList's CellRenderer is a PureComponent over
+	// the row, its renderer and extraData. Its own cell component wraps each
+	// row, as the real list does, so a test can lay a cell out (its onLayout)
+	// and measure the row.
+	const ListCell = memo(function ListCell(props: {
+		item: unknown;
+		index: number;
+		renderItem?: (info: ListRowInfo) => ReactNode;
+		/** Unread here: it's a prop only so a new value re-renders the cell,
+		 * as the real list's extraData does. */
+		extraData?: unknown;
+		Cell?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+	}) {
+		const row = props.renderItem?.({ item: props.item, index: props.index }) ?? null;
+		return props.Cell ? createElement(props.Cell, { item: props.item, index: props.index }, row) : row;
+	});
 	const FlatList = (props: {
 		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
 		renderItem?: (info: { item: unknown; index: number }) => ReactNode;
 		CellRendererComponent?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+		extraData?: unknown;
+		strictMode?: boolean;
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
@@ -105,17 +221,23 @@ export function nativeModuleMock() {
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item, index) => {
-				const row = props.renderItem?.({ item, index }) ?? null;
-				// A list's own cell wraps each row, as the real list does, so a
-				// test can lay a cell out (its onLayout) and measure the row.
-				const Cell = props.CellRendererComponent;
-				return createElement(
+			...(props.data ?? []).map((item, index) =>
+				createElement(
 					"Item",
 					{ key: props.keyExtractor?.(item, index) ?? index },
-					Cell ? createElement(Cell, { item, index }, row) : row,
-				);
-			}),
+					createElement(ListCell, {
+						item,
+						index,
+						// As the real FlatList does: without strictMode it wraps
+						// renderItem afresh on every render, so every cell re-renders
+						// with the list; with it, the wrapper is memoized, and a cell
+						// re-renders only for a new renderItem, row or extraData.
+						renderItem: props.strictMode ? props.renderItem : (info: ListRowInfo) => props.renderItem?.(info),
+						extraData: props.extraData,
+						Cell: props.CellRendererComponent,
+					}),
+				),
+			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
@@ -148,9 +270,13 @@ export function nativeModuleMock() {
 
 	return {
 		AccessibilityInfo: {
-			announceForAccessibility: () => {},
+			announceForAccessibility: vi.fn(),
+			// Reduce Motion stays off and never changes here: a suite that
+			// needs it mocks AccessibilityInfo itself.
 			isReduceMotionEnabled: () => Promise.resolve(false),
-			addEventListener: () => ({ remove: () => {} }),
+			isReduceTransparencyEnabled: () => systemGlass.read(),
+			addEventListener: (event: string, listener: (value: boolean) => void) =>
+				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
 		},
 		ActivityIndicator: "ActivityIndicator",
 		// In front the whole test; a test that needs the app to come and go
@@ -161,6 +287,11 @@ export function nativeModuleMock() {
 		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
 		Image: "Image",
+		Keyboard: {
+			addListener: keyboard.addListener,
+			dismiss: vi.fn(() => keyboard.hide()),
+			isVisible: () => keyboard.visible,
+		},
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
@@ -308,8 +439,41 @@ export function reanimatedModuleMock() {
 	for (const step of ["springify", "duration", "dampingRatio"]) transition[step] = () => transition;
 	return {
 		__esModule: true,
-		default: { ScrollView: "ScrollView", View: "Animated.View" },
+		// An animated component renders as the component it wraps.
+		default: {
+			ScrollView: "ScrollView",
+			View: "Animated.View",
+			createAnimatedComponent: <T,>(component: T) => component,
+		},
 		LinearTransition: transition,
+		// An animated style is its worklet's result at render time.
+		useAnimatedStyle: <T,>(updater: () => T) => updater(),
+	};
+}
+
+/** How far the keyboard has risen, 0 to 1, as react-native-keyboard-controller
+ * reports it frame by frame. It follows the testkit keyboard (1 while shown),
+ * unless a test holds it partway with `at`. */
+export const keyboardProgress = { at: null as number | null };
+
+/** react-native-keyboard-controller's useReanimatedKeyboardAnimation for
+ * vitest: the progress above, and a render whenever the keyboard moves, since
+ * a mocked shared value can't drive a style on its own. */
+export function useKeyboardAnimationMock() {
+	const [, rendered] = useState(0);
+	useEffect(() => {
+		const again = () => rendered((count) => count + 1);
+		const subscriptions = [
+			keyboard.addListener("keyboardWillShow", again),
+			keyboard.addListener("keyboardWillHide", again),
+		];
+		return () => {
+			for (const subscription of subscriptions) subscription.remove();
+		};
+	}, []);
+	return {
+		progress: { value: keyboardProgress.at ?? (keyboard.visible ? 1 : 0) },
+		height: { value: 0 },
 	};
 }
 
@@ -448,11 +612,13 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
-/** Mounts `element` and flushes its effects, returning the test renderer. */
-export function render(element: ReactElement): ReactTestRenderer {
+/** Mounts `element` and flushes its effects, returning the test renderer.
+ * `options.createNodeMock` hands host components' refs a stand-in, such as a
+ * ScrollView whose scrollTo a test records. */
+export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
-		tree = create(element);
+		tree = create(element, options);
 	});
 	return tree;
 }
@@ -504,8 +670,39 @@ export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
-/** The first mounted Pressable whose accessibility label is `label`, found
- * the way VoiceOver finds a button; undefined when there is none. */
+/** The first mounted Pressable VoiceOver names `label`: its accessibility
+ * label, or, with none, the text inside it, which iOS reads in its place;
+ * undefined when there is none. */
 export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
-	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	return tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === label,
+	)[0];
+}
+
+/** The one scrolling body of the dock whose card carries `testID` (spec 8.4),
+ * checked to shrink with its card; `holds` says whether the Pressable
+ * labelled `label` scrolls inside it or stays put outside it. */
+export function dockBody(tree: ReactTestRenderer, testID: string) {
+	const card = tree.root.findByProps({ testID });
+	expect(card.props.style).toMatchObject({ flexShrink: 1 });
+	const [scroller, ...others] = card.findAll((node) => String(node.type) === "ScrollView");
+	if (!scroller) throw new Error(`the dock ${testID} has no scroller`);
+	expect(others).toHaveLength(0);
+	// No floor: the answer controls outside it win whatever room is short.
+	expect(scroller.props.style).toEqual(shrinkingScroller);
+	return {
+		scroller,
+		holds(label: string) {
+			const target = pressable(tree, label);
+			if (!target) throw new Error(`no pressable labelled ${label}`);
+			return scroller.findAll((node) => node === target).length > 0;
+		},
+	};
+}
+
+/** The composer's focus as the Composer would report it: `focused` or not. */
+export function composerFocusedAs(focused: boolean): ComposerFocus {
+	const focus = new ComposerFocus();
+	focus.set(focused);
+	return focus;
 }

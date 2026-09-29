@@ -369,6 +369,59 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_CONTAINER=1` — the live deploy pipeline against a disposable container host
+
+The deploy pipeline kept after comp08 passes 1–3 (the crash-fencing stack's
+removal): an alpine+sshd Docker container stands in for the disposable host (the
+accepted D-7 plan), and the check drives the hub's own AppWire client through the
+pipeline's whole wire path — `evener/host/add` → `evener/host/attach` (which
+provisions the bare host) → `evener/host/plan` (mints the confirmation token) →
+`evener/host/deploy` → `evener/host/restart` → `evener/host/operations`. It
+asserts the operation records' pending → running → complete lifecycle and
+identity pair, the token's single use (a replay refuses the typed `token-missing`
+arm), the restart's host-side process replacement (the same endpoint serves the
+same stamped build from a provably later process start), and the host's own
+`launch-check` reporting the controller's build. It also pins the
+simplification's live proof: the container carries no evener-fence helper, no
+claim primitive, and no fencing state, and the happy path carries no
+fencing-flavoured refusal or prose.
+
+**This gate writes to the host** — it creates its own run-target directory there
+and starts a hub from it — which is why it needs `EVENER_SSH_E2E_DEPLOY=1` on top
+of `EVENER_SSH_E2E=1`, like the sibling deploy check. It skips under `-short`.
+`EVENER_SSH_E2E_HOST` targets an existing disposable host instead of the
+container (the override path) and skips the container; `EVENER_SSH_E2E_USER`
+sets that entry's ssh user, as in the sibling checks.
+
+Docker: the check caches one small image, `evener-e2e-ssh:local` (alpine plus
+openssh, curl, lsof, and procps — the host tools the product's ssh paths
+invoke), and removes its container when the run finishes; remove the cached
+image with `docker rmi evener-e2e-ssh:local`. When Docker or its daemon is
+unavailable (and no `EVENER_SSH_E2E_HOST` is set), the check skips with that
+reason; so does a `DOCKER_HOST` — or an active docker context — naming a
+non-local daemon, because the check publishes the container's sshd on this
+controller's `127.0.0.1` and cannot reach a remote daemon's port.
+
+How the container is reached: a per-run ed25519 key authorized in the container,
+the container's sshd published on a per-run loopback port, and a per-run
+`ssh_config` naming the alias. The product's plain `ssh` invocations are
+redirected to it by a per-run `ssh` shim placed first on `PATH`, because OpenSSH
+resolves its user config from the passwd-database home and NOT `$HOME` — a config
+in the controller's isolated HOME (the convention the other live checks use for
+hub state) would never be consulted. The shim hands the per-run config to exactly
+the alias's invocations and passes every other invocation through unchanged, so
+no product code changes.
+
+Prerequisites: Docker with a reachable daemon (or `EVENER_SSH_E2E_HOST`), a
+**clean** checkout (the controller's build identity is stamped from `HEAD`, and
+the check skips on a dirty tree), and the Go toolchain. Only the container's
+`linux/amd64` target is supported for the Docker path; other targets skip.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostDeployPipelineContainerE2E' -count=1 -v
+~~~
+
 ### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
 
 The credential push's criterion (component 07c,
@@ -1661,6 +1714,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, the `mobile-native/src` and `mobile/src` sources match the native Biome formatter config (`mobile-native/biome.jsonc`, the `npm run lint` step), and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, shared-session tests, native typechecking, formatting, or script module resolution fail. |
 | `make native-preflight` | Ensure the mobile-native dependency install is present, real, and lockfile-compatible before any native target runs. | mobile-native/node_modules exists as a real directory, matches package-lock.json, and holds an executable .bin/expo, so Metro bundles with the pinned Expo instead of whatever `npx` finds on PATH. | Setup prerequisite for the native gates. | Node 22.13+; never installs, refusing instead with the command to run. | node_modules is missing, is a symlink (the bundler resolves no module through one, whatever the lockfiles say), is older than package-lock.json, or has no executable .bin/expo; the message names `cd mobile-native && npm ci`. |
 | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
+| `make check-podfile-lock` | Check that mobile-native/Podfile.lock locks exactly the iOS pods autolinking resolves. | every pod the Expo and React Native autolinking the generated Podfile runs would link, Expo's companion pods included, is in the lock's DEPENDENCIES under the same name and directory, and every autolinked pod the lock lists is still linked. | Native CI; local pre-merge when mobile-native/package.json, package-lock.json or Podfile.lock change. | Node 22.13+ and an already-installed, real (not symlinked) mobile-native dependency tree; no macOS, CocoaPods, Xcode or generated ios/ project. Expo's precompiled mode and extraPods are not handled. | an autolinked pod is not locked, or the lock lists an autolinked pod nothing links (a version change inside an already locked pod is not checked), or the script's own tests (check-podfile-lock.test.mjs) fail. |
 | `make api-package-preflight` | Ensure the appwire-client/typescript dependency install is present and healthy before the qualification runner starts. | node_modules carries the pinned tsc and the ws the qualification runner imports, or is repaired with npm ci. | Setup prerequisite for test-api-package. | Node 22+; never runs npm ci through a symlinked node_modules. | node_modules is missing and npm ci fails, is a mismatched symlink, or lacks a working tsc / ws; on a real install the message names `cd appwire-client/typescript && npm ci`, and on a symlinked one it names the shared install instead. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |

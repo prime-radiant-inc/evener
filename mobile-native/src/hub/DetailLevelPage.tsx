@@ -20,8 +20,8 @@ import { useEffect, useRef, useState } from "react";
 import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SwitchRow } from "../sheet/Grouped";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { Group, GroupedPage, GroupFooter, Row, SwitchRow } from "../sheet/Grouped";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { useHubSheet } from "./hubSheetContext";
 
@@ -83,7 +83,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={hubName} />
+				<FirstLoad hubName={hubName} label="Loading the default detail level" />
 			</GroupedPage>
 		);
 	}
@@ -117,12 +117,10 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const failedChoice =
 		failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable && !state.draftUnreadable;
 	const failedAction = failed && !writeUncertain && (conflict || state.draftUnreadable) && !stateErrorShown;
-	return (
-		<GroupedPage>
-			<SheetStatus />
-			{state.support === "unsupported" ? (
-				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
-			) : null}
+	// What happened to a choice, and what to do about it, reads beneath the
+	// levels it was made in; a page with no levels to show leads with it.
+	const status = (
+		<>
 			{state.draftUnreadable ? (
 				<>
 					<GroupFooter tone="danger">A saved change to this setting couldn't be read on this phone.</GroupFooter>
@@ -184,9 +182,17 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 					</Group>
 				</>
 			) : null}
+		</>
+	);
+	return (
+		<GroupedPage>
+			<SheetStatus />
+			{state.support === "unsupported" ? (
+				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
+			) : null}
 			{config && state.support === "supported" ? (
 				<>
-					<GroupLabel>Default detail level</GroupLabel>
+					{/* The page's title names the setting. */}
 					<Group>
 						{DETAIL_LEVELS.map(({ level, label, description }) => (
 							<Row
@@ -212,9 +218,12 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 							}}
 						/>
 					</Group>
+					{status}
 					{config.content.kind === "custom" ? <CustomChoices config={config} disabled={busy} choose={choose} /> : null}
 				</>
-			) : null}
+			) : (
+				status
+			)}
 		</GroupedPage>
 	);
 }
@@ -232,8 +241,7 @@ function CustomChoices({
 	if (content.kind !== "custom") return null;
 	return (
 		<>
-			<GroupLabel>Shows</GroupLabel>
-			<Group>
+			<Group label="Shows">
 				{SHOWS.map(({ key, label }) => (
 					<SwitchRow
 						key={key}
@@ -244,8 +252,7 @@ function CustomChoices({
 					/>
 				))}
 			</Group>
-			<GroupLabel>More detail</GroupLabel>
-			<Group>
+			<Group label="More detail">
 				{MORE_DETAIL.map(([key, label]) => (
 					<SwitchRow
 						key={key}
@@ -256,8 +263,7 @@ function CustomChoices({
 					/>
 				))}
 			</Group>
-			<GroupLabel>Hook events</GroupLabel>
-			<Group>
+			<Group label="Hook events">
 				{HOOK_EXIT_DETAILS.map((detail) => (
 					<Row
 						key={detail}

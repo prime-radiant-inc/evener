@@ -8,9 +8,18 @@
 //   for real and a suite can assert on what a press played.
 // - expo-sqlite/kv-store: the device's key-value store, which the Haptics
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
+// - expo-glass-effect: the system Liquid Glass the bottom bars wear
+//   (design/BarFrame). GlassView is an inert host element, and whether the
+//   API is there reads the testkit's systemGlass (off unless a test says).
 // - expo-symbols: the SF Symbols every grouped row draws its glyph with
 //   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
 //   element, as the suites that mock it themselves draw it.
+// - react-native-keyboard-controller: the App's KeyboardProvider and the
+//   Session's KeyboardAvoidingView, as inert host elements that keep their
+//   props, so a suite can see which avoiding view a screen uses and how; and
+//   the keyboard's progress, which the bars' home-indicator room follows.
+// - react-native-reanimated: the testkit's reanimatedModuleMock, since every
+//   bar (design/BarFrame) animates with the keyboard.
 import { vi } from "vitest";
 
 // react-test-renderer logs a deprecation warning through console.error on
@@ -33,6 +42,25 @@ vi.mock("expo-haptics", async () => {
 });
 
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+vi.mock("react-native-keyboard-controller", async () => ({
+	KeyboardProvider: "KeyboardProvider",
+	KeyboardAvoidingView: "KeyboardControllerAvoidingView",
+	useReanimatedKeyboardAnimation: (await import("./renderNative.testkit")).useKeyboardAnimationMock,
+}));
+
+vi.mock("react-native-reanimated", async () => (await import("./renderNative.testkit")).reanimatedModuleMock());
+
+vi.mock("expo-glass-effect", async () => {
+	const { systemGlass } = await import("./renderNative.testkit");
+	return {
+		GlassView: "GlassView",
+		isGlassEffectAPIAvailable: () => {
+			if (systemGlass.available === "throws") throw new Error("Cannot find native module 'ExpoGlassEffect'");
+			return systemGlass.available;
+		},
+	};
+});
 
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();

@@ -37,17 +37,21 @@ export function BoardNotices({
 	hubId,
 	notices,
 	navigation,
+	connected,
 }: {
 	hubId: string;
 	notices: Notice[];
 	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">;
+	/** Whether the hub is reachable. A notice's action needs it (ruling 21):
+	 * while the hub is out of reach the action hides, and the sentence stays. */
+	connected: boolean;
 }) {
 	if (!notices.length) return null;
 	return notices.map((notice) => (
 		<NoticeRow
 			key={notice.key}
 			text={notice.text}
-			action={{ label: notice.action, onPress: () => openNotice(navigation, hubId, notice) }}
+			action={connected ? { label: notice.action, onPress: () => openNotice(navigation, hubId, notice) } : undefined}
 		/>
 	));
 }

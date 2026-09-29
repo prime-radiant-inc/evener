@@ -338,7 +338,7 @@ func TestRestoreIdleFailureRetainsTheManifestReferencedChildScratch(t *testing.T
 	}
 	defer root.Close()
 
-	scratchBase := t.TempDir()
+	scratchBase := realTempDirForTest(t)
 	t.Setenv(envvars.TmpDir.Name, scratchBase)
 	// The child takes production's snapshot path, so its environment mints a
 	// scratch before anything can fail; the fault then fails the construction
@@ -422,10 +422,10 @@ func TestRestoreIdleFailureSettlesTheReprovisionedFreshScratch(t *testing.T) {
 	// Isolate the scratch base: every directory this restore mints lands
 	// under it, so the settlement's disposals are observable directly, and
 	// cleanup removes directory and pin together.
-	isolated := t.TempDir()
+	isolated := realTempDirForTest(t)
 	t.Setenv(envvars.TmpDir.Name, isolated)
 	netDisabled := false
-	childWorkspace := t.TempDir()
+	childWorkspace := realTempDirForTest(t)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		// A workspace of the child's own keeps the restore off the root's
 		// shared environment, so it creates a fresh sandboxed one — and a

@@ -12,7 +12,20 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "find" | "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
+	| {
+			kind:
+				| "find"
+				| "files"
+				| "subagents"
+				| "tasks"
+				| "notes"
+				| "info"
+				| "aside"
+				| "like"
+				| "pin"
+				| "archive"
+				| "shutDown";
+	  };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
@@ -66,6 +79,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		...(input.canAside
 			? [item("Ask aside…", "aside", { description: "A side question in its own session; this one keeps working" })]
 			: []),
+		item("New session like this", "like"),
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),

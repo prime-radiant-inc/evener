@@ -49,7 +49,7 @@ import {
   watchGloss,
   watchTitle,
 } from "@evener/appwire-client";
-import { sessionGroupHostId, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -73,7 +73,6 @@ import {
   type CompletedJobsFoldRailNode,
   displayState,
   type HostRailNode,
-  type InactiveFoldRailNode,
   type JobRailNode,
   needsYouDescendantCount,
   type OverflowRailNode,
@@ -220,7 +219,7 @@ function Signal({ wireState }: { wireState: string }) {
 // leadsOverWork says the session's own state is something a person must do, a
 // restart, a question or a pending approval (approvalWaiting), which outranks
 // any work still running on the row. A plain your-move row does not: its turn
-// ended and its subagents' work is what is happening. activityGloss leads its
+// ended and its jobs are what is happening. activityGloss leads its
 // line with that state's word and SessionRow keeps the row's needs-you dot;
 // both read this one predicate, so the gloss and the dot cannot disagree about
 // which states outrank work.
@@ -251,20 +250,12 @@ function leadsOverWork(session: RailSession): boolean {
 // only assert on as one flat string.
 //
 // A state a person must act on (leadsOverWork) leads the line whatever else
-// is running: a subagent or job count in its place would read as work in
-// progress.
+// is running: a job count in its place would read as work in progress.
 export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
-  const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
   const word = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
-  const wordLeads = leadsOverWork(session);
   const parts: string[] = [];
-  if (wordLeads) parts.push(word);
-  if (workingCount > 0) {
-    parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
-  } else if (!wordLeads && (jobCount === 0 || session.state === "active")) {
-    parts.push(word);
-  }
+  if (leadsOverWork(session) || jobCount === 0 || session.state === "active") parts.push(word);
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
@@ -658,18 +649,13 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const { session } = node;
   // A non-local row names its host on the title line (a LABEL, not a tree
   // re-layout); reachability comes from the manifest's sources, not from the
-  // row. A CLUSTER row names its members' host - its own host_id is the
-  // synthetic scope prefix of its id ("cluster"), which names no machine -
-  // the same resolver the grouping uses, so the chip cannot contradict the
-  // group the row sits under. Dormant keeps its own "never run" meaning -
-  // see useHostOnline.
-  const hostId = sessionGroupHostId(session);
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
   const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
-  // The state this row PRESENTS (railNodes' displayState): a turn-ended
-  // subagent presents as idle, not "your move", because its next input comes
-  // from its parent session, never from the user. Dot, gloss, tint, and
+  // The state this row PRESENTS (railNodes' displayState): a pending approval
+  // presents as needs-you whatever the wire state says. Dot, gloss, tint, and
   // tooltip all read this one value so they can never disagree about a row.
   const presented = displayState(session);
   // A quiet row (idle, ended, notLoaded, unknown) is title + age, one line: the
@@ -680,12 +666,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
   const activity = activeWorkSummary(session);
-  const hasWorkingDescendants = activity.workingSubagents > 0;
   const hasRunningJobs = activity.runningJobs > 0;
-  const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
-  // Descendant/job activity is a working signal for the owning session. A
+  const hasActiveWork = session.state === "active" || hasRunningJobs;
+  // Job activity is a working signal for the owning session. A
   // failure, a restart, a question and a pending approval still win over that
-  // rollup, so none can disappear behind a green child - nor, for an approval,
+  // rollup, so none can disappear behind a green job - nor, for an approval,
   // behind the row's own "active" wire state (the escalation blocks mid-turn).
   const outranksWork = presented === "errored" || leadsOverWork(session);
   let effectiveState = presented;
@@ -724,7 +709,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // A live root's whole-tree subagent tally (D1); nested rows show none: running and failed counts
   // in words. It too can be all a quiet row has to say, so it earns the line.
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
-  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches || tally !== null;
+  const showsActivity = showsGloss || hasRunningJobs || hasWatches || tally !== null;
   // The tinted gloss itself still belongs to a signal row (or to a depth-0
   // row naming its project). A watch-only quiet row's second line is just its
   // watch count; glossing "idle" beside the count would be noise, not a gloss.
@@ -998,9 +983,9 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   );
 }
 
-// The "Inactive subagents (N)" disclosure (parity-m3-sidebar-tree.md §3).
+// A disclosure row (the completed-jobs fold).
 // No signal slot at all, matching Signal's own render-only-when-dotted
-// contract (a group of finished sessions has no state to report). No actions
+// contract (a group of finished jobs has no state to report). No actions
 // menu either: it stands for rows rather than being one, and the rows it
 // hides carry their own. Its label sits at the same x as every other row at
 // its nesting depth - the trailing chevron after the label is its toggle,
@@ -1022,11 +1007,6 @@ function DisclosureFoldRow({ label, testId, info }: { label: string; testId: str
       </span>
     </span>
   );
-}
-
-function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
-  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
-  return <DisclosureFoldRow label={label} testId="rail-row-inactive-fold" info={info} />;
 }
 
 function jobLabel(job: JobRailNode["job"]): string {
@@ -1217,8 +1197,6 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
       return <JobRow node={node} />;
     case "watch":
       return <WatchRow node={node} />;
-    case "inactiveFold":
-      return <InactiveFoldRow node={node} info={info} />;
     case "completedJobsFold":
       return <CompletedJobsFoldRow node={node} info={info} />;
     case "overflow":

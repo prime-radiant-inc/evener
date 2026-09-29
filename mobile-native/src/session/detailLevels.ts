@@ -34,32 +34,34 @@ export function detailLevel(level: ContentLevel): DetailLevel {
 	return found;
 }
 
-// Chat shows the conversation and nothing else. The shared Chat preset keeps
-// one line per step (its vector matches Intent's), so the phone projects the
-// projector's own no-intent Custom vector instead (ruling 8).
-const JUST_THE_CONVERSATION = {
-	kind: "custom",
-	toolIntent: false,
-	toolCalls: false,
-	reasoning: false,
-	expandByDefault: false,
-} as const;
+/** What a session's transcript shows: the config it projects at, and whether
+ * the screen then keeps just the conversation (Chat). They come together so
+ * no caller can take one without the other. */
+export interface TranscriptDisplay {
+	config: TranscriptDisplayConfigV1 | null;
+	justTheConversation: boolean;
+}
 
-export function configForLevel(
+export function displayForLevel(
 	chosen: ContentLevel | null,
 	hubConfig: TranscriptDisplayConfigV1 | null,
-): TranscriptDisplayConfigV1 | null {
+): TranscriptDisplay {
 	// Chat means just the conversation on the phone whether this session or
 	// the hub's default chose it (ruling 8).
 	const hubChat = hubConfig?.content.kind === "preset" && hubConfig.content.level === "chat";
 	const level = chosen ?? (hubChat ? "chat" : null);
 	// Nothing chosen here: the session shows exactly what the hub says.
-	if (!level) return hubConfig;
+	if (!level) return { config: hubConfig, justTheConversation: false };
 	const base = hubConfig ?? shippedConfig("mobile");
-	return makeTranscriptDisplayConfig(
-		level === "chat" ? JUST_THE_CONVERSATION : { kind: "preset", level },
-		base.advanced,
-	);
+	// Chat projects at Intent on purpose: there a subagent's call survives as
+	// its own row (a no-intent vector hides it), and the screen then drops the
+	// settled and running steps (projectNativeTranscript's justTheConversation).
+	// The shared Chat preset keeps a line per step.
+	const chat = level === "chat";
+	return {
+		config: makeTranscriptDisplayConfig({ kind: "preset", level: chat ? "intent" : level }, base.advanced),
+		justTheConversation: chat,
+	};
 }
 
 export function currentLevel(
@@ -67,7 +69,10 @@ export function currentLevel(
 	hubConfig: TranscriptDisplayConfigV1 | null,
 ): ContentLevel | "custom" | null {
 	if (chosen) return chosen;
-	if (!hubConfig) return null;
+	// No hub config yet (or ever): the transcript projects at the config-less
+	// show-everything config, which is Full content — so the menu marks that
+	// level rather than nothing (projectedRows.ts PROJECT_EVERYTHING_CONFIG).
+	if (!hubConfig) return "full";
 	return hubConfig.content.kind === "preset" ? hubConfig.content.level : "custom";
 }
 

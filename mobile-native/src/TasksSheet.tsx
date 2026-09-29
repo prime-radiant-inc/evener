@@ -8,17 +8,11 @@ import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
-import { Sheet, useSheet } from "./sheet/Sheet";
+import { Sheet } from "./sheet/Sheet";
+import { useSheet } from "./sheet/useSheet";
+import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Action, Copy, ErrorMessage, useColors } from "./ui";
-
-const statusLabel = {
-	open: "Open",
-	in_progress: "In progress",
-	done: "Done",
-	cancelled: "Cancelled",
-};
-const glyph = { open: "○", in_progress: "●", done: "✓", cancelled: "×" };
 
 /** The session's Tasks sheet: a formSheet route over the session it lists
  * (sheetRoutes.ts). It reads its hub's connection itself, since a sheet
@@ -136,12 +130,12 @@ export function TaskList({
 			>
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={`${statusLabel[task.status] ?? task.status}: ${task.description}`}
+					accessibilityLabel={`${TASK_STATUS_LABEL[task.status] ?? task.status}: ${task.description}`}
 					accessibilityState={{ expanded: open }}
 					onPress={() => toggle(task.id)}
 					style={{ minHeight: 44, justifyContent: "center", gap: 4 }}
 				>
-					<Copy>{`${glyph[task.status] ?? "○"} ${task.description}`}</Copy>
+					<Copy>{`${TASK_STATUS_GLYPH[task.status] ?? "○"} ${task.description}`}</Copy>
 					{!open && latest && (task.status === "open" || task.status === "in_progress") ? (
 						<Copy muted>{latest}</Copy>
 					) : null}
@@ -150,7 +144,7 @@ export function TaskList({
 					<View style={{ gap: 10, paddingVertical: 8 }}>
 						<Copy
 							muted
-						>{`${statusLabel[task.status] ?? task.status} · ${task.type}${task.reasoningEffort ? ` · ${task.reasoningEffort}` : ""}`}</Copy>
+						>{`${TASK_STATUS_LABEL[task.status] ?? task.status} · ${task.type}${task.reasoningEffort ? ` · ${task.reasoningEffort}` : ""}`}</Copy>
 						{task.dependsOn?.length ? (
 							<Copy muted>{`Depends on ${task.dependsOn.map((id) => `#${id}`).join(", ")}`}</Copy>
 						) : null}

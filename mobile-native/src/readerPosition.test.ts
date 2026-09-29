@@ -9,10 +9,11 @@ import {
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
-	shouldApplyExactRestore,
+	exactRestoreDue,
 } from "./readerPosition";
 import type { SyncStringStorage } from "./syncStringStorage";
 import type { TimelineRow } from "./timeline";
@@ -45,21 +46,57 @@ const anchor = (over: Partial<ReaderAnchor> = {}): ReaderAnchor => ({
 });
 describe("reader positions", () => {
 	it("retries a clamped restore when the saved position becomes reachable", () => {
-		const measurement = { key: "anchor", y: 4734, height: 127 };
 		const desired = 4746;
 		const clamped = reachableReaderOffset(desired, 4934, 598);
 		expect(clamped).toBe(4336);
-		expect(shouldApplyExactRestore(measurement, measurement, clamped, clamped)).toBe(false);
+		const cut = { key: "anchor", height: 127, offset: clamped, clamped: true };
+		expect(exactRestoreDue(cut, { key: "anchor", height: 127 }, clamped)).toBe(false);
 		const reachable = reachableReaderOffset(desired, 6120, 598);
 		expect(reachable).toBe(desired);
-		expect(shouldApplyExactRestore(measurement, measurement, clamped, reachable)).toBe(true);
-		expect(
-			shouldApplyExactRestore(measurement, measurement, reachable, reachableReaderOffset(desired, 7000, 598)),
-		).toBe(false);
+		expect(exactRestoreDue(cut, { key: "anchor", height: 127 }, reachable)).toBe(true);
 		expect(reachableReaderOffset(desired, 300, 598)).toBe(0);
+	});
+	it("restores an anchor exactly once it has landed, however its row's measured y moves after", () => {
+		// A virtualized list re-estimating rows it unmounted moves the anchor
+		// row's measured y back and forth; chasing it made the list ping-pong.
+		const landed = { key: "anchor", height: 144, offset: 9731, clamped: false };
+		expect(exactRestoreDue(landed, { key: "anchor", height: 144 }, 9570)).toBe(false);
+		expect(exactRestoreDue(landed, { key: "anchor", height: 144 }, 9731)).toBe(false);
+	});
+	it("restores again when the anchor's own row reflows, as a text-size change does", () => {
+		const landed = { key: "anchor", height: 144, offset: 9731, clamped: false };
+		expect(exactRestoreDue(landed, { key: "anchor", height: 180 }, 9731)).toBe(true);
+	});
+	it("restores a new anchor, or the first time", () => {
+		expect(exactRestoreDue(null, { key: "anchor", height: 10 }, 100)).toBe(true);
+		expect(
+			exactRestoreDue({ key: "other", height: 10, offset: 5, clamped: false }, { key: "anchor", height: 10 }, 100),
+		).toBe(true);
 	});
 	it("uses stable transcript identity and pair ordering", () => {
 		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
+		// A reply's round key outlasts its stream's wire id and its recording.
+		const reply: TimelineRow = {
+			kind: "assistant",
+			id: "wire",
+			transcriptKey: "key-wire",
+			roundKey: "round:r1:agentMessage",
+			markdown: "",
+			streaming: false,
+		};
+		expect(readerKey(reply)).toBe("round:r1:agentMessage");
+		// A communicate reply keys by its call, which the preview and the
+		// recorded message both carry (issue #3173).
+		const communicate: TimelineRow = {
+			kind: "assistant",
+			id: "wire",
+			transcriptKey: "key-wire",
+			roundKey: "round:r1:agentMessage",
+			callKey: "call:c1:agentMessage",
+			markdown: "",
+			streaming: false,
+		};
+		expect(readerKey(communicate)).toBe("call:c1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
@@ -79,6 +116,20 @@ describe("reader positions", () => {
 			index: 1,
 			viewOffset: -18,
 		});
+	});
+	it("anchors on the first row in view, passing over a time marker", () => {
+		// A marker can leave the list when an older page lands, so an anchor on
+		// it would find nothing to restore to.
+		const marker: TimelineRow = { kind: "time", id: "time-turn_2", turnId: "turn_2", at: 0 };
+		const rows = [row("a", { entry: 1, item: 1 }), marker, row("b", { entry: 2, item: 1 })];
+		const measurements = new Map([
+			[readerKey(rows[0]), { key: readerKey(rows[0]), y: 0, height: 100 }],
+			[readerKey(marker), { key: readerKey(marker), y: 100, height: 30 }],
+			[readerKey(rows[2]), { key: readerKey(rows[2]), y: 130, height: 80 }],
+		]);
+		expect(readerAnchorRow(rows, measurements, 50)).toBe(rows[0]);
+		expect(readerAnchorRow(rows, measurements, 110)).toBe(rows[2]);
+		expect(readerAnchorRow(rows, measurements, 300)).toBeUndefined();
 	});
 	it("does not capture an unmeasured row", () => {
 		const item = row("a", { entry: 1, item: 1 });
@@ -140,9 +191,11 @@ describe("reader positions", () => {
 			),
 		).toEqual({ kind: "exact", index: 20, viewOffset: -120 });
 		const measurement = { key: readerKey(rows[20]), y: 600, height: 120 };
-		expect(shouldApplyExactRestore(null, measurement, null, 12)).toBe(true);
-		expect(shouldApplyExactRestore(measurement, measurement, 12, 12)).toBe(false);
-		expect(shouldApplyExactRestore({ ...measurement, height: 80 }, measurement, 12, 12)).toBe(true);
+		// The exact command's view offset is -12: the row at y 600 restores to 612.
+		const applied = { key: measurement.key, height: 120, offset: 612, clamped: false };
+		expect(exactRestoreDue(null, measurement, 612)).toBe(true);
+		expect(exactRestoreDue(applied, measurement, 612)).toBe(false);
+		expect(exactRestoreDue({ ...applied, height: 80 }, measurement, 612)).toBe(true);
 	});
 	it("requires exact identity or exact protocol position", () => {
 		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 3, item: 1 })];
@@ -173,7 +226,9 @@ describe("reader positions", () => {
 		}
 		expect(attempts.retryUnmeasured()).toBe(false);
 		expect(attempts.begin(measured)).toBe(true);
-		expect(shouldApplyExactRestore(measurement, measurement, 332, 332)).toBe(false);
+		expect(exactRestoreDue({ key: measurement.key, height: 463, offset: 332, clamped: false }, measurement, 332)).toBe(
+			false,
+		);
 		// Virtualization can remove the measured cell before the next effect.
 		expect(attempts.begin(missing)).toBe(true);
 		expect(attempts.begin(missing)).toBe(false);

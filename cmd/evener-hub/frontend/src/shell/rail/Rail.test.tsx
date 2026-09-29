@@ -24,6 +24,12 @@ import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import {
+  archivedListKey,
+  archivedListStore,
+  refreshLoadedArchivedLists,
+  resetArchivedListStoreForTests,
+} from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -1949,33 +1955,32 @@ describe("resource-backed Rail", () => {
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");
     const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });
-    const cluster = summary({
-      ref: "local:cluster",
-      session_id: "cluster",
-      title: "Keyboard cluster",
-      kind: "cluster",
+    const parent = summary({
+      ref: "local:parent",
+      session_id: "parent",
+      title: "Keyboard parent",
       children: [child],
     });
-    installState([sectionResource("live", [cluster])]);
+    installState([sectionResource("live", [parent])]);
     render(<Rail />);
 
-    const clusterRow = screen.getByRole("treeitem", { name: /keyboard cluster/i });
-    act(() => clusterRow.focus());
-    expect(document.activeElement).toBe(clusterRow);
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
+    act(() => parentRow.focus());
+    expect(document.activeElement).toBe(parentRow);
+    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    expect(parentRow.getAttribute("aria-expanded")).toBe("true");
     const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
     expect(document.activeElement).toBe(childRow);
 
     fireEvent.keyDown(childRow, { key: "Enter" });
     expect(window.location.pathname).toBe("/s/local%3Achild");
     fireEvent.keyDown(childRow, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(clusterRow);
-    fireEvent.keyDown(clusterRow, { key: "ArrowLeft" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(parentRow);
+    fireEvent.keyDown(parentRow, { key: "ArrowLeft" });
+    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
   test("a watch row is passive: keyboard activation persists no expansion override", () => {
@@ -3006,5 +3011,306 @@ describe("the selected session's rail row", () => {
     for (const tree of trees) {
       expect(within(tree).queryAllByRole("treeitem", { selected: true })).toHaveLength(1);
     }
+  });
+});
+
+describe("archived rows come from evener/archived/list", () => {
+  const archivedRow = (index: number) =>
+    summary({ ref: `local:old-${index}`, session_id: `old-${index}`, title: `Old run ${index}`, live: false });
+  const archivedCatalog = (moreArchived: number) =>
+    resource(
+      { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
+      {
+        generation_id: "g1",
+        revision: 1,
+        projects: [{ key: "p", name: "Proj", session_count: moreArchived + 1, more_archived: moreArchived }],
+        remaining: 0,
+      },
+    );
+  function installList(rows: NavigationSessionSummary[], total: number, nextCursor?: string) {
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("projects", "p")]: { rows, total, nextCursor, loaded: true, loading: false, error: null },
+      },
+    });
+  }
+
+  beforeEach(() => resetArchivedListStoreForTests());
+
+  test("the summary path takes archived rows from the list and counts the rest as not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    const rows = Array.from({ length: 50 }, (_, i) => archivedRow(i));
+    installList(rows, 60, "cursor-1");
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    const archived = project?.sessions.filter((session) => session.tier === "archived") ?? [];
+    expect(archived.map((session) => session.ref)).toEqual(rows.map((row) => row.ref));
+    expect(archived[0]?.project_key).toBe("p");
+    expect(project?.more_archived).toBe(10);
+  });
+
+  test("once the list loads, its own total counts the rows not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList(
+      Array.from({ length: 50 }, (_, i) => archivedRow(i)),
+      61,
+      "cursor-1",
+    );
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(11);
+  });
+
+  test("before the list loads, the whole archived count is not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.some((session) => session.tier === "archived")).toBe(false);
+    expect(project?.more_archived).toBe(60);
+  });
+
+  test("the graph path ignores the navigation archived tier and reads the list", () => {
+    const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
+    const projectSummary = { key: "p", name: "Proj", session_count: 61, more_archived: 60 };
+    const projectSummaryKey = scopedEntityKey(catalogKey, "1");
+    const catalog = normalizedResource(
+      catalogKey,
+      { projects: [projectSummary] },
+      {
+        metadata: {},
+        entities: [{ key: projectSummaryKey, kind: "project", value: projectSummary }],
+        containers: [
+          {
+            key: navigationRootContainerKey(catalogKey, "projects"),
+            owner: { kind: "resource_root", slot: "projects" },
+            children: [projectSummaryKey],
+          },
+        ],
+      },
+    );
+    installState([catalog, graphProjectResource("p", "3", "4", summary({ ref: "local:now", title: "Now" }))]);
+    installList([archivedRow(0), archivedRow(1)], 60, "cursor-1");
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.filter((session) => session.tier === "archived").map((session) => session.ref)).toEqual([
+      "local:old-0",
+      "local:old-1",
+    ]);
+    expect(project?.more_archived).toBe(58);
+  });
+
+  test("the Archived sessions count is the project's archived total, not its loaded rows", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList(
+      Array.from({ length: 50 }, (_, i) => archivedRow(i)),
+      60,
+      "cursor-1",
+    );
+    render(<Rail />);
+    expect(screen.getByRole("heading", { name: /Archived sessions \(60\)/ })).toBeTruthy();
+  });
+
+  test("a hydrated project with archived sessions fetches its archived list", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]));
+  });
+
+  test("a reveal of an archived session on a later page pages the list until its row renders", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const cursors: Array<string | undefined> = [];
+    client.on("evener/archived/list", (params) => {
+      cursors.push(params.cursor);
+      return params.cursor === "cursor-1"
+        ? { sessions: [archivedRow(1)], total: 2, nextCursor: "cursor-2" }
+        : { sessions: [archivedRow(2)], total: 2 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(3),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-2" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-2",
+          top_level_ref: "local:old-2",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(2),
+        },
+      ),
+    ]);
+    installList([archivedRow(0)], 3, "cursor-1");
+    render(<Rail revealTarget="local:old-2" />, client);
+    await waitFor(() => expect(cursors).toEqual(["cursor-1", "cursor-2"]));
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-2"]')).not.toBeNull());
+    restoreScroll();
+  });
+
+  test("a reveal of a fork original under an archived row pages until its continuation loads", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const cursors: Array<string | undefined> = [];
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    client.on("evener/archived/list", (params) => {
+      cursors.push(params.cursor);
+      return { sessions: [{ ...archivedRow(2), children: [original] }], total: 3, nextCursor: "cursor-2" };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(2),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:orig" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:orig",
+          top_level_ref: "local:old-2",
+          top_level: false,
+          tier: "archived",
+          project_key: "p",
+          session: original,
+        },
+      ),
+    ]);
+    installList([archivedRow(0)], 2, "cursor-1");
+    render(<Rail revealTarget="local:orig" />, client);
+    await waitFor(() => expect(cursors).toEqual(["cursor-1"]));
+    await act(async () => undefined);
+    expect(cursors).toEqual(["cursor-1"]);
+    restoreScroll();
+  });
+
+  test("a loaded list refetches when the navigation count moves past it", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]));
+    await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list whose total still disagrees with the navigation count is not refetched again", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toHaveLength(1));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list an action already refreshed is not refetched when the navigation count catches up", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await act(async () => {
+      await refreshLoadedArchivedLists();
+    });
+    expect(seen).toHaveLength(1);
+    act(() => installState([archivedCatalog(3), project]));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a project counts the navigation's archived total while its first page loads", () => {
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("projects", "p")]: { rows: [], total: 0, loaded: false, loading: true, error: null },
+      },
+    });
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(3);
+  });
+
+  test("a count that moves while the list loads refetches once the stale answer lands", async () => {
+    const client = new FakeClient("ready");
+    const stale = { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    const fresh = { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    let release: () => void = () => undefined;
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      if (seen.length > 1) return fresh;
+      return new Promise((resolve) => {
+        release = () => resolve(stale);
+      });
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    let refreshing: Promise<void> = Promise.resolve();
+    act(() => {
+      refreshing = refreshLoadedArchivedLists();
+    });
+    await waitFor(() => expect(seen).toHaveLength(1));
+    act(() => installState([archivedCatalog(3), project]));
+    await act(async () => {
+      release();
+      await refreshing;
+    });
+    await waitFor(() => expect(seen).toHaveLength(2));
+  });
+
+  test("a session in both navigation and the archived list renders once", () => {
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:old-0", title: "Old run 0" })])]);
+    installList([archivedRow(0)], 1);
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.filter((session) => session.ref === "local:old-0")).toHaveLength(1);
+  });
+
+  test("the archived fold's overflow row loads the list's next page", async () => {
+    const client = new FakeClient("ready");
+    const seen: Array<{ cursor?: string }> = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 3, "cursor-1");
+    render(<Rail />, client);
+    fireEvent.click(sectionDisclosure(/Archived sessions/));
+    const archived = sectionRoot(/Archived sessions/);
+    fireEvent.click(within(archived).getByText("Proj"));
+    fireEvent.click(within(archived).getByText(/1 older/));
+    await waitFor(() => expect(seen.some((params) => params.cursor === "cursor-1")).toBe(true));
+    await waitFor(() => expect(within(archived).getByText("Old run 2")).toBeTruthy());
   });
 });

@@ -3,7 +3,7 @@
 
 import { type ActivityUsage, formatTokenCount, isActivityFailure } from "@evener/appwire-client";
 
-// formatUsagePair renders a delegate row's token cluster ("↑41k ↓6k"), or null
+// formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null
 // when the daemon sent no usage (old daemon, shell-only work) so the row hides
 // the cluster instead of rendering ↑0 ↓0.
 export function formatUsagePair(usage: ActivityUsage | undefined): string | null {

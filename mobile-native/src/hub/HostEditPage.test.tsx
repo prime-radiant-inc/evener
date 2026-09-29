@@ -6,14 +6,28 @@ import { expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText } from "../renderNative.testkit";
+import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HostEditPage } from "./HostEditPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+// What the page's removal guard (useSheet's usePreventRemove) holds, and
+// the navigation object the hook reads: a test plays the stack's part.
+const guard = vi.hoisted(() => ({
+	prevented: false,
+	onPrevent: null as null | ((options: { data: { action: unknown } }) => void),
+	navigation: null as unknown,
+}));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
-	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
+	return {
+		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]),
+		useNavigation: () => guard.navigation,
+		usePreventRemove: (prevent: boolean, onPrevent: (options: { data: { action: unknown } }) => void) => {
+			guard.prevented = prevent;
+			guard.onPrevent = onPrevent;
+		},
+	};
 });
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -48,10 +62,14 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 	const navigation = {
 		isFocused: () => focus.focused,
 		goBack: vi.fn(),
+		dispatch: vi.fn(),
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => {
 			options = { ...options, ...next };
 		}),
 	};
+	guard.navigation = navigation;
+	// Where the page asked its scroller to go.
+	const scrolls: unknown[] = [];
 	const tree = render(
 		<HubSheetProvider value={context}>
 			<HostEditPage
@@ -59,6 +77,10 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 				route={{ key: "HostEdit", name: "HostEdit", params: { hubId: "hub-1", name } }}
 			/>
 		</HubSheetProvider>,
+		{
+			createNodeMock: (element) =>
+				element.type === "ScrollView" ? { scrollTo: (to: unknown) => scrolls.push(to) } : null,
+		},
 	);
 	await settle();
 	const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label, editable: true });
@@ -82,6 +104,7 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 		header,
 		save,
 		options: () => options,
+		scrolls,
 		dispose: () => hosts.dispose(),
 	};
 }
@@ -104,7 +127,21 @@ it("titles the page for its host and fills every field from the host's row", asy
 	expect(page.field("Roots").props.multiline).toBe(true);
 	const text = renderedText(page.tree);
 	expect(text).toContain("Hub config path");
-	expect(text).toContain("Optional listen address of the host's hub, when it is not the default.");
+	page.dispose();
+});
+
+it("says once that only the SSH address is required, and what each empty field means (audit M4)", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	const text = renderedText(page.tree);
+	expect(text).toContain("SSH destination, e.g. host.example or user@host.example.");
+	expect(text).toContain("Only the SSH address is required.");
+	expect(text).not.toMatch(/\bOptional\b/);
+	expect(page.field("User").props.placeholder).toBe("From the address or SSH config");
+	expect(page.field("Key path").props.placeholder).toBe("From your SSH config");
+	expect(page.field("Evener path").props.placeholder).toBe("evener on PATH");
+	expect(page.field("Hub config path").props.placeholder).toBe("The default hub.toml");
+	expect(page.field("Hub address").props.placeholder).toBe("The default address");
+	expect(page.field("Roots").props.placeholder).toBe("No project roots. One per line.");
 	page.dispose();
 });
 
@@ -158,6 +195,41 @@ it("puts any other refusal above the fields", async () => {
 	await page.save();
 	const text = renderedText(page.tree);
 	expect(text.indexOf("the registry is read-only right now")).toBeLessThan(text.indexOf("SSH address"));
+	page.dispose();
+});
+
+it("scrolls a refusal that names a field into view, however far down the page was", async () => {
+	const fleet = scriptedFleet([attic]);
+	fleet.refuse.update = new WireError('host "attic": missing ssh destination', -32602, {
+		evenerErrorInfo: "invalidHostField",
+		field: "address",
+	});
+	const page = await mount(fleet, "attic");
+	// The page lays its SSH address field out 60 points down, and the person
+	// has scrolled to Roots at the bottom before pressing Save.
+	act(() =>
+		page.tree.root
+			.findByProps({ testID: "host-field-address" })
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 60, width: 393, height: 120 } } }),
+	);
+	await page.save();
+	expect(page.scrolls).toEqual([{ y: 60, animated: true }]);
+	page.dispose();
+});
+
+it("scrolls to the top for a refusal above the fields", async () => {
+	const fleet = scriptedFleet([attic]);
+	fleet.refuse.update = new WireError("the registry is read-only right now", -32000);
+	const page = await mount(fleet, "attic");
+	await page.save();
+	expect(page.scrolls).toEqual([{ y: 0, animated: true }]);
+	page.dispose();
+});
+
+it("stays where it is when a save lands", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	await page.save();
+	expect(page.scrolls).toEqual([]);
 	page.dispose();
 });
 
@@ -267,5 +339,77 @@ it("refuses an edit made while someone else changed the host, and never saves ov
 	expect(text).toContain("This host changed since you opened it. Cancel, then open it again to see the change.");
 	expect(text.indexOf("This host changed")).toBeLessThan(text.indexOf("SSH address"));
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
+	page.dispose();
+});
+
+const leave = { type: "GO_BACK" };
+
+it("leaves at once when nothing was changed", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	expect(guard.prevented).toBe(false);
+	await act(async () => page.header("headerLeft").props.onPress());
+	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	page.dispose();
+});
+
+it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async () => {
+	alertRequests.length = 0;
+	const page = await mount(scriptedFleet([attic]), "attic");
+	page.type("User", "root");
+	expect(guard.prevented).toBe(true);
+	// The stack routes Cancel's goBack, a swipe and Back through the guard.
+	act(() => guard.onPrevent?.({ data: { action: leave } }));
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
+	expect(page.navigation.dispatch).not.toHaveBeenCalled();
+	act(() =>
+		alertRequests
+			.at(-1)
+			?.buttons?.find((button) => button.text === "Discard")
+			?.onPress?.(),
+	);
+	expect(page.navigation.dispatch).toHaveBeenCalledWith(leave);
+	page.dispose();
+});
+
+it("stops asking once an edit is typed back to what the host had", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	page.type("User", "root");
+	page.type("User", "jesse");
+	expect(guard.prevented).toBe(false);
+	page.dispose();
+});
+
+it("leaves without asking once its save lands", async () => {
+	alertRequests.length = 0;
+	const page = await mount(scriptedFleet([attic]), "attic");
+	page.type("User", "root");
+	await page.save();
+	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	// The save's own leaving passes the guard untouched.
+	if (guard.prevented) act(() => guard.onPrevent?.({ data: { action: leave } }));
+	expect(alertRequests).toHaveLength(0);
+	page.dispose();
+});
+
+it("holds Back and a swipe while its save is in flight, without asking", async () => {
+	alertRequests.length = 0;
+	const fleet = scriptedFleet([attic]);
+	const page = await mount(fleet, "attic");
+	page.type("User", "root");
+	fleet.client.request = (() => new Promise(() => {})) as never;
+	await act(async () => page.header("headerRight").props.onPress());
+	expect(guard.prevented).toBe(true);
+	act(() => guard.onPrevent?.({ data: { action: leave } }));
+	expect(alertRequests).toHaveLength(0);
+	expect(page.navigation.dispatch).not.toHaveBeenCalled();
+	page.dispose();
+});
+
+it("counts roots that save the same as no change", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	// A blank line and spaces drop out of the saved roots.
+	page.type("Roots", "/srv/b\n\n  /srv/a  \n");
+	expect(guard.prevented).toBe(false);
 	page.dispose();
 });

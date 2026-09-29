@@ -85,74 +85,10 @@ func TestIndexFavoriteProjectsAmbiguousEmptyClaim(t *testing.T) {
 	}
 }
 
-// TestIndexFavoriteNodesEmptyID covers the empty-ID skip path.
-func TestIndexFavoriteNodesEmptyID(t *testing.T) {
-	authorities := []FavoriteNodeAuthority{
-		{ID: ""},
-		{ID: "node-1", Quality: FavoriteAuthorityComplete, Kind: FavoriteNodeSession},
-	}
-	sessions := indexFavoriteSessions(nil)
-	index := indexFavoriteNodes(authorities, sessions)
-	if len(index.byID) != 1 {
-		t.Fatalf("byID = %v, want 1 entry", index.byID)
-	}
-}
-
-// TestIndexFavoriteNodesAmbiguous covers the ambiguous detection for
-// incomplete authority.
-func TestIndexFavoriteNodesAmbiguous(t *testing.T) {
-	authorities := []FavoriteNodeAuthority{
-		{ID: "node-1", Quality: FavoriteAuthorityIncomplete, Kind: FavoriteNodeSession},
-	}
-	sessions := indexFavoriteSessions(nil)
-	index := indexFavoriteNodes(authorities, sessions)
-	if !index.ambiguousIDs["node-1"] {
-		t.Fatalf("node-1 should be ambiguous with partial quality")
-	}
-}
-
-// TestIndexFavoriteNodesUnknownKind covers the unknown-kind path.
-func TestIndexFavoriteNodesUnknownKind(t *testing.T) {
-	authorities := []FavoriteNodeAuthority{
-		{ID: "node-1", Quality: FavoriteAuthorityComplete, Kind: "unknown"},
-	}
-	sessions := indexFavoriteSessions(nil)
-	index := indexFavoriteNodes(authorities, sessions)
-	if !index.ambiguousIDs["node-1"] {
-		t.Fatalf("node-1 should be ambiguous with unknown kind")
-	}
-}
-
-// TestIndexFavoriteNodesCluster covers the cluster node path.
-func TestIndexFavoriteNodesCluster(t *testing.T) {
-	authorities := []FavoriteNodeAuthority{
-		{ID: "cluster-1", Quality: FavoriteAuthorityComplete, Kind: FavoriteNodeCluster},
-	}
-	sessions := indexFavoriteSessions(nil)
-	index := indexFavoriteNodes(authorities, sessions)
-	if !index.clusterIDs["cluster-1"] {
-		t.Fatalf("cluster-1 should be in clusterIDs")
-	}
-}
-
-// TestIndexFavoriteNodesClusterAmbiguous covers the cluster-collision path.
-func TestIndexFavoriteNodesClusterAmbiguous(t *testing.T) {
-	authorities := []FavoriteNodeAuthority{
-		{ID: "session-1", Quality: FavoriteAuthorityComplete, Kind: FavoriteNodeCluster},
-	}
-	sessions := indexFavoriteSessions([]FavoriteSessionAuthority{
-		{ID: "session-1"},
-	})
-	index := indexFavoriteNodes(authorities, sessions)
-	if !index.ambiguousIDs["session-1"] {
-		t.Fatalf("session-1 should be ambiguous (cluster + session collision)")
-	}
-}
-
 // TestClassifyFavoriteDecisionUnknown covers the default (dormant) path.
 func TestClassifyFavoriteDecisionUnknown(t *testing.T) {
 	key := ArchiveKey{Kind: "unknown", ID: "x"}
-	result := classifyFavoriteDecision(key, favoriteSessionIndex{}, favoriteProjectIndex{}, favoriteNodeIndex{})
+	result := classifyFavoriteDecision(key, favoriteSessionIndex{}, favoriteProjectIndex{})
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("state = %v, want dormant", result.State)
 	}
@@ -169,8 +105,7 @@ func TestClassifyFavoriteSessionAliasToCanonicalRef(t *testing.T) {
 	}
 	key := ArchiveKey{Kind: "session", ID: ref.String()}
 	sessions := indexFavoriteSessions(nil)
-	nodes := indexFavoriteNodes(nil, sessions)
-	result := classifyFavoriteSession(key, sessions, nodes)
+	result := classifyFavoriteSession(key, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("state = %v, want dormant", result.State)
 	}

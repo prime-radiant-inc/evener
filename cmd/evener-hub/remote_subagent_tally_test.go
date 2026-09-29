@@ -2,7 +2,6 @@ package hub
 
 import (
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -28,21 +27,10 @@ func TestLocalDaemonEntriesFromRosterCarryTheTallyOnlyOnTheRoot(t *testing.T) {
 // live row carries subagents exactly like a local one (S3), and a remote row
 // whose tree has no subagent carries no key.
 func TestNavigationRemoteLiveRowCarriesItsSubagentTally(t *testing.T) {
-	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	projection := remoteNavigationProjection(t, []appwire.Thread{
 		{ID: "coordinating", Source: "host-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Subagents: &appwire.SubagentTally{Running: 3, Failed: 1}}},
 		{ID: "alone", Source: "host-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
 	})
-	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
-
-	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	projection, err := buildNavigationProjection(captured.Inputs)
-	if err != nil {
-		t.Fatalf("buildNavigationProjection: %v", err)
-	}
 	row := navigationProjectedSummary(t, projection, "host-a:coordinating")
 	if want := (hubapi.NavigationSubagentTally{Running: 3, Failed: 1}); row.Subagents == nil || *row.Subagents != want {
 		t.Fatalf("remote row tally = %+v, want %+v", row.Subagents, want)

@@ -29,6 +29,7 @@ export type {
   NormalizedResource,
 } from "./codec";
 export {
+  decodeArchivedListSessions,
   decodeNavigationResponse,
   materializeNavigationResource,
   materializeSnapshot,
@@ -43,7 +44,6 @@ export {
   canonicalHostId,
   orderedHosts,
   projectHostIds,
-  sessionGroupHostId,
 } from "./hostGrouping";
 export { cloneAndDeepFreezeJSON, equalJSON } from "./immutable";
 export { isSequenceGap, matchesTarget, matchingTargets, requiredRevision } from "./invalidation";

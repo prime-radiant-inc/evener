@@ -147,6 +147,31 @@ func TestDocFile_EmptyFormat_400(t *testing.T) {
 	}
 }
 
+// A non-raw request must be refused before the file is read and hashed. The
+// format gate sits ahead of the read, so an existing file is never opened for
+// a request that will 400 — the guard is observable because the read itself
+// fails here.
+func TestDocFile_NonRawFormatSkipsFileRead(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origOpen := docOpen
+	t.Cleanup(func() { docOpen = origOpen })
+	opened := false
+	docOpen = func(string, string) (*os.File, error) {
+		opened = true
+		return nil, os.ErrInvalid
+	}
+	rec := docRequest(t, web, session, "notes.txt")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-raw: status=%d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+	if opened {
+		t.Fatalf("non-raw request must be refused before the file is opened")
+	}
+}
+
 func TestDocImageServesPNG(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}

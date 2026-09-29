@@ -28,7 +28,6 @@ import {
   sessionNodes,
   topLevelAncestorRef,
   watchCountLabel,
-  workingDescendantCount,
 } from "./railNodes";
 
 function session(overrides: Partial<RailSession> = {}): RailSession {
@@ -66,7 +65,7 @@ const closed = () => false;
 const NO_SOURCES: readonly Source[] = [];
 
 test("adapts resource-local session summaries into stable recursive rail rows", () => {
-  const child = session({ row_id: "navigation:child", ref: "child", kind: "subagent", state: "active" });
+  const child = session({ row_id: "navigation:child", ref: "child", kind: "fork", state: "active" });
   const rows = sessionNodes([session({ row_id: "navigation:parent", ref: "parent", children: [child] })], closed);
   expect(rows[0]).toMatchObject({ id: "navigation:parent", kind: "session", session: { ref: "parent" } });
   expect(rows[0]?.children[0]).toMatchObject({ id: "navigation:child", kind: "session" });
@@ -132,48 +131,35 @@ describe("resource projection semantics", () => {
     expect(section.sessions.map((row) => row.ref)).toEqual(["a", "b"]);
     expect(pinSectionDisclosureID(section.id)).toBe("pinsection:opaque");
   });
-  test("folds inactive descendants while retaining current order and counts", () => {
+  test("renders nested rows inline in their incoming order, with no inactive fold", () => {
     const root = session({
       ref: "root",
       row_id: "root",
       state: "active",
       children: [
-        session({ ref: "done", row_id: "done", state: "ended" }),
-        session({ ref: "working", row_id: "working", state: "active" }),
+        session({ ref: "done", row_id: "done", kind: "fork", state: "ended" }),
+        session({ ref: "working", row_id: "working", kind: "fork", state: "active" }),
       ],
     });
     const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["session", "inactiveFold"]);
-    expect(node?.children[1]).toMatchObject({ count: 1, expanded: false });
+    expect(node?.children.map((child) => child.id)).toEqual(["done", "working"]);
   });
 
-  test("keeps active jobs inline and puts idle subagents and completed jobs in separate folds", () => {
+  test("keeps running jobs inline and puts completed jobs in a fold", () => {
     const root = session({
       ref: "root",
       row_id: "root",
       state: "idle",
-      children: [
-        session({ ref: "idle-child", row_id: "idle-child", kind: "subagent", state: "idle" }),
-        session({ ref: "active-child", row_id: "active-child", kind: "subagent", state: "active" }),
-      ],
+      children: [session({ ref: "original", row_id: "original", kind: "fork", state: "idle" })],
     });
     Object.assign(root, {
       running_jobs: [{ job_id: "job-running", job_type: "shell", status: "running" }],
       completed_jobs: [{ job_id: "job-completed", job_type: "shell", status: "completed" }],
     });
     const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["session", "job", "inactiveFold", "completedJobsFold"]);
+    expect(node?.children.map((child) => child.kind)).toEqual(["session", "job", "completedJobsFold"]);
     expect(node?.children[1]).toMatchObject({ kind: "job", job: { job_id: "job-running" } });
-    expect(node?.children[2]).toMatchObject({ kind: "inactiveFold", count: 1 });
-    expect(node?.children[3]).toMatchObject({ kind: "completedJobsFold", count: 1 });
-  });
-
-  test("keeps an idle subagent with active work in the inline list", () => {
-    const child = session({ ref: "child", row_id: "child", kind: "subagent", state: "idle" });
-    Object.assign(child, { running_jobs: [{ job_id: "job-child", job_type: "shell", status: "running" }] });
-    const [node] = sessionNodes([session({ ref: "root", row_id: "root", children: [child] })], closed);
-    expect(node?.children.map((entry) => entry.kind)).toEqual(["session"]);
-    expect(node?.children[0]).toMatchObject({ children: [{ kind: "job", job: { job_id: "job-child" } }] });
+    expect(node?.children[2]).toMatchObject({ kind: "completedJobsFold", count: 1 });
   });
 
   test("keeps a session's own watch rows inline, after its running jobs", () => {
@@ -365,16 +351,7 @@ describe("resource projection semantics", () => {
     expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
   });
 
-  test("handles cluster disclosure without a second inactive fold", () => {
-    const cluster = session({
-      kind: "cluster",
-      row_id: "cluster",
-      ref: "cluster",
-      children: [session({ row_id: "member", ref: "member", state: "ended" })],
-    });
-    expect(sessionNodes([cluster], closed)[0]?.children.map((child) => child.id)).toEqual(["member"]);
-  });
-  test("derives attention and working counts from recursive summaries", () => {
+  test("derives the attention count from recursive summaries", () => {
     const root = session({
       state: "active",
       children: [
@@ -383,9 +360,7 @@ describe("resource projection semantics", () => {
       ],
     });
     expect(needsYouDescendantCount(root)).toBe(1);
-    expect(workingDescendantCount(root)).toBe(2);
-    expect(displayState(session({ kind: "subagent", state: "awaiting" }))).toBe("idle");
-    expect(displayState(session({ kind: "subagent", state: "awaiting", ask_pending: true }))).toBe("awaiting");
+    expect(displayState(session({ state: "awaiting" }))).toBe("awaiting");
   });
   // An approval blocks its turn mid-tool, so the row's wire state stays
   // "active"; approval_pending is the only thing saying a person is needed.
@@ -394,16 +369,15 @@ describe("resource projection semantics", () => {
     expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
   });
-  test("a descendant waiting on an approval counts as needing you, not as working", () => {
+  test("a descendant waiting on an approval counts as needing you", () => {
     const root = session({
       state: "active",
       children: [
         session({ ref: "approval", kind: "fork", state: "active", approval_pending: true }),
-        session({ ref: "worker", kind: "subagent", state: "active" }),
+        session({ ref: "worker", kind: "fork", state: "active" }),
       ],
     });
     expect(needsYouDescendantCount(root)).toBe(1);
-    expect(workingDescendantCount(root)).toBe(1);
   });
   test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
     const working = session({ row_id: "working", ref: "working", state: "active" });
@@ -721,7 +695,6 @@ describe("host grouping (organize by)", () => {
       "host:local",
       "projectnode:evener@local",
       "root",
-      "inactive:root",
     ]);
   });
 
@@ -730,16 +703,8 @@ describe("host grouping (organize by)", () => {
     const nested = project({ key: "evener", sources: ["local"], sessions: [carrier] });
     // The carrier's row is a fold too: without it in the chain the target
     // row never renders, whatever opens above it.
-    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual([
-      "projectnode:evener",
-      "root",
-      "inactive:root",
-    ]);
-    expect(revealExpansionIds([nested], [], "devbox:child", "project-host")).toEqual([
-      "projectnode:evener",
-      "root",
-      "inactive:root",
-    ]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual(["projectnode:evener", "root"]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "project-host")).toEqual(["projectnode:evener", "root"]);
     // A project whose rows span hosts adds its per-host branch first.
     const spread = project({
       key: "spread",
@@ -750,7 +715,6 @@ describe("host grouping (organize by)", () => {
       "projectnode:spread",
       "projectnode:spread@host:local",
       "root",
-      "inactive:root",
     ]);
   });
 
@@ -763,15 +727,10 @@ describe("host grouping (organize by)", () => {
       children: [on("local", "achild")],
     });
     const archived = project({ key: "old", sessions: [archivedCarrier] });
-    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual([
-      "archivedgroup:old",
-      "aroot",
-      "inactive:aroot",
-    ]);
+    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual(["archivedgroup:old", "aroot"]);
     expect(revealExpansionIds([archived], [], "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
       "projectnode:old",
       "aroot",
-      "inactive:aroot",
     ]);
     const liveCarrier = session({
       ref: "lroot",
@@ -782,36 +741,13 @@ describe("host grouping (organize by)", () => {
     expect(revealExpansionIds([], [liveCarrier, on("local", "l1")], "devbox:lchild", "project-host")).toEqual([
       "livehost:devbox",
       "lroot",
-      "inactive:lroot",
     ]);
     // Flat Live renders ungrouped, so the chain is only the carrier rows.
-    expect(revealExpansionIds([], [liveCarrier], "devbox:lchild", "flat")).toEqual(["lroot", "inactive:lroot"]);
+    expect(revealExpansionIds([], [liveCarrier], "devbox:lchild", "flat")).toEqual(["lroot"]);
   });
 
-  test("a cluster carrier opens only its own row; deeper chains walk every ancestor", () => {
-    // Cluster members render inline (no inactive fold names them), so the
-    // cluster's row is the only fold between a member and the top.
-    const clustered = project({
-      key: "cl",
-      sources: ["local"],
-      sessions: [
-        session({
-          ref: "cluster:abc",
-          row_id: "cluster:abc",
-          host_id: "local",
-          kind: "cluster",
-          children: [on("local", "member", { state: "ended" })],
-        }),
-      ],
-    });
-    expect(revealExpansionIds([clustered], [], "local:member", "host-project")).toEqual([
-      "host:local",
-      "projectnode:cl@local",
-      "cluster:abc",
-    ]);
-    // A settled leaf names every row above it plus the inactive fold in
-    // front of each settled one; a current middle row renders inline and
-    // opens no fold of its parent's.
+  test("a deeper leaf's reveal walks every session row above it", () => {
+    // A deeper leaf names every session row above it.
     const deep = project({
       key: "deep",
       sources: ["local"],
@@ -832,12 +768,7 @@ describe("host grouping (organize by)", () => {
         }),
       ],
     });
-    expect(revealExpansionIds([deep], [], "local:leaf", "flat")).toEqual([
-      "projectnode:deep",
-      "top",
-      "mid",
-      "inactive:mid",
-    ]);
+    expect(revealExpansionIds([deep], [], "local:leaf", "flat")).toEqual(["projectnode:deep", "top", "mid"]);
   });
 
   test("revealExpansionIds opens a Live host subheader only while Live renders grouped", () => {
@@ -1073,56 +1004,5 @@ describe("host grouping (organize by)", () => {
     const alphaAfter = second.find((node) => node.id === "host:render-farm")?.children[0];
     expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
     expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
-  });
-
-  test("a clustered project groups under its members' host, never a synthetic cluster host", () => {
-    const member = (host: string, ref: string) =>
-      session({
-        row_id: `navigation:${host}:${ref}`,
-        ref: `${host}:${ref}`,
-        session_id: ref,
-        host_id: host,
-        kind: "session",
-        state: "ended",
-        children: [],
-      });
-    // The hub names no host for a synthetic cluster row: its wire host_id
-    // is the "cluster" scope prefix of the row's id (navigationNodeRef
-    // falls back to the node ID), which names no manifest source.
-    const clustered = session({
-      row_id: "navigation:cluster:ab",
-      ref: "cluster:ab",
-      session_id: "ab",
-      host_id: "cluster",
-      kind: "cluster",
-      state: "ended",
-      children: [member("devbox", "m1")],
-    });
-    const evener = project({ key: "evener", sources: [], sessions: [clustered] });
-    const hosts = hostProjectNodes([evener], sources, closed);
-    expect(hosts.map((node) => node.id)).toEqual(["host:devbox"]);
-    expect(childIds(hosts[0]?.children[0])).toContain("navigation:cluster:ab");
-    // A reveal to a member walks the cluster's home host, not "cluster" -
-    // and opens the cluster's own row, the fold the member renders under.
-    expect(revealExpansionIds([evener], [], "devbox:m1", "host-project")).toEqual([
-      "host:devbox",
-      "projectnode:evener@devbox",
-      "navigation:cluster:ab",
-    ]);
-  });
-
-  test("a clustered live row groups under its members' host, like the project tiers", () => {
-    const clustered = session({
-      row_id: "navigation:cluster:ab",
-      ref: "cluster:ab",
-      session_id: "ab",
-      host_id: "cluster",
-      kind: "cluster",
-      state: "active",
-      children: [on("devbox", "m1")],
-    });
-    const rows = sessionNodes([clustered, on("local", "l1")], closed);
-    const grouped = liveNodesGroupedByHost(rows, sources, closed);
-    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
   });
 });

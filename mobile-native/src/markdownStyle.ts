@@ -7,6 +7,15 @@ import type { MarkdownStyle } from "react-native-enriched-markdown";
 import { fonts } from "./design/tokens";
 import type { useColors } from "./ui";
 
+// The platform monospace face for code spans and code blocks. iOS resolves the
+// app's Mono token ("Menlo" is iOS-only); Android does not, so it falls back to
+// the platform monospace face. A function, not a module constant, so the
+// current OS is read at each call (the same per-call read this module had when
+// the value was a local).
+export function codeFontFamily(): string {
+	return Platform.OS === "ios" ? fonts.mono : "monospace";
+}
+
 export interface TextRole {
 	fontFamily?: string;
 	fontSize: number;
@@ -36,7 +45,6 @@ export function markdownStyle(colors: ReturnType<typeof useColors>, roles: Markd
 	const h1 = heading(roles.headings[0]);
 	const h2 = heading(roles.headings[1]);
 	const h3 = heading(roles.headings[2]);
-	const codeFontFamily = Platform.OS === "ios" ? fonts.mono : "monospace";
 	return {
 		paragraph: body,
 		h1,
@@ -67,7 +75,7 @@ export function markdownStyle(colors: ReturnType<typeof useColors>, roles: Markd
 			backgroundColor: colors.surface,
 			borderColor: colors.border,
 			fontSize: 14,
-			fontFamily: codeFontFamily,
+			fontFamily: codeFontFamily(),
 		},
 		codeBlock: {
 			fontSize: 14,
@@ -79,7 +87,7 @@ export function markdownStyle(colors: ReturnType<typeof useColors>, roles: Markd
 			padding: 12,
 			marginTop: 8,
 			marginBottom: 12,
-			fontFamily: codeFontFamily,
+			fontFamily: codeFontFamily(),
 			syntaxColors: {
 				keyword: colors.accent,
 				operator: colors.text,

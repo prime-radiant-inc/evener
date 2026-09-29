@@ -1443,6 +1443,33 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
   });
 
+  test("an uncertain save that actually landed reads as confirmed, not a conflict", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
+
+    // The write did land after all: the next authoritative read finds the hub
+    // at revision + 1 holding exactly the config the draft proposed.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState()).toMatchObject({
+      writeUncertain: false,
+      draft: null,
+      draftConflict: false,
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+    expect(drafts.stored()).toBeNull();
+  });
+
   test("a known revision conflict lands the canonical value and keeps the proposal for review", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
