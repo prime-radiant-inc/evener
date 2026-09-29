@@ -292,7 +292,10 @@ describe("conversation-owned session controls", () => {
 		);
 		await controls.loadModels();
 		const reload = controls.loadModels();
-		expect(controls.getSnapshot()).toMatchObject({ loadingModels: true, catalog: { data: [{ displayName: "Model One 1" }] } });
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: true,
+			catalog: { data: [{ displayName: "Model One 1" }] },
+		});
 		second.resolve();
 		await reload;
 		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 2");
