@@ -196,13 +196,15 @@ function Providers({
 	// The store triple is what binds React to the credential core: every field
 	// read below is the core's own state, with no projection in between.
 	const core = useSyncExternalStore(store.subscribe, store.getState, store.getInitialState);
-	const editorVersion = useRef(0);
+	// Changes whenever you leave or switch the provider detail, so a late result
+	// from an earlier visit is ignored.
+	const detailVisitId = useRef(0);
 	// A screen the user has left must not act on a write that outlives it: the
-	// bump makes every captured version stale, so a late `act` continuation or
+	// bump makes every captured visit stale, so a late `act` continuation or
 	// probe result neither reports an error nor issues a listing read.
 	useEffect(
 		() => () => {
-			editorVersion.current += 1;
+			detailVisitId.current += 1;
 		},
 		[],
 	);
@@ -305,23 +307,27 @@ function Providers({
 	// Asking the provider for its current models is a read: it runs beside a
 	// write, and its answer lands in the listing like any other.
 	const [checkingModels, setCheckingModels] = useState<string | null>(null);
-	// Which check the Checking state belongs to. It moves only when a check
-	// starts or the detail closes, never with editorVersion (a row or a link
-	// bumps that while the check's provider stays open), so the latest check
-	// always ends its own Checking state.
-	const checkVersion = useRef(0);
+	// The id of the newest model check, so only that check can clear "Checking
+	// for new models…". Unlike detailVisitId it survives a link that reopens the
+	// same provider, and closing the detail forgets the check.
+	const latestModelCheckId = useRef(0);
+	// The provider whose detail is open, for a check's late failure to find.
+	const shownProvider = useRef(selected);
+	useEffect(() => {
+		shownProvider.current = selected;
+	}, [selected]);
 	async function checkModels(name: string) {
-		// Like `act`, a check the user has left behind reports nothing.
-		const version = editorVersion.current;
-		const check = ++checkVersion.current;
+		const check = ++latestModelCheckId.current;
+		const current = () => check === latestModelCheckId.current;
 		setActionError(null);
 		setCheckingModels(name);
 		try {
 			await surface.checkModels(name);
 		} catch {
-			if (version === editorVersion.current) setActionError(MODELS_NOT_CHECKED);
+			// Only on the detail that asked: a link may have opened another one.
+			if (current() && shownProvider.current === name) setActionError(MODELS_NOT_CHECKED);
 		} finally {
-			if (check === checkVersion.current) setCheckingModels(null);
+			if (current()) setCheckingModels(null);
 		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
@@ -329,14 +335,14 @@ function Providers({
 	const leaveKey = (leave: () => void) =>
 		guardLeave({ busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
 	function close() {
-		editorVersion.current += 1;
+		detailVisitId.current += 1;
 		setSelected(null);
 		setConfiguration(null);
 		setEditingCredential(null);
 		setCredentialTarget(null);
 		setKey("");
 		setActionError(null);
-		checkVersion.current += 1;
+		latestModelCheckId.current += 1;
 		setCheckingModels(null);
 	}
 	async function act(
@@ -349,12 +355,12 @@ function Providers({
 		// what keeps a request that cannot be sent from clearing input the user
 		// may still want once ready again.
 		if (!canUseConnection()) return;
-		const version = editorVersion.current;
+		const visit = detailVisitId.current;
 		setActionError(null);
 		setActionWarning(null);
 		try {
 			const applied = await action();
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			// An instance mutation answers false when a newer request superseded the
 			// listing it answered with: the write may have landed, but this screen
 			// cannot confirm it, so it does not report success. The surface that
@@ -367,7 +373,7 @@ function Providers({
 			setCredentialTarget(null);
 			setKey("");
 		} catch (err) {
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			// A refusal for rows of a replaced connection, or a destination that
 			// moved since the row was read, is not an unconfirmed operation: say what
 			// changed and re-read so the action is retryable against the rows now on
@@ -439,11 +445,11 @@ function Providers({
 			return;
 		}
 		// The error belongs to the provider the user is looking at when it lands:
-		// selecting another row bumps editorVersion, so a probe whose row was left
+		// selecting another row bumps detailVisitId, so a probe whose row was left
 		// behind neither names this row nor reports on the one just picked.
-		const version = editorVersion.current;
+		const visit = detailVisitId.current;
 		void surface.testCredentials(name, row?.endpointFingerprint).catch((err) => {
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			if (isEndpointConflict(err)) setActionError(ENDPOINT_CHANGED_TEST_MESSAGE);
 		});
 	}
@@ -464,7 +470,7 @@ function Providers({
 		const target = core.instances.find((item) => item.name === focus);
 		if (target && signInFocus && target.authModes?.includes("oauth")) onSignIn(target.name);
 		else if (target) {
-			editorVersion.current += 1;
+			detailVisitId.current += 1;
 			setSelected(target.name);
 		}
 		onFocused();
@@ -501,7 +507,7 @@ function Providers({
 											accessibilityLabel={[item.name, sub, status?.word].filter(Boolean).join(", ")}
 											chevron
 											onPress={() => {
-												editorVersion.current += 1;
+												detailVisitId.current += 1;
 												setActionError(null);
 												setSelected(item.name);
 											}}

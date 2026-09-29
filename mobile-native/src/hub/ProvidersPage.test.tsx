@@ -1879,6 +1879,7 @@ it("ends a check's Checking state when it lands, even after a new link reopened 
 	await act(async () => {});
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
 	// A second link to the same provider arrives while the check runs.
 	await act(async () => tree.update(<ProvidersPage {...page({})} />));
 	await act(async () => tree.update(<ProvidersPage {...page({ focus: "work" })} />));
@@ -1899,4 +1900,85 @@ it("holds Check for new models while the connection is down", async () => {
 		tree.update(<ProvidersPage {...props} />);
 	});
 	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: true });
+});
+
+/** A page opened at `focus`, whose later links arrive through `relink`. */
+function linkedPage(focus: string) {
+	const navigation = { setParams: vi.fn() };
+	const page = (params: { focus?: string }) =>
+		({ route: { params: { hubId: "hub-1", ...params } }, navigation }) as unknown as ComponentProps<
+			typeof ProvidersPage
+		>;
+	const tree = render(<ProvidersPage {...page({ focus })} />);
+	const relink = async (next: string) => {
+		await act(async () => tree.update(<ProvidersPage {...page({})} />));
+		await act(async () => tree.update(<ProvidersPage {...page({ focus: next })} />));
+	};
+	return { tree, relink };
+}
+
+/** Answers each evener/instance/refreshModels call in turn, by provider. */
+function heldChecks(fake: FakeClient) {
+	const pending = new Map<string, { resolve: (value: InstanceListResponse) => void; reject: (reason: Error) => void }>();
+	fake.on(
+		"evener/instance/refreshModels",
+		(params: { name: string }) =>
+			new Promise<InstanceListResponse>((resolve, reject) => {
+				pending.set(params.name, { resolve, reject });
+			}),
+	);
+	return pending;
+}
+
+it("says a check failed when it lands after a new link reopened the same provider", async () => {
+	const fake = providersHub([withModels()]);
+	const checks = heldChecks(fake);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await relink("work");
+	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+});
+
+it("keeps a check's failure off another provider a link opened meanwhile", async () => {
+	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
+	const checks = heldChecks(fake);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await relink("home");
+	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+});
+
+it("checks two providers back to back: only the newer check ends its Checking state", async () => {
+	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
+	const checks = heldChecks(fake);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	await act(async () => {});
+	await openDetail(tree, "home");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	const listing = {
+		instances: [withModels(), { ...withModels(), name: "home", isDefault: false }],
+		availableProviders: [],
+	};
+	await act(async () => checks.get("work")?.resolve(listing));
+	await act(async () => {});
+	expect(hasControl(tree, "Checking for new models…")).toBe(true);
+	await act(async () => checks.get("home")?.resolve(listing));
+	await act(async () => {});
+	expect(hasControl(tree, "Check for new models")).toBe(true);
 });
