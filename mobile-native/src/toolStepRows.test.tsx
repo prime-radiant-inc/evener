@@ -48,7 +48,9 @@ const runsAt = (level: Level) => rowsAt(level).filter((row): row is Run => row.k
 // What a run's expanded steps say, one line per step.
 // Each Text's own words, its nested runs (a Menlo target) joined as drawn.
 function stepText(run: Run): string {
-	const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub" sessionRef="ref-tools" />);
+	const tree = render(
+		<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub" sessionRef="ref-tools" />,
+	);
 	return tree.root
 		.findAll((node) => String(node.type) === "Text")
 		.map(textOf)

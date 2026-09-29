@@ -1344,7 +1344,14 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				detail: { description: "read config", summary: "Read a file", words: { verb: "Read a file" } },
 				turnId: "t2",
 			},
-			{ id: "c5", label: "view", family: "tool", state: "completed", detail: { summary: "Used view", words: { verb: "Used view" } }, turnId: "t2" },
+			{
+				id: "c5",
+				label: "view",
+				family: "tool",
+				state: "completed",
+				detail: { summary: "Used view", words: { verb: "Used view" } },
+				turnId: "t2",
+			},
 		],
 	},
 	{
@@ -1518,7 +1525,12 @@ describe("the timeline projection delegates to the shared projector", () => {
 			if (c3?.kind !== "activity") throw new Error("differential lost c3");
 			expect(c3.state).toBe("failed");
 			expect(c3.summaryOnly).toBeUndefined();
-			expect(c3.detail).toEqual({ error: "boom", exitCode: 1, summary: "Ran a command", words: { verb: "Ran a command" } });
+			expect(c3.detail).toEqual({
+				error: "boom",
+				exitCode: 1,
+				summary: "Ran a command",
+				words: { verb: "Ran a command" },
+			});
 
 			// The running call is the same attention carve-out: full detail,
 			// running state, at every level.

@@ -70,7 +70,6 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 							description: "Look it up",
 							arguments: JSON.stringify({ query: "rust lifetimes" }),
 							summary: 'Searched the web for "rust lifetimes"',
-
 						},
 					},
 				],

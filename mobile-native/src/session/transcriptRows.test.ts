@@ -347,7 +347,9 @@ describe("a run's one line", () => {
 	});
 
 	it("names the program a command ran, not the cd to the session's own directory", () => {
-		const cd = shell("a", "go test ./...", { detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) } });
+		const cd = shell("a", "go test ./...", {
+			detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) },
+		});
 		expect(runSummary([cd]).parts).toEqual([{ key: "shell", family: "shell", text: "ran go test", failed: 0 }]);
 	});
 
