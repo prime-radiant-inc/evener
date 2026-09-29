@@ -110,6 +110,7 @@ import {
 	archiveTarget,
 	archivingSessionId,
 	pinSession,
+	projectChange,
 	type RowAction,
 	type RowActionContext,
 	renameSession,
@@ -837,17 +838,10 @@ function Board({
 	};
 	/** A project's change: held while offline, or through the journal. */
 	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
-		if (!liveNow.current) {
-			holdAction({ kind: "project", project: { key: project.key, workingDir: project.working_dir }, action });
-			return;
-		}
-		if (!organizationOpen(organization)) return;
-		if (action === "pin" || action === "unpin") void organization.actions?.favorite(project.key, action === "pin");
-		else
-			void organization.actions?.archive(
-				{ kind: "project", id: project.key, workingDir: project.working_dir },
-				action === "archive",
-			);
+		const target = { key: project.key, workingDir: project.working_dir };
+		if (!liveNow.current) holdAction({ kind: "project", project: target, action });
+		else if (organization.actions && organizationOpen(organization))
+			void projectChange(organization.actions, target, action);
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		// The menu offers what the project will be once what's held goes, so a

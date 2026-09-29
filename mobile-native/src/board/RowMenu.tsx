@@ -108,8 +108,6 @@ export function RowPreviewCard({
 export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuSheet">) {
 	const { hubId, ref, archived } = route.params;
 	const navigation = useNavigation();
-	const { palette } = useColors();
-	const scale = useTextScale();
 	// `host` is read when the sheet goes away, by then from its last render.
 	const sheet = useSheet({ onClosed: () => host?.closed() });
 	const host = useSheetHost(rowMenuHosts, sheetKey(hubId), sheet);
@@ -137,49 +135,16 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 					onPress={() => leaveThen(() => host.openSession(item))}
 				/>
 				{host.actions(item, archived).map((action) => (
-					<Pressable
+					<MenuItem
 						key={action}
-						accessibilityRole="button"
-						accessibilityLabel={ROW_ACTION_LABELS[action]}
+						label={ROW_ACTION_LABELS[action]}
+						symbol={ROW_ACTION_SYMBOLS[action]}
+						danger={action === "shutDown"}
 						onPress={() => leaveThen(() => host.act(item, action))}
-						style={({ pressed }) => ({
-							minHeight: 44,
-							paddingHorizontal: 16,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 12,
-							backgroundColor: pressed ? palette.pressed : palette.canvas,
-						})}
-					>
-						<SymbolView name={ROW_ACTION_SYMBOLS[action]} size={18 * scale} tintColor={palette.inkMid} />
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 17 * scale, color: action === "shutDown" ? palette.dangerInk : palette.inkHi }}
-						>
-							{ROW_ACTION_LABELS[action]}
-						</Text>
-					</Pressable>
+					/>
 				))}
 				{host.held(item).map(({ id, label }) => (
-					<Pressable
-						key={id}
-						accessibilityRole="button"
-						accessibilityLabel={label}
-						onPress={() => leaveThen(() => host.cancel(id))}
-						style={({ pressed }) => ({
-							minHeight: 44,
-							paddingHorizontal: 16,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 12,
-							backgroundColor: pressed ? palette.pressed : palette.canvas,
-						})}
-					>
-						<SymbolView name="xmark.circle" size={18 * scale} tintColor={palette.inkMid} />
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, color: palette.inkHi }}>
-							{label}
-						</Text>
-					</Pressable>
+					<MenuItem key={id} label={label} symbol="xmark.circle" onPress={() => leaveThen(() => host.cancel(id))} />
 				))}
 			</ScrollView>
 		</Sheet>
@@ -211,4 +176,42 @@ const LONG_PRESS_MS = 500;
  * sheet here without its callers changing. */
 export function RowMenu({ onOpenSheet, children }: RowMenuProps) {
 	return cloneElement(children, { onLongPress: onOpenSheet, delayLongPress: LONG_PRESS_MS });
+}
+
+function MenuItem({
+	label,
+	symbol,
+	danger = false,
+	onPress,
+}: {
+	label: string;
+	symbol: SFSymbol;
+	danger?: boolean;
+	onPress: () => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={label}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				paddingHorizontal: 16,
+				flexDirection: "row",
+				alignItems: "center",
+				columnGap: 12,
+				backgroundColor: pressed ? palette.pressed : palette.canvas,
+			})}
+		>
+			<SymbolView name={symbol} size={18 * scale} tintColor={palette.inkMid} />
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ fontSize: 17 * scale, color: danger ? palette.dangerInk : palette.inkHi }}
+			>
+				{label}
+			</Text>
+		</Pressable>
+	);
 }
