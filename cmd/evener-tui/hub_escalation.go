@@ -65,10 +65,27 @@ func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationReques
 		mode: params.Mode,
 		ref:  ref,
 	})
+	m.setDashboardRowApproval(ref, true)
 	if ref == strings.TrimSpace(m.detail.Ref) && len(m.escalationsByRef[ref]) == 1 {
 		m.promptHeadEscalation()
 	} else if ref == strings.TrimSpace(m.detail.Ref) {
 		m.addSessionSystem(fmt.Sprintf("Sandbox approval queued (%d now waiting).", len(m.escalationsByRef[ref])))
+	}
+}
+
+// setDashboardRowApproval flips the approval flag on any cached dashboard row
+// for ref, so the live escalation path (raise / answer) keeps the row's ◆
+// marker, needs-you count and sort band honest without a tree refetch (the
+// dashboard has no periodic refresh). No-op when no row matches.
+func (m *hubModel) setDashboardRowApproval(ref string, pending bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return
+	}
+	for i := range m.rows {
+		if m.rows[i].ref.String() == ref {
+			m.rows[i].approvalPending = pending
+		}
 	}
 }
 
@@ -198,6 +215,7 @@ func (m *hubModel) handleEscalationResolved(msg hubEscalationResolvedMsg) {
 	switch {
 	case msg.err == nil:
 		m.removeEscalationAt(msg.ref, idx)
+		m.setDashboardRowApproval(msg.ref, len(m.escalationsByRef[msg.ref]) > 0)
 		if msg.approve {
 			echo("Allowed once.")
 		} else {
@@ -205,6 +223,7 @@ func (m *hubModel) handleEscalationResolved(msg hubEscalationResolvedMsg) {
 		}
 	case errors.As(msg.err, &we) && we.Code == appwire.CodeConflict:
 		m.removeEscalationAt(msg.ref, idx)
+		m.setDashboardRowApproval(msg.ref, len(m.escalationsByRef[msg.ref]) > 0)
 		echo("Sandbox approval already resolved.")
 	default:
 		q[idx].resolving = false

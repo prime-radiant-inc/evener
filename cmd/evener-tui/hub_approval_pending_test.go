@@ -156,3 +156,31 @@ func TestCommandPaletteSessionEntry_ApprovalReadsNeedsYou(t *testing.T) {
 		t.Fatal("expected a session entry in the palette rows")
 	}
 }
+
+// The dashboard has no periodic refresh, so the row's approval flag must follow
+// the live escalation path (raise/answer), not only the thread/list snapshot
+// (roborev #3129 round 2).
+func TestApplySandboxEscalation_KeepsDashboardRowLive(t *testing.T) {
+	ref, err := appwire.ParseRef("local:th_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active"}}}
+	m.applySandboxEscalation(appwire.SandboxEscalationRequested{EscalationID: "esc_1"}, "local:th_1")
+	if !m.rows[0].approvalPending {
+		t.Fatal("a live escalation must mark the session's dashboard row as approval-pending")
+	}
+}
+
+func TestHandleEscalationResolved_ClearsDashboardRowLive(t *testing.T) {
+	ref, err := appwire.ParseRef("local:th_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active", approvalPending: true}}}
+	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
+	m.handleEscalationResolved(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true})
+	if m.rows[0].approvalPending {
+		t.Fatal("answering the escalation must clear the row's approval flag")
+	}
+}
