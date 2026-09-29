@@ -170,6 +170,23 @@ func TestRejectClientMutationWithNonWireError(t *testing.T) {
 	}
 }
 
+// A refusal whose data wraps the standard data still records the mark, and
+// keeps its category: the rejection stores the ErrorData the wrapper embeds.
+func TestRejectClientMutationKeepsTheMarkOfWrappedData(t *testing.T) {
+	t.Parallel()
+	record := &clientMutationRecord{ClientMutationID: "cm_wrapped"}
+	rejectClientMutation(record, appwire.InvalidHostField("hostname", "hostname is taken"))
+	want := appwire.ErrorData{
+		EvenerErrorInfo:  appwire.ErrorInvalidHostField,
+		ClientMutationID: "cm_wrapped",
+		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+		RetryDisposition: appwire.RetryDispositionNone,
+	}
+	if record.Rejection == nil || record.Rejection.Data != want {
+		t.Fatalf("rejection = %+v, want data %+v", record.Rejection, want)
+	}
+}
+
 func TestRejectClientMutationDataHasClientMutationID(t *testing.T) {
 	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_3"}

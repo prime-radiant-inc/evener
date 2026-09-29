@@ -718,6 +718,23 @@ func (e WireError) NotAccepted(clientMutationID string) WireError {
 
 var errorDataType = reflect.TypeFor[ErrorData]()
 
+// ErrorDataOf is the standard data an error's Data is, or a struct of it embeds
+// (HostFieldErrorData and the like), and whether it has one.
+func ErrorDataOf(data any) (ErrorData, bool) {
+	if plain, ok := data.(ErrorData); ok {
+		return plain, true
+	}
+	value := reflect.ValueOf(data)
+	if value.Kind() != reflect.Struct {
+		return ErrorData{}, false
+	}
+	field, ok := embeddedErrorData(value)
+	if !ok {
+		return ErrorData{}, false
+	}
+	return field.Interface().(ErrorData), true
+}
+
 // markedNotAccepted is a copy of data with its ErrorData marked: data itself
 // when it is one, or the ErrorData a struct embeds. The error data types embed
 // ErrorData by value, and Data holds them by value, so reaching the embedded
@@ -730,11 +747,15 @@ func markedNotAccepted(data any, clientMutationID string) any {
 		data.MutationOutcome = MutationOutcomeNotAccepted
 		data.RetryDisposition = RetryDispositionNone
 	}
+	if plain, ok := data.(ErrorData); ok {
+		mark(&plain)
+		return plain
+	}
 	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
 		copied := reflect.New(value.Type()).Elem()
 		copied.Set(value)
-		if target, ok := errorDataIn(copied); ok {
-			mark(target)
+		if field, ok := embeddedErrorData(copied); ok {
+			mark(field.Addr().Interface().(*ErrorData))
 			return copied.Interface()
 		}
 	}
@@ -743,18 +764,15 @@ func markedNotAccepted(data any, clientMutationID string) any {
 	return fresh
 }
 
-// errorDataIn is the ErrorData a settable struct value is, or embeds directly.
-func errorDataIn(value reflect.Value) (*ErrorData, bool) {
-	if value.Type() == errorDataType {
-		return value.Addr().Interface().(*ErrorData), true
-	}
-	// Only an ErrorData the struct embeds itself: FieldByName also finds one
-	// promoted from a deeper embed (a longer Index), which isn't this data's.
+// embeddedErrorData is the ErrorData field a struct value embeds itself,
+// settable when the struct is. FieldByName also finds one promoted from a
+// deeper embed (a longer Index), which isn't this data's, so that doesn't count.
+func embeddedErrorData(value reflect.Value) (reflect.Value, bool) {
 	field, ok := value.Type().FieldByName("ErrorData")
 	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
-		return nil, false
+		return reflect.Value{}, false
 	}
-	return value.Field(field.Index[0]).Addr().Interface().(*ErrorData), true
+	return value.Field(field.Index[0]), true
 }
 
 func MutationUnknown(clientMutationID, message string) WireError {

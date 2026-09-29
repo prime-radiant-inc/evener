@@ -202,3 +202,19 @@ func TestNotAcceptedKeepsWrappedData(t *testing.T) {
 		t.Fatalf("data = %#v, want the lifecycle data kept and marked", lifecycle.Data)
 	}
 }
+
+// The standard data is read from plain or wrapped error data alike, and from
+// nothing else.
+func TestErrorDataOfReadsPlainAndWrappedData(t *testing.T) {
+	if data, ok := ErrorDataOf(InvalidParams("bad").Data); !ok || data.EvenerErrorInfo != ErrorInvalidParams {
+		t.Fatalf("plain = %+v, %v; want its ErrorData", data, ok)
+	}
+	if data, ok := ErrorDataOf(InvalidHostField("hostname", "taken").Data); !ok || data.EvenerErrorInfo != ErrorInvalidHostField {
+		t.Fatalf("wrapped = %+v, %v; want the ErrorData it embeds", data, ok)
+	}
+	for _, other := range []any{nil, map[string]any{"evenerErrorInfo": "x"}, struct{ Name string }{"x"}} {
+		if data, ok := ErrorDataOf(other); ok {
+			t.Fatalf("ErrorDataOf(%#v) = %+v, want none", other, data)
+		}
+	}
+}
