@@ -144,6 +144,8 @@ export async function createDemoHub(
 	if (typeof address === "string" || !address)
 		throw new Error("Missing demo address");
 	const subscribers = new Map<WebSocket, Set<string>>();
+	// thread/start replies held for startDelaySeconds, cleared on close.
+	const heldReplies = new Set<ReturnType<typeof setTimeout>>();
 	const thread: Thread = {
 		id: "demo-thread",
 		sessionId: "demo-session",
@@ -756,12 +758,19 @@ export async function createDemoHub(
 				if (changed && fleetRefs.has(changed.evener.ref))
 					refreshCapabilities(changed);
 				const reply = JSON.stringify({ jsonrpc: "2.0", id, result });
-				if (request.method === "thread/start" && modes.startDelaySeconds)
-					setTimeout(
-						() => socket.send(reply),
-						modes.startDelaySeconds * 1000,
-					);
-				else socket.send(reply);
+				if (request.method === "thread/start" && modes.startDelaySeconds) {
+					// Held, as a slow hub would; a client that leaves meanwhile takes
+					// the held reply with it.
+					const held = setTimeout(() => {
+						heldReplies.delete(held);
+						socket.send(reply);
+					}, modes.startDelaySeconds * 1000);
+					heldReplies.add(held);
+					socket.once("close", () => {
+						clearTimeout(held);
+						heldReplies.delete(held);
+					});
+				} else socket.send(reply);
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
 			} catch (error) {
@@ -789,6 +798,7 @@ export async function createDemoHub(
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
+				for (const held of heldReplies) clearTimeout(held);
 				commandLines?.close();
 				for (const socket of server.clients) socket.terminate();
 				server.close();
