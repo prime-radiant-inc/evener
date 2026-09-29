@@ -13,6 +13,7 @@ import {
 	createElement,
 	type ForwardedRef,
 	forwardRef,
+	memo,
 	type ReactElement,
 	type ReactNode,
 	type Ref,
@@ -160,12 +161,29 @@ export function nativeModuleMock() {
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
+	type ListRowInfo = { item: unknown; index: number };
+	// A list's cell: VirtualizedList's CellRenderer is a PureComponent over
+	// the row, its renderer and extraData. Its own cell component wraps each
+	// row, as the real list does, so a test can lay a cell out (its onLayout)
+	// and measure the row.
+	const ListCell = memo(function ListCell(props: {
+		item: unknown;
+		index: number;
+		renderItem?: (info: ListRowInfo) => ReactNode;
+		extraData?: unknown;
+		Cell?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+	}) {
+		const row = props.renderItem?.({ item: props.item, index: props.index }) ?? null;
+		return props.Cell ? createElement(props.Cell, { item: props.item, index: props.index }, row) : row;
+	});
 	const FlatList = (props: {
 		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
 		renderItem?: (info: { item: unknown; index: number }) => ReactNode;
 		CellRendererComponent?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+		extraData?: unknown;
+		strictMode?: boolean;
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
@@ -200,17 +218,23 @@ export function nativeModuleMock() {
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item, index) => {
-				const row = props.renderItem?.({ item, index }) ?? null;
-				// A list's own cell wraps each row, as the real list does, so a
-				// test can lay a cell out (its onLayout) and measure the row.
-				const Cell = props.CellRendererComponent;
-				return createElement(
+			...(props.data ?? []).map((item, index) =>
+				createElement(
 					"Item",
 					{ key: props.keyExtractor?.(item, index) ?? index },
-					Cell ? createElement(Cell, { item, index }, row) : row,
-				);
-			}),
+					createElement(ListCell, {
+						item,
+						index,
+						// As the real FlatList does: without strictMode it wraps
+						// renderItem afresh on every render, so every cell re-renders
+						// with the list; with it, the wrapper is memoized, and a cell
+						// re-renders only for a new renderItem, row or extraData.
+						renderItem: props.strictMode ? props.renderItem : (info: ListRowInfo) => props.renderItem?.(info),
+						extraData: props.extraData,
+						Cell: props.CellRendererComponent,
+					}),
+				),
+			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);

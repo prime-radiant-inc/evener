@@ -691,6 +691,19 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(pressable(tree, "Send answer")).toBeDefined();
 	});
 
+	// The dock follows the same typing rule as the rest (useComposerTyping):
+	// a keyboard up for the find bar's field isn't the composer's.
+	it("keeps the options while the keyboard is up for the find bar", async () => {
+		const { tree } = await mount(thread("ref-question-find", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.hide());
+	});
+
 	it("brings the options back from Show options, which lowers the keyboard", async () => {
 		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
 		await press(tree, "Other answer…");

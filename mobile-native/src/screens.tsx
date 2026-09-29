@@ -203,6 +203,13 @@ interface FindState {
 
 /** A new query starts a new search: no current match yet, and older history
  * is searched only when there is something to look for. */
+/** FlatList's strictMode, which memoizes its item renderer so cells
+ * re-render only for a new renderItem, row or extraData. React Native
+ * documents it on FlatList (Libraries/Lists/FlatList.js, "Enable an
+ * optimization to memoize the item renderer") but leaves it out of the
+ * TypeScript types, so it goes in as a spread. */
+const FLAT_LIST_STRICT_MODE: object = { strictMode: true };
+
 function newFind(query: string): FindState {
 	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
 }
@@ -2552,6 +2559,10 @@ export function ConversationScreen({
 		};
 	}, []);
 
+	// Whether a Retry press would send now. Read on every render, since it
+	// follows a session control going pending, which changes no input the
+	// rows otherwise read; the rows re-render when it flips (renderItem).
+	const sendsNow = liveSendKind() !== null;
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the
 	// reader keying, a sheet opening), so it does not rebuild every visible
@@ -2594,7 +2605,7 @@ export function ConversationScreen({
 						errorActionFor={(row) =>
 							conversation
 								? // Retry shows only when a press would send.
-									errorAction(row, conversation, liveSendKind() !== null)
+									errorAction(row, conversation, sendsNow)
 								: null
 						}
 						onErrorAction={runErrorAction}
@@ -2619,7 +2630,7 @@ export function ConversationScreen({
 			conversation,
 			openSubagent,
 			answerFor,
-			liveSendKind,
+			sendsNow,
 			runErrorAction,
 			documentChips,
 		],
@@ -2662,6 +2673,12 @@ export function ConversationScreen({
 							// The live run changes when a turn starts or ends, without the
 							// rows changing; its row must re-render to show or hide its fold control.
 							extraData={liveRun}
+							// Cells re-render only for a new renderItem, new rows or the
+							// extraData above: a screen render that changes nothing a row
+							// reads (the bottom bar re-laying out as the keyboard folds the
+							// queue) leaves them alone, where FlatList otherwise rebuilds its
+							// renderer, and so every visible cell, on every render (#3247).
+							{...FLAT_LIST_STRICT_MODE}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
 							// A row keeps its reader key when history records it, so the
@@ -2978,7 +2995,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerShown}
+									composerUp={composerKeyboard}
 								/>
 							) : null}
 						</View>
