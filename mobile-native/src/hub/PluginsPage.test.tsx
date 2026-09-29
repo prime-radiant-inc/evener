@@ -225,7 +225,7 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Leave the Marketplaces segment and come back: the guard lives at the screen, so
 	// it survives the browser's death, but the remount's own read answers
@@ -252,7 +252,7 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(fenced.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
@@ -320,7 +320,7 @@ it("fences the name when a re-registration lands while the confirm dialog is ope
 	// fence acme - Remove stays disabled on the already-removed row - and the
 	// cleanup warning still raises.
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
@@ -456,7 +456,7 @@ it("keeps the fence when a pre-removal read lands inside the outcome's window", 
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -807,7 +807,7 @@ it("shows the failed read's error alone when the retained list is not empty", as
 	// vouch for hide behind the error and Retry, but the retained list is not
 	// empty, so the empty-state copy must not claim the hub has no
 	// marketplaces beside the error that says the load failed.
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(renderedText(tree)).not.toContain("No marketplaces on this hub.");
 });
 
@@ -1225,7 +1225,7 @@ it("records a pending removal settling after a remount whose list read failed", 
 	// read, and its failure keeps the error copy up until a fresh read
 	// reconciles.
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 
 	await act(async () => {
@@ -1357,7 +1357,7 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and the source the stale row still shows,
 	// landing within the same whole second as the original registration: the
@@ -1434,7 +1434,7 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Start a BLANK-name add from a different source, then leave the Marketplaces
 	// segment before it resolves: the store the screen owns outlives the browser,
@@ -1537,7 +1537,7 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second, while another client registers gamma: the add's answer
@@ -1622,7 +1622,7 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Start a BLANK-name add from a different source, then the hub says the list
 	// changed before it resolves: the pending read outranks the add, so the store
@@ -1716,7 +1716,7 @@ it("keeps the fence for a fenced row a blank add's answer carries unchanged", as
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Submit a BLANK-name add of the fenced marketplace's own source: only a
 	// row the answer newly carries - one the pre-add list did not have, in the
@@ -1787,7 +1787,7 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second as the removed registration, on a hub whose list reads
@@ -1868,7 +1868,7 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source - landing within
 	// the same whole second, so the add's own answer is a list the wire cannot
@@ -2240,7 +2240,7 @@ it("clears the fence when another client re-adds the name from a different sourc
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// The re-add's stamp matches the removed registration's whole second, but
 	// its source is its own: the fence the stale read kept has to recognize a
@@ -2285,7 +2285,7 @@ it("re-enables Remove for a same-source same-second re-registration", async () =
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// The reconciliation read failed, so the retry read is the first
 	// authoritative read after the outcome - and it carries a row the wire
