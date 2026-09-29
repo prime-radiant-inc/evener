@@ -130,7 +130,9 @@ export interface LaunchSettingsState {
   resolveError: string | null;
 }
 
-const CHANGED_ELSEWHERE = "Launch settings changed elsewhere. Reload before saving.";
+/** What an editor says while its layer carries a change made elsewhere
+ * (`changedElsewhere`): the edit stays until you discard it. */
+export const LAUNCH_CHANGED_ELSEWHERE = "Launch settings changed elsewhere. Discard your changes to see them.";
 
 /** One hub/cwd/layer editor. Whole-layer writes require a fresh baseline check. */
 export class LaunchSettings {
@@ -174,10 +176,11 @@ export class LaunchSettings {
       // A global update can change a project's inherited values too.
       if (event.params.layer !== "global" && event.params.cwd !== this.cwd) return;
       if (this.state.saving) return; // The post-write read reconciles notifications.
-      if (this.state.dirty) {
-        this.version += 1;
-        this.publish({ changedElsewhere: true, loading: false });
-      } else void this.refresh();
+      // A dirty editor reads the layer again and keeps its draft: only a
+      // layer whose content moved from the baseline flags it (load's
+      // reconcile compares), so a global update seen by a project editor, or
+      // one that changed nothing here, leaves the edit alone.
+      void this.load(false, this.state.dirty);
     });
   }
   /** Rebind only within the same hub. A different hub needs a different editor. */
@@ -198,7 +201,10 @@ export class LaunchSettings {
     if (this.disposed || !this.client || this.state.saving || (this.state.dirty && !discardDraft && !reconcile)) return;
     const rpc = launchConfigRequests(this.client);
     const version = ++this.version;
-    this.publish({ loading: true, error: null });
+    // A reconcile under an unsaved edit leaves the editor editable: it reads
+    // quietly and keeps whatever draft stands when it lands.
+    const quiet = reconcile && this.state.dirty;
+    this.publish(quiet ? { error: null } : { loading: true, error: null });
     try {
       const [schema, current, resolved] = await Promise.all([
         rpc.schema(),
@@ -236,9 +242,12 @@ export class LaunchSettings {
     const draft = { ...this.state.draft };
     if (value === undefined) delete draft[field];
     else draft[field] = value;
+    const dirty = !equalJSON(draft, this.state.current);
     this.publish({
       draft,
-      dirty: !equalJSON(draft, this.state.current),
+      dirty,
+      // Edited back to the baseline, the draft no longer overwrites anything.
+      changedElsewhere: dirty && this.state.changedElsewhere,
       error: null,
     });
   }
@@ -253,10 +262,7 @@ export class LaunchSettings {
       !this.state.draft
     )
       return false;
-    if (this.state.changedElsewhere) {
-      this.publish({ error: CHANGED_ELSEWHERE });
-      return false;
-    }
+    if (this.state.changedElsewhere) return false;
     const draft = this.state.draft;
     const baseline = this.state.current;
     const rpc = launchConfigRequests(this.client);
@@ -269,7 +275,10 @@ export class LaunchSettings {
       const latest = await rpc.getLayer(this.cwd, this.layer);
       if (!active()) return false;
       if (!equalJSON(latest, baseline)) {
-        this.publish({ changedElsewhere: true, error: CHANGED_ELSEWHERE });
+        // The hub's layer is the baseline now: the draft stays, flagged, and
+        // it clears only once it matches what the hub holds.
+        const dirty = !equalJSON(latest, draft);
+        this.publish({ current: latest, dirty, changedElsewhere: dirty });
         return false;
       }
       sent = true;
@@ -288,17 +297,22 @@ export class LaunchSettings {
       if (sent && active()) {
         try {
           const current = await rpc.getLayer(this.cwd, this.layer);
+          const differs = !equalJSON(current, draft);
+          // The read-back is this save's own check: a layer that doesn't match
+          // what was sent is an error to review, never a change elsewhere.
           if (active())
             this.publish({
               current,
-              dirty: !equalJSON(current, draft),
-              changedElsewhere: !equalJSON(current, draft),
+              dirty: differs,
+              ...(differs && confirmed
+                ? { error: "The hub saved something different. Review the values before saving again." }
+                : {}),
             });
+          if (differs) confirmed = false;
         } catch {
           if (active())
             this.publish({
-              changedElsewhere: true,
-              error: "Could not read the layer after saving. Reload to confirm its state.",
+              error: "Could not read the layer back after saving. Open it again to check it.",
             });
           confirmed = false;
         }

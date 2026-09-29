@@ -347,6 +347,7 @@ function hubClient(
 	readLatencyMs = 0,
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
+	olderPage: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -382,7 +383,10 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
-			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "thread/turns/list") {
+				await olderPage;
+				return { data: olderTurns };
+			}
 			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
@@ -438,6 +442,9 @@ async function mount(
 		settled = true,
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
+		// Holds the older page until the promise settles, for what happens
+		// while one is on its way.
+		olderPage = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -445,7 +452,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -2110,8 +2117,18 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		act(() => keyboard.hide());
 	});
 
-	// With the dock in the composer's place, a keyboard up is for something
-	// else (the find bar, say), so the queue stays as it is.
+	// The keyboard is up for the find bar's field, not the composer.
+	it("keeps the queue open while you type in the find bar", async () => {
+		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// With the dock in the composer's place, a keyboard up isn't the
+	// composer's, so the queue stays as it is.
 	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
 		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
 		expect(field(tree)).toBeUndefined();
@@ -2796,6 +2813,93 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
 		expect(renderedText(tree)).toContain("1 of 3");
+	});
+
+	describe("following the live end while find pages older history", () => {
+		// Whether new content pulls the list to its end. The size keeps the
+		// unmeasured test list (a 0pt viewport at offset 0) at its end.
+		const followsTheEnd = (tree: ReactTestRenderer) => {
+			flatListCalls.length = 0;
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 0));
+			return flatListCalls.some((call) => call.method === "scrollToEnd");
+		};
+		const unrelated = [askReplyTurn("turn_0", "Unrelated?", "Yes.")];
+
+		it("leaves the end while a page is on its way, and follows again when find closes", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree, hub } = await mount(findTurns("ref-find-close"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(false);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(true);
+			release();
+			await settle();
+		});
+
+		it("stays off the end when find closes after the list moved away from it", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree } = await mount(findTurns("ref-find-moved"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			act(() =>
+				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+			);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 4_000));
+			scrollTo(tree, 1_000);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(false);
+			release();
+			await settle();
+		});
+
+		it("follows again when a search reaches the start of history with no match", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-miss"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(true);
+		});
+
+		it("stays with a match it paged back to", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-paged-match"), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0", "Is it flaky?", "Sometimes.")],
+			});
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			await search(tree, "Is it flaky");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(flatListCalls.filter((call) => call.method === "scrollToIndex")).not.toEqual([]);
+			expect(followsTheEnd(tree)).toBe(false);
+		});
+
+		it("asks for no page when the match is already loaded", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-loaded"), { olderCursor: "cursor-1" });
+			chooseMenu("Find in session");
+			await search(tree, "settle");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+		});
 	});
 
 	it("says there are no older matches once history ends", async () => {

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { expect, it } from "vitest";
-import { type LaunchConfigClient, LaunchSettings } from "./launchConfig";
+import { LAUNCH_CHANGED_ELSEWHERE, type LaunchConfigClient, LaunchSettings } from "./launchConfig";
 import type { LaunchConfigLayerName } from "./launchSchema";
 import type { AnyNotification, LaunchConfigLayer, LaunchConfigResolved } from "./types.gen";
 
@@ -208,11 +208,13 @@ it("marks externally updated dirty editors without replacing their drafts", asyn
   f.model.start();
   await f.model.refresh();
   f.model.edit("maxRounds", 8);
+  f.layer = { ...f.layer, model: "external/model" };
   for (const listener of f.listeners)
     listener({
       method: "evener/launch/updated",
       params: { cwd: "/", layer: "global" },
     });
+  await new Promise((done) => setTimeout(done, 0));
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
   expect(f.model.getSnapshot().changedElsewhere).toBe(true);
   expect(await f.model.save()).toBe(false);
@@ -399,4 +401,114 @@ it("does not infer trust from a successful reply if the current file differs", a
   expect(await f.model.trustRepository("reviewed")).toBe(false);
   expect(f.model.getSnapshot().resolved?.repo?.hash).toBe("changed");
   expect(f.model.getSnapshot().error).toBeTruthy();
+});
+it("leaves a project editor unflagged when only the global layer changed", async () => {
+  const f = fixture("project", "/repo");
+  f.model.start();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  for (const listener of f.listeners)
+    listener({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+  await Promise.resolve();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  f.model.dispose();
+});
+it("flags an update to the edited layer only when its content changed", async () => {
+  const f = fixture();
+  f.model.start();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  const notify = () => {
+    for (const listener of f.listeners)
+      listener({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+  };
+  notify();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+  f.layer = { ...f.layer, model: "external/model" };
+  notify();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  f.model.dispose();
+});
+it("clears the flag once the draft matches the baseline again", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  f.layer = { ...f.layer, maxRounds: 9 };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  // The refused save read the hub's layer, so that is the baseline now.
+  f.model.edit("maxRounds", 9);
+  expect(f.model.getSnapshot().dirty).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+});
+it("says changed-elsewhere with the flag alone, never as an error too", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  f.layer = { ...f.layer, model: "external/model" };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  expect(f.model.getSnapshot().error).toBeNull();
+  expect(LAUNCH_CHANGED_ELSEWHERE).toBe("Launch settings changed elsewhere. Discard your changes to see them.");
+});
+it("reports its own save's failed read-back as an error, not as a change elsewhere", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  const original = f.io.request;
+  let reads = 0;
+  f.io.request = async (method, params) => {
+    if (method.endsWith("getLayer") && ++reads === 2) throw Error("read lost");
+    return original(method, params);
+  };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+  expect(f.model.getSnapshot().error).toBe("Could not read the layer back after saving. Open it again to check it.");
+});
+it("reports a read-back that differs from what it saved as an error, not as a change elsewhere", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  const original = f.io.request;
+  f.io.request = async (method, params) => {
+    const value = await original(method, params);
+    if (method.endsWith("setLayer")) f.layer = { ...f.layer, maxRounds: 7 };
+    return value;
+  };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+  expect(f.model.getSnapshot().error).toBe("The hub saved something different. Review the values before saving again.");
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+});
+it("keeps the flag when an edit returns to the old baseline after the hub moved", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  f.layer = { ...f.layer, maxRounds: 9 };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  // 3 was the baseline this edit started from; the hub now holds 9.
+  f.model.edit("maxRounds", 3);
+  expect(f.model.getSnapshot().dirty).toBe(true);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  f.model.edit("maxRounds", 9);
+  expect(f.model.getSnapshot().dirty).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+});
+it("keeps a dirty editor editable while an update notification re-reads its layer", async () => {
+  const f = fixture();
+  f.model.start();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  for (const listener of f.listeners)
+    listener({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+  expect(() => f.model.edit("maxRounds", 10)).not.toThrow();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(10);
+  f.model.dispose();
 });

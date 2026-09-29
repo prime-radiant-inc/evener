@@ -1387,7 +1387,28 @@ export function ConversationScreen({
 			setFind({ ...find, seeking: false });
 			return;
 		}
+		// Paging older history reads away from the live end, so new rows stop
+		// pulling the list down while find looks.
+		if (follow.state.current.following) {
+			findLeftTheEnd.current = true;
+			follow.dispatch({ type: "unfollow" });
+		}
 		loadOlderPage();
+	});
+	// A search that ends with no match, or find closing, gives the end back to
+	// a list find unfollowed, when the list is still there. A jump to a match
+	// is reading, and keeps it.
+	const findLeftTheEnd = useRef(false);
+	useEffect(() => {
+		if (!findLeftTheEnd.current || (find !== null && (find.seeking || find.key !== null))) return;
+		findLeftTheEnd.current = false;
+		const stillAtEnd = atEnd({
+			contentOffset: { y: listOffset.current },
+			contentSize: { height: readerContentHeight.current },
+			layoutMeasurement: { height: readerViewportHeight.current },
+			contentInset: listUnderBar.contentInset,
+		});
+		if (stillAtEnd) follow.dispatch({ type: "follow" });
 	});
 	// The current match comes into view, 30% down the list. A row the list
 	// hasn't measured fails the jump (onScrollToIndexFailed, while
@@ -1412,6 +1433,7 @@ export function ConversationScreen({
 		if (findCurrentNow.current !== null) scrollToFindMatch(findCurrentNow.current);
 	}
 	function scrollToFindMatch(index: number) {
+		findLeftTheEnd.current = false;
 		follow.dispatch({ type: "unfollow" });
 		readerHeader.current = false;
 		// The reading position follows the jump, so nothing pulls the list back.
@@ -2432,10 +2454,13 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Typing in the composer: Next steps aside and the queue folds to one line,
-	// so the transcript keeps its room; both return when the keyboard lowers.
-	// A keyboard up for a dock's own field is not this.
-	const typing = keyboardShown && composerShown;
+	// Typing in the composer: Next and the header's chips and note step aside,
+	// and the queue folds to one line, so the transcript keeps its room; all of
+	// it returns when the keyboard lowers.
+	// A keyboard up for a dock's field or the find bar is not this: the find
+	// bar's own field raises it with the composer still mounted. (The header
+	// keeps the find bar in place itself, whatever hides the chips.)
+	const typing = keyboardShown && composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
@@ -2815,7 +2840,7 @@ export function ConversationScreen({
 										/>
 									) : undefined
 								}
-								hidden={headerHiding.hidden}
+								hidden={headerHiding.hidden || typing}
 								onChip={openChip}
 								notes={
 									notesPreview ? (

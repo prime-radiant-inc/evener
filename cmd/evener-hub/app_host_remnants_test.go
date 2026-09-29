@@ -1828,18 +1828,26 @@ func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
 	// (c) A later retry is not falsely busy: the timed-out attempt is taken over
 	// and the run proceeds to completion once the wedge lifts.
 	unwedge()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	// The deadline abandons the run's teardown step, which stays parked on the
+	// host gate and, once the wedge lifts, removes the host itself. Wait for
+	// that abandoned run to land — its registry drop is the observable
+	// completion — before the later retry: otherwise the retry races the
+	// abandoned step for the gate and can be refused busy with its "remove"
+	// hold instead of completing, which is the race this test hit in CI.
+	waitFor(t, func() bool {
+		_, live := m.cfg.hosts.Get("side")
+		return !live
+	}, "the abandoned teardown never removed the host")
+	// The registry drop runs under the host gate, so wait for the abandoned run
+	// to release that gate too before the later retry reserves it.
+	waitFor(t, func() bool {
 		release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "probe"})
-		if gateErr == nil {
-			release()
-			break
+		if gateErr != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the gate was never released after the wedged run: %v", gateErr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		release()
+		return true
+	}, "the gate was never released after the wedged run")
 	m.testOnlyBeforePinnedRun = nil
 	second, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
 	if err != nil {

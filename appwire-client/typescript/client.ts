@@ -161,9 +161,8 @@ const FEATURE_KEYS = [
   "auth",
 ] as const;
 const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
-const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
-function hasRequiredAndOptionalKeys(
+function hasExactKeys(
   value: Record<string, unknown>,
   required: readonly string[],
   optional: readonly string[] = [],
@@ -173,12 +172,16 @@ function hasRequiredAndOptionalKeys(
   return required.every((key) => Object.hasOwn(value, key)) && actual.every((key) => allowed.has(key));
 }
 
-/** Runtime boundary for the untyped JSON-RPC initialize result. */
+/**
+ * Runtime boundary for the untyped JSON-RPC initialize result. The response's
+ * own top-level keys are exact. The objects inside it (serverInfo, features,
+ * navigation) are lenient: each field the client knows is checked strictly,
+ * and a field a newer hub added is passed through untouched, never refused, so
+ * an additive wire change doesn't fail older clients' handshakes (#3182,
+ * #3226).
+ */
 export function decodeInitializeResponse(value: unknown): InitializeResponse {
-  if (
-    !isPlainObject(value) ||
-    !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
-  ) {
+  if (!isPlainObject(value) || !hasExactKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)) {
     throw new InitializeValidationError("response");
   }
   const serverInfo = value.serverInfo;
@@ -186,7 +189,6 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   const navigation = value.navigation;
   if (
     !isPlainObject(serverInfo) ||
-    !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
     typeof serverInfo.version !== "string" ||
@@ -202,21 +204,13 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   }
   if (
     !isPlainObject(features) ||
-    // Additive wire changes need no version bump: a hub may advertise feature
-    // flags this build has never heard of, so only the keys the client knows
-    // are required (an unknown key is preserved, not rejected). This mirrors
-    // the lenient receipt decode on mobile (#1759).
-    !FEATURE_KEYS.every((key) => Object.hasOwn(features, key)) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
     FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
   ) {
     throw new InitializeValidationError("features");
   }
   if (Object.hasOwn(value, "navigation")) {
-    if (
-      !isPlainObject(navigation) ||
-      !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
-    ) {
+    if (!isPlainObject(navigation)) {
       throw new InitializeValidationError("navigation");
     }
     if (

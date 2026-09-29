@@ -901,7 +901,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 
 	// The resume waits: starting against the stale rows would refuse the
 	// device start and strand the flow in its error phase.
-	expect(renderedText(tree)).not.toContain("Sign-in could not be started");
+	expect(renderedText(tree)).not.toContain("couldn't start signing in");
 
 	// The listing the new connection owes lands; the gate clears and the
 	// idle exchange finally runs.
@@ -1007,10 +1007,10 @@ it("holds the re-key window back from the previous hub's recorded client", async
 	await act(async () => {});
 	await act(async () => {});
 
-	// Connecting replaces the surface: no sign-in affordance mounts and no
-	// exchange runs against the previous hub's client — the strongest form
-	// of the round-58 contract, closed one layer up.
-	expect(renderedText(tree)).toContain("Connecting to New hub…");
+	// The first-load wait replaces the surface: no sign-in affordance mounts
+	// and no exchange runs against the previous hub's client — the strongest
+	// form of the round-58 contract, closed one layer up.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(tree.root.findAll((node) => typeof node.props.onSignIn === "function")).toHaveLength(0);
 	expect(stale.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
@@ -1171,13 +1171,14 @@ it("offers no pull-to-refresh and never asks to reconnect", async () => {
 	expect(tree.root.findAll((node) => "refreshing" in node.props || "onRefresh" in node.props)).toHaveLength(0);
 });
 
-it("says Connecting before the first listing, in place of a wall", async () => {
+it("waits quietly, connected, for the first listing, in place of a wall (spec 14)", async () => {
 	const fake = new FakeClient("ready");
 	fake.on("evener/instance/list", () => new Promise(() => {}));
 	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const { tree } = mountPage();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Connecting to Work hub…");
+	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(hasControl(tree, "Add provider")).toBe(false);
 });
 

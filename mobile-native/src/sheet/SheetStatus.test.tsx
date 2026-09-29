@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { render, renderedText } from "../renderNative.testkit";
-import { Connecting, SheetStatus } from "./SheetStatus";
+import { FirstLoad, SheetStatus } from "./SheetStatus";
 
 const status = { line: null as string | null, state: "ready", fatal: false };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -24,9 +24,32 @@ it("shows nothing while live, and the line with no button while not", () => {
 	expect(tree.root.findAllByProps({ accessibilityRole: "button" })).toHaveLength(0);
 });
 
-it("says a never-loaded page is connecting, or why it can't", () => {
+it.each(["connecting", "reconnecting"])("says a never-loaded page is connecting while %s", (state) => {
 	status.fatal = false;
-	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe("Connecting to magic-kingdom…");
+	status.state = state;
+	expect(renderedText(render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />))).toBe(
+		"Connecting to magic-kingdom…",
+	);
+});
+
+it.each(["ready", "idle", "closed"])(
+	"waits quietly while %s, and names what it waits on for VoiceOver (spec 14)",
+	(state) => {
+		status.fatal = false;
+		status.state = state;
+		const tree = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />);
+		expect(renderedText(tree)).toBe("");
+		expect(tree.root.findByType("ActivityIndicator" as never).props.accessibilityLabel).toBe("Loading hosts");
+	},
+);
+
+it("says why a never-loaded page can't connect, whatever the state", () => {
 	status.fatal = true;
-	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe(INCOMPATIBLE_VERSIONS);
+	for (const state of ["ready", "connecting", "closed"]) {
+		status.state = state;
+		expect(renderedText(render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />))).toBe(
+			INCOMPATIBLE_VERSIONS,
+		);
+	}
+	status.fatal = false;
 });

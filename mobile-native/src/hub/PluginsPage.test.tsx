@@ -3172,3 +3172,11 @@ it("never asks to reconnect or offers pull-to-refresh, in any segment", async ()
 	await openDetail(tree, "demo-plugin");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 });
+
+it("waits for the installed list in the same padded space every Hub page waits in", async () => {
+	const hub = pageHub([]);
+	hub.on("evener/plugin/list", () => new Promise(() => {}));
+	const { tree } = await mountPage(hub);
+	const spinner = tree.root.findByProps({ accessibilityLabel: "Loading installed plugins" });
+	expect(spinner.props.style).toEqual({ padding: 32 });
+});
