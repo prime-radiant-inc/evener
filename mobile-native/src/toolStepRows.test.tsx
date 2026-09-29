@@ -11,7 +11,7 @@ import { render, renderedText, textOf } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
 import { stepEvidence } from "./session/evidence";
-import { hideAnswerMessages, runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { answerTo, hideAnswerMessages, runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -111,6 +111,20 @@ describe("a call and its result, served as two items", () => {
 		expect(stepEvidence(step(level, "edit_file")).map((evidence) => evidence.kind)).toEqual(["diff"]);
 		expect(stepEvidence(step(level, "write_file"))).toEqual([{ kind: "wrote", path: "agent/tree_order.go" }]);
 		expect(stepEvidence(step(level, "apply_patch")).map((evidence) => evidence.kind)).toEqual(["diff"]);
+	});
+});
+
+// agent/testdata/toolwire records a real ask_user call and your answer after
+// it: the question is a row of its own, which reads the answer you gave, and
+// your composed "[answers]" message stays out of the transcript.
+describe("a question put to you, with the answer you gave", () => {
+	it.each(["intent", "tools", "full"] as const)("reads as its own row with your answer, at %s", (level) => {
+		const rows = rowsAt(level);
+		const asked = rows.find((row) => row.kind === "activity" && row.label === "ask_user");
+		expect(asked).toBeDefined();
+		expect(runsAt(level).flatMap((run) => run.steps).some((step) => step.label === "ask_user")).toBe(false);
+		expect(answerTo(toolWireModel(), asked?.id ?? "")).toBe('"Ship tonight"');
+		expect(rows.some((row) => row.kind === "user" && row.text.startsWith("[answers]"))).toBe(false);
 	});
 });
 
