@@ -1290,20 +1290,21 @@ it("doesn't search while the Board is out of view, and asks again when it return
 	act(() => tree.unmount());
 });
 
-it("gives the search field a 44pt hit area without changing its 36pt look", async () => {
+it("gives the search field a 44pt touch target while it still draws 36pt", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
 	const row = tree.root.find((node) => node.props.testID === "search-field");
-	const style = row.props.style;
-	const drawn = style.height - (style.paddingVertical ?? 0) * 2;
-	expect(drawn).toBe(36);
-	const input = tree.root.find(
+	expect(row.props.style.height).toBe(52);
+	// The visible pill is still the stock 36pt.
+	const pill = row.findAll((node) => node.type === ("View" as never) && node.props.style?.position === "absolute")[0];
+	expect(pill?.props.style.height).toBe(36);
+	// The input's own row is the target, so a slop wouldn't be clipped away.
+	const input = row.find(
 		(node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions",
 	);
-	const slop = input.props.hitSlop ?? {};
-	expect(drawn + (slop.top ?? 0) + (slop.bottom ?? 0)).toBeGreaterThanOrEqual(44);
+	expect(input.parent?.props.style.height).toBeGreaterThanOrEqual(44);
 	act(() => tree.unmount());
 });
 
@@ -1320,6 +1321,60 @@ it("re-tucks the search field when Dynamic Type changes its height", async () =>
 	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
 	expect(height).toBe(70);
 	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
+	act(() => tree.unmount());
+});
+
+it("leaves a field the reader revealed or scrolled past where it is on a Dynamic Type change", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	const scrollToY = (y: number) =>
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: { contentOffset: { x: 0, y }, layoutMeasurement: { width: 390, height: 700 } },
+			}),
+		);
+	// Revealed by pulling down, without focusing.
+	scrollToY(0);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	// Scrolled down the list.
+	scrollToY(400);
+	harness.fontScale = 1;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps one search through a sheet over the Board, without re-asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A sheet over the Board is still the Board (ruling 28): the binding holds,
+	// so closing it asks nothing again.
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
 
