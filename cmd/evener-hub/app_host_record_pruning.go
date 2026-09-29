@@ -389,6 +389,14 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 			delete(records.provisioning, name)
 		}
 	}
+	// The compensation's carry lands after the prune: it restores the flags of a
+	// name the removal's staged write pruned, but only for a name this write
+	// carries live (a record's flags exist only for a live host).
+	for name, provisioning := range change.carryProvisioning {
+		if _, live := liveNames[name]; live {
+			records.provisioning[name] = provisioning
+		}
+	}
 	if change.tombstone != nil {
 		tombstone := change.tombstone.Tombstone
 		records.tombstones[tombstone.Name] = tombstone

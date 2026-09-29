@@ -514,7 +514,17 @@ func helperGateWireRefusal(err error) (appwire.WireError, bool) {
 	// gate with the reason the claim/delivery was refused (a lost claim race, a
 	// live foreign process, a failed probe), and that detail must reach the
 	// caller. gate.Host and gate.PinnedVersion carry the data half.
-	message := err.Error()
+	return helperGateWire(gate, err.Error())
+}
+
+// helperGateWire is the one conversion from a helper-gate refusal to §8's
+// conflict-class envelope, shared by every surface (the probe classifier here and
+// orphan-resolve's verify arm). A known discriminator renders as its pinned arm —
+// the pinned version for the absent arm, the distrusted version for the untrusted
+// one — and a discriminator this build does not know returns ok=false, so no
+// surface ever renders an unknown class as absent or untrusted and each refuses
+// it explicitly (§8:161's fail-closed posture).
+func helperGateWire(gate *hostfence.HelperGateError, message string) (appwire.WireError, bool) {
 	switch gate.Discriminator {
 	case hostfence.DiscriminatorHelperAbsent:
 		// §8's data names the version to act on: the pinned version the operator
@@ -526,8 +536,8 @@ func helperGateWireRefusal(err error) (appwire.WireError, bool) {
 		return appwire.FencingHelperUntrusted(gate.Host, strconv.Itoa(gate.ObservedVersion), message), true
 	default:
 		// A discriminator this build does not know is not the absent class: the
-		// caller refuses it explicitly (operationProbeRefusal's guard) rather
-		// than rendering it as an arm this build never defined.
+		// caller refuses it explicitly rather than rendering it as an arm this
+		// build never defined.
 		return appwire.WireError{}, false
 	}
 }

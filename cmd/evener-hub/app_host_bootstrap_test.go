@@ -676,3 +676,79 @@ func TestHostBootstrapTokenLifecycle(t *testing.T) {
 		t.Fatal("the post-finalize invalidation rewrote hub.toml")
 	}
 }
+
+// TestHostBootstrapProvisioningSurvivesACompensatedRemoval pins the round-7
+// medium: a removal's staged write prunes the live host's bootstrap flags from
+// the store and the file, but the pre-commit compensation rolls the entry back
+// with the flags restored (the plan captured them before the staged write), so a
+// failed remove never leaves a live host reading as never-provisioned
+// (§6:131's exactly-once exemption). It drives the staged-write shape and the
+// real compensationChange through the record machinery, so it fails without the
+// provisioning carry.
+func TestHostBootstrapProvisioningSurvivesACompensatedRemoval(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "s.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	store := m.bootstrapStore()
+	if _, _, err := store.PersistAttemptFence("side", bootstrapEpoch()); err != nil {
+		t.Fatalf("PersistAttemptFence: %v", err)
+	}
+	if _, err := store.FinalizeBootstrap("side", hostfence.HelperVersion); err != nil {
+		t.Fatalf("FinalizeBootstrap: %v", err)
+	}
+
+	known := m.cfg.store.snapshot()
+	removal := make([]hostreg.Host, 0, len(known))
+	for _, entry := range known {
+		if entry.Name != "side" {
+			removal = append(removal, entry)
+		}
+	}
+	plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "side", Key: "k", Entries: removal, Known: known}
+	// What stageCommit captures before its write.
+	plan.PriorProvisioning = m.cfg.store.provisioningFor(plan.Name)
+
+	// The staging write: the removal's post-mutation live set. It prunes the flags.
+	m.cfg.mu.Lock()
+	err := m.persistHosts(removal, known, hostPersistChange{})
+	m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("staged write: %v", err)
+	}
+	if p := m.cfg.store.provisioningFor("side"); p != (hostfence.Provisioning{}) {
+		t.Fatalf("the staged write left %+v; the prune is what makes the compensation's restore the point", p)
+	}
+
+	// The pre-commit compensation: the rollback re-adds the pre-mutation entry.
+	m.cfg.mu.Lock()
+	err = m.persistHosts(known, known, compensationChange(plan))
+	m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("compensation write: %v", err)
+	}
+
+	// The live host kept its flags in the store and in the file.
+	if p := m.cfg.store.provisioningFor("side"); !p.AttemptFenced || !p.HelperInstalled || p.HelperVersion != hostfence.HelperVersion {
+		t.Fatalf("store provisioning after the compensation = %+v, want the flags restored", p)
+	}
+	record := liveRecord(t, configPath, "side")
+	if !record.BootstrapAttempted || !record.HelperInstalled || record.HelperVersion != hostfence.HelperVersion {
+		t.Fatalf("host_records[side] after the compensation = %+v, want the flags restored", record)
+	}
+
+	// A reopen reads the same flags back.
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig after the compensation: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	reopened := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, func(string, ...any) {})
+	if p := reopened.cfg.store.provisioningFor("side"); !p.AttemptFenced || !p.HelperInstalled {
+		t.Fatalf("reopened store provisioning = %+v, want the flags restored", p)
+	}
+}

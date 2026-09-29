@@ -365,6 +365,13 @@ type hostPersistChange struct {
 	// derivation and installed only by a successful write, so a failed write
 	// leaves both the file and the store exactly as they were.
 	provisioning *pendingHostProvisioning
+	// carryProvisioning restores the bootstrap records this write must re-emit
+	// beyond the store's own set: a compensation rolling a removal back to the
+	// pre-mutation live entry carries the flags the removal's staged write pruned
+	// (the store lost them and the file no longer holds the name's record), so a
+	// failed removal never leaves a live host reading as never-provisioned.
+	// Keyed by host name; applied after the derivation's liveness prune.
+	carryProvisioning map[string]hostfence.Provisioning
 }
 
 // pendingHostProvisioning is the bootstrap record one hub.toml write carries,
