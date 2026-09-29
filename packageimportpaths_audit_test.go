@@ -103,6 +103,9 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 		{"cmd/evener-hub/frontend/src/seamDirItself.ts", "import { errorText } from \"../protocol\";\n", "by path"},
 		{"mobile-native/src/requirePath.cjs", "const wire = require(\"../../appwire-client/typescript/errors\");\nvoid wire;\n", "by path"},
 		{"mobile-native/src/viMockPath.test.ts", "vi.mock(\"../../appwire-client/typescript/errors\", () => ({}));\n", "by path"},
+		{"mobile-native/src/viDoMockPath.test.ts", "vi.doMock(\"../../appwire-client/typescript/errors\", () => ({}));\n", "by path"},
+		{"mobile-native/src/viImportActualPath.test.ts", "vi.importActual(\"../../appwire-client/typescript/errors\");\n", "by path"},
+		{"mobile-native/src/jestMockPath.test.ts", "jest.mock(\"../../appwire-client/typescript/errors\");\n", "by path"},
 		{"mobile-native/src/sideEffect.ts", "import \"../../appwire-client/typescript/errors\";\n", "by path"},
 		{"mobile-native/src/reExport.ts", "export { errorText } from \"../../appwire-client/typescript/errors\";\n", "by path"},
 		// A wrapped statement puts the specifier on a line with no `import`

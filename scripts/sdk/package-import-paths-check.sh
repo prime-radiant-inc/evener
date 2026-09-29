@@ -4,18 +4,20 @@
 #
 # It is a line grep, not a parser. A quoted literal that follows a module-loading
 # keyword -- `from` (static import or re-export), a dynamic `import(` or
-# `require(`, a test's `vi.mock(`, or a side-effect `import "..."` -- and
-# contains `appwire-client/typescript` (the package by path) or `/protocol/`
-# (the directory the package used to live behind) fails the gate. The rewriter's
-# TypeScript reader is precise about which quoted strings are imports; this gate
-# is deliberately broader, because the cost of missing one is a path import that
-# typechecks and that nothing else in the tree notices. It cannot tell a live
-# import from a commented-out one on the same line, so a quoted path in a
-# COMMENT -- a commented-out import, an example in a doc comment -- is refused
-# too. Ordinary string data -- a docs URL, a demo path, a fixture label -- is
-# not a module-loading line and passes. Spell the package name, or move the
-# string out of the swept trees, or (for a config or a test that legitimately
-# names the path) add it to the exact-path exemptions below.
+# `require(`, a test's mocking call (`vi.mock(`/`vi.importActual(` and the rest
+# of the family the shared module-specifiers reader names), or a side-effect
+# `import "..."` -- and contains `appwire-client/typescript` (the package by
+# path) or `/protocol/` (the directory the package used to live behind) fails
+# the gate. The rewriter's TypeScript reader is precise about which quoted
+# strings are imports; this gate is deliberately broader, because the cost of
+# missing one is a path import that typechecks and that nothing else in the tree
+# notices. It cannot tell a live import from a commented-out one on the same
+# line, so a quoted path in a COMMENT -- a commented-out import, an example in a
+# doc comment -- is refused too. Ordinary string data -- a docs URL, a demo
+# path, a fixture label -- is not a module-loading line and passes. Spell the
+# package name, or move the string out of the swept trees, or (for a config or a
+# test that legitimately names the path) add it to the exact-path exemptions
+# below.
 #
 # --root points the sweep at a fixture tree instead of this checkout; only the
 # gate's own Go test passes it.
@@ -72,11 +74,13 @@ exempt_configs=(
 seam='/protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
 
-# The module-loading keywords a specifier can follow, each ending just before the
-# opening quote. `from` covers static imports, re-exports, and a statement
-# wrapped so its specifier lands on a line with no `import` keyword on it. A
-# quoted literal with none of these ahead of it is string data, not an import.
-loader='(^|[^[:alnum:]_])(from[[:space:]]+|require[[:space:]]*\([[:space:]]*|vi\.mock[[:space:]]*\([[:space:]]*|import[[:space:]]*\([[:space:]]*|import[[:space:]]+)'
+# The module-loading constructs a specifier can follow, each ending just before
+# the opening quote. `from` covers static imports, re-exports, and a statement
+# wrapped so its specifier lands on a line with no `import` keyword on it; the
+# `.method(` half is the mocking family module-specifiers.mjs's MOCK_CALLS names
+# (vi.mock/doMock/unmock/importActual/importMock, and jest's). A quoted literal
+# with none of these ahead of it is string data, not an import.
+loader='((^|[^[:alnum:]_])(from[[:space:]]+|import[[:space:]]+|(require|import)[[:space:]]*\([[:space:]]*)|\.(mock|doMock|unmock|importActual|importMock)[[:space:]]*\([[:space:]]*)'
 
 status=0
 
