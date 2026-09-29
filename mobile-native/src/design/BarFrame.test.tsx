@@ -60,4 +60,17 @@ describe("BarFrame", () => {
 			paddingBottom: inset(),
 		});
 	});
+
+	it("keeps the home indicator's room, hairline and fill whatever a screen's style says", () => {
+		const tree = render(
+			<BarFrame testID="bar" style={{ paddingBottom: 99, borderTopWidth: 3, backgroundColor: "red" }}>
+				{null}
+			</BarFrame>,
+		);
+		expect(style(host(tree))).toMatchObject({
+			paddingBottom: inset(),
+			borderTopWidth: 0.5,
+			backgroundColor: paletteFor("light").page,
+		});
+	});
 });

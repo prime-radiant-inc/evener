@@ -16,7 +16,8 @@ export function BarFrame({
 	testID,
 }: {
 	children: ReactNode;
-	/** A screen's own layout for the bar (its cap, its top padding). */
+	/** A screen's own layout for the bar (its cap, its top padding). The
+	 * home indicator's room, the hairline and the fill are the frame's. */
 	style?: StyleProp<ViewStyle>;
 	testID?: string;
 }) {
@@ -26,14 +27,16 @@ export function BarFrame({
 	return (
 		<View
 			testID={testID}
+			// The screen's layout goes first, so it can't undo what the frame
+			// owns: the home indicator's room, the hairline and the fill.
 			style={[
+				style,
 				{
 					paddingBottom: keyboardShown ? 0 : bottom,
 					borderTopWidth: 0.5,
 					borderColor: palette.edge,
 					backgroundColor: palette.page,
 				},
-				style,
 			]}
 		>
 			{children}
