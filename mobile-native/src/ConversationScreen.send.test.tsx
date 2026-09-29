@@ -2224,18 +2224,21 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
-	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
-		// Ruling on the device pass: the pills must never hide the newest
-		// message, so the list's end grows by the stack's height.
+	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+		// Spec 8.3: the transcript keeps 60pt at its end so Next never sits on
+		// the last line. The room is fixed, reserved whether or not anything
+		// floats: a toast, Next or the pill coming and going (Next with fleet
+		// polling) must never move what you read. The trade-off, ruled in
+		// review: a toast (about 3s) may briefly sit over the last line.
 		const { tree } = await mount(thread("ref-inset", "active"));
 		const list = () =>
 			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
 		const bottom = () => list().props.contentContainerStyle.paddingBottom;
-		const stack = tree.root.findByType(FloatingStack);
-		act(() => stack.props.onHeight(104));
-		expect(bottom()).toBe(16 + 104 + 10);
-		act(() => stack.props.onHeight(0));
-		expect(bottom()).toBe(16);
+		expect(bottom()).toBe(60);
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(bottom()).toBe(60);
+		expect(tree.root.findByType(FloatingStack).props.onHeight).toBeUndefined();
 	});
 
 	it("shows no Next while this session asks you something", async () => {

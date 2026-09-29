@@ -118,7 +118,7 @@ import {
 	type QueueEntryRef,
 	whatCanActNow,
 } from "./session/ghosts";
-import { FloatingStack } from "./session/FloatingStack";
+import { FloatingStack, transcriptEndRoom } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
@@ -174,7 +174,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -876,8 +876,7 @@ export function ConversationScreen({
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
 	);
-	// How tall the toast, Next and "↓ new" stand over the transcript's end.
-	const [floatingHeight, setFloatingHeight] = useState(0);
+	const textScale = useTextScale();
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
@@ -2558,12 +2557,13 @@ export function ConversationScreen({
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
 							renderItem={renderItem}
-							// The end stays clear of what floats over it (the toast, Next
-							// and "↓ new"), so they never hide the newest message.
+							// The end keeps a fixed room for what floats over it (spec 8.3),
+							// so Next never sits on the last line and nothing coming or
+							// going there moves the list.
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
+								paddingBottom: transcriptEndRoom(textScale),
 							}}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -2753,7 +2753,6 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
-							onHeight={setFloatingHeight}
 						/>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
