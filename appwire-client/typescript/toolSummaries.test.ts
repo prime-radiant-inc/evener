@@ -8,16 +8,20 @@ import { mcpToolParts, toolFamily, toolStepProgress, toolStepSummary, words } fr
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
 // words are the web's, lifted unchanged.
 test.each<[ToolWireCall, string]>([
-  ["call_read_file", "Read agent/tree.go · lines 1-3"],
-  ["call_read_file_range", "Read agent/tree.go · lines 120-159"],
+  // The tool numbers a file's final empty line too.
+  ["call_read_file", "Read agent/tree.go · lines 1-4"],
+  ["call_read_file_range", "Read agent/tree.go · lines 2-3"],
   ["call_grep", 'Searched "func settle" in agent (*.go) · 2 hits'],
-  ["call_glob", "Matched agent/**/*_test.go · 3 matches"],
-  ["call_list_dir", "Listed agent/internal · 4 entries"],
-  ["call_edit_file", "Edited agent/tree.go · +3 -2"],
+  ["call_glob", "Matched agent/**/*_test.go · 2 matches"],
+  // The count list_dir states on its last line, not its line count.
+  ["call_list_dir", "Listed agent · 3 entries"],
+  ["call_list_dir_empty", "Listed empty · 0 entries"],
+  ["call_list_dir_page", "Listed agent · 2 entries"],
+  ["call_edit_file", "Edited agent/tree.go · +4 -2"],
   ["call_write_file", "Wrote agent/tree_order.go"],
-  ["call_apply_patch", "Patched agent/tree.go, agent/tree_order.go · +3 -1"],
-  ["call_shell", "Ran go test ./agent/..."],
-  ["call_shell_failed", "Ran go vet ./agent/..."],
+  ["call_apply_patch", "Patched agent/tree.go, agent/tree_drain.go · +2 -0"],
+  ["call_shell", "Ran cat agent/tree_order.go"],
+  ["call_shell_failed", "Ran test -f agent/missing.go"],
   ["call_web_fetch", "Fetched https://example.com/release-notes · 48213 bytes"],
   ["call_web_search", 'Searched the web for "go race detector settle drain" · 2 results'],
   ["call_use_skill", "Activated skill: systematic-debugging"],
@@ -36,7 +40,7 @@ test.each<[ToolWireCall, string]>([
 
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
-    "Ran cd /home/jesse/git/evener && go test ./agent/...",
+    "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
   );
 });
 
@@ -129,4 +133,20 @@ test("reads a tool name in words, hyphens and underscores alike", () => {
   expect(words("compact_context")).toBe("compact context");
   expect(words("foo-bar_baz")).toBe("foo bar baz");
   expect(toolStepSummary({ toolName: "foo-bar" })).toBe("Used foo bar");
+});
+
+test("says the count list_dir states, one entry or many", () => {
+  const listed = (output: string) =>
+    toolStepSummary({ toolName: "list_dir", argumentsJSON: JSON.stringify({ path: "a" }), output });
+  expect(listed("b.go\t3\n\n1 entries")).toBe("Listed a · 1 entry");
+  expect(listed("b.go\t3\nc.go\t4\n\n2 entries")).toBe("Listed a · 2 entries");
+  // An empty directory is the count alone.
+  expect(listed("0 entries")).toBe("Listed a · 0 entries");
+  // A page of a longer listing counts the entries it returned.
+  expect(listed("b.go\t3\nc.go\t4\n\n2 of 5 entries (offset 0) — more with list_dir(offset=2)")).toBe(
+    "Listed a · 2 entries",
+  );
+  expect(listed("d.go\t3\n\n1 of 5 entries (offset 4)")).toBe("Listed a · 1 entry");
+  // An output without the count counts its lines.
+  expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });

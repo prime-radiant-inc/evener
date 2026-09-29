@@ -93,10 +93,23 @@ function listTarget(args: Record<string, unknown>): string | undefined {
   return `${path || "."}${pattern ? ` (${pattern})` : ""}`;
 }
 
+// list_dir ends its listing with the count it returned: "3 entries" after a
+// blank line, the count alone for an empty directory, or "2 of 5 entries
+// (offset 0) — more…" for a page of a longer one. A summary says how many it
+// returned; an output without a count counts its lines.
+const LIST_DIR_COUNT_RE = /(?:^|\n)(\d+)(?: of (\d+))? entries/;
+
+function listDirCount(output: string | undefined): string | undefined {
+  if (!output) return undefined;
+  const stated = LIST_DIR_COUNT_RE.exec(output)?.[1];
+  if (stated === undefined) return outputCount(output, "entries");
+  return `${stated} ${stated === "1" ? "entry" : "entries"}`;
+}
+
 /** "Listed agent/internal · 4 entries", or "Listed files". */
 export function listDirSummary(step: ToolStep): string {
   const target = listTarget(parseArgs(step.argumentsJSON));
-  return target ? withCount(`Listed ${target}`, outputCount(step.output, "entries")) : "Listed files";
+  return target ? withCount(`Listed ${target}`, listDirCount(step.output)) : "Listed files";
 }
 
 function globPattern(args: Record<string, unknown>): string | undefined {

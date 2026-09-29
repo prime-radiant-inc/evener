@@ -54,15 +54,15 @@ describe("a step with no intent", () => {
 	it.each(["intent", "tools", "full"] as const)("says what it did in the web's words, at %s", (level) => {
 		const text = runsAt(level).map(stepText).join("\n");
 		for (const summary of [
-			"Read agent/tree.go · lines 1-3",
-			"Read agent/tree.go · lines 120-159",
+			"Read agent/tree.go · lines 1-4",
+			"Read agent/tree.go · lines 2-3",
 			'Searched "func settle" in agent (*.go) · 2 hits',
-			"Matched agent/**/*_test.go · 3 matches",
-			"Listed agent/internal · 4 entries",
+			"Matched agent/**/*_test.go · 2 matches",
+			"Listed agent · 3 entries",
 			"Wrote agent/tree_order.go",
-			"Patched agent/tree.go, agent/tree_order.go · +3 -1",
+			"Patched agent/tree.go, agent/tree_drain.go · +2 -0",
 			// The session's own directory: its cd is noise, as on the web.
-			"Ran go test ./agent/...",
+			"Ran cat agent/tree_order.go",
 			'Searched the web for "go race detector settle drain" · 2 results',
 			"Activated skill: systematic-debugging",
 			"Used github: create issue",

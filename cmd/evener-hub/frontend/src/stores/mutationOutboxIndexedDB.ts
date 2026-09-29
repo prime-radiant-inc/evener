@@ -59,9 +59,15 @@ const STORAGE_WAIT_MS = 10_000;
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
+// The one neutral message for a transaction that timed out. The same error
+// covers reads, Stop, cancel, and enqueue writes, so the sentence must read
+// after any action headline ("Send failed: ...", "Stop failed: ...") and name
+// neither a draft nor a cause. It is a bare retryable detail, never a gate - a
+// stuck open is not remembered, so every later operation still attempts the
+// open and a send after the open recovers succeeds.
 export class MutationStorageTimeoutError extends Error {
   constructor() {
-    super("Browser message storage is not responding. Your draft has been kept. Try again when storage recovers.");
+    super("It didn't go through. Try again.");
     this.name = "MutationStorageTimeoutError";
   }
 }
@@ -140,6 +146,9 @@ export class MutationOutboxIndexedDB {
   }
 
   close(): void {
+    // Drop the connection we hold and forget it, so a later call simply opens
+    // again. An open still in flight keeps running: its success lands after
+    // this, finds its promise superseded, and closes the late connection.
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
@@ -192,6 +201,10 @@ export class MutationOutboxIndexedDB {
   // its user's click, before its durable write issues. Fresh from the
   // ref's sequence row, never cached - another tab's Stop is invisible to
   // this tab's memory.
+  //
+  // This read is the click's first storage observation; a timeout rejects it
+  // (the send fails), which is the safe outcome - there is no retry to answer
+  // later with an epoch a Stop may have since bumped.
   async readStopEpoch(targetRef: string): Promise<number> {
     return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
   }
@@ -526,11 +539,7 @@ export class MutationOutboxIndexedDB {
         // runtime's projections and pins last saw this ref before the
         // removal, and this fire-and-forget write is the only thing that can
         // tell them.
-        try {
-          this.#supersededDiscardListener?.(source.targetRef);
-        } catch {
-          // A listener cannot change the durable transaction's outcome.
-        }
+        this.#notifyQuietly(() => this.#supersededDiscardListener?.(source.targetRef));
       })
       .catch(() => {
         // Left for the next settle, clear, or delete.
@@ -715,32 +724,36 @@ export class MutationOutboxIndexedDB {
   }
 
   async #open(): Promise<IDBDatabase> {
+    // A stuck open is not remembered: every later call attempts the open
+    // again, so a send after storage recovers still succeeds.
     if (this.#database) return this.#database;
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
       let abandoned = false;
-      let upgradeTransaction: IDBTransaction | null = null;
       const fail = (error: unknown) => {
         abandoned = true;
         clearTimeout(timer);
-        try {
-          // Release the database open lock if its schema upgrade is still active.
-          upgradeTransaction?.abort();
-        } catch {
-          // A completed upgrade cannot be aborted; late success closes its connection.
-        }
         reject(error);
       };
-      const timer = setTimeout(() => fail(new MutationStorageTimeoutError()), STORAGE_WAIT_MS);
+      const timer = setTimeout(() => {
+        // The watchdog fired: fail this one attempt with the actionable error.
+        // A later call attempts the open again.
+        fail(new MutationStorageTimeoutError());
+      }, STORAGE_WAIT_MS);
       request.addEventListener(
         "upgradeneeded",
         () => {
-          upgradeTransaction = request.transaction;
-          if (abandoned || this.#databasePromise !== opening) {
-            upgradeTransaction?.abort();
-            return;
-          }
+          // The schema upgrade must always be allowed to commit, even for an
+          // open this adapter has already abandoned. Aborting a
+          // versionchange/upgrade transaction is the documented trigger for
+          // Chromium's wedged connection coordinator (crbug 40278488), after
+          // which open() never fires success, error, or blocked - so there is
+          // deliberately no release/abort path here. `abandoned` and
+          // `#databasePromise` decide only whether the late success below
+          // installs its connection, never whether the upgrade commits; a
+          // later call clears the abandoned promise and opens afresh, which is
+          // what makes recovery after a stalled upgrade possible.
           const database = request.result;
           if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
             const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
@@ -832,6 +845,8 @@ export class MutationOutboxIndexedDB {
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
+    // One attempt: a timeout fails this call (the caller retries by acting
+    // again), and every later call attempts the open afresh.
     const database = await this.#open();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
@@ -886,8 +901,12 @@ export class MutationOutboxIndexedDB {
   }
 
   #notifyWriteStalled(waiting: boolean): void {
+    this.#notifyQuietly(() => this.#onWriteStalled?.(waiting));
+  }
+
+  #notifyQuietly(notify: () => void): void {
     try {
-      this.#onWriteStalled?.(waiting);
+      notify();
     } catch {
       // Status subscribers cannot change the durable transaction outcome.
     }
