@@ -90,7 +90,9 @@
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
 # takeover's guard write (before the holder write, the crash window the replay
 # reconciliation repairs), EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the post-spawn
-# entry write so the kill-on-tracking-failure path is exercised, and
+# entry write so the kill-on-tracking-failure path is exercised (with
+# EVENER_FENCE_FAULT_AFTER_SPAWN_READY=<file>, only once the command has created
+# that file), and
 # EVENER_FENCE_FAULT_UNREADABLE_START=1 hides a live process's start token so
 # the fail-closed recheck arm is exercised, and
 # EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE=1 makes a nonce candidate
@@ -1173,6 +1175,17 @@ do_perform() { # <bootId> <opSeq> <command>
 		own_nonce=''
 	fi
 	if [ "${EVENER_FENCE_FAULT_AFTER_SPAWN:-0}" = 1 ]; then
+		# Test-only: EVENER_FENCE_FAULT_AFTER_SPAWN_READY names a file the
+		# command creates once its setup is done; the fault waits (bounded) for
+		# it, so the command is not killed before it has done what the test
+		# reads.
+		ready_attempt=0
+		while [ -n "${EVENER_FENCE_FAULT_AFTER_SPAWN_READY:-}" ] &&
+			[ ! -e "$EVENER_FENCE_FAULT_AFTER_SPAWN_READY" ] &&
+			[ "$ready_attempt" -lt 100 ]; do
+			ready_attempt=$((ready_attempt + 1))
+			sleep 0.1
+		done
 		post_spawn_failure "cannot record the lease entry (injected fault)"
 	fi
 	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' '' ||
