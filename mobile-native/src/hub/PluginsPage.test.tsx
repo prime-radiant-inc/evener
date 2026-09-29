@@ -2660,7 +2660,9 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 		/>,
 	);
 	const kinds = tree.root.findByProps({ accessibilityRole: "radiogroup", accessibilityLabel: "Kind" });
-	const kindLabels = kinds.findAllByProps({ accessibilityRole: "radio" }).map((radio) => radio.props.accessibilityLabel);
+	const kindLabels = kinds
+		.findAllByProps({ accessibilityRole: "radio" })
+		.map((radio) => radio.props.accessibilityLabel);
 	expect(kindLabels).toEqual(["Git URL", "GitHub", "Hub directory"]);
 	const add = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	expect(add().props.disabled).toBe(true);

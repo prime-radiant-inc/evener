@@ -4,8 +4,8 @@
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode, type Ref } from "react";
-import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { Children, Fragment, isValidElement, type ReactNode, type Ref, useEffect } from "react";
+import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
@@ -394,6 +394,9 @@ export function TextFieldRow({
 	machine = true,
 	placeholder,
 	secure = false,
+	returnKeyType,
+	onSubmitEditing,
+	ref,
 }: {
 	label: string;
 	value: string;
@@ -402,8 +405,13 @@ export function TextFieldRow({
 	disabled?: boolean;
 	machine?: boolean;
 	placeholder?: string;
-	/** A token or key: the field hides what's typed. */
+	/** A token or key: the field hides what's typed, and iOS never offers to
+	 * fill or save it. */
 	secure?: boolean;
+	/** "next" to lead on to the form's next field, "done" on its last. */
+	returnKeyType?: "next" | "done";
+	onSubmitEditing?: () => void;
+	ref?: Ref<TextInput>;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -417,9 +425,14 @@ export function TextFieldRow({
 			placeholder={placeholder}
 			placeholderTextColor={palette.inkLow}
 			secureTextEntry={secure}
-			autoCapitalize="none"
-			autoCorrect={false}
-			spellCheck={false}
+			{...(secure ? { textContentType: "none", autoComplete: "off" } : null)}
+			autoCapitalize={machine ? "none" : "sentences"}
+			autoCorrect={!machine}
+			spellCheck={!machine}
+			returnKeyType={returnKeyType}
+			onSubmitEditing={onSubmitEditing}
+			submitBehavior={returnKeyType === "next" ? "submit" : undefined}
+			ref={ref}
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkHi,
@@ -436,15 +449,31 @@ export function TextFieldRow({
 	);
 }
 
+/** What went wrong with a form, at its top in danger ink. VoiceOver hears each
+ * new message, since the Save that caused it sits up in the header. */
+export function FormError({ message }: { message: string | null }) {
+	useEffect(() => {
+		if (message) AccessibilityInfo.announceForAccessibility(message);
+	}, [message]);
+	return message ? (
+		<GroupFooter tone="danger" live>
+			{message}
+		</GroupFooter>
+	) : null;
+}
+
 /** A group's footer: ink-mid, or the attention or danger ink when it reports
  * something a person must act on. */
 export function GroupFooter({
 	children,
 	tone = "normal",
 	machine = false,
+	live = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** Android reads it again when it changes (FormError announces on iOS). */
+	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
 }) {
@@ -454,6 +483,7 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			accessibilityLiveRegion={live ? "polite" : undefined}
 			style={[
 				{
 					color,

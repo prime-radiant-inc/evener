@@ -11,8 +11,7 @@ import { createProviderParams, editProviderParams, type ProviderDraft } from "./
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SearchField, TextFieldRow } from "./sheet/Grouped";
 import { Sheet } from "./sheet/Sheet";
 
-const CREDENTIAL_HEADER_HELP =
-	"Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
+const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
 
 export function ProviderEditor({
 	instance,

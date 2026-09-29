@@ -1,8 +1,21 @@
-import { View } from "react-native";
+import { AccessibilityInfo, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag, TextFieldRow } from "./Grouped";
+import { createRef } from "react";
+import { act } from "react-test-renderer";
+import {
+	FormError,
+	Group,
+	GroupFooter,
+	GroupLabel,
+	Row,
+	RowValue,
+	Segmented,
+	SwitchRow,
+	Tag,
+	TextFieldRow,
+} from "./Grouped";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -243,6 +256,23 @@ describe("a segmented control", () => {
 	});
 });
 
+describe("a form's error", () => {
+	it("shows in danger ink, and VoiceOver hears each new one", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(<FormError message="Name is required." />);
+		const text = texts(tree)[0];
+		expect(merged(text?.props.style).color).toBe(light.dangerInk);
+		expect(text?.props.accessibilityLiveRegion).toBe("polite");
+		expect(announce).toHaveBeenLastCalledWith("Name is required.");
+		act(() => tree.update(<FormError message="Select an available base provider." />));
+		expect(announce).toHaveBeenLastCalledWith("Select an available base provider.");
+		act(() => tree.update(<FormError message={null} />));
+		expect(texts(tree)).toHaveLength(0);
+		expect(announce).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("labels, footers and tags", () => {
 	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
@@ -387,6 +417,41 @@ describe("a text field row", () => {
 		expect(token.props.secureTextEntry).toBe(true);
 		expect(token.props.placeholder).toBe("New token");
 		expect(token.props.placeholderTextColor).toBe(light.inkLow);
+	});
+
+	it("lets words someone chose be capitalized and corrected, and keeps a machine value as typed", () => {
+		const name = render(<TextFieldRow label="Hub name" value="" onChangeText={() => {}} machine={false} />);
+		const nameInput = name.root.findByType("TextInput" as never);
+		expect(nameInput.props).toMatchObject({ autoCapitalize: "sentences", autoCorrect: true, spellCheck: true });
+		const address = render(<TextFieldRow label="SSH address" value="" onChangeText={() => {}} />);
+		const addressInput = address.root.findByType("TextInput" as never);
+		expect(addressInput.props).toMatchObject({ autoCapitalize: "none", autoCorrect: false, spellCheck: false });
+	});
+
+	it("never offers to fill or save a secret it hides", () => {
+		const token = render(<TextFieldRow label="New token" value="" onChangeText={() => {}} secure />);
+		const input = token.root.findByType("TextInput" as never);
+		expect(input.props).toMatchObject({ secureTextEntry: true, textContentType: "none", autoComplete: "off" });
+	});
+
+	it("hands its return key to the form, and its input to a ref, so one field can lead to the next", () => {
+		const onSubmit = vi.fn();
+		const ref = createRef<TextInput>();
+		const tree = render(
+			<TextFieldRow
+				label="Instance name"
+				value=""
+				onChangeText={() => {}}
+				returnKeyType="next"
+				onSubmitEditing={onSubmit}
+				ref={ref}
+			/>,
+		);
+		const input = tree.root.findByType("TextInput" as never);
+		expect(input.props.returnKeyType).toBe("next");
+		input.props.onSubmitEditing();
+		expect(onSubmit).toHaveBeenCalledOnce();
+		expect(input.props.ref).toBe(ref);
 	});
 
 	it("takes several lines when asked, and holds while disabled", () => {

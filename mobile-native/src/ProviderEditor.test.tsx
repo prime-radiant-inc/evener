@@ -110,9 +110,7 @@ it("keeps the draft when readiness is lost before the save runs", async () => {
 	// Nothing ran, so nothing reports: no failure copy claims a save was
 	// tried, and the draft keeps what was typed for the connection's return.
 	expect(renderedText(tree)).not.toContain("Save could not be confirmed");
-	expect(tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.value).toBe(
-		"https://changed.example",
-	);
+	expect(tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.value).toBe("https://changed.example");
 });
 
 const providers = [
