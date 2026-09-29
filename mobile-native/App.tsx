@@ -12,11 +12,15 @@ import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AlertBannerHost } from "./src/alerts/AlertBannerHost";
-import { AlertsProvider, useReportRoutes } from "./src/alerts/AlertsProvider";
+import { AlertsProvider } from "./src/alerts/AlertsProvider";
+import { useReportRoutes } from "./src/alerts/alertsContext";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { DisplayProvider } from "./src/display/displayContext";
+import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
 import { HubSheet } from "./src/hub/HubSheet";
+import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
@@ -39,11 +43,7 @@ import {
 } from "./src/ProjectsScreen";
 import { ProvidersScreen } from "./src/ProvidersScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
-import {
-	ConversationScreen,
-	HubsScreen,
-	type Routes,
-} from "./src/screens";
+import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
@@ -61,7 +61,6 @@ import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
-import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
@@ -74,19 +73,25 @@ function stackRoutes(state: NavigationState) {
 		.map((route) => ({ name: route.name, params: route.params }));
 }
 
+// Runs before the first render, so the first frame already has the
+// appearance chosen in Display (spec 12), native chrome included.
+followAppearanceChoice();
+
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
 	// everything, and it fills the screen.
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
 			<SafeAreaProvider>
-				<ConnectionProvider>
-					<NativePreferencesProvider>
-						<AlertsProvider>
-							<Navigation />
-						</AlertsProvider>
-					</NativePreferencesProvider>
-				</ConnectionProvider>
+				<DisplayProvider value={displayPreferences}>
+					<ConnectionProvider>
+						<NativePreferencesProvider>
+							<AlertsProvider>
+								<Navigation />
+							</AlertsProvider>
+						</NativePreferencesProvider>
+					</ConnectionProvider>
+				</DisplayProvider>
 			</SafeAreaProvider>
 		</GestureHandlerRootView>
 	);
@@ -154,8 +159,8 @@ function Navigation() {
 				>
 					<Stack.Screen
 						name="Hubs"
-						component={HubsScreen}
-						options={{ title: "Evener · Hubs" }}
+						component={FirstRunScreen}
+						options={{ headerShown: false }}
 					/>
 					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen
@@ -203,11 +208,6 @@ function Navigation() {
 						name="KeybindingPreferences"
 						component={KeybindingPreferencesScreen}
 						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="TranscriptPreferences"
-						component={TranscriptPreferencesScreen}
-						options={{ title: "Transcript display" }}
 					/>
 					<Stack.Screen name="Providers" component={ProvidersScreen} />
 					<Stack.Screen name="Plugins" component={PluginsScreen} />

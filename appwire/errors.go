@@ -1,6 +1,9 @@
 package appwire
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 const (
 	CodeParseError     = -32700
@@ -556,6 +559,34 @@ type WireError struct {
 
 func (e WireError) Error() string {
 	return e.Message
+}
+
+// TransportFailureError reports that Client.Request failed at the transport
+// layer rather than by returning an error frame the peer sent: the connection's
+// read loop is gone (or its notification buffer overflowed), so the client
+// synthesized an InternalError-shaped failure for a request the peer never
+// answered. The embedded WireError keeps the shape generic callers already
+// match — errors.As still finds a CodeInternalError WireError — while the
+// distinct type is the provenance an adapter uses to tell a lost response from
+// an InternalError that arrived intact. Without it an adapter has only the
+// message text, and reclassifies an application error such as "cannot parse
+// transcript: unexpected EOF" as host unavailability, driving an automatic
+// mutation retry for a failure that was never a transport loss.
+type TransportFailureError struct {
+	WireError
+}
+
+// Unwrap exposes the synthesized WireError so errors.As(err, &WireError) still
+// matches exactly as it did before provenance was retained.
+func (e TransportFailureError) Unwrap() error { return e.WireError }
+
+// IsTransportFailure reports whether err is a failure the client synthesized
+// because its read loop is gone (see TransportFailureError), as opposed to an
+// error frame the peer sent. Adapters check it instead of reconstructing
+// transport provenance from message text.
+func IsTransportFailure(err error) bool {
+	_, ok := errors.AsType[TransportFailureError](err)
+	return ok
 }
 
 func InvalidParams(message string) WireError {

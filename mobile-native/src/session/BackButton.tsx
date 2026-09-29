@@ -10,13 +10,15 @@ function backLabel(count: number): string {
 	return `Back, ${count} ${count === 1 ? "other needs" : "others need"} you`;
 }
 
-export function BackButton({ count, onPress }: { count: number; onPress: () => void }) {
+/** `label`, when a screen gives one, replaces what VoiceOver reads: the
+ * Reader's "Back, 2 new while you read". */
+export function BackButton({ count, label, onPress }: { count: number; label?: string; onPress: () => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={backLabel(count)}
+			accessibilityLabel={label ?? backLabel(count)}
 			onPress={onPress}
 			hitSlop={8}
 			style={({ pressed }) => ({

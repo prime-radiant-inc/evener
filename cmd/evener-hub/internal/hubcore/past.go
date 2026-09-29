@@ -122,6 +122,11 @@ type PastIndex struct {
 	// findCached miss and before the first probe. Instance-scoped test seam for
 	// interleaving a Rebuild swap in that window; nil in production.
 	afterFindCacheMiss func()
+
+	// rootIndex caches RootIndex's build for generation rootIndexGen. Guarded
+	// by mu.
+	rootIndex    *RootIndex
+	rootIndexGen uint64
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -1188,6 +1193,38 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 // swaps the index during its probe (see foldOne): after the bound it reports a
 // miss rather than a stale probe.
 const pastFindProbeAttempts = 3
+
+// Lookup returns the indexed entry for sessionID. Unlike Find it is a pure map
+// read: it never probes the disk on a miss and never changes the index, so an
+// id that is on disk but not yet folded in is reported absent.
+func (i *PastIndex) Lookup(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
+}
+
+// RootIndex returns the lineage index over the current entries, rebuilt only
+// when the index has changed since the last call.
+func (i *PastIndex) RootIndex() *RootIndex {
+	i.mu.RLock()
+	if i.rootIndex != nil && i.rootIndexGen == i.gen {
+		cached := i.rootIndex
+		i.mu.RUnlock()
+		return cached
+	}
+	metas := make([]schema.SessionMeta, 0, len(i.all))
+	for _, e := range i.all {
+		metas = append(metas, e.Meta)
+	}
+	gen := i.gen
+	i.mu.RUnlock()
+
+	built := NewRootIndex(metas)
+	i.mu.Lock()
+	if i.gen == gen {
+		i.rootIndex, i.rootIndexGen = built, gen
+	}
+	i.mu.Unlock()
+	return built
+}
 
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {

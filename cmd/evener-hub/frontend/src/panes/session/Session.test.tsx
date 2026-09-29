@@ -496,6 +496,39 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   expect(window.location.pathname).toBe("/");
 });
 
+// UI-01's cached-model half at the surface: a deletion fence that lands after
+// the pane already hydrated must replace the stale transcript with the deleted
+// state instead of leaving it on screen. The store keeps the cached model, so
+// the surface has to key off the deletion flag, not "no model".
+test("a deletion fence after hydration replaces a cached transcript with the deleted surface", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_gone" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText("Soon gone")).toBeTruthy());
+
+  fake.on("thread/read", () => {
+    throw new WireError("target has been deleted: local:ref_gone", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  await act(async () => {
+    await threadsStore
+      .getState()
+      .refreshThread("ref_gone")
+      .catch(() => undefined);
+  });
+
+  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  expect(screen.queryByText("Soon gone")).toBeNull();
+  expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+});
+
 test("shows the thread's live name once hydrated, not the raw ref", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { name: "My session" }));
@@ -2970,6 +3003,51 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   // clear an incompatible daemon on its own.
   expect(screen.getByRole("button", { name: "Force stop…" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+// A merely-resumable local session needs no special UI: sending a prompt resumes
+// it (the hub folds the resume into turn/start), so its standalone Resume notice
+// and button are dropped. The two other causes of the obligation keep the
+// notice - a restartRequired daemon above, and a session with uncertain messages
+// (which the Resume action reconciles).
+test("a merely-resumable local session shows no standalone Resume notice", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:resume-only-notice";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        // The hub's resume fence pairs resumeRequired with send:false
+        // (applyThreadResumeRequirement); this is that wire shape.
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  const tree = () => (
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>
+  );
+  const { rerender } = render(tree());
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // The resume-only predicate now fails closed until the ref's durable outbox
+  // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
+  // render, so load the outbox and re-render - the pane's own liveness tick
+  // does the same within a tick - before asserting the notice is dropped.
+  await refreshPendingTurnsProjection(ref);
+  // Readiness now follows the fence's own ownership check: the runtime's
+  // startup discovery scan starts an all-targets read that out-ranks this
+  // specific one, so settle the outstanding projection work and let the latest
+  // read be the one that marks the ref loaded.
+  await flushPendingTurnsProjectionForTests();
+  rerender(tree());
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("refreshes a restarted session without closing its pane", async () => {

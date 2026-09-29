@@ -2,8 +2,9 @@ import type { Thread } from "@evener/appwire-client";
 import { NO_ACTIVE_TURN, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import { controlsFor, pressRefusal } from "./liveControls";
+import { controlsFor, pressLocalRecoveryFenced, pressRefusal, recoveryFence } from "./liveControls";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const CAPABILITIES = { send: true, steer: true, interrupt: true, queue: true } as Thread["evener"]["capabilities"];
@@ -33,6 +34,11 @@ function thread(status: string, steer = true): Thread {
 
 beforeEach(() => {
   resetThreadsStoreForTests();
+  // Installs (via this module's own load) the pending-turns projection the
+  // store-wide resume-only predicate reads, and clears any rows a prior test
+  // left, so the press reads a real, empty projection rather than the
+  // fail-closed default.
+  resetPendingTurnsStoreForTests();
 });
 afterEach(() => {
   resetThreadsStoreForTests();
@@ -78,4 +84,134 @@ test("controlsFor is sessionControls over the model's status, capabilities and q
   expect(controls.steer).toBe(false);
   // Idle with a parked queue drains.
   expect(controls.drain).toBe(true);
+});
+
+// The hub bit is the authority. The client offers Send from the hub's own
+// admission answer, never from the resumeRequired/send-false/cold-status shape
+// it used to infer: applyThreadResumeRequirement stamps that same shape for a
+// Stop drain, an unconfirmed force-stop exit, and the connection-recovery
+// fence, whose turn/start the hub still refuses.
+test("isResumeOnlyLocal follows the hub's foldable bit, never the inferred shape", () => {
+  const base = { status: { type: "notLoaded" } } as const;
+  // resumeRequired set (the hub's fence overlay) but the hub did not stamp the
+  // foldable bit: a Stop drain / unconfirmed exit / connection fence, not this.
+  const fencedButNotFoldable = { resumeRequired: true, status: { type: "notLoaded" } };
+  expect(recoveryFence("local:s", fencedButNotFoldable, true).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(true);
+  // A non-local ref is never this shape even when the hub bit is set.
+  expect(recoveryFence("remote:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(false);
+});
+
+// The client's own signals still narrow the carve-out: a delivery-uncertain row
+// the hub's explicit Resume reconciles, a queued non-send row that would starve
+// the folded send at the target's FIFO, and a Stop this page started all keep
+// the fence.
+test("isResumeOnlyLocal keeps the fence for uncertain, queued, and in-flight-Stop signals", () => {
+  const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
+  expect(recoveryFence("local:s", foldable, true).resumeOnly).toBe(true);
+  expect(recoveryFence("local:s", foldable, true, { uncertainMessages: true }).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", foldable, true, { queuedNonSend: true }).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", foldable, true, { stopInFlight: true }).resumeOnly).toBe(false);
+  // A fenced-but-not-resume-only shape is still fenced, and still reached by
+  // the stopped-local card.
+  const uncertain = recoveryFence("local:s", foldable, true, { uncertainMessages: true });
+  expect(uncertain.stillFenced).toBe(true);
+  expect(uncertain.fencedLocal).toBe(true);
+});
+
+// RoboRev Medium (round 13): the hub's resume-only admission is
+// status-independent (sessionActionRecoveryError / resumeOnlyFoldable read no
+// status), so a live snapshot the hub legitimately stamped foldable - a daemon
+// another controller started under a confirmed force-stop obligation - keeps
+// the carve-out and still folds. The stale bit this predicate must not honor is
+// defended against where it is written: the off-shut-down transition clears it
+// (settleResumeOnlyOffShutdown) and a connection-generation change invalidates
+// it (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
+// has ended can no longer mis-route a send. The predicate follows the bit
+// alone, never a status.
+test("isResumeOnlyLocal follows the hub's foldable bit, not the status", () => {
+  // A live snapshot the hub legitimately stamped foldable keeps the carve-out:
+  // the hub admits the folded send there too.
+  const foldableActive = { resumeOnlyFoldable: true, status: { type: "active" } } as const;
+  expect(recoveryFence("local:s", foldableActive, false).resumeOnly).toBe(true);
+  // A bit the off-shut-down transition (or a reconnect) cleared is not this
+  // shape, whatever the status - the property the stale-bit defence protects.
+  const clearedActive = { resumeOnlyFoldable: false, status: { type: "active" } } as const;
+  expect(recoveryFence("local:s", clearedActive, false).resumeOnly).toBe(false);
+  const clearedStopped = { resumeOnlyFoldable: false, status: { type: "notLoaded" } } as const;
+  expect(recoveryFence("local:s", clearedStopped, false).resumeOnly).toBe(false);
+});
+
+// RoboRev Medium (round 8): a Stop this page started is its OWN fence, not only
+// a blocker of the resume-only carve-out. A stale thread refresh can clear
+// restartBlockingObligations while the forceStop RPC is still draining (the hub
+// holds Stopping > 0 and refuses even turn/start there), so stillFenced must
+// hold on stopInFlight alone, independent of restartObligated. The stopped-local
+// follow-up card must stay reachable for the drain's whole window.
+test("an in-flight Stop keeps the fence without the restart obligation", () => {
+  const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
+  const reading = recoveryFence("local:s", foldable, false, { stopInFlight: true });
+  expect(reading.resumeOnly).toBe(false);
+  expect(reading.stillFenced).toBe(true);
+  expect(reading.fencedLocal).toBe(true);
+  // The local-prefix rule is unchanged: a non-local ref is never this fence.
+  expect(recoveryFence("remote:s", foldable, false, { stopInFlight: true }).stillFenced).toBe(false);
+});
+
+// The press fence is method-agnostic, and deliberately so: none of its callers
+// presses the send (the composer's submit runs decideSubmitRoute over
+// availabilityFor, which is where the resume-only carve-out lives - asserted
+// through pressRefusal below), and every verb it does guard - steer, the
+// queue-strip actions, the recovery-fenced built-ins - is one the hub refuses
+// for the obligation's whole window. So a merely-resumable session keeps the
+// fence here.
+test("the press fence keeps a merely-resumable local session fenced", async () => {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  const ref = "local:resume-only";
+  fake.on("thread/read", () => ({
+    thread: {
+      ...thread("notLoaded"),
+      id: ref,
+      sessionId: ref,
+      evener: {
+        ref,
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        capabilities: { ...CAPABILITIES, send: false },
+        queue: { revision: 0, depth: 0 },
+      },
+    } as Thread,
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // Send is offered, so its own press-time reading agrees and does not refuse.
+  expect(pressRefusal(ref, "send")).toBeUndefined();
+  expect(pressLocalRecoveryFenced(ref)).toBe(true);
+});
+
+// RoboRev Medium (this round): the press-time fence reads the store's own
+// in-flight Stop (stoppingRefs) as its OWN clause, never only the restart
+// obligation. A stale thread refresh can clear restartBlockingObligations while
+// a local forceStop is still draining - the hub holds Stopping > 0 and refuses
+// every verb this helper guards for exactly that window - so the press fence
+// must hold on stoppingRefs alone. turn/interrupt is deliberately NOT routed
+// through this helper (the composer's Stop press reads pressRefusal(ref,
+// "stop") directly), so the drain window never blocks the interrupt that ends
+// it.
+test("pressLocalRecoveryFenced keeps its fence while a Stop drains, with no obligation", () => {
+  const ref = "local:draining";
+  // The obligation is already clear; only the in-flight Stop is left.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(pressLocalRecoveryFenced(ref)).toBe(false);
+  threadsStore.setState((s) => ({ stoppingRefs: new Set(s.stoppingRefs).add(ref) }));
+  expect(pressLocalRecoveryFenced(ref)).toBe(true);
+  // The Stop settles: the RPC resolved and cleared stoppingRefs.
+  threadsStore.setState((s) => {
+    const stoppingRefs = new Set(s.stoppingRefs);
+    stoppingRefs.delete(ref);
+    return { stoppingRefs };
+  });
+  expect(pressLocalRecoveryFenced(ref)).toBe(false);
 });

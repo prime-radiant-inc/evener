@@ -49,7 +49,7 @@ import {
   watchGloss,
   watchTitle,
 } from "@evener/appwire-client";
-import { sessionGroupHostId } from "@evener/appwire-client/state/navigation";
+import { sessionGroupHostId, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -113,6 +113,8 @@ const CLASS = {
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
   secondLine: requireClass(styles.secondLine, "RailRow.module.css", "secondLine"),
   watchCount: requireClass(styles.watchCount, "RailRow.module.css", "watchCount"),
+  subagentTally: requireClass(styles.subagentTally, "RailRow.module.css", "subagentTally"),
+  subagentFailed: requireClass(styles.subagentFailed, "RailRow.module.css", "subagentFailed"),
   watchGlyph: requireClass(styles.watchGlyph, "RailRow.module.css", "watchGlyph"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
@@ -711,7 +713,10 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // this file): without it the count would vanish on exactly the session where
   // a watch is the only thing happening, which is the case this feature exists
   // for.
-  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches;
+  // A live root's whole-tree subagent tally (D1); nested rows show none: running and failed counts
+  // in words. It too can be all a quiet row has to say, so it earns the line.
+  const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches || tally !== null;
   // The tinted gloss itself still belongs to a signal row (or to a depth-0
   // row naming its project). A watch-only quiet row's second line is just its
   // watch count; glossing "idle" beside the count would be noise, not a gloss.
@@ -781,7 +786,15 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
                 {/* The gloss shares the line's separator convention: the count
                     carries it only when something follows, so a watch-only
                     line ends with the word, not a dangling "·". */}
-                {`${watchCountLabel(watchCount, retainedWatchCount, omittedWatchCount)}${gloss !== "" ? " ·" : ""}`}
+                {`${watchCountLabel(watchCount, retainedWatchCount, omittedWatchCount)}${tally !== null || gloss !== "" ? " ·" : ""}`}
+              </span>
+            )}
+            {tally !== null && (
+              <span data-testid="rail-row-subagent-tally" className={CLASS.subagentTally}>
+                {tally.running > 0 && `${tally.running} running`}
+                {tally.running > 0 && tally.failed > 0 && ", "}
+                {tally.failed > 0 && <span className={CLASS.subagentFailed}>{`${tally.failed} failed`}</span>}
+                {gloss !== "" && " ·"}
               </span>
             )}
             {gloss !== "" && (

@@ -8,28 +8,18 @@
 // Session pause theirs out of view (phase 3 ruling 33), and alerts must hear
 // about sessions wherever you are. That is a second set of navigation reads
 // while the Board or a Session is in front.
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { liveBands } from "../board/attention";
 import { createBoardController } from "../board/boardData";
 import { boardSeen } from "../board/nativeBoardMemory";
 import { type Notice, notices } from "../board/notices";
 import { useConnection } from "../ConnectionProvider";
 import { haptic } from "../haptics";
-import { AlertCenter, type AlertSnapshot, type AlertTimer, type HoldKind } from "./alertCenter";
+import { AlertCenter, type AlertTimer } from "./alertCenter";
 import { AlertFeed } from "./alertEvents";
+import { type Alerts, AlertsContext, type ReportedRoute } from "./alertsContext";
 import { alertScreenFor, coversBanners } from "./alertScreen";
 import { alertPreferences } from "./nativeAlertPreferences";
-
-type Route = { name: string; params?: object };
-
-interface Alerts {
-	center: AlertCenter;
-	reportRoutes(routes: readonly Route[]): void;
-	noticeFor(key: string): Notice | undefined;
-}
-
-const Context = createContext<Alerts | null>(null);
 
 const realClock: AlertTimer = {
 	now: () => Date.now(),
@@ -52,11 +42,11 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	}, [center]);
 
 	// What is on screen, and whether a sheet or modal covers it (ruling 7).
-	const routes = useRef<readonly Route[]>([]);
+	const routes = useRef<readonly ReportedRoute[]>([]);
 	const screenHub = useRef(hubId);
 	const uncover = useRef<(() => void) | null>(null);
 	const reportRoutes = useCallback(
-		(next: readonly Route[]) => {
+		(next: readonly ReportedRoute[]) => {
 			routes.current = next;
 			center.setScreen(alertScreenFor(next, screenHub.current));
 			const covered = coversBanners(next.at(-1));
@@ -130,42 +120,5 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 		() => ({ center, reportRoutes, noticeFor: (key) => noticesByKey.current.get(key) }),
 		[center, reportRoutes],
 	);
-	return <Context.Provider value={value}>{children}</Context.Provider>;
-}
-
-function useAlerts(): Alerts {
-	const value = useContext(Context);
-	if (!value) throw new Error("AlertsProvider is required.");
-	return value;
-}
-
-export function useAlertCenter(): AlertCenter {
-	return useAlerts().center;
-}
-
-export function useAlertSnapshot(): AlertSnapshot {
-	const center = useAlertCenter();
-	return useSyncExternalStore(center.subscribe, center.getSnapshot);
-}
-
-/** Holds banners while `active`: the Reader and typing hold "quiet", a
- * covering view "covered" (ruling 7). */
-export function useHoldAlerts(active: boolean, kind: HoldKind): void {
-	const center = useAlertCenter();
-	useEffect(() => (active ? center.hold(kind) : undefined), [active, kind, center]);
-}
-
-/** How many alerts wait behind a hold. */
-export function useHeldAlertCount(): number {
-	return useAlertSnapshot().held;
-}
-
-/** Tells alerts the stack's routes up to the focused one. */
-export function useReportRoutes(): (routes: readonly Route[]) => void {
-	return useAlerts().reportRoutes;
-}
-
-/** The notice alerts last read under a key, for a tapped notice banner. */
-export function useNoticeFor(): (key: string) => Notice | undefined {
-	return useAlerts().noticeFor;
+	return <AlertsContext.Provider value={value}>{children}</AlertsContext.Provider>;
 }

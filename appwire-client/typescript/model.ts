@@ -308,6 +308,17 @@ export interface ThreadModel {
   // separating a fenced live+idle session from an editable one. Snapshot-only:
   // an explicit resume re-hydrates the model with the flag cleared.
   resumeRequired?: boolean;
+  // ResumeOnlyFoldable is the hub's own admission answer, carried straight from
+  // appwire.EvenerThread.ResumeOnlyFoldable on the snapshot: a turn/start sent
+  // right now would be admitted under the resume-only carve-out, so the send
+  // folds the pending resume into itself. The hub stamps it only when that
+  // admission would actually succeed, which is why the client keys its Send
+  // offer on this bit rather than inferring the shape from resumeRequired plus
+  // a missing send capability - that same overlay also clears send for a Stop
+  // drain, an unconfirmed force-stop exit, the connection-recovery fence, and
+  // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
+  // the fence re-hydrates the model without it.
+  resumeOnlyFoldable?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;

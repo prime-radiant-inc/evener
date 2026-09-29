@@ -63,6 +63,15 @@ const (
 	captureMaxModelIDLen  = 256
 )
 
+// Capture enumerates each provider's model ids on a bounded budget and freezes
+// the result into a Snapshot. One fetch runs per provider, in parallel, and
+// Capture stops waiting once the budget expires, recording providers that have
+// not answered by then as StatusTimeout.
+//
+// The callable boundary requires fetch to honor its context: Capture bounds
+// only its own wait, and Go cannot reclaim a fetch that blocks past
+// cancellation, so fetch must return promptly once ctx is canceled. A budget
+// that is already spent starts no fetch at all.
 func Capture(parent context.Context, providers []string, requiredProvider string, fetch func(context.Context, string) ([]string, error), budget time.Duration) Snapshot {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
@@ -75,6 +84,12 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 	}
 	out := make(chan result, len(providers))
 	for _, name := range providers {
+		if ctx.Err() != nil {
+			// The budget is already spent: launching fetch could only start
+			// work that Capture, having already given up, could never join.
+			// Leave the provider to the timeout accounting below.
+			continue
+		}
 		go func(name string) {
 			models, err := fetch(ctx, name)
 			r := result{name: name, err: err}

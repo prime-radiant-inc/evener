@@ -9,7 +9,12 @@ import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
+import {
+  hasBlockedUnknown,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
@@ -268,6 +273,190 @@ test("an older all-target projection cannot erase a newly committed send", async
   } finally {
     spy.mockRestore();
     hold?.release();
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+// RoboRev Medium (PR 2862, round 9): readProjectionIntoStore marked a ref
+// loaded whenever its read merely resolved, even when a newer read had already
+// superseded it (apply() filtered the target out). The resume-only predicate
+// then read "loaded, no uncertainty" from the still-empty projection while the
+// winning read was outstanding, so a send could fold a resume ahead of the
+// blocked or queued rows that winning read had yet to publish. Readiness must
+// follow the fence's own ownership check: only a read still current for the ref
+// marks it loaded.
+test("a durable read a newer read superseded does not mark its ref loaded", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  // Start the mutation runtime and let its one-shot startup discovery scan run
+  // to completion. That scan is untracked by the projection-work tracker and
+  // fires an all-targets refresh of its own; draining it here keeps it from
+  // superseding the reads this test drives. The scan names no ref (nothing is
+  // tracked yet), so the reset below starts the ref unloaded for our reads.
+  await refreshPendingTurnsProjection(ref);
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  resetPendingTurnsStoreForTests();
+  const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let announceSecondHold: (() => void) | undefined;
+  const secondHold = new Promise<void>((resolve) => {
+    announceSecondHold = resolve;
+  });
+  const getAll = IDBObjectStore.prototype.getAll;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      holds.push(holdIndexedDBEvent(request, "success"));
+      if (holds.length === 2) announceSecondHold?.();
+    }
+    return request;
+  });
+  try {
+    const older = refreshPendingTurnsProjection(ref);
+    const newer = refreshPendingTurnsProjection(ref);
+    await secondHold;
+    await Promise.all(holds.map((hold) => hold.reached));
+    // Neither read has resolved yet: the ref is not loaded, so the predicate
+    // fails closed.
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    // The older read resolves first, already superseded by the newer one.
+    holds[0]?.release();
+    await older;
+    // The superseded read must NOT mark the ref loaded: the winning read is
+    // still outstanding, and its rows are not visible yet.
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    holds[1]?.release();
+    await newer;
+    // The winning read is now the current word for the ref, so it loads.
+    expect(hasBlockedUnknown(ref)).toBe(false);
+  } finally {
+    spy.mockRestore();
+    for (const hold of holds) hold.release();
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+// RoboRev Medium (PR 2862, round 11): loadedRefs kept a ref loaded once its
+// read resolved and never invalidated that state when a NEWER durable read
+// began. A blockedUnknown written after the last read therefore sat unseen
+// while the newer read was in flight, and the resume-only predicate read
+// "loaded, no uncertainty" from the stale projection - folding a resume ahead
+// of the row. Readiness must be invalidated when a refresh starts, and restored
+// only by the read that still owns the ref when it resolves.
+test("a ref does not read as loaded while a newer durable read is in flight", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  await connect();
+  await flushPendingTurnsProjectionForTests();
+  // Drain the runtime's one-shot startup discovery scan (an untracked
+  // all-targets refresh of its own) so it cannot supersede the read below.
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  // Load the ref: its durable outbox is empty, so it reads as loaded with no
+  // uncertainty.
+  await refreshPendingTurnsProjection(ref);
+  expect(hasBlockedUnknown(ref)).toBe(false);
+
+  // A durable blockedUnknown the loaded projection has not seen yet.
+  const record = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "newly uncertain" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "newly uncertain" }] },
+  });
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+
+  // Hold the next durable read so the refresh stays in flight with its rows
+  // unpublished.
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const refresh = refreshPendingTurnsProjection(ref);
+  try {
+    await readStarted;
+    // The read is in flight and its rows are not published yet: the ref must
+    // not read as loaded, so the predicate fails closed instead of trusting the
+    // stale "no uncertainty" answer.
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    hold?.release();
+    await refresh;
+    // The read owns the ref again: loaded, reflecting the newly written row.
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    // Prove it is loaded rather than merely still failing closed: settling the
+    // row and re-reading clears the predicate.
+    await storage.settleApplied(record.clientMutationId);
+    await refreshPendingTurnsProjection(ref);
+    expect(hasBlockedUnknown(ref)).toBe(false);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await refresh;
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+// The all-targets branch of the same rule: a read that covers every tracked ref
+// must fail each of them closed while it is in flight, so a stale projection
+// cannot answer for any of them before the read publishes.
+test("an all-targets refresh fails a tracked ref closed while its read is in flight", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  await connect();
+  await flushPendingTurnsProjectionForTests();
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  await refreshPendingTurnsProjection(ref);
+  expect(hasBlockedUnknown(ref)).toBe(false);
+
+  const record = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "newly uncertain" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "newly uncertain" }] },
+  });
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const refresh = refreshPendingTurnsProjection();
+  try {
+    await readStarted;
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    hold?.release();
+    await refresh;
+    expect(hasBlockedUnknown(ref)).toBe(true);
+    await storage.settleApplied(record.clientMutationId);
+    await refreshPendingTurnsProjection(ref);
+    expect(hasBlockedUnknown(ref)).toBe(false);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await refresh;
     await flushPendingTurnsProjectionForTests();
   }
 });
