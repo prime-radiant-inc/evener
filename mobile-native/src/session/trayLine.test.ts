@@ -107,14 +107,6 @@ describe("the tray's line (spec 8.3)", () => {
 		);
 	});
 
-	// Spec 8.3: the activity with its elapsed time. A thought with nothing
-	// to count yet says how long it has run; the estimate replaces the clock
-	// once there is one (spec 8.3's "Thinking… · 1.2K tokens").
-	it("times a thought that has no token estimate yet", () => {
-		const thought = item({ type: "reasoning", text: "", status: "inProgress", startedAt: ago(12_000) });
-		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 12s");
-	});
-
 	it("says Thinking with a token estimate and no clock", () => {
 		const thought = item({ type: "reasoning", text: "x".repeat(4_800), status: "inProgress" });
 		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");

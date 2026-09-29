@@ -117,13 +117,11 @@ const RUNNING_A_COMMAND = "Running a command";
 
 function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
-		// Spec 8.3: "Thinking… · 1.2K tokens" once there is an estimate; until
-		// then, how long the thought has run, so the tray always says more
-		// than the word alone.
 		const tokens = thinkingTokens(item);
-		return tokens > 0
-			? { text: `Thinking… · ${formatTokenCount(tokens)} tokens`, waitsOnSubagents: false }
-			: { text: "Thinking…", startedAt: timeOf(item.startedAt), waitsOnSubagents: false };
+		return {
+			text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…",
+			waitsOnSubagents: false,
+		};
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
