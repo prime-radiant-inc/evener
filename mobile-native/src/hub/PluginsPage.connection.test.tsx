@@ -241,7 +241,8 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	// The screen's half of the store wiring, in the minimal shape this
 	// browser-level test needs: one store held for the whole render, and a
 	// capture ref no add in this test ever fills.
-	const marketplaces = createMarketplacesStore(client, createHubWriteGate());
+	const gate = createHubWriteGate();
+	const marketplaces = createMarketplacesStore(client, gate);
 	const lastAddMarketplaces: {
 		current: readonly MarketplaceEntry[] | null;
 	} = { current: null };
@@ -255,10 +256,10 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 			client={client}
 			connectionState={state}
 			hubName="Work hub"
-			installed={createPluginsStore(client, createHubWriteGate())}
+			installed={createPluginsStore(client, gate)}
 			marketplaces={marketplaces}
 			lastAddMarketplaces={lastAddMarketplaces}
-			gate={createHubWriteGate()}
+			gate={gate}
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}

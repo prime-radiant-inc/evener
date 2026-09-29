@@ -80,7 +80,11 @@ function GuardedBrowser({
 	// captured beside it. Nothing here drives connection transitions - these
 	// tests hold a ready connection throughout.
 	const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
-	const marketplaces = useMemo(() => createMarketplacesStore(client, createHubWriteGate()), [client]);
+	// One gate for this host's stores and the browser, exactly as the screen
+	// wires it: the stores serialize through the same instance the browser
+	// reads its busy state from.
+	const gate = useMemo(() => createHubWriteGate(), []);
+	const marketplaces = useMemo(() => createMarketplacesStore(client, gate), [client, gate]);
 	const names = useMemo(() => new Set([...guard.keys(), ...fenced]), [guard, fenced]);
 	return (
 		<>
@@ -89,10 +93,10 @@ function GuardedBrowser({
 				client={client}
 				connectionState="ready"
 				hubName="Work hub"
-				installed={createPluginsStore(client, createHubWriteGate())}
+				installed={createPluginsStore(client, gate)}
 				marketplaces={marketplaces}
 				lastAddMarketplaces={lastAddMarketplaces}
-				gate={createHubWriteGate()}
+				gate={gate}
 				ready={true}
 				canUseConnection={canUseConnection}
 				onOpenPlugin={() => {}}

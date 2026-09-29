@@ -69,7 +69,6 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (hubWriteBusy) return;
     const trimmedName = nameValue.trim();
     try {
       await store.getState().addMarketplace({ name: trimmedName, source: buildSource() });
