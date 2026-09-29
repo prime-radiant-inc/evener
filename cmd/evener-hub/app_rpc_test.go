@@ -8901,6 +8901,67 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	}
 }
 
+// TestHubLogfForSinkIsFixedAtConstruction pins that hubLogfFor resolves its
+// default sink once, when it builds the logger, rather than reading the
+// os.Stderr global on every call. A live server goroutine logging through a
+// per-call read races any test that redirects os.Stderr (captureHubStderr);
+// the real startup path already sets the sink before any server runs (#2783).
+func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
+	first, err := os.CreateTemp(t.TempDir(), "hub-logf-first-")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	original := os.Stderr
+	t.Cleanup(func() { os.Stderr = original })
+	os.Stderr = first
+	logf := hubLogfFor(hubcore.WebConfig{})
+
+	second, err := os.CreateTemp(t.TempDir(), "hub-logf-second-")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	// Probe the race a live logging goroutine would hit: log from another
+	// goroutine while the test redirects os.Stderr, the shape that filed #2783.
+	started := make(chan struct{})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(started)
+		for range 1 << 20 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			logf("sink probe")
+		}
+	}()
+	<-started
+	os.Stderr = second
+	close(stop)
+	<-done
+
+	// The sink resolved at construction still receives a later line; the
+	// redirect now in effect does not, because the logger no longer reads the
+	// global per call.
+	logf("after swap")
+	os.Stderr = original
+
+	if size, err := first.Stat(); err != nil || size.Size() == 0 {
+		t.Fatalf("sink set at construction captured nothing (stat err=%v)", err)
+	}
+	if size, err := second.Stat(); err != nil {
+		t.Fatalf("stat later redirect: %v", err)
+	} else if size.Size() != 0 {
+		t.Fatalf("sink followed os.Stderr after construction: %d bytes went to the later redirect", size.Size())
+	}
+}
+
 func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
