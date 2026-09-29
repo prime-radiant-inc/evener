@@ -1007,6 +1007,11 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 	}
 }
 
+// navigationStatsLogfFor is where navigation build stats lines go. Tests that
+// build a hub web server replace it so a slow build cannot write to stderr
+// outside a test that asserts the line (which passes cfg.Logf).
+var navigationStatsLogfFor = hubLogfFor
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }

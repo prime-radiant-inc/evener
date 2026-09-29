@@ -51,6 +51,8 @@ type navigationSnapshot struct {
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
 	remoteIncompleteIDs map[string]struct{}
 	remoteGeneration    uint64
+	// resolveDuration is the time ResolveProjectMap took inside this capture.
+	resolveDuration time.Duration
 }
 
 type favoriteRemoteOwnership struct {
@@ -490,7 +492,9 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	// Resolve live working directories once at ingestion. BuildTree and the
 	// orphan-live projection reuse this carried identity rather than resolving
 	// in grouping or rendering loops.
+	resolveStart := time.Now()
 	resolvedProjects := hubcore.ResolveProjectMap(metas, live)
+	resolveDuration := time.Since(resolveStart)
 	projectCandidates := make(map[string]map[string]identifier.Project, len(resolvedProjects)+len(carriedProjectCandidates))
 	for path, project := range resolvedProjects {
 		addNavigationProjectCandidate(projectCandidates, path, project)
@@ -545,6 +549,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		remoteSources:       fetch.sources,
 		remoteIncompleteIDs: incompleteIDs,
 		remoteGeneration:    fetch.generation,
+		resolveDuration:     resolveDuration,
 	}
 }
 
