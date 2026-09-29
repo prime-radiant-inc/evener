@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { PluginLaunchCandidate, PluginPreviewResponse } from "@evener/appwire-client";
-import { pluginCounts, pluginGroups, pluginWarnings } from "./pluginFacts";
+import { pluginCounts, pluginGroups, pluginWarnings, unclaimedDiagnostics } from "./pluginFacts";
 
 const plugin = (
 	name: string,
@@ -60,4 +60,26 @@ it("finds a plugin's own warnings", () => {
 	};
 	expect(pluginWarnings(preview, "superpowers-chrome")).toEqual(["Chrome isn't installed on this host"]);
 	expect(pluginWarnings(preview, "go")).toEqual([]);
+});
+
+it("keeps the preview's other diagnostics for the page: unnamed ones, and ones naming no listed plugin", () => {
+	const preview: PluginPreviewResponse = {
+		plugins: [plugin("superpowers-chrome", "superpowers-marketplace")],
+		diagnostics: [
+			{ name: "superpowers-chrome", message: "Chrome isn't installed on this host" },
+			{ message: "stat /home/jesse/.evener/plugins: permission denied: installed and bundled plugins are unavailable" },
+			{ name: "broken", path: "/home/jesse/.evener/plugins/broken", message: "invalid manifest" },
+		],
+	};
+	expect(unclaimedDiagnostics(preview)).toEqual([
+		"stat /home/jesse/.evener/plugins: permission denied: installed and bundled plugins are unavailable",
+		"broken: invalid manifest",
+	]);
+	expect(unclaimedDiagnostics({ plugins: [] })).toEqual([]);
+	expect(
+		unclaimedDiagnostics({
+			plugins: [],
+			diagnostics: [{ message: "store unreadable" }, { message: "store unreadable" }],
+		}),
+	).toEqual(["store unreadable"]);
 });

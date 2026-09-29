@@ -36,3 +36,16 @@ export function pluginWarnings(preview: PluginPreviewResponse, name: string): st
 		.filter((diagnostic) => diagnostic.name === name)
 		.map((diagnostic) => diagnostic.message);
 }
+
+/** The preview's diagnostics no plugin row shows: those naming no plugin (the
+ * plugin store is unreadable) and those naming one that never became a
+ * candidate (an invalid manifest, a duplicate name). The page lists them, so
+ * a short or empty list is never left unexplained. */
+export function unclaimedDiagnostics(preview: PluginPreviewResponse): string[] {
+	const listed = new Set(preview.plugins.map((plugin) => plugin.name));
+	const lines = (preview.diagnostics ?? [])
+		.filter((diagnostic) => !diagnostic.name || !listed.has(diagnostic.name))
+		.map((diagnostic) => (diagnostic.name ? `${diagnostic.name}: ${diagnostic.message}` : diagnostic.message));
+	// A repeated line says nothing new.
+	return [...new Set(lines)];
+}

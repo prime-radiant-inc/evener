@@ -2,6 +2,7 @@ import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
+import { palettes } from "../design/tokens";
 import { pressable, render, renderedText } from "../renderNative.testkit";
 import { sheetContext, TestSheet } from "./newSessionTestUtils";
 import { PluginChecklist } from "./PluginChecklist";
@@ -146,4 +147,30 @@ it("says plugins wait for a project, rather than checking forever", async () => 
 	expect(page.calls).toEqual([]);
 	expect(page.text()).toContain("Plugins are listed once a project is chosen.");
 	expect(page.text()).not.toContain("Checking plugins");
+});
+
+it("shows the preview's diagnostics that belong to no listed plugin, in attention ink", async () => {
+	const page = mount({
+		answer: {
+			...preview,
+			diagnostics: [
+				...(preview.diagnostics ?? []),
+				{ message: "installed and bundled plugins are unavailable" },
+				{ name: "broken", message: "invalid manifest" },
+			],
+		},
+	});
+	await debounce();
+	const lines = page.tree.root.findAll(
+		(node) =>
+			String(node.type) === "Text" &&
+			["installed and bundled plugins are unavailable", "broken: invalid manifest"].includes(node.props.children),
+	);
+	expect(lines).toHaveLength(2);
+	for (const line of lines)
+		expect(line.props.style).toEqual(
+			expect.arrayContaining([expect.objectContaining({ color: palettes.light.attentionInk })]),
+		);
+	// A row's own warning stays on its row, once.
+	expect(page.text().split("Chrome isn't installed on this host")).toHaveLength(2);
 });

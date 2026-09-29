@@ -18,7 +18,7 @@ import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useNewSession } from "./newSessionContext";
-import { pluginCounts, pluginGroups, pluginWarnings } from "./pluginFacts";
+import { pluginCounts, pluginGroups, pluginWarnings, unclaimedDiagnostics } from "./pluginFacts";
 import { pluginChoice } from "./sheetPlugins";
 
 export function PluginChecklist() {
@@ -53,6 +53,11 @@ export function PluginChecklist() {
 			) : !response && plugins.status === "loading" ? (
 				<GroupFooter>{`Checking plugins on ${hostLabel(source)}…`}</GroupFooter>
 			) : null}
+			{(response ? unclaimedDiagnostics(response) : []).map((diagnostic) => (
+				<GroupFooter key={diagnostic} tone="attention">
+					{diagnostic}
+				</GroupFooter>
+			))}
 			{groups.map((group) => (
 				<View key={group.marketplace ?? ""}>
 					{group.marketplace ? (
