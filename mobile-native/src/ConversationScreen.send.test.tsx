@@ -45,6 +45,7 @@ import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetT
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 
@@ -2537,9 +2538,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
-	/** The coordinator's thread, as the phone reads it without following it. */
-	function coordinator(stopSubagent: boolean) {
+	/** The coordinator's thread, as the phone reads it without following it.
+	 * `id` models a coordinator that restarted under a new thread. */
+	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
 		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { id: string }).id = id;
 		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
 			...CAPABILITIES,
 			...(stopSubagent ? { stopSubagent: true } : {}),
@@ -2559,9 +2562,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2721,6 +2727,16 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		// The screen opened with the route's thread, but the coordinator has
+		// since restarted under a new one: its tree comes back under that new
+		// thread, so the panel must ask for it by the thread it reads now.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {

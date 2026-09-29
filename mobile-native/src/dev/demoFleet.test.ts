@@ -678,7 +678,7 @@ describe("demo fleet empty option", () => {
 		expect(manifest.sections).toMatchObject({
 			live: { count: 0 },
 			needs_you: { count: 0 },
-			pin_sections: { count: 0 },
+			pin_sections: { count: 2 },
 		});
 		expect(manifest.catalogs).toMatchObject({
 			projects: { count: 0 },
@@ -699,9 +699,12 @@ describe("demo fleet empty option", () => {
 		expect(needsYou).toHaveLength(0);
 	});
 
-	it("has no pin sections", () => {
+	it("keeps both durable pin sections, with no rows pinned in them", () => {
 		const catalog = read(fleet, params({ resource: "pin_catalog", limit: 100 }));
-		expect(catalog.pin_sections).toEqual([]);
+		expect(catalog.pin_sections).toEqual([
+			{ id: "release", name: "Release", count: 0 },
+			{ id: "research", name: "Research", count: 0 },
+		]);
 	});
 
 	it("has no projects, archived projects or test-run projects in the catalogs", () => {
@@ -819,7 +822,9 @@ describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
 
 	it("changes nothing, and never throws, when a step's session isn't in the fleet", () => {
 		const empty = createDemoFleet({ now: STARTUP, empty: true });
-		expect(() => empty.step("question")).not.toThrow();
+		const payload = empty.step("question");
+		// No row changed, so the step bumps neither the sequence nor a target.
+		expect(payload).toEqual({ generationId: DEMO_FLEET_GENERATION, sequence: 0, targets: [] });
 		expect(liveRows(empty)).toEqual([]);
 	});
 

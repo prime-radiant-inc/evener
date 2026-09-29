@@ -212,13 +212,39 @@ func TestConsumeModelStream_Observation_ZeroContentPhases(t *testing.T) {
 // event, where the two spans coincide) but fails here: the deltas are
 // separated by a real gap, preceded by a real, larger padding gap during
 // which nothing is sent. A wall-clock implementation reports pad+gap
-// (>= padDelay); the correct one reports only gap (< padDelay). Runs
-// consumeModelStream concurrently with the sends (unlike this file's other
-// tests) because the gaps must be observed as real elapsed time by the
-// consumer, not just queued ahead of it in the buffered channel.
+// (>= padDelay); the correct one reports only gap (< padDelay).
+//
+// The content-event window itself is measured with the injected
+// contentWindowClock, so the correct implementation's value is the scripted
+// gap rather than real elapsed time. Measuring that window with the wall
+// clock is what made this test flaky: on a loaded -race runner the consumer
+// could be scheduled late enough that two real sends 40ms apart read as a
+// 500ms+ window (issue #2924). The real pad sleep stays because it is what
+// catches a wall-clock implementation, whose reported span still includes it.
+// The sends still run concurrently with consumeModelStream so that window is
+// observed in-band, not queued ahead of it in the buffered channel.
 func TestConsumeModelStream_Observation_ContentWindowExcludesPrefixGap(t *testing.T) {
 	t.Parallel()
+
+	const padDelay = 200 * time.Millisecond // before the first content event
+	const gapDelay = 40 * time.Millisecond  // between the two content events
+
+	// noteContent reads the clock once per content event (text/reasoning delta
+	// or tool-arg bytes) on the consumer goroutine, so a call-order script hands
+	// the first delta `base` and the second `base+gapDelay` deterministically.
+	base := time.Unix(0, 0)
+	steps := []time.Time{base, base.Add(gapDelay)}
+	calls := 0
+	contentClock := func() time.Time {
+		now := steps[calls]
+		if calls < len(steps)-1 {
+			calls++
+		}
+		return now
+	}
+
 	sess := newSession(t)
+	sess.cfg.testOnly.contentWindowClock = contentClock
 	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
 	st := llm.NewChanStream(nil)
 
@@ -232,8 +258,6 @@ func TestConsumeModelStream_Observation_ContentWindowExcludesPrefixGap(t *testin
 		done <- outcome{obs, err}
 	}()
 
-	const padDelay = 200 * time.Millisecond // before the first content event
-	const gapDelay = 40 * time.Millisecond  // between the two content events
 	time.Sleep(padDelay)
 	st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
 	st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "a"})
