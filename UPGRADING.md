@@ -10,11 +10,14 @@ alone. Build `evener-dev` from a checkout with `make build-dev` when you
 need it.
 
 Release archives no longer carry `evener-dev`: they hold `evener` alone.
-Versions that required `evener-dev` in the archive have aged out, and a
-current `evener upgrade` installs `evener` alone from an archive without it.
-An `evener-dev` that an earlier install left in `~/.local/share/evener/bin`
-(and its `~/.local/bin` link) is no longer updated. Remove it if you don't
-use it:
+No tagged evener release ever required `evener-dev` in the archive — `v0.2.0`,
+the first evener-named release, already installs `evener` alone
+(`installBinaries`) — so the only `evener upgrade` that still needs it is a
+development/snapshot build from the transition window between the binary
+consolidation and the evener-only `installBinaries`; those have aged out, and
+such a build must reinstall with `install.sh` to move past them. An
+`evener-dev` that an earlier install left in `~/.local/share/evener/bin` (and
+its `~/.local/bin` link) is no longer updated. Remove it if you don't use it:
 
 ```sh
 rm -f ~/.local/bin/evener-dev ~/.local/share/evener/bin/evener-dev

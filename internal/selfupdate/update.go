@@ -35,7 +35,9 @@ var defaultMaxArchiveBytes = int64(128 << 20)
 
 // installBinaries is the binary an upgrade installs from the release archive.
 // evener-dev, the dev tooling binary, is not installed and no longer rides in
-// the archive; versions that required it have aged out.
+// the archive: no tagged release required it there (v0.2.0, the first
+// evener-named release, already installs evener alone), only dev/snapshot
+// builds from the transition window did, and those have aged out.
 var installBinaries = []string{"evener"}
 
 var (
