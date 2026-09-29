@@ -20,11 +20,13 @@ const connectionClient: CommandCatalogClient = {
       // connection's catalog, not this one's. The loop's dirty coalescing
       // already supersedes an in-flight read when a re-read is triggered, but
       // a swap to a not-yet-ready client triggers none, so a late response
-      // would publish over the replacement connection here. Rejecting routes
-      // it to the loop's fail-soft (keep the last catalog, report the error),
-      // and the new connection's own ready-transition load replaces it.
+      // would publish over the replacement connection here. Answer it with
+      // the catalog the store already holds instead: the supersede stays
+      // silent (no technical error flash for an expected internal
+      // cancellation), the last catalog is kept, and the new connection's
+      // own ready-transition load replaces it.
       if (connectionStore.getState().client !== client) {
-        throw new Error("connection changed while the request was in flight");
+        return { ...response, commands: store.getState().commands };
       }
       return response;
     });

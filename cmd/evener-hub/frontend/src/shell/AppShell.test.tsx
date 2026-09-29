@@ -3124,6 +3124,9 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
     method: "evener/navigation/read",
     params: { resource: "manifest", representationVersion: 2 },
   });
+  // Required, not just allowed above: a regression that stops loading the
+  // catalog on connect must fail this test, not slip past the allow-list.
+  expect(client.calls).toContainEqual({ method: "evener/command/list", params: {} });
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call

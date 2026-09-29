@@ -34,10 +34,12 @@ test("a replaced client's catalog is read on the swap, not only on its later not
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
 });
 
-// RoboRev #3022 round 2's reconciliation: a swap to a client that is not
-// ready yet triggers no re-read (no ready transition), so a response from the
-// OUTGOING client that lands in that window must not publish its catalog over
-// the connection that replaced it.
+// RoboRev #3022's reconciliation: a swap to a client that is not ready yet
+// triggers no re-read (no ready transition), so a response from the OUTGOING
+// client that lands in that window must not publish its catalog over the
+// connection that replaced it. The supersede is silent: the last catalog
+// (here the initial empty one) stays with NO error state - a superseded read
+// is an expected internal cancellation, not a failure to surface.
 test("a response landing after a swap to a not-yet-ready client is dropped, not published", async () => {
   const first = new FakeClient("ready");
   let answerFirst!: (value: CommandListResponse) => void;
@@ -56,11 +58,14 @@ test("a response landing after a swap to a not-yet-ready client is dropped, not 
   connectionStore.getState().connect(second as never);
 
   answerFirst({ commands: [{ name: "stale-from-first", source: "user" }] });
-  await vi.waitFor(() => expect(useCommandCatalog.getState().error ?? "").not.toBe(""));
-  expect(useCommandCatalog.getState().commands).toEqual([]);
+  // Let the superseded read settle, then assert: stale commands never
+  // published, and no error flashed for what is an expected cancellation.
+  await vi.waitFor(() => expect(useCommandCatalog.getState().loading).toBe(false));
+  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], error: null });
 
   second.emitStateChange("ready");
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
+  expect(useCommandCatalog.getState().error).toBeNull();
 });
 
 test("refresh reads the catalog through the connection's client, and a failed re-read keeps the last one", async () => {
