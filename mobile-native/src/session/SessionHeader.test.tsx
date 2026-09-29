@@ -469,15 +469,20 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		expect(barRoom(tree)).toBe(64);
 	});
 
-	// The chips row still fades at its trailing edge on the glass, so a
-	// cut-off chip reads as "there's more".
-	it("keeps the chips' overflow fade on the glass", () => {
-		const tree = render(header({ chips: [goal], glassTop: 64 }));
-		const row = tree.root.find((node) => node.props.testID === "chips-row");
-		const scroller = row.findAll((node) => node.props.horizontal === true)[0];
-		act(() => scroller?.props.onLayout({ nativeEvent: { layout: { width: 300, height: 48, x: 0, y: 0 } } }));
-		act(() => scroller?.props.onContentSizeChange(500, 48));
-		expect(tree.root.findAll((node) => node.props.testID === "chips-fade")).toHaveLength(1);
+	// The fade fades into the page color, which on the glass would paint an
+	// opaque band over it; there the chips just run under the glass's edge,
+	// as a horizontal scroll does anywhere on iOS. Off the glass it stays.
+	it("fades overflowing chips into the page, and not on the glass", () => {
+		const fades = (glassTop?: number) => {
+			const tree = render(header({ chips: [goal], glassTop }));
+			const row = tree.root.find((node) => node.props.testID === "chips-row");
+			const scroller = row.findAll((node) => node.props.horizontal === true)[0];
+			act(() => scroller?.props.onLayout({ nativeEvent: { layout: { width: 300, height: 48, x: 0, y: 0 } } }));
+			act(() => scroller?.props.onContentSizeChange(500, 48));
+			return tree.root.findAll((node) => node.props.testID === "chips-fade").length;
+		};
+		expect(fades()).toBe(1);
+		expect(fades(64)).toBe(0);
 	});
 
 	it("clips its sliding rows once, at their own top", () => {

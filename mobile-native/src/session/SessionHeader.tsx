@@ -164,7 +164,9 @@ function ChipsRow({
 					<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
 				))}
 			</ScrollView>
-			{overflows ? (
+			{/* The fade is into the page color, so on the glass it would paint an
+			    opaque band; there the chips run under the glass's edge instead. */}
+			{overflows && !onGlass ? (
 				<View
 					testID="chips-fade"
 					pointerEvents="none"
