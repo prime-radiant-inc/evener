@@ -144,6 +144,11 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 	expect(documentBlocks("a<br>b")[0]?.text).toBe("ab");
 	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See <https://x.test> too.");
 	expect(documentBlocks('Tags like <span title="a > b">value</span> go.')[0]?.text).toBe("Tags like value go.");
+	expect(documentBlocks("Code ``a`<b>`` done.")[0]?.text).toBe("Code a<b> done.");
+});
+
+it("keeps an html block's markup but still strips its markdown", () => {
+	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
 });
 
 it("hashes the same text the same way every time, and different text differently", () => {
