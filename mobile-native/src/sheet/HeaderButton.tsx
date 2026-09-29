@@ -1,8 +1,21 @@
 // A sheet's header action (Done, Cancel, Save): accent ink, semibold when it
 // finishes the page, a 44pt target that dims while pressed and reads in ink-low
-// while it can't run, following Dynamic Type on iOS.
+// while it can't run, following Dynamic Type on iOS up to xxxLarge. Like iOS's
+// own bar buttons it stops growing at the accessibility sizes and stays on one
+// line, so a word never breaks across the header.
 import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
 import { allowFontScaling, useColors } from "../ui";
+
+/** Body at xxxLarge, the largest size before the accessibility sizes: 23pt
+ * over the default 17 (Apple's Dynamic Type sizes). */
+const XXXL_SCALE = 23 / 17;
+
+/** How much a sheet header's text grows: with Dynamic Type on iOS, up to
+ * xxxLarge. The header's title and its buttons share it. */
+export function useHeaderTextScale(): number {
+	const { fontScale } = useWindowDimensions();
+	return Platform.OS === "ios" ? Math.min(fontScale, XXXL_SCALE) : 1;
+}
 
 export function HeaderButton({
 	label,
@@ -19,8 +32,7 @@ export function HeaderButton({
 	onPress(): void;
 }) {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useHeaderTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -39,6 +51,7 @@ export function HeaderButton({
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
+				numberOfLines={1}
 				style={{
 					color: disabled ? palette.inkLow : palette.accentInk,
 					fontSize: 17 * scale,

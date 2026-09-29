@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { render, renderedText } from "../renderNative.testkit";
 import { Sheet } from "./Sheet";
 
-vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+// The text size the phone is set to: 1 is the default (Large).
+const text = vi.hoisted(() => ({ fontScale: 1 }));
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ fontScale: text.fontScale, scale: 2, width: 390, height: 844 }),
+}));
 
 describe("the sheet's chrome", () => {
 	const pressable = (tree: ReturnType<typeof render>, label: string) =>
@@ -75,4 +80,19 @@ describe("the sheet's chrome", () => {
 		expect(title.props.style.maxWidth).toBe("56%");
 		expect(title.props.children).toBe("Sign in to codex-jesse-fsck.com");
 	});
+});
+
+it("keeps its title to xxxLarge at the accessibility sizes, as its header buttons do (#3311)", () => {
+	try {
+		text.fontScale = 53 / 17;
+		const tree = render(
+			<Sheet title="Sign in to codex" onCancel={() => {}}>
+				<Text>body</Text>
+			</Sheet>,
+		);
+		const title = tree.root.findByProps({ accessibilityRole: "header" });
+		expect(title.props.style.fontSize).toBe(23);
+	} finally {
+		text.fontScale = 1;
+	}
 });

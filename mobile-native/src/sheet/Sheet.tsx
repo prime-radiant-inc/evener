@@ -13,9 +13,9 @@
 // field, a segmented control or a toast, goes in `accessory`, inside the
 // header. A modal has no detents, but keeps the same shape.
 import type { ReactElement, ReactNode } from "react";
-import { Platform, Text, useWindowDimensions, View } from "react-native";
+import { Text, View } from "react-native";
 import { allowFontScaling, useColors } from "../ui";
-import { HeaderButton } from "./HeaderButton";
+import { HeaderButton, useHeaderTextScale } from "./HeaderButton";
 
 export interface SheetButton {
 	/** "Done" unless the sheet names its own verb, such as "Add" or "Send". */
@@ -42,8 +42,7 @@ export interface SheetProps {
 
 export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory, children }: SheetProps) {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useHeaderTextScale();
 	return (
 		<>
 			<View collapsable={false} style={{ backgroundColor: palette.canvas }}>
