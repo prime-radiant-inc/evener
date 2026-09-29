@@ -1,25 +1,23 @@
 // New session (spec 11): a large sheet from the Board's New session button
 // that holds its own stack, so the pickers push inside the sheet and Back
-// returns to the form (ruling 1). The sheet owns the creation store, bound to
-// the hub while it is ready, the hub's hosts and live sessions, and this
-// phone's memory of starts, and hands them to its pages through
-// newSessionContext.tsx. Swiping it down closes it and keeps the draft
+// returns to the form (ruling 1). The sheet binds the hub's creation store
+// (creations.ts) while the hub is ready, holds the hub's hosts and live
+// sessions and this phone's memory of starts, and hands them to its pages
+// through newSessionContext.tsx. Swiping it down closes it and keeps the draft
 // (ruling 18).
 import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
-import { createNewSessionService } from "../../../mobile/src/services/newSession";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
-import { nativeDrafts } from "../nativeDrafts";
-import { createNewSessionStore } from "../newSession";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
 import { useColors } from "../ui";
 import { BrowseFolders } from "./BrowseFolders";
+import { creationService, creationStore } from "./creations";
 import { AccessPicker } from "./AccessPicker";
 import { HostPicker } from "./HostPicker";
 import { ModelPicker } from "./ModelPicker";
@@ -40,7 +38,7 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
-	const store = useMemo(() => createNewSessionStore(hubId, () => nativeDrafts().creation), [hubId]);
+	const store = creationStore(hubId);
 	const memory = useMemo(() => launchMemory(hubId), [hubId]);
 
 	// The form is placed once, as it opens with its draft loaded.
@@ -54,7 +52,7 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	}, [store, memory, like, storageLoaded]);
 	useEffect(() => () => stopOpening.current(), []);
 
-	const service = useMemo(() => (ready && client ? createNewSessionService(client) : null), [ready, client]);
+	const service = ready && client ? creationService(client) : null;
 	// A new or lost connection rebinds the store, which makes anything in
 	// flight on the old one obsolete. Closing the sheet doesn't: a start the
 	// sheet was swiped away from still lands, so the form can say the session
