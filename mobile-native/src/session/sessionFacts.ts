@@ -141,8 +141,8 @@ export function effortName(level: string): string {
 }
 
 /** A model as the catalog names it (a model is called one way everywhere
- * people read it). While the catalog is away (it clears while it reloads and
- * after a failed load) the hub's session row names it (S17's model_name, the
+ * people read it). While the catalog is away (before the first load, and
+ * after a failed load clears it; a reload keeps it) the hub's session row names it (S17's model_name, the
  * same name model/list gives), and only then the id. Right after a switch the
  * row may lag until the fleet re-reads it; that only shows while the catalog
  * is away too. */
