@@ -24,6 +24,7 @@ import {
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
@@ -945,6 +946,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             ) : (
               <DockRegion />
             )}
+            {/* The activity sidebar: the zoom system's triage surface, a right
+              shell region scoped to the session being read. Desktop only. */}
+            {!isMobile && route !== null && <ActivitySidebar />}
           </div>
           {/* The activity status bar: the zoom system's glance surface, a
               full-width strip under the content row. Desktop only; mobile
