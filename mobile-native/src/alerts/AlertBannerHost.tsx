@@ -8,6 +8,7 @@ import { Alert, View } from "react-native";
 import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 import { openNotice } from "../board/BoardNotices";
 import { requestBoardJump } from "../board/boardJump";
+import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import type { Routes } from "../screens";
 import { AlertBanner } from "./AlertBanner";
@@ -35,7 +36,7 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 			// since took its draft with it, so the tap says so rather than doing
 			// nothing. A start on another hub than the one selected opens once
 			// that hub is selected, so its sheet has its own connection.
-			if (!profiles.some((profile) => profile.id === target.hubId)) {
+			if (!hasHub(profiles, target.hubId)) {
 				Alert.alert(
 					`${target.hubName} was removed`,
 					"Its New session draft was removed with it, so there's nothing to open.",

@@ -10,6 +10,7 @@ import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
@@ -41,7 +42,7 @@ export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSessio
 	// A removed hub has no store to make or show: its sheet closes, whether the
 	// hub went while the sheet was open or on its way here. It closes in a
 	// layout effect, before the empty sheet is ever painted.
-	const removed = !profiles.some((profile) => profile.id === props.route.params.hubId);
+	const removed = !hasHub(profiles, props.route.params.hubId);
 	useLayoutEffect(() => {
 		if (removed) navigation.goBack();
 	}, [removed, navigation]);

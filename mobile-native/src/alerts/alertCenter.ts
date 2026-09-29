@@ -110,16 +110,22 @@ export const COALESCE_MS = 5_000;
 export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
-const NEEDS_YOU_KINDS: ReadonlySet<Alert["kind"]> = new Set<NeedsYouKind>([
-	"failed",
-	"question",
-	"approval",
-	"warning",
-	"restartNeeded",
-]);
+/** Which kinds are sessions that need you, every kind named so a new one
+ * has to be decided here. */
+const NEEDS_YOU: Record<Alert["kind"], boolean> = {
+	failed: true,
+	question: true,
+	approval: true,
+	warning: true,
+	restartNeeded: true,
+	finished: false,
+	started: false,
+	notice: false,
+	startFailed: false,
+};
 
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return NEEDS_YOU_KINDS.has(alert.kind);
+	return NEEDS_YOU[alert.kind];
 }
 
 /** The session an alert is about, or null for a notice or a failed start. */
@@ -134,13 +140,9 @@ function followsInTurn(alert: Alert): boolean {
 	return alert.kind === "started" || alert.kind === "startFailed";
 }
 
-function aboutSession(alert: Alert, ref: string): boolean {
-	return sessionRef(alert) === ref;
-}
-
 /** An alert that brings news rather than asks for you: no haptic, and it
  * never joins, replaces or waits behind another banner. */
-function quiet(alert: Alert): boolean {
+export function quiet(alert: Alert): boolean {
 	return alert.kind === "finished" || alert.kind === "started";
 }
 
@@ -218,7 +220,7 @@ export class AlertCenter {
 		this.screen = screen;
 		if (screen.kind === "other") return;
 		const about = (alert: Alert) =>
-			screen.kind === "board" ? alert.kind === "notice" : aboutSession(alert, screen.ref);
+			screen.kind === "board" ? alert.kind === "notice" : sessionRef(alert) === screen.ref;
 		const recent = screen.kind === "session" ? this.recent.filter((ref) => ref !== screen.ref) : this.recent;
 		const dropped = this.dropAlerts(about);
 		if (!dropped && recent.length === this.recent.length) return;
@@ -230,7 +232,7 @@ export class AlertCenter {
 	 * alert about it that waits or still shows would be stale news, so it
 	 * goes. The recent order stays; Next reads who needs you now. */
 	retract(ref: string): void {
-		if (this.dropAlerts((alert) => aboutSession(alert, ref))) this.publish();
+		if (this.dropAlerts((alert) => sessionRef(alert) === ref)) this.publish();
 	}
 
 	/** A hub's failed start needs no alert any more: its New session is open
@@ -341,12 +343,12 @@ export class AlertCenter {
 	}
 
 	private wanted(alert: Alert): boolean {
+		// A start that failed is about what you just did, whatever the settings.
+		if (alert.kind === "startFailed") return true;
 		const { failures, questions, finished } = this.preferences;
 		if (alert.kind === "failed" && !failures) return false;
 		if ((alert.kind === "question" || alert.kind === "approval") && !questions) return false;
 		if (alert.kind === "finished" && !finished) return false;
-		// A start that failed is about what you just did, whatever the settings.
-		if (alert.kind === "startFailed") return true;
 		// Nothing alerts about what is on screen: the session you're looking
 		// at, or a notice while the Board, which lists it, is up.
 		if (alert.kind === "notice") return this.screen.kind !== "board";

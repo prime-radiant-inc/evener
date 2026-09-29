@@ -9,12 +9,14 @@ import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from
 import type { BoardState, WhyLine } from "../board/attention";
 import { StateMark } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import type { Alert, Banner } from "./alertCenter";
+import { type Alert, type Banner, quiet } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
 
 const COALESCED_LINE = "Tap to see them on the Board.";
 const STARTED_LINE = "Session started. Tap to open it.";
 const START_FAILED_HINT = "Tap to open New session.";
+const MAY_HAVE_STARTED_LINE = "It may have started.";
+const DRAFT_KEPT_LINE = "Your draft is kept.";
 
 /** Each session alert's mark: its Board state, a session you started as
  * working, and a start that failed as failed. */
@@ -46,7 +48,7 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 		return {
 			title: only.uncertain ? "Couldn't confirm the new session started" : "Couldn't start the new session",
 			why: null,
-			hint: `On ${only.hubName}. ${only.uncertain ? "It may have started." : "Your draft is kept."} ${START_FAILED_HINT}`,
+			hint: `On ${only.hubName}. ${only.uncertain ? MAY_HAVE_STARTED_LINE : DRAFT_KEPT_LINE} ${START_FAILED_HINT}`,
 		};
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
@@ -102,7 +104,7 @@ export function AlertBanner({
 	const { title, why, hint } = words(banner);
 	const label = bannerLabel(banner);
 	// News rather than a request: a finished result or a session you started.
-	const news = banner.alerts.every((alert: Alert) => alert.kind === "finished" || alert.kind === "started");
+	const news = banner.alerts.every(quiet);
 
 	// The drop: this component mounts once per banner (the host keys it by
 	// id), so it drops in on mount and never again. Reduce Motion is read at
