@@ -19,6 +19,9 @@ function isMermaidCodeToken(token: Token): boolean {
 }
 
 function fenceTokenTerminated(raw: string): boolean {
+	// marked normalizes CRLF at lex, so raw never contains "\r"; the divide on
+	// "\n" alone is deliberate (the web sibling does the same, belt-and-braces
+	// replace aside).
 	const lines = raw.split("\n");
 	for (let index = lines.length - 1; index >= 0; index -= 1) {
 		const line = lines[index] ?? "";
@@ -58,7 +61,12 @@ export function splitNativeSegments(source: string): NativeSegment[] {
 	const tokens = lexer(source);
 	const definitions: string[] = [];
 	collectDefinitions(tokens, definitions);
-	const prefix = definitions.length > 0 ? `${definitions.join("")}\n` : "";
+	// A def's raw keeps its trailing "\n" only when another line immediately
+	// follows, so two blank-line-separated defs would fuse into one unparseable
+	// line ("...a.example[b]: ..."). Terminate each raw, then a closing blank
+	// line, so the block lexes as separate definitions.
+	const prefix =
+		definitions.length > 0 ? `${definitions.map((d) => (d.endsWith("\n") ? d : `${d}\n`)).join("")}\n` : "";
 
 	const segments: NativeSegment[] = [];
 	let markdownRun = "";
