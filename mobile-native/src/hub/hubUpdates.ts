@@ -65,13 +65,14 @@ export function createPhoneHubUpdates(
 				const end = () => finish(false);
 				// The wait owns the check the return to ready makes (useHubUpdates
 				// skips its own while restarting), so one answer both shows the
-				// hub's version and ends the wait. A check that fails while the
-				// hub settles waits for the next time the connection is ready.
+				// hub's version and ends the wait. A check that fails ends it as
+				// not updated: nothing else would ask again while the connection
+				// stays up, and the sheet's next check shows where the hub stands.
 				const unsubscribe = readiness.subscribe(() => {
 					if (!readiness.isReady()) return;
 					void controller.runCheck().then(() => {
 						const check = controller.getState().check;
-						if (check) finish(check.currentVersion !== previousVersion);
+						finish(check !== null && check.currentVersion !== previousVersion);
 					});
 				});
 				endWaits.add(end);
