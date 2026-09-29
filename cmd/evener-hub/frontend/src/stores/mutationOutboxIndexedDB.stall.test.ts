@@ -151,10 +151,10 @@ test("a timeout fails the call without deleting anything, and a later call succe
   await vi.advanceTimersByTimeAsync(10_000);
   const error = await stalled;
   expect(error).toBeInstanceOf(MutationStorageTimeoutError);
-  // The failure is the ordinary send error: the draft is kept and a retry may
-  // succeed. Nothing is deleted and nothing refuses: the very next call
-  // attempts the open again and succeeds, and the earlier record survived.
-  expect((error as Error).message).toBe("The message could not be saved; your draft has been kept. Try again.");
+  // The failure is the shared neutral retry message. Nothing is deleted and
+  // nothing refuses: the very next call attempts the open again and succeeds,
+  // and the earlier record survived.
+  expect((error as Error).message).toBe("It didn't go through. Try again.");
   expect(await storage.listOutbox()).toEqual([seeded]);
   expect(deleteDatabase).not.toHaveBeenCalled();
   storage.close();
@@ -272,7 +272,7 @@ test("close() during an open closes the late connection and does not install it"
   expect(() => late?.transaction("outbox")).toThrow();
 });
 
-test("a stalled upgrade times out and fails the call", async () => {
+test("a stalled upgrade times out, and once the upgrade commits a later operation succeeds", async () => {
   const indexedDB = new IDBFactory();
   const createObjectStore = IDBDatabase.prototype.createObjectStore;
   let keepAlive = true;
@@ -293,6 +293,18 @@ test("a stalled upgrade times out and fails the call", async () => {
     pulse();
     return store;
   });
+  // Watch the stalled attempt's open request: its success fires only once the
+  // versionchange transaction has committed, which is the signal the upgrade
+  // was never aborted and can still land.
+  const open = indexedDB.open.bind(indexedDB);
+  let abandonedSucceeded = false;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    const request = open(name, version);
+    request.addEventListener("success", () => {
+      abandonedSucceeded = true;
+    });
+    return request;
+  });
   const storage = new MutationOutboxIndexedDB({ indexedDB });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let settled = false;
@@ -308,7 +320,16 @@ test("a stalled upgrade times out and fails the call", async () => {
     await vi.advanceTimersByTimeAsync(10_000); // the open watchdog
     await nextRealTask();
     await settleRealTasks(() => settled);
+    // The stalled attempt failed, but its upgrade was never aborted.
     expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
+    // Let the versionchange transaction commit: the abandoned connection then
+    // closes, the promise is cleared, and a later call opens afresh and
+    // succeeds. Recovery is possible - the non-aborting upgrade design holds.
+    keepAlive = false;
+    await settleRealTasks(() => abandonedSucceeded);
+    expect(abandonedSucceeded).toBe(true);
+    const record = await storage.enqueueIntent(intent);
+    expect(await storage.listOutbox()).toEqual([record]);
   } finally {
     keepAlive = false;
     storage.close();

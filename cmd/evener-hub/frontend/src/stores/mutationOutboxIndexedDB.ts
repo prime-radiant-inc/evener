@@ -59,13 +59,15 @@ const STORAGE_WAIT_MS = 10_000;
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
-// The one actionable message for a stuck open: the message was not saved, the
-// draft is kept, and a later try may succeed. It is a bare retryable detail,
-// never a gate - a stuck open is not remembered, so every later operation
-// still attempts the open and a send after the open recovers succeeds.
+// The one neutral message for a transaction that timed out. The same error
+// covers reads, Stop, cancel, and enqueue writes, so the sentence must read
+// after any action headline ("Send failed: ...", "Stop failed: ...") and name
+// neither a draft nor a cause. It is a bare retryable detail, never a gate - a
+// stuck open is not remembered, so every later operation still attempts the
+// open and a send after the open recovers succeeds.
 export class MutationStorageTimeoutError extends Error {
   constructor() {
-    super("The message could not be saved; your draft has been kept. Try again.");
+    super("It didn't go through. Try again.");
     this.name = "MutationStorageTimeoutError";
   }
 }
@@ -537,11 +539,7 @@ export class MutationOutboxIndexedDB {
         // runtime's projections and pins last saw this ref before the
         // removal, and this fire-and-forget write is the only thing that can
         // tell them.
-        try {
-          this.#supersededDiscardListener?.(source.targetRef);
-        } catch {
-          // A listener cannot change the durable transaction's outcome.
-        }
+        this.#notifyQuietly(() => this.#supersededDiscardListener?.(source.targetRef));
       })
       .catch(() => {
         // Left for the next settle, clear, or delete.
@@ -750,9 +748,12 @@ export class MutationOutboxIndexedDB {
           // open this adapter has already abandoned. Aborting a
           // versionchange/upgrade transaction is the documented trigger for
           // Chromium's wedged connection coordinator (crbug 40278488), after
-          // which open() never fires success, error, or blocked. `abandoned`
-          // and `#databasePromise` decide only whether the late success below
-          // installs its connection, never whether the upgrade commits.
+          // which open() never fires success, error, or blocked - so there is
+          // deliberately no release/abort path here. `abandoned` and
+          // `#databasePromise` decide only whether the late success below
+          // installs its connection, never whether the upgrade commits; a
+          // later call clears the abandoned promise and opens afresh, which is
+          // what makes recovery after a stalled upgrade possible.
           const database = request.result;
           if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
             const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
