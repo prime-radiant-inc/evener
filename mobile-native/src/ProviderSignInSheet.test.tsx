@@ -159,6 +159,17 @@ it("copies the code with Copy code, and says when the copy fails", async () => {
 	expect(renderedText(failing.tree)).toContain("Could not copy the code. Select it to copy manually.");
 });
 
+it("stops saying Code copied when a later copy fails", async () => {
+	const { tree } = await mount(deviceFlow);
+	await press(tree, "Copy code");
+	expect(pressable(tree, "Code copied")).toBeDefined();
+	edges.copies = false;
+	await press(tree, "Code copied");
+	expect(renderedText(tree)).toContain("Could not copy the code. Select it to copy manually.");
+	expect(pressable(tree, "Code copied")).toBeUndefined();
+	expect(pressable(tree, "Copy code")).toBeDefined();
+});
+
 it("opens the sign-in page in the app only after copying the code", async () => {
 	const { tree } = await mount(deviceFlow);
 	await press(tree, "Open sign-in page");

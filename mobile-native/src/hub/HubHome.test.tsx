@@ -93,12 +93,19 @@ let updates: PhoneHubUpdates;
 let context: HubSheetContextValue;
 
 async function mount(
-	options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet; providers?: FakeClient } = {},
+	options: {
+		check?: UpdateCheckResponse | Error;
+		ready?: boolean;
+		/** Whether a control that needs the hub may act (a re-key window says no). */
+		usable?: boolean;
+		fleet?: ScriptedFleet;
+		providers?: FakeClient;
+	} = {},
 ) {
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
-	const live = { usable: options.ready ?? true };
+	const live = { usable: options.usable ?? options.ready ?? true };
 	updates = createPhoneHubUpdates(fake.client, readiness);
 	context = {
 		hubId: "hub-1",
@@ -190,6 +197,13 @@ it("opens Providers inside the sheet, counting them and tagging the ones to sign
 	expect(sheet.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 	const tags = find("Providers, 3, 1 to sign in")?.findAllByType(Tag);
 	expect(tags?.map((tag) => tag.props)).toEqual([{ text: "1 to sign in", tone: "amber" }]);
+});
+
+it("reads no providers while the connection can't be used, even when it says ready", async () => {
+	// A re-key window: the client may still be the previous hub's.
+	const providers = providersHub(["codex-jesse-fsck.com"], [{ provider: "codex-jesse-fsck.com", needsLogin: true }]);
+	await mount({ providers, usable: false });
+	expect(providers.calls.map((call) => call.method)).not.toContain("evener/auth/list");
 });
 
 it("counts providers with no tag when none needs signing in", async () => {

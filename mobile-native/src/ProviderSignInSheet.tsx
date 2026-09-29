@@ -53,12 +53,13 @@ export function ProviderSignInSheet({
 		setLocalError(null);
 	}, [authorized]);
 	async function copy(flowId: string, code: string) {
+		let copied = false;
 		try {
-			if (await Clipboard.setStringAsync(code)) setCopiedFlow(flowId);
-			else setLocalError(COPY_FAILED);
-		} catch {
-			setLocalError(COPY_FAILED);
-		}
+			copied = await Clipboard.setStringAsync(code);
+		} catch {}
+		// A failed copy takes back an earlier "Code copied".
+		setCopiedFlow(copied ? flowId : null);
+		if (!copied) setLocalError(COPY_FAILED);
 	}
 	// openBrowserAsync resolves only when the page closes, so the waiting state
 	// starts as it opens and is taken back if it couldn't.

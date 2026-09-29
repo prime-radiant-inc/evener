@@ -1,9 +1,9 @@
 import type { AnyNotification, AuthStatusResponse } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
-import { useAuthStatuses } from "./useAuthStatuses";
+import { AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -74,6 +74,35 @@ it("keeps the last statuses through a failed read", async () => {
 	await act(settle);
 	expect(fake.methods).toHaveLength(2);
 	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+});
+
+it("reads again on its own after a failed read, until one lands", async () => {
+	// A failed first read would otherwise leave the words to the instance rows
+	// alone, which call an expired sign-in "Signed in" (RoboRev, #3040).
+	vi.useFakeTimers();
+	const fake = hub([new Error("the hub is busy"), new Error("still busy"), [expired]]);
+	const { result } = renderHook(() => useAuthStatuses(fake.client));
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	expect(fake.methods).toHaveLength(1);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
+	});
+	expect(fake.methods).toHaveLength(2);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
+	});
+	expect(fake.methods).toHaveLength(3);
+	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	// Once a read lands, nothing more is scheduled.
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS * 3);
+	});
+	expect(fake.methods).toHaveLength(3);
+});
+afterEach(() => {
+	vi.useRealTimers();
 });
 
 it("reads nothing without a client", async () => {

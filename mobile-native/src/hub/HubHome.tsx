@@ -60,18 +60,20 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			void hosts?.read();
 			// A store with no connection yet refuses the read; the next focus,
 			// or the connection turning ready, reads again.
-			if (ready)
+			if (ready && canUseConnection())
 				credentials
 					.getState()
 					.fetch()
 					.catch(() => {});
-		}, [hosts, credentials, ready]),
+		}, [hosts, credentials, ready, canUseConnection]),
 	);
 	const fleet = fleetSummary(useOptionalSnapshot(hosts)?.rows ?? null, check?.currentVersion);
 	const listing = useSyncExternalStore(credentials.subscribe, credentials.getState);
 	const providers = providersSummary(
 		listing.listingEstablished ? listing.instances : null,
-		useAuthStatuses(ready ? client : null),
+		// Gated as the Providers page gates it, so a re-key window never reads
+		// the previous hub's statuses.
+		useAuthStatuses(canUseConnection() ? client : null),
 	);
 	return (
 		<GroupedPage>
