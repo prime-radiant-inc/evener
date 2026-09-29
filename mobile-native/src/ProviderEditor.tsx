@@ -7,8 +7,9 @@ import {
 	type ProviderDescriptor,
 } from "@evener/appwire-client";
 import type { LiveReadiness } from "./connectionDisplay";
+import { space } from "./design/tokens";
 import { createProviderParams, draftChanged, editProviderParams, type ProviderDraft } from "./providerForm";
-import type { TextInput } from "react-native";
+import { type TextInput, View } from "react-native";
 import {
 	FormError,
 	Group,
@@ -16,12 +17,12 @@ import {
 	GroupFooter,
 	GroupGap,
 	Row,
-	SearchField,
 	TextFieldRow,
 	useErrorInView,
 	useFormError,
 } from "./sheet/Grouped";
 import { guardLeave } from "./sheet/confirmDiscard";
+import { SearchField } from "./sheet/SearchField";
 import { Sheet } from "./sheet/Sheet";
 
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
@@ -219,7 +220,9 @@ export function ProviderEditor({
 						{choosing ? (
 							<>
 								<GroupGap />
-								<SearchField label="Find provider" query={query} onChange={setQuery} />
+								<View style={{ marginHorizontal: space.margin }}>
+									<SearchField label="Find provider" value={query} onChangeText={setQuery} />
+								</View>
 								{matches.length > 0 ? (
 									<Group>
 										{matches.map((provider) => (

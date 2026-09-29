@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
-import { projectThread } from "./transcriptProjector";
+import { entryDisplayKey, projectThread } from "./transcriptProjector";
 import { WarningCodeContextBudget } from "./warnings";
 
 const BASE_THREAD = {
@@ -861,5 +861,39 @@ describe("transcript projector", () => {
 
     expect(customConfig.content.kind).toBe("custom");
     expect(entriesFor(model, customConfig)).toEqual(entriesFor(model, presetConfig));
+  });
+
+  // A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+  // until its round is recorded, when it becomes a history item with a new id
+  // (roundId stays). The round's first reply keys by the round, so a renderer
+  // that keys rows by displayKey reconciles it instead of remounting (markdown
+  // re-render, lost selection, dead anchor).
+  test("a streamed reply keeps its display key when history records its round", () => {
+    const streaming = threadWith(
+      item("stream:r1/0:agentMessage", "agentMessage", { roundId: "r1", text: "Looking", status: "inProgress" }),
+    );
+    const recorded = threadWith(item("item_assistant_1_0", "agentMessage", { roundId: "r1", text: "Looking" }));
+
+    const live = entriesFor(streaming, preset("chat")).map(entryDisplayKey).at(-1);
+    expect(live).toBe("round:r1:agentMessage");
+    expect(entriesFor(recorded, preset("chat")).map(entryDisplayKey).at(-1)).toBe(live);
+  });
+
+  // A round can record two replies (text before and after a tool call), so only
+  // the round's first reply takes the round key; keys stay unique. A
+  // communicate preview carries the round but is recorded with no round id, so
+  // it takes none.
+  test("only a round's first reply takes the round key", () => {
+    const model = threadWith(
+      item("stream:r1/0:agentMessage", "agentMessage", { roundId: "r1", text: "first" }),
+      item("item_assistant_1_1", "agentMessage", { roundId: "r1", text: "second" }),
+      item("stream:preview", "agentMessage", { roundId: "r2", callId: "call_1", text: "preview" }),
+    );
+
+    expect(entriesFor(model, preset("chat")).map(entryDisplayKey)).toEqual([
+      "round:r1:agentMessage",
+      "item_assistant_1_1",
+      "stream:preview",
+    ]);
   });
 });
