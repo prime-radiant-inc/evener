@@ -32,6 +32,9 @@ export interface StartInput {
 	/** A chosen model's name when the host's model list failed to load, so
 	 * the hub can't be asked for it (submit needs the list to start on it). */
 	unconfirmedModel: string | null;
+	/** A start of this very draft may already exist (the store's
+	 * startMayRepeat), so starting it again could make a second session. */
+	startMayRepeat: boolean;
 }
 
 export interface StartBlock {
@@ -44,6 +47,12 @@ export interface StartBlock {
 
 export function startBlock(input: StartInput): StartBlock | null {
 	if (!input.ready || input.busy) return { field: null, message: null };
+	if (input.startMayRepeat)
+		return {
+			field: null,
+			message:
+				"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
+		};
 	if (input.reach === "offline")
 		return { field: "host", message: `${input.hostLabel} is offline. Connect it or choose another host.` };
 	if (input.reach === "missing")

@@ -2,20 +2,25 @@
 // (hubSeen.ts, which the session screen imports) can keep its per-hub
 // instances the same way nativeBoardMemory.ts does.
 
-/** One instance per hub, made on first use and dropped when the hub is forgotten. */
-export function perHub<T>(make: (hubId: string) => T) {
+/** One instance per hub, made on first use and dropped when the hub is
+ * forgotten. What the first get passes after the hub goes to the maker, so an
+ * instance keeps what it was made with. */
+export function perHub<T, A extends unknown[] = []>(make: (hubId: string, ...args: A) => T) {
 	const instances = new Map<string, T>();
 	return {
-		get(hubId: string): T {
+		get(hubId: string, ...args: A): T {
 			let instance = instances.get(hubId);
 			if (!instance) {
-				instance = make(hubId);
+				instance = make(hubId, ...args);
 				instances.set(hubId, instance);
 			}
 			return instance;
 		},
-		forget(hubId: string): void {
+		/** Drops the hub's instance, returning it so its owner can close it. */
+		forget(hubId: string): T | undefined {
+			const instance = instances.get(hubId);
 			instances.delete(hubId);
+			return instance;
 		},
 	};
 }

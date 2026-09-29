@@ -1,10 +1,11 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
-import type { CreationDraft } from "./creationDraftRepository";
+import { type CreationDraft, CreationDraftRepository } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
 import { ImageSelection } from "./imageSelection";
 import { createNewSessionStore } from "./newSession";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 function deferred() {
 	let resolve!: (value: unknown) => void;
@@ -892,7 +893,7 @@ function restored(draft: Partial<CreationDraft>, models: unknown[]) {
 			},
 		} as ConversationClientLike),
 	);
-	return { store, requests };
+	return { store, requests, saved };
 }
 
 it("makes a saved per-launch model the form's choice when the host lists it", async () => {
@@ -931,4 +932,233 @@ it("drops a saved per-launch effort that came with no model", async () => {
 	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
 	expect(start).not.toHaveProperty("reasoningEffort");
 	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
+});
+
+describe("a start that lands clears only the draft it started", () => {
+	function repository() {
+		const { port } = openSqliteSyncDouble();
+		const drafts = new CreationDraftRepository(port);
+		return () => drafts;
+	}
+	function heldHub() {
+		const starts: ReturnType<typeof deferred>[] = [];
+		const service = createNewSessionService({
+			request(method: string) {
+				if (method === "thread/start") {
+					const start = deferred();
+					starts.push(start);
+					return start.promise;
+				}
+				return Promise.resolve({ data: [] });
+			},
+		} as unknown as ConversationClientLike);
+		return { service, starts };
+	}
+	const landed = { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} };
+
+	it("clears the draft and empties the form when the draft is still the one it started", async () => {
+		const storage = repository();
+		const { service, starts } = heldHub();
+		const store = createNewSessionStore("hub-a", storage);
+		store.getState().bind(service);
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("fix the flaky test");
+		const started = store.getState().submit();
+		await flush();
+		starts[0]?.resolve(landed);
+		expect(await started).toMatchObject({ status: "created" });
+		expect(storage().read("hub-a")).toBeNull();
+		expect(store.getState()).toMatchObject({ cwd: "", prompt: "" });
+	});
+
+	it("keeps a newer draft another form saved while the start was on its way", async () => {
+		const storage = repository();
+		const { service, starts } = heldHub();
+		const first = createNewSessionStore("hub-a", storage);
+		first.getState().bind(service);
+		await first.getState().setCwd("/project", false);
+		first.getState().setPrompt("fix the flaky test");
+		const started = first.getState().submit();
+		await flush();
+		// Another form on this hub reads the draft and edits it.
+		const second = createNewSessionStore("hub-a", storage);
+		second.getState().setPrompt("something else entirely");
+		starts[0]?.resolve(landed);
+		expect(await started).toMatchObject({ status: "created" });
+		// The newer draft stays, and since the start is now known to have
+		// worked, it no longer says one may exist.
+		expect(storage().read("hub-a")).toMatchObject({ prompt: "something else entirely", unconfirmed: false });
+		expect(second.getState().prompt).toBe("something else entirely");
+		expect(first.getState().unconfirmedCreation).toBe(false);
+	});
+});
+
+it("changes nothing in a form whose start is on its way (#3104)", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	store.getState().selectModel(null);
+	const started = store.getState().submit();
+	await flush();
+	const before = { ...store.getState() };
+	await store.getState().setCwd("/elsewhere");
+	store.getState().setPrompt("something else");
+	store.getState().setReasoning("high");
+	store.getState().selectModel(model);
+	store.getState().setLaunchOverrides({ maxRounds: 3 });
+	store.getState().addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
+	await store.getState().changeHost("paradise-park", "paradise-park");
+	store.getState().applySetup({ host: "paradise-park", cwd: "/elsewhere", model: null, effort: "high", overrides: {} });
+	store.getState().applySeed({ host: "paradise-park", cwd: "/elsewhere" });
+	store.getState().discard();
+	expect(store.getState()).toMatchObject({
+		source: before.source,
+		cwd: before.cwd,
+		prompt: before.prompt,
+		images: before.images,
+		reasoning: before.reasoning,
+		model: before.model,
+		launchOverrides: before.launchOverrides,
+		submitting: true,
+	});
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	await started;
+});
+
+describe("a start that may already exist (#3104)", () => {
+	it("holds the same draft back after a rebind leaves its start uncertain, until the draft changes", async () => {
+		const { store, calls } = setup();
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("go");
+		expect(store.getState().startMayRepeat()).toBe(false);
+		const started = store.getState().submit();
+		await flush();
+		// The connection comes back as a new one while the start is out.
+		store.getState().bind(null);
+		expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
+		expect(store.getState().startMayRepeat()).toBe(true);
+		store.getState().setPrompt("go, and also fix the docs");
+		expect(store.getState().startMayRepeat()).toBe(false);
+		store.getState().setPrompt("go");
+		expect(store.getState().startMayRepeat()).toBe(true);
+		// The old request settles later, on the connection it went out on.
+		answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+		expect(await started).toEqual({ status: "obsolete" });
+	});
+
+	it("holds back a restored draft whose start couldn't be confirmed", () => {
+		const { saved, storage } = memoryDrafts();
+		saved.set("hub-a", {
+			source: "local",
+			cwd: "/project",
+			prompt: "go",
+			harness: "",
+			model: null,
+			reasoning: "",
+			launchOverrides: {},
+			images: [],
+			unconfirmed: true,
+		});
+		const store = createNewSessionStore("hub-a", storage);
+		expect(store.getState().startMayRepeat()).toBe(true);
+		store.getState().discard();
+		expect(store.getState().startMayRepeat()).toBe(false);
+	});
+});
+
+it("retires for a removed hub: unbound, marked retired, and starts nothing more (#3104)", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	const started = store.getState().submit();
+	await flush();
+	expect(store.getState().retired).toBe(false);
+	store.getState().retire();
+	expect(store.getState()).toMatchObject({ retired: true, submitting: false });
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await started).toEqual({ status: "obsolete" });
+	expect(await store.getState().submit()).toEqual({ status: "blocked" });
+});
+
+describe("an uncertain start across a reopen (#3104)", () => {
+	/** A draft whose start went out, then lost its connection: uncertain. */
+	async function uncertain() {
+		const { saved, storage } = memoryDrafts();
+		const own = createNewSessionStore("hub-a", storage);
+		own.getState().bind(
+			createNewSessionService({
+				// The start never answers; nothing else is asked.
+				request: () => new Promise(() => {}),
+			} as unknown as ConversationClientLike),
+		);
+		await own.getState().setCwd("/project", false);
+		own.getState().setPrompt("go");
+		void own.getState().submit();
+		await flush();
+		own.getState().bind(null);
+		return { own, saved, storage };
+	}
+
+	it("still holds the unchanged draft after the app reopens", async () => {
+		const { storage } = await uncertain();
+		const reopened = createNewSessionStore("hub-a", storage);
+		expect(reopened.getState()).toMatchObject({ unconfirmedCreation: true, prompt: "go" });
+		expect(reopened.getState().startMayRepeat()).toBe(true);
+	});
+
+	it("doesn't hold a draft edited since, after the app reopens", async () => {
+		const { own, saved, storage } = await uncertain();
+		own.getState().setPrompt("go, and fix the docs");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go, and fix the docs", unconfirmed: false });
+		const reopened = createNewSessionStore("hub-a", storage);
+		expect(reopened.getState().startMayRepeat()).toBe(false);
+		// Put back as sent, it says a start may exist again.
+		own.getState().setPrompt("go");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
+	});
+});
+
+it("keeps an uncertain draft uncertain when the host's models fill in what an older build saved (#3104)", async () => {
+	const { store, saved } = restored({ launchOverrides: { model: "p/a", reasoningEffort: "high" }, unconfirmed: true }, [
+		model,
+	]);
+	expect(store.getState().startMayRepeat()).toBe(true);
+	await store.getState().loadModels(true);
+	// The model the draft named is now the form's own: not an edit.
+	expect(store.getState()).toMatchObject({ model, reasoning: "high" });
+	expect(store.getState().startMayRepeat()).toBe(true);
+	expect(saved.get("hub-a")).toMatchObject({ unconfirmed: true });
+	// A real edit still makes it a new draft.
+	store.getState().setPrompt("go, and fix the docs");
+	expect(store.getState().startMayRepeat()).toBe(false);
+	expect(saved.get("hub-a")).toMatchObject({ unconfirmed: false });
+});
+
+it("persists nothing once retired, even with its start still out (#3104)", async () => {
+	const { saved, storage } = memoryDrafts();
+	const store = createNewSessionStore("hub-a", storage);
+	const starts: ReturnType<typeof deferred>[] = [];
+	store.getState().bind(
+		createNewSessionService({
+			request: () => {
+				const start = deferred();
+				starts.push(start);
+				return start.promise;
+			},
+		} as unknown as ConversationClientLike),
+	);
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	const started = store.getState().submit();
+	await flush();
+	// The hub is removed: its drafts go first, then its store retires.
+	saved.clear();
+	store.getState().retire();
+	expect(store.getState().retired).toBe(true);
+	starts.at(-1)?.resolve({ thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await started).toEqual({ status: "obsolete" });
+	// Nothing the retired store does afterwards reaches storage.
+	store.getState().setPrompt("anything");
+	store.getState().retryStorage();
+	expect(saved.size).toBe(0);
 });

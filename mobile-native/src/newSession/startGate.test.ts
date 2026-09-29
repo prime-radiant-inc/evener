@@ -12,6 +12,7 @@ const ready: StartInput = {
 	reach: "local",
 	pluginIssues: [],
 	unconfirmedModel: null,
+	startMayRepeat: false,
 };
 const row = (over: Partial<HostRow>): HostRow => hostRow("paradise-park", over);
 
@@ -84,6 +85,16 @@ describe("a chosen model the host couldn't list", () => {
 		expect(startBlock({ ...ready, cwd: "", unconfirmedModel: "GLM 5.3 Vision" })).toEqual({
 			field: "project",
 			message: null,
+		});
+	});
+});
+
+describe("a draft whose last start may have worked (#3104)", () => {
+	it("holds Start and says why, so it isn't started twice", () => {
+		expect(startBlock({ ...ready, startMayRepeat: true })).toEqual({
+			field: null,
+			message:
+				"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
 		});
 	});
 });
