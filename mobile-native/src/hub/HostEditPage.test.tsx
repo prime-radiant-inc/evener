@@ -391,3 +391,11 @@ it("holds Back and a swipe while its save is in flight, without asking", async (
 	expect(page.navigation.dispatch).not.toHaveBeenCalled();
 	page.dispose();
 });
+
+it("counts roots that save the same as no change", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	// A blank line and spaces drop out of the saved roots.
+	page.type("Roots", "/srv/b\n\n  /srv/a  \n");
+	expect(guard.prevented).toBe(false);
+	page.dispose();
+});

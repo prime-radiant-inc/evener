@@ -72,8 +72,9 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	const [fields, setFields] = useState(() => fieldsFrom(row));
 	// What the page opened with: typed back to it, there is nothing to lose.
 	const [original] = useState(() => fieldsFrom(row));
-	// Compared as the saved entry would carry them (entryFrom trims).
-	const dirty = HOST_ENTRY_FIELD_ORDER.some((field) => fields[field].trim() !== original[field].trim());
+	// Compared as the saved entry would carry them: trimmed, and the roots
+	// parsed line by line, so an edit that saves the same is no change.
+	const dirty = JSON.stringify(entryFrom(fields)) !== JSON.stringify(entryFrom(original));
 	// The pair of the row the form opened on: the edit speaks for what the
 	// person saw, so a host changed since then refuses instead of being
 	// overwritten.

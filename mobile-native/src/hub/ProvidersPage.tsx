@@ -498,7 +498,8 @@ function Providers({
 				onRequestClose={() => {
 					// A swipe down asks before an edit or a pasted key goes (spec 6),
 					// and waits out a save in flight, as each Cancel does.
-					if (configuration && editorLeave.current) editorLeave.current(close);
+					// An open editor always answers for itself, never the key guard.
+					if (configuration) editorLeave.current?.(close);
 					else leaveKey(close);
 				}}
 			>
