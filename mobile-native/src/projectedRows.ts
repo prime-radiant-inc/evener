@@ -37,6 +37,7 @@
 import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
+	attentionWarningNotice,
 	configFingerprint,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
@@ -164,9 +165,10 @@ export interface ActivityMember {
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
 // shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), and "system" for every other
-// system event.
-export type NoticeTone = "info" | "warning" | "system";
+// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
+// warning a human should see (attentionWarningNotice: amber, per spec), and
+// "system" for every other system event.
+export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
 
@@ -242,6 +244,8 @@ export type MobileTimelineItem =
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
 				notifications?: SteeringFragment[];
+				// A daemon warning's what-to-do, read as a quiet second line.
+				hint?: string;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -249,7 +253,8 @@ export type MobileTimelineItem =
 		| { kind: "question"; id: string; questions: AskQuestionRef[] }
 		// thought: a thought the projector didn't show (its redacted critical
 		// reasoning), which the transcript reads as one quiet line.
-		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
+		// attention: a warning, drawn amber (spec 8.2's Warning), not a failure's red.
+		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean; attention?: boolean }
 		| { kind: "attachments"; id: string; items: AttachmentRef[] }
 	) & {
 		transcriptKey?: string;
@@ -752,6 +757,21 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	// A daemon warning a human should see (not an informational one) reads in
+	// the attention tone, with its hint beneath (#3387).
+	const attention = attentionWarningNotice(it);
+	if (attention) {
+		return {
+			kind: "notice",
+			id: it.id,
+			origin: "system",
+			family: "warning",
+			tone: "attention",
+			text: it.text ?? "",
+			eventKind: "warning",
+			...(attention.hint ? { hint: attention.hint } : {}),
+		};
+	}
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
@@ -783,6 +803,7 @@ function warningFailure(it: ItemModel): Extract<MobileTimelineItem, { kind: "fai
 		id: it.id,
 		title: hasWarningText(rawTitle) ? rawTitle : "Warning",
 		detail,
+		attention: true,
 	};
 }
 

@@ -1,5 +1,7 @@
 // An error in the transcript (spec 8.2, "Error"): a red rule, the hub's words
-// as they are, and at most one action (errorAction).
+// as they are, and at most one action (errorAction). A warning is the same row
+// with an amber rule (attention): amber means a human is needed, red that
+// something failed (#3387).
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ErrorAction } from "./errorAction";
@@ -11,17 +13,26 @@ export function ErrorRow({
 	detail,
 	action,
 	onAction,
+	attention = false,
 }: {
 	title: string;
 	detail: string;
 	action: ErrorAction | null;
 	onAction?: (action: ErrorAction) => void;
+	attention?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const body = { fontSize: 15 * scale, lineHeight: 20 * scale };
 	return (
-		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.dangerInk, paddingLeft: 12, gap: 4 }}>
+		<View
+			style={{
+				borderLeftWidth: 2,
+				borderLeftColor: attention ? palette.attention : palette.dangerInk,
+				paddingLeft: 12,
+				gap: 4,
+			}}
+		>
 			<Text allowFontScaling={allowFontScaling} style={{ ...body, fontWeight: "600", color: palette.inkHi }}>
 				{title}
 			</Text>

@@ -818,3 +818,69 @@ describe("an error", () => {
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
 	});
 });
+
+// A warning is amber (spec 8.2 and the state table: amber means a human is
+// needed; red means failed), with its hint as a quiet second line (#3387).
+describe("a warning", () => {
+	const AMBER = "#F59E0B";
+	const DANGER_INK = "#C51D23";
+	const rule = (tree: ReturnType<typeof render>) =>
+		tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
+
+	it("draws a daemon warning notice with an amber rule, its text, and its hint", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "w",
+					origin: "system",
+					family: "warning",
+					tone: "attention",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					hint: "Check the state directory.",
+					turnId: "turn_2",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+				errorActionFor={() => "retry"}
+				onErrorAction={() => {}}
+			/>,
+		);
+		expect(rule(tree)).toBe(AMBER);
+		expect(renderedText(tree)).toContain("inspect delegate attention: permission denied");
+		expect(renderedText(tree)).toContain("Check the state directory.");
+		// A warning reports; it offers no Retry or Resume of its own.
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
+	});
+
+	it("draws a warning item amber too", () => {
+		const tree = render(
+			<TimelineItem
+				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true }}
+				hubId="hub"
+				sessionRef="warning"
+			/>,
+		);
+		expect(rule(tree)).toBe(AMBER);
+	});
+
+	it("keeps a loop detection red", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "l",
+					origin: "system",
+					family: "warning",
+					tone: "warning",
+					eventKind: "loop_detection",
+					text: "The agent repeated itself",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+			/>,
+		);
+		expect(rule(tree)).toBe(DANGER_INK);
+	});
+});

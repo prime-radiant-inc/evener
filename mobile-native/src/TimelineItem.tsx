@@ -157,9 +157,15 @@ export function TimelineItem({
 			content = isCriticalNotice(item) ? (
 				<ErrorRow
 					title={item.text}
-					detail=""
-					action={errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null}
+					detail={item.hint ?? ""}
+					action={
+						// A daemon warning reports; Retry and Resume answer a failure.
+						item.tone === "attention"
+							? null
+							: (errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null)
+					}
 					onAction={onErrorAction}
+					attention={item.tone === "attention"}
 				/>
 			) : (
 				<SystemEvent label={label} text={item.text} expanded={expanded} onToggle={toggle}>
@@ -185,6 +191,7 @@ export function TimelineItem({
 					detail={item.detail}
 					action={errorActionFor?.(item) ?? null}
 					onAction={onErrorAction}
+					attention={item.attention}
 				/>
 			);
 			break;

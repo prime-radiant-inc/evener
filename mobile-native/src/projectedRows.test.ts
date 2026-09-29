@@ -376,8 +376,48 @@ describe("projectedRow — item entries", () => {
 			id: "i1",
 			title: "Space",
 			detail: "disk low — free some",
+			attention: true,
 			turnId: "t1",
 		});
+	});
+
+	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
+	// human should see reads in the attention tone, amber per spec, with its
+	// hint as a quiet second line; an informational one stays a quiet system
+	// line; loop_detection, turn_limit and error stay the red warning tone.
+	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					raw: { warning: { title: "Evener error", hint: "Check the state directory." } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "warning",
+			tone: "attention",
+			text: "inspect delegate attention: permission denied",
+			hint: "Check the state directory.",
+		});
+	});
+
+	it("keeps an informational daemon warning a quiet system line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "Output clamped",
+					raw: { warning: { title: "Context budget", code: "context_budget" } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "notice", family: "unknown-system", tone: "system" });
 	});
 
 	it("drops a warning whose every part is blank", () => {
@@ -700,6 +740,7 @@ describe("projectedRow — critical entries", () => {
 			id: "i1",
 			title: "Title",
 			detail: "msg",
+			attention: true,
 			turnId: "t1",
 		});
 	});
@@ -1314,7 +1355,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		detail: { output: "auditing quietly" },
 		turnId: "t1",
 	},
-	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up", turnId: "t1" },
+	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up", attention: true, turnId: "t1" },
 	{
 		kind: "activity",
 		id: "unk1",
