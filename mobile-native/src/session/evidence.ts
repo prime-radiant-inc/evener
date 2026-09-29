@@ -91,6 +91,9 @@ function balancedClose(markdown: string, start: number): number | undefined {
 					else if (markdown[i] === ">") break;
 				}
 				if (i >= markdown.length) return undefined;
+			} else if (ch === '"' || ch === "'") {
+				// An empty destination may still carry a quoted title.
+				quote = ch;
 			} else if (ch === "(") {
 				depth++;
 			} else if (ch === ")" && --depth === 0) {
@@ -117,12 +120,27 @@ function withoutImages(markdown: string): string {
 			out += markdown[i];
 			continue;
 		}
-		const altEnd = markdown.indexOf("]", i + 2);
+		// The alt may itself hold a nested image, so its "]" is the one that
+		// balances the "![", counting brackets and honoring escapes — the first
+		// "]" would end it early and let a nested destination leak out as a live
+		// image (#3289).
+		let altEnd = -1;
+		let brackets = 1;
+		for (let j = i + 2; j < markdown.length; j++) {
+			const ch = markdown[j];
+			if (ch === "\\") j++;
+			else if (ch === "[") brackets++;
+			else if (ch === "]" && --brackets === 0) {
+				altEnd = j;
+				break;
+			}
+		}
 		if (altEnd === -1) {
 			out += markdown[i];
 			continue;
 		}
-		const alt = markdown.slice(i + 2, altEnd);
+		// A nested image in the alt reads as its own alt text too.
+		const alt = withoutImages(markdown.slice(i + 2, altEnd));
 		const dest = altEnd + 1;
 		if (markdown[dest] === "[") {
 			// By reference: ![alt][ref], the reference defined elsewhere.

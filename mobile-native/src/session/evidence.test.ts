@@ -339,6 +339,20 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A nested image in the alt must not leak its destination as a live image,
+	// an empty destination may still carry a quoted title, and a title may be
+	// single-quoted (#3289).
+	it("strips a nested alt image, an empty-destination title, and a single-quoted title", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions:
+				"# Diagrams\n\n![![x](https://attacker.test/inner.png)](https://attacker.test/outer.png) and ![a]( \"a ) b\") and ![b](url 'x)y')",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\nx and a and b" },
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
