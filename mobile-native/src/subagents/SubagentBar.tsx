@@ -3,7 +3,9 @@
 // thing you can do about it, stop it, and a way back to its coordinator.
 // The two stack, each the bar's full width: side by side, "Ask coordinator
 // to stop it" needs about 180pt of the 143pt half the bar leaves it even at
-// the default text size (device audit N9), and every label keeps to one line.
+// the default text size (device audit N9). At full width a label wraps only at
+// the largest text sizes, and wraps rather than truncates, so no button hides
+// its verb behind an ellipsis.
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -46,7 +48,6 @@ export function SubagentBar({
 					<SymbolView name="stop.fill" size={12} tintColor={palette.inkHi} />
 					<Text
 						allowFontScaling={allowFontScaling}
-						numberOfLines={1}
 						style={{ ...label, flexShrink: 1, textAlign: "center", color: palette.inkHi }}
 					>
 						{offer === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
@@ -54,7 +55,7 @@ export function SubagentBar({
 				</Pressable>
 			) : offer === "requested" ? (
 				<View style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}>
-					<Text allowFontScaling={allowFontScaling} style={{ ...label, color: palette.inkMid }}>
+					<Text allowFontScaling={allowFontScaling} style={{ ...label, textAlign: "center", color: palette.inkMid }}>
 						Stop requested
 					</Text>
 				</View>
@@ -76,8 +77,7 @@ export function SubagentBar({
 			>
 				<Text
 					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					style={{ ...label, fontWeight: "600", color: palette.onFill }}
+					style={{ ...label, fontWeight: "600", textAlign: "center", color: palette.onFill }}
 				>
 					Open coordinator
 				</Text>
