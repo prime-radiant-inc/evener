@@ -41,6 +41,8 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_worktree_remove: "Removed worktree settle-fix",
   call_worktree_prune: "Pruned worktrees · 0 removed, 2 skipped",
   call_worktree_adopt: "Adopted worktree lane",
+  // The web's ask_user descriptor's line, the question's header.
+  call_ask_user: "Asked: [Deploy]",
   call_web_fetch: "Fetched https://example.com/release-notes · 48213 bytes",
   call_web_search: 'Searched the web for "go race detector settle drain" · 2 results',
   call_use_skill: "Activated skill: systematic-debugging",

@@ -7,6 +7,7 @@
 // Every tool no summary covers, an MCP tool among them, still reads as words
 // ("Used github: create issue", "Used compact context"), never its raw name.
 
+import { parseAskUserQuestions } from "./askShared";
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
 import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
@@ -43,6 +44,7 @@ export type ToolFamily =
   | "transcript"
   | "sessions"
   | "worktree"
+  | "ask"
   | "mcp"
   | "tool";
 
@@ -323,6 +325,18 @@ function taskListWords(step: ToolStep): StepWords {
   return { verb: taskListChanges(step) ? "Updated the task list" : "Checked the task list" };
 }
 
+// --- questions ------------------------------------------------------------------
+
+// "Asked: [Deploy]", the header of each question the call put, as the web's
+// ask_user row says it, or "Asked a question" when none parses. What the user
+// answered comes from their reply (askShared's answeredAskUserSuffix), which
+// a step alone doesn't carry.
+function askUserWords(step: ToolStep): StepWords {
+  const questions = parseAskUserQuestions(step);
+  if (!questions) return { verb: "Asked a question" };
+  return { verb: `Asked: ${questions.map((question) => `[${question.header}]`).join(", ")}` };
+}
+
 // --- every other tool ---------------------------------------------------------
 
 /** A tool name's words: its underscores and hyphens are spaces
@@ -416,6 +430,8 @@ function progressFor(
       return findSessionsProgress(step);
     case "worktree":
       return worktreeProgress(step);
+    case "ask":
+      return "Asking a question";
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -453,6 +469,7 @@ const TOOLS: Record<string, ToolEntry> = {
   read_session_transcript: { family: "transcript", words: readTranscriptWords },
   find_session_transcripts: { family: "sessions", words: findSessionsWords },
   manage_worktree: { family: "worktree", words: worktreeWords },
+  ask_user: { family: "ask", words: askUserWords },
 };
 
 export const readFileSummary = summaryOf(readFileWords);
@@ -466,6 +483,7 @@ export const shellSummary = summaryOf(shellWords);
 export const webFetchSummary = summaryOf(webFetchWords);
 export const webSearchSummary = summaryOf(webSearchWords);
 export const useSkillSummary = summaryOf(useSkillWords);
+export const askUserSummary = summaryOf(askUserWords);
 
 function entryFor(toolName: string): ToolEntry | undefined {
   return Object.hasOwn(TOOLS, toolName) ? TOOLS[toolName] : undefined;
