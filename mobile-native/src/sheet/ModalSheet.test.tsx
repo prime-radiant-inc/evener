@@ -3,7 +3,8 @@ import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { render } from "../renderNative.testkit";
-import { ModalSheet } from "./ModalSheet";
+import { ModalFrame, ModalSheet } from "./ModalSheet";
+import { Sheet } from "./Sheet";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
@@ -35,5 +36,19 @@ describe("a sheet in a modal", () => {
 			</ModalSheet>,
 		);
 		expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	});
+
+	it("frames a sheet that draws its own header, such as an editor with Save", () => {
+		const tree = render(
+			<ModalFrame onRequestClose={() => {}}>
+				<Sheet title="Add provider" done={{ label: "Save", onPress: () => {} }}>
+					<ScrollView />
+				</Sheet>
+			</ModalFrame>,
+		);
+		expect(tree.root.findByType("Modal" as never).props.presentationStyle).toBe("pageSheet");
+		const frame = tree.root.findByType("SafeAreaView" as never);
+		expect(frame.props.style).toMatchObject({ backgroundColor: palettes.light.canvas });
+		expect(frame.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save" })).toBeDefined();
 	});
 });

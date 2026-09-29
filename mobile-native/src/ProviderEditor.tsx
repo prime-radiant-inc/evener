@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { TextInput, View } from "react-native";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
 	isEndpointConflict,
 	type InstanceCreateParams,
@@ -9,7 +8,11 @@ import {
 } from "@evener/appwire-client";
 import type { LiveReadiness } from "./connectionDisplay";
 import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SearchField, TextFieldRow } from "./sheet/Grouped";
+import { Sheet } from "./sheet/Sheet";
+
+const CREDENTIAL_HEADER_HELP =
+	"Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
 
 export function ProviderEditor({
 	instance,
@@ -21,6 +24,7 @@ export function ProviderEditor({
 	onSaved,
 	onEndpointConflict,
 	onCancel,
+	accessory,
 }: {
 	instance?: InstanceEntry;
 	providers: ProviderDescriptor[];
@@ -42,8 +46,9 @@ export function ProviderEditor({
 	onSaved(name: string): void;
 	onEndpointConflict(name: string): void;
 	onCancel(): void;
+	/** Pinned under the title, such as the connection's status line. */
+	accessory?: ReactNode;
 }) {
-	const colors = useColors();
 	const alive = useRef(true);
 	useEffect(() => {
 		alive.current = true;
@@ -76,22 +81,6 @@ export function ProviderEditor({
 	const [query, setQuery] = useState("");
 	const [saving, setSaving] = useState(false);
 	const busy = disabled || saving;
-	function field(label: string, value: string, change: (value: string) => void) {
-		return (
-			<View key={label} style={{ gap: 4 }}>
-				<Copy>{label}</Copy>
-				<TextInput
-					accessibilityLabel={label}
-					value={value}
-					onChangeText={change}
-					editable={!busy}
-					autoCapitalize="none"
-					autoCorrect={false}
-					style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-				/>
-			</View>
-		);
-	}
 	async function save() {
 		// The invocation-time readiness guard, ahead of every state change: a
 		// save that cannot be sent bails before clearing the error slot or
@@ -145,74 +134,125 @@ export function ProviderEditor({
 			if (alive.current) setSaving(false);
 		}
 	}
+	const base = providers.find((provider) => provider.id === draft.base);
+	const matches = providers.filter((provider) =>
+		`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+	);
 	return (
-		<View style={{ gap: 12 }}>
-			<Copy>{instance ? `Edit ${instance.name}` : "Add provider instance"}</Copy>
-			{!instance && (
-				<>
-					<Copy muted>Base provider</Copy>
-					<Action disabled={busy} expanded={choosing} onPress={() => setChoosing(!choosing)}>
-						{providers.find((provider) => provider.id === draft.base)?.name || draft.base || "Choose base provider"}
-					</Action>
-					{choosing && (
+		<Sheet
+			title={instance ? `Edit ${instance.name}` : "Add provider"}
+			onCancel={onCancel}
+			cancelDisabled={saving}
+			done={{ label: "Save", disabled: busy, onPress: () => void save() }}
+			accessory={accessory}
+		>
+			<GroupedPage>
+				{!instance &&
+					(choosing || !base ? (
 						<>
-							{field("Find provider", query, setQuery)}
-							{providers
-								.filter((provider) =>
-									`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
-								)
-								.map((provider) => (
-									<Choice
-										key={provider.id}
-										label={provider.name || provider.id}
-										selected={draft.base === provider.id}
+							<GroupLabel>Base provider</GroupLabel>
+							{choosing ? (
+								<>
+									<SearchField label="Find provider" query={query} onChange={setQuery} />
+									<Group>
+										{matches.map((provider) => (
+											<Row
+												key={provider.id}
+												label={provider.name || provider.id}
+												checked={draft.base === provider.id}
+												disabled={busy}
+												onPress={() => {
+													setDraft({ ...draft, base: provider.id, vars: {} });
+													setChoosing(false);
+													setQuery("");
+												}}
+											/>
+										))}
+									</Group>
+								</>
+							) : (
+								<Group>
+									<Row
+										label="Choose a provider"
+										accessibilityLabel="Choose base provider"
+										tone="accent"
+										chevron
 										disabled={busy}
-										onPress={() => {
-											setDraft({ ...draft, base: provider.id, vars: {} });
-											setChoosing(false);
-											setQuery("");
-										}}
+										onPress={() => setChoosing(true)}
 									/>
-								))}
+								</Group>
+							)}
 						</>
-					)}
-					{field("Instance name", draft.name, (name) => setDraft({ ...draft, name }))}
-				</>
-			)}
-			{field("Base URL (optional)", draft.baseUrl, (baseUrl) => setDraft({ ...draft, baseUrl }))}
-			{instance?.baseUrl && !draft.baseUrl.trim() && <Copy>Resets the endpoint to the provider’s default.</Copy>}
-			{!instance && (
-				<>
-					{Object.entries(providers.find((provider) => provider.id === draft.base)?.vars ?? {})
-						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([template, environment]) =>
-							field(environment, draft.vars[template] ?? "", (value) =>
-								setDraft({ ...draft, vars: { ...draft.vars, [template]: value } }),
-							),
-						)}
-					{field("API key environment variable (optional)", draft.apiKeyEnv, (apiKeyEnv) =>
-						setDraft({ ...draft, apiKeyEnv }),
-					)}
-					{field("Credential header (optional)", draft.credentialHeader, (credentialHeader) =>
-						setDraft({ ...draft, credentialHeader }),
-					)}
-					<Copy muted>Use a $VARIABLE reference in credential headers. Store API keys from the instance details.</Copy>
-				</>
-			)}
-			<ErrorMessage message={error} />
-			<View style={[styles.row, { flexWrap: "wrap" }]}>
-				<Action
-					disabled={busy}
-					onPress={() => {
-						void save();
-					}}
-				>
-					{saving ? "Saving…" : "Save instance"}
-				</Action>
-				<Action disabled={saving} onPress={onCancel}>
-					Cancel
-				</Action>
-			</View>
-		</View>
+					) : (
+						<Group label="Base provider">
+							<Row
+								label={base.name || base.id}
+								accessibilityLabel={`Base provider, ${base.name || base.id}`}
+								chevron
+								disabled={busy}
+								onPress={() => setChoosing(true)}
+							/>
+						</Group>
+					))}
+				{!instance && (
+					<Group label="Name">
+						<TextFieldRow
+							label="Instance name"
+							value={draft.name}
+							onChangeText={(name) => setDraft({ ...draft, name })}
+							disabled={busy}
+						/>
+					</Group>
+				)}
+				<Group label="Base URL">
+					<TextFieldRow
+						label="Base URL"
+						value={draft.baseUrl}
+						onChangeText={(baseUrl) => setDraft({ ...draft, baseUrl })}
+						disabled={busy}
+					/>
+				</Group>
+				<GroupFooter>
+					{instance?.baseUrl && !draft.baseUrl.trim()
+						? "Resets the endpoint to the provider’s default."
+						: "Optional. Empty uses the provider’s default."}
+				</GroupFooter>
+				{!instance && (
+					<>
+						{Object.entries(base?.vars ?? {})
+							.sort(([a], [b]) => a.localeCompare(b))
+							.map(([template, environment]) => (
+								<Group key={template} label={environment} machineLabel>
+									<TextFieldRow
+										label={environment}
+										value={draft.vars[template] ?? ""}
+										onChangeText={(value) => setDraft({ ...draft, vars: { ...draft.vars, [template]: value } })}
+										disabled={busy}
+									/>
+								</Group>
+							))}
+						<Group label="API key variable">
+							<TextFieldRow
+								label="API key environment variable"
+								value={draft.apiKeyEnv}
+								onChangeText={(apiKeyEnv) => setDraft({ ...draft, apiKeyEnv })}
+								disabled={busy}
+							/>
+						</Group>
+						<GroupFooter>Optional.</GroupFooter>
+						<Group label="Credential header">
+							<TextFieldRow
+								label="Credential header"
+								value={draft.credentialHeader}
+								onChangeText={(credentialHeader) => setDraft({ ...draft, credentialHeader })}
+								disabled={busy}
+							/>
+						</Group>
+						<GroupFooter>{CREDENTIAL_HEADER_HELP}</GroupFooter>
+					</>
+				)}
+				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
+			</GroupedPage>
+		</Sheet>
 	);
 }

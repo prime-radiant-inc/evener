@@ -5,11 +5,12 @@
 // not the screen around it.
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { InstanceEntry } from "@evener/appwire-client";
+import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { ProviderEditor } from "./ProviderEditor";
 import { render, renderedText } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const instance = {
 	name: "alpha",
@@ -46,7 +47,7 @@ it("stays open and does not report success when the save is unconfirmed", async 
 			onCancel={() => {}}
 		/>,
 	);
-	pressLabel(tree, "Save instance");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onSaved).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Save could not be confirmed");
@@ -67,7 +68,7 @@ it("reports success when the save is confirmed", async () => {
 			onCancel={() => {}}
 		/>,
 	);
-	pressLabel(tree, "Save instance");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onSaved).toHaveBeenCalledWith("alpha");
 });
@@ -94,14 +95,14 @@ it("keeps the draft when readiness is lost before the save runs", async () => {
 		/>,
 	);
 	const baseUrl = tree.root.findByProps({
-		accessibilityLabel: "Base URL (optional)",
+		accessibilityLabel: "Base URL",
 	});
 	act(() => {
 		baseUrl.props.onChangeText("https://changed.example");
 	});
 
 	ready = false;
-	pressLabel(tree, "Save instance");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 
 	expect(onEdit).not.toHaveBeenCalled();
@@ -109,7 +110,82 @@ it("keeps the draft when readiness is lost before the save runs", async () => {
 	// Nothing ran, so nothing reports: no failure copy claims a save was
 	// tried, and the draft keeps what was typed for the connection's return.
 	expect(renderedText(tree)).not.toContain("Save could not be confirmed");
-	expect(tree.root.findByProps({ accessibilityLabel: "Base URL (optional)" }).props.value).toBe(
+	expect(tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.value).toBe(
 		"https://changed.example",
 	);
+});
+
+const providers = [
+	{ id: "anthropic", name: "Anthropic" },
+	{ id: "azure", name: "Azure OpenAI", vars: { "{resource}": "AZURE_RESOURCE" } },
+] as unknown as ProviderDescriptor[];
+
+function sectionLabels(tree: ReturnType<typeof render>): string[] {
+	// The sheet's own title is the first header; the rest are section labels.
+	return tree.root
+		.findAllByProps({ accessibilityRole: "header" })
+		.slice(1)
+		.map((header) => header.props.children);
+}
+
+it("adds a provider in a grouped form: a base picker, field rows, Save and Cancel up top", async () => {
+	const onCreate = vi.fn(async () => true);
+	const onCancel = vi.fn();
+	const tree = render(
+		<ProviderEditor
+			providers={providers}
+			onCreate={onCreate}
+			onEdit={async () => true}
+			disabled={false}
+			canUseConnection={() => true}
+			onSaved={() => {}}
+			onEndpointConflict={() => {}}
+			onCancel={onCancel}
+		/>,
+	);
+	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Add provider");
+	expect(tree.root.findAll((node) => node.props.accessibilityRole === "radio")).toHaveLength(0);
+	pressLabel(tree, "Choose base provider");
+	expect(tree.root.findByProps({ accessibilityLabel: "Find provider" })).toBeDefined();
+	pressLabel(tree, "Azure OpenAI");
+	// Chosen, the picker folds back to one row that reopens it.
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Find provider")).toHaveLength(0);
+	const chosen = tree.root.findAll((node) => node.props.accessibilityLabel === "Base provider, Azure OpenAI");
+	expect(chosen).not.toHaveLength(0);
+	expect(sectionLabels(tree)).toEqual([
+		"Base provider",
+		"Name",
+		"Base URL",
+		"AZURE_RESOURCE",
+		"API key variable",
+		"Credential header",
+	]);
+	expect(renderedText(tree)).not.toContain("(optional)");
+	act(() => tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("work"));
+	act(() => tree.root.findByProps({ accessibilityLabel: "AZURE_RESOURCE" }).props.onChangeText("contoso"));
+	pressLabel(tree, "Save");
+	await act(async () => {});
+	expect(onCreate).toHaveBeenCalledOnce();
+	pressLabel(tree, "Cancel");
+	expect(onCancel).toHaveBeenCalledOnce();
+});
+
+it("edits a provider's base URL under an Edit title, and says an emptied URL resets it", () => {
+	const tree = render(
+		<ProviderEditor
+			instance={instance}
+			providers={[]}
+			onCreate={async () => true}
+			onEdit={async () => true}
+			disabled={false}
+			canUseConnection={() => true}
+			onSaved={() => {}}
+			onEndpointConflict={() => {}}
+			onCancel={() => {}}
+		/>,
+	);
+	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Edit alpha");
+	expect(sectionLabels(tree)).toEqual(["Base URL"]);
+	act(() => tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.onChangeText(""));
+	expect(renderedText(tree)).toContain("Resets the endpoint to the provider’s default.");
 });

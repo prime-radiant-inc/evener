@@ -3,6 +3,9 @@ import type { HubProfile, HubUpdate } from "./connection";
 import { Group, GroupedPage, GroupFooter, Row, SwitchRow, TextFieldRow } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 
+const TOKEN_REPLACED = "Leave empty to remove the saved token.";
+const TOKEN_KEPT = "The saved token will be kept.";
+
 /** Edit hub (spec 12, Hubs): the saved hub's name, its address to read, and
  * its token, replaced only when asked. */
 export function HubEditor({
@@ -68,9 +71,7 @@ export function HubEditor({
 						/>
 					) : null}
 				</Group>
-				<GroupFooter>
-					{replaceToken ? "Leave empty to remove the saved token." : "The saved token will be kept."}
-				</GroupFooter>
+				<GroupFooter>{replaceToken ? TOKEN_REPLACED : TOKEN_KEPT}</GroupFooter>
 				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 			</GroupedPage>
 		</ModalSheet>

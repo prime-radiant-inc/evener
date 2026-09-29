@@ -2644,7 +2644,7 @@ it("keeps the marketplace draft through a flap, with no Reconnect anywhere", asy
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
-it("adds a marketplace from a grouped form: a segmented kind, the source and name in rows, and Add in the header", async () => {
+it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up top", async () => {
 	const onAdd = vi.fn(async () => {});
 	const onClose = vi.fn();
 	const tree = render(
@@ -2660,11 +2660,8 @@ it("adds a marketplace from a grouped form: a segmented kind, the source and nam
 		/>,
 	);
 	const kinds = tree.root.findByProps({ accessibilityRole: "radiogroup", accessibilityLabel: "Kind" });
-	expect(kinds.findAllByProps({ accessibilityRole: "radio" }).map((radio) => radio.props.accessibilityLabel)).toEqual([
-		"Git URL",
-		"GitHub",
-		"Hub directory",
-	]);
+	const kindLabels = kinds.findAllByProps({ accessibilityRole: "radio" }).map((radio) => radio.props.accessibilityLabel);
+	expect(kindLabels).toEqual(["Git URL", "GitHub", "Hub directory"]);
 	const add = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	expect(add().props.disabled).toBe(true);
 	act(() => kinds.findByProps({ accessibilityLabel: "GitHub" }).props.onPress());
