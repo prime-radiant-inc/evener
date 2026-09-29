@@ -16,7 +16,8 @@ import (
 // wire would then carry as invalid UTF-8.
 func TestBoundedFinishTextKeepsWholeRunes(t *testing.T) {
 	t.Parallel()
-	long := strings.Repeat("é", delegateFinishReasonLimit)
+	// "€" is three bytes, so the limit lands mid-rune and the cut must walk back.
+	long := strings.Repeat("€", delegateFinishReasonLimit)
 	got := boundedFinishText("  " + long + "  ")
 	if !utf8.ValidString(got) || len(got) > delegateFinishReasonLimit || got == "" {
 		t.Fatalf("bounded text: %d bytes, valid=%v", len(got), utf8.ValidString(got))
@@ -40,6 +41,10 @@ func TestFailedRunCarriesItsErrorThroughReplay(t *testing.T) {
 	}
 	if replayed := delegatePreparedFinish(*finish.packet); replayed.errorText != "provider returned 500" {
 		t.Fatalf("replayed error=%q", replayed.errorText)
+	}
+	// A leading newline is not an empty first line.
+	if leading := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("\n  provider returned 500\nmore")}); leading.errorText != "provider returned 500" {
+		t.Fatalf("leading-newline error=%q", leading.errorText)
 	}
 	reported := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "done", communicated: true})
 	if reported.errorText != "" {
