@@ -124,6 +124,8 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
+import { nativeDisclosureStore } from "./nativeDisclosure";
+import { sessionDisclosureScope } from "./session/disclosureKeys";
 import { atEnd, pagesOlder, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
@@ -436,6 +438,13 @@ export function ConversationScreen({
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	const follow = useLiveEndFollow();
+	// Rows keep their open state in one app-wide store, scoped by session, so a
+	// row the list remounts keeps it. Leaving the session drops its scope, which
+	// keeps the store bounded.
+	useEffect(() => {
+		const scope = sessionDisclosureScope(route.params.hubId, route.params.ref);
+		return () => nativeDisclosureStore.clearScope(scope);
+	}, [route.params.hubId, route.params.ref]);
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
@@ -2535,6 +2544,7 @@ export function ConversationScreen({
 						forkDisabled={!connected || !focused || snapshot.status !== "open"}
 						quote={quote}
 						live={item.id === liveRun}
+						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
 						openSubagent={openSubagent}
 						answerFor={answerFor}
@@ -2607,7 +2617,7 @@ export function ConversationScreen({
 							}}
 							data={timelineRows}
 							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to fold or unfold.
+							// rows changing; its row must re-render to show or hide its fold control.
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}

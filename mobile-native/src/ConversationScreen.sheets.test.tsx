@@ -711,6 +711,45 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	tree.unmount();
 });
 
+it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+	const running = {
+		...thread,
+		status: { type: "active" },
+		evener: { ...thread.evener, activeTurnId: "t1" },
+		turns: [
+			{
+				id: "t1",
+				status: "inProgress",
+				items: [
+					{ id: "u", turnId: "t1", type: "userMessage", text: "look", status: "completed" },
+					{
+						id: "c",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "shell",
+						argumentsJson: '{"command":"ls"}',
+						output: "a.txt",
+						status: "completed",
+					},
+				],
+			},
+		],
+	} as unknown as Thread;
+	const { tree } = mount(running);
+	await flush();
+	// A run's fold control names it collapsed or expanded; a run held open
+	// while live has none.
+	const folds = () =>
+		tree.root.findAll((node) => /^1 step\b.*, (collapsed|expanded)$/.test(String(node.props.accessibilityLabel ?? "")));
+	act(() => detailLevels("hub-1").set(ref, "intent"));
+	await flush();
+	expect(folds()[0]?.props.accessibilityLabel).toMatch(/, collapsed$/);
+	act(() => detailLevels("hub-1").set(ref, "tools"));
+	await flush();
+	expect(folds()).toEqual([]);
+	tree.unmount();
+});
+
 /** A session with a subagent, tasks, a blocked goal and two queued
  * messages: every context chip. */
 const busy = {
