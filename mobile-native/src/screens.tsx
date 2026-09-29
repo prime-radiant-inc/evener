@@ -2624,6 +2624,7 @@ export function ConversationScreen({
 
 	return (
 		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+			<View pointerEvents="none" style={{ position: "absolute", top: 0, left: 0, width: 30, height: 300, backgroundColor: "red", zIndex: 99 }} />
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
