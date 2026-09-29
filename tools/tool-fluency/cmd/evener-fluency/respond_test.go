@@ -168,10 +168,11 @@ func TestRunRespondPromptListsAllQuestionsNumbered(t *testing.T) {
 	if len(adapter.requests) != 1 {
 		t.Fatalf("model called %d times, want 1", len(adapter.requests))
 	}
-	var promptText string
-	for _, m := range adapter.requests[0].Messages {
-		promptText += m.Text() + "\n"
+	texts := make([]string, len(adapter.requests[0].Messages))
+	for i, m := range adapter.requests[0].Messages {
+		texts[i] = m.Text()
 	}
+	promptText := strings.Join(texts, "\n")
 	for _, want := range []string{"1.", "What is the new name?", "2.", "Which records should carry the new name?"} {
 		if !strings.Contains(promptText, want) {
 			t.Errorf("prompt = %q, want it to contain %q", promptText, want)
