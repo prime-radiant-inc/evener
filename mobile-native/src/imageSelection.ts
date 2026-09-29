@@ -39,12 +39,6 @@ export class CameraAccessDenied extends Error {
  * original, ProRAW included, and below what would risk its memory. */
 export const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 
-/** The shared type and count limits, without the attachment size limit,
- * which applies to the image after the phone scales it. */
-function typeAndCountRejection(image: PickedImage, reserved: number): string | undefined {
-	return rejectionReason({ type: image.type, name: image.name, size: 0 }, reserved);
-}
-
 /** What ImagePicker.encode returns: JPEG, scaled to fit (imageFit.ts). */
 export const ENCODED_IMAGE_TYPE = "image/jpeg";
 
@@ -112,13 +106,14 @@ export class ImageSelection {
 			for (const image of picked) {
 				// The picked file's own size isn't the attachment limit: the phone
 				// scales the photo down (imageFit.ts) and its encoding is checked
-				// below. Only a file too big to decode safely is refused here.
+				// below. Only a file too big to decode safely is refused here, so
+				// the shared check sees no size and applies its type and count limits.
 				const reason =
 					!Number.isFinite(image.size) || image.size < 0
 						? `${image.name} (could not read file size)`
 						: image.size > MAX_SOURCE_BYTES
 							? `${image.name} (too large to process)`
-							: typeAndCountRejection(image, reserved);
+							: rejectionReason({ ...image, size: 0 }, reserved);
 				if (reason) {
 					errors.push(reason);
 					continue;
