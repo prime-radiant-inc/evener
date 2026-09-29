@@ -9,14 +9,34 @@ vi.mock("react-native", async () => ({
 
 function client() {
 	const unwatched = { count: 0 };
+	const watched = { count: 0 };
 	return {
 		unwatched,
+		watched,
 		request: vi.fn(async () => ({ hosts: [] })),
-		onNotification: () => () => {
-			unwatched.count += 1;
+		onNotification: () => {
+			watched.count += 1;
+			return () => {
+				unwatched.count += 1;
+			};
 		},
 	};
 }
+
+it("watches the hub's notifications only once the fleet is committed, never during render", () => {
+	const only = client();
+	const seenInRender: number[] = [];
+	const hook = renderHook(() => {
+		const fleet = useHubFleet(only as never);
+		// A render React may throw away must not have subscribed anything.
+		seenInRender.push(only.watched.count);
+		return fleet;
+	});
+	expect(seenInRender[0]).toBe(0);
+	expect(only.watched.count).toBe(1);
+	hook.unmount();
+	expect(only.unwatched.count).toBe(1);
+});
 
 it("has nothing to read through before there is a client", () => {
 	const hook = renderHook(() => useHubFleet(null));

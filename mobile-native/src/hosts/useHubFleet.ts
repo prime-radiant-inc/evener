@@ -19,13 +19,14 @@ export function useHubFleet(client: ConversationClientLike | null): HubFleet {
 				: { hosts: null, live: null },
 		[client],
 	);
-	useEffect(
-		() => () => {
+	useEffect(() => {
+		const unwatch = fleet.live?.watch();
+		return () => {
+			unwatch?.();
 			fleet.hosts?.dispose();
 			fleet.live?.dispose();
-		},
-		[fleet],
-	);
+		};
+	}, [fleet]);
 	return fleet;
 }
 

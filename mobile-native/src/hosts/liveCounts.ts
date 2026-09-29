@@ -25,7 +25,6 @@ export const LIVE_PAGE_LIMIT = 10;
 
 export class LiveSessionsReader {
 	private readonly pages: NavigationPages<NavigationSessionSummary>;
-	private readonly unwatch: () => void;
 
 	constructor(client: ConversationClientLike) {
 		this.pages = new NavigationPages<NavigationSessionSummary>(
@@ -35,7 +34,12 @@ export class LiveSessionsReader {
 			(row) => row.ref,
 			50,
 		);
-		this.unwatch = this.pages.watch();
+	}
+
+	/** Follows the hub's navigation changes until the returned stop runs. A
+	 * sheet starts it from an effect, never while rendering. */
+	watch(): () => void {
+		return this.pages.watch();
 	}
 
 	getSnapshot = () => this.pages.getSnapshot();
@@ -50,7 +54,6 @@ export class LiveSessionsReader {
 	}
 
 	dispose(): void {
-		this.unwatch();
 		this.pages.cancel();
 	}
 }
