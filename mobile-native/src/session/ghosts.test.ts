@@ -173,7 +173,9 @@ describe("messages that didn't make it (spec 14)", () => {
 				text: "look at [image 1]",
 				buttons: [],
 				menu: [],
-				origin: { kind: "draft" },
+				// The ghost stands in for outbox row "a": its origin carries the id
+				// so Discard can clear both.
+				origin: { kind: "draft", clientMutationId: "a" },
 			}),
 		]);
 		// The outbox lost track of it: the draft's actions are yours again.
@@ -183,7 +185,7 @@ describe("messages that didn't make it (spec 14)", () => {
 				text: "look at [image 1]",
 				buttons: ["check", "discard"],
 				menu: ["edit"],
-				origin: { kind: "draft" },
+				origin: { kind: "draft", clientMutationId: "a" },
 			}),
 		]);
 		// The outbox row is gone and the draft still doesn't know.

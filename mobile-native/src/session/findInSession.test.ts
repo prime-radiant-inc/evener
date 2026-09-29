@@ -1,3 +1,5 @@
+import { type EvenerDelegateInfo, parseSteeringNotifications } from "@evener/appwire-client";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "../timeline";
 import { findMatches, matchLabel, rowText, stepMatch } from "./findInSession";
@@ -48,5 +50,43 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 	it("says where you are", () => {
 		expect(matchLabel([1, 2, 4], 2)).toBe("2 of 3");
 		expect(matchLabel([], null)).toBe("No matches");
+	});
+});
+
+describe("finding words in a delegate or job notification", () => {
+	const text = notificationWireItem("delegate-reported").text ?? "";
+	const row: TimelineRow = {
+		kind: "notice",
+		id: "n",
+		origin: "steering",
+		family: "informational",
+		tone: "info",
+		text,
+		notifications: parseSteeringNotifications(text),
+	};
+
+	it("matches an unnamed subagent by the title the session's subagents give it", () => {
+		const text = notificationWireItem("delegate-failed-unnamed").text ?? "";
+		const unnamed: TimelineRow = { ...row, notifications: parseSteeringNotifications(text) };
+		const delegates = [{ delegateId: "dlg_2", description: "Split the retry loop" }] as EvenerDelegateInfo[];
+		expect(findMatches([unnamed], "split the retry loop failed", delegates)).toEqual([0]);
+		// The frame names no subagent, so without the session's subagents the
+		// card (and so its search text) says "Subagent failed".
+		const withoutDelegates = undefined;
+		expect(findMatches([unnamed], "split the retry loop", withoutDelegates)).toEqual([]);
+		expect(findMatches([unnamed], "subagent failed", withoutDelegates)).toEqual([0]);
+	});
+
+	it("reads a truncated frame as its neutral line", () => {
+		const truncated = text.slice(0, 60);
+		const remnant: TimelineRow = { ...row, text: truncated, notifications: [{ kind: "text", text: truncated }] };
+		expect(findMatches([remnant], "delegate_id")).toEqual([]);
+		expect(findMatches([remnant], "couldn't be read")).toEqual([0]);
+	});
+
+	it("matches the words the card shows, never its markup", () => {
+		expect(findMatches([row], "settle finished")).toEqual([0]);
+		expect(findMatches([row], "waits for the drain")).toEqual([0]);
+		expect(findMatches([row], "delegate_id")).toEqual([]);
 	});
 });

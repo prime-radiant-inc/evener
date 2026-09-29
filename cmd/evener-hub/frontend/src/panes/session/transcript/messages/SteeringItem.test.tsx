@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
@@ -307,6 +308,34 @@ Job job_shell completed.
   expect(cards[0]?.textContent).toContain("Delegate completed");
   expect(cards[0]?.textContent).not.toContain("Job completed");
   expect(cards[1]?.textContent).toContain("Job completed");
+});
+
+// The daemon's own frames (agent/testdata/notificationwire): a subagent's
+// report carries its result as TerminalPacket JSON, never the attribute shape
+// above, and the card must say who reported and what.
+test("a subagent's recorded report renders its name and message, never the raw packet", () => {
+  render(
+    <SteeringItem item={item({ text: notificationWireItem("delegate-reported").text })} turn={turn} live={false} />,
+  );
+  const card = screen.getByTestId("notification-card");
+  expect(card.textContent).toContain("Delegate completed");
+  expect(card.textContent).toContain("Fix race in tree settle");
+  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain(
+    "Done: the settle pass now waits for the drain.",
+  );
+});
+
+test("a subagent's recorded failure renders as a failure with its message", () => {
+  render(
+    <SteeringItem
+      item={item({ text: notificationWireItem("delegate-failed-unnamed").text })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const card = screen.getByTestId("notification-card");
+  expect(card.textContent).toContain("Delegate failed");
+  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain("go test exited 1 three times");
 });
 
 test("a job-notification steer renders a notification card (not a steering divider)", () => {

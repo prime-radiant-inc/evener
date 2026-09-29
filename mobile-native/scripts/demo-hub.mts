@@ -14,6 +14,7 @@ import type {
 	NavigationInvalidatedPayload,
 	NotesHumanSetParams,
 	Thread,
+	ThreadItem,
 	Turn,
 	TurnStartParams,
 	UrlsRemoveParams,
@@ -86,6 +87,8 @@ export interface DemoHubModes {
 	unconfirmed?: boolean;
 	// The handshake's protocolVersion, to show the phone a version mismatch.
 	protocolVersion?: string;
+	// How often "grow" lands a step (default two seconds).
+	growEveryMs?: number;
 }
 
 const DEMO_STEPS: readonly DemoStep[] = [
@@ -96,7 +99,10 @@ const DEMO_STEPS: readonly DemoStep[] = [
 	"host-offline",
 	"host-online",
 ];
-const COMMANDS = [...DEMO_STEPS, "burst"].join(", ");
+// "grow": the working session gains GROW_STEPS finished steps, one at a
+// time, so the transcript's scrolling can be watched as rows land.
+const GROW_STEPS = 15;
+const COMMANDS = [...DEMO_STEPS, "burst", "grow"].join(", ");
 // Three alerts within a second, for the coalesced banner.
 const BURST: readonly DemoStep[] = ["question", "failure", "approval"];
 
@@ -205,7 +211,7 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: startedAt })
+			? createDemoSessions({ now: startedAt, long: fleetOptions.long })
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
@@ -284,6 +290,45 @@ export async function createDemoHub(
 		stageFleetState(thread, state as "failed" | "approval" | "yourmove", Date.now());
 		resync(thread);
 	}
+	// "grow": one finished shell step lands in s-pr2138's running turn at a
+	// time, each announced with a resync, as the hub announces a new round.
+	const growTimers = new Set<ReturnType<typeof setInterval>>();
+	let grown = 0;
+	function grow() {
+		const thread = threads.get(fleetSessionRef("s-pr2138"));
+		const turn = thread?.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+		if (!thread || !turn) throw new Error("s-pr2138 has no running turn to grow");
+		let landed = 0;
+		const timer = setInterval(() => {
+			grown += 1;
+			landed += 1;
+			const now = Date.now();
+			const step = {
+				id: `demo-grow-${grown}`,
+				type: "commandExecution",
+				toolName: "shell",
+				callId: `demo-grow-call-${grown}`,
+				description: `Ran check ${grown}`,
+				argumentsJson: JSON.stringify({ command: `go test ./agent/grow${grown}/...` }),
+				status: "completed",
+				startedAt: now - 3000,
+				completedAt: now,
+				output: "ok",
+			} satisfies ThreadItem;
+			turn.items = [...(turn.items ?? []), step];
+			if (landed >= GROW_STEPS) {
+				clearInterval(timer);
+				growTimers.delete(timer);
+			}
+			// A step that can't be announced says so; the timer runs on.
+			try {
+				resync(thread);
+			} catch (error) {
+				console.error("grow: resync failed:", error);
+			}
+		}, modes.growEveryMs ?? 2000);
+		growTimers.add(timer);
+	}
 	// The command input: a step's name plays it, "burst" plays three at once.
 	const commandLines =
 		demoFleet && modes.commands
@@ -294,6 +339,7 @@ export async function createDemoHub(
 		// A step that fails says so and leaves the hub running.
 		try {
 			if (command === "burst") for (const step of BURST) play(step);
+			else if (command === "grow") grow();
 			else if ((DEMO_STEPS as readonly string[]).includes(command))
 				play(command as DemoStep);
 			else if (command !== "")
@@ -816,6 +862,7 @@ export async function createDemoHub(
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
+				for (const timer of growTimers) clearInterval(timer);
 				commandLines?.close();
 				for (const socket of server.clients) socket.terminate();
 				server.close();
@@ -842,10 +889,40 @@ function askAfterSeconds(value: string | undefined): number | undefined {
 	return seconds;
 }
 
+const USAGE = `Usage: npx tsx scripts/demo-hub.mts [--help]
+
+A scripted hub for native UI checks: no Evener daemon, no LLM. Add it in the
+app as a hub at http://127.0.0.1:<port> with no token. Configured by
+environment variables:
+
+  EVENER_DEMO_PORT=<port>            listen here (default 9196)
+  EVENER_DEMO_MARKDOWN=<file>        the playground's reply text
+  EVENER_DEMO_FLEET=1                serve the redesign's fleet of sessions
+  EVENER_DEMO_FLEET_OFFLINE_HOST=1   with the fleet: paradise-park offline
+  EVENER_DEMO_FLEET_EMPTY=1          with the fleet: nothing live
+  EVENER_DEMO_FLEET_ASK_AFTER=<s>    with the fleet: s-gateway asks after s seconds
+  EVENER_DEMO_FLEET_PLAN_REVISED=1   with the fleet: serve the plan's revision
+  EVENER_DEMO_FLEET_OLDER=1          with the fleet: fifteen older turns ahead of
+                                     Get PR 2138's, paged by item as a v6 hub does
+  EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
+                                     and messages, many steps and notifications,
+                                     so screenshots exercise real-sized content
+  EVENER_DEMO_COMMANDS=1             with the fleet: read commands from stdin
+                                     (${COMMANDS})
+  EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
+  EVENER_DEMO_PROTOCOL=<version>     the handshake's protocol version
+`;
+
 if (
 	process.argv[1] &&
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+	if (process.argv.includes("--help") || process.argv.includes("-h")) {
+		// Exit only once the help has drained: into a pipe, stdout is
+		// asynchronous, and exiting at once can cut it short.
+		await new Promise((resolve) => process.stdout.write(USAGE, resolve));
+		process.exit(0);
+	}
 	const hub = await createDemoHub(
 		Number(process.env.EVENER_DEMO_PORT ?? 9196),
 		process.env.EVENER_DEMO_MARKDOWN
@@ -858,6 +935,7 @@ if (
 					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
+					long: process.env.EVENER_DEMO_LONG === "1",
 				}
 			: undefined,
 		{

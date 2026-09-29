@@ -1164,8 +1164,7 @@ function Board({
 											hubId,
 											sessionRef: trail.sessionRef,
 											path: trail.path,
-											reviewRef: trail.reviewRef,
-											reviewTitle: trail.reviewTitle,
+											sessionTitle: trail.sessionTitle,
 											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
 										})
 									}
