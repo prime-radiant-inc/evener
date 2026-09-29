@@ -16,7 +16,6 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import {
 	createHubWriteGate,
 	createMarketplacesStore,
-	createPluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
@@ -49,12 +48,6 @@ const ACME: MarketplaceEntry = {
 	source: { kind: "github", repo: "acme/plugins" },
 	lastUpdated: 1,
 };
-
-// The residue guard PluginsPage wires around the browser in production, in
-// the minimal shape a reconnect test needs: nothing is fenced, nothing is
-// recorded, and every authoritative read reports to nobody. These tests
-// exercise the connection's own recovery, never a marketplace removal.
-const NO_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
 function plugin(name: string): PluginEntry {
 	return {
@@ -256,18 +249,14 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 			client={client}
 			connectionState={state}
 			hubName="Work hub"
-			installed={createPluginsStore(client, gate)}
 			marketplaces={marketplaces}
 			lastAddMarketplaces={lastAddMarketplaces}
 			gate={gate}
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
-			onOpenPlugin={() => {}}
-			appliedRemovalNames={NO_APPLIED_REMOVALS}
-			onAppliedRemoval={() => true}
+			onOpenMarketplace={() => {}}
 			onAuthoritativeMarketplaces={() => {}}
 			onMarketplaceAdded={() => {}}
-			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));

@@ -23,6 +23,8 @@ export type HubRoutes = {
 	Providers: { hubId: string; focus?: string; signIn?: boolean };
 	/** focus opens that plugin's detail once. */
 	Plugins: { hubId: string; focus?: { plugin: string; marketplace: string } };
+	/** A marketplace pushed from the Plugins page's Marketplaces or Browse list. */
+	Marketplace: { hubId: string; name: string; segment: "marketplaces" | "browse" };
 	Hubs: undefined;
 	AddHub: { how: How };
 	HubDetails: { id: string };

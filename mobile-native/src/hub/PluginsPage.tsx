@@ -46,6 +46,7 @@ import { SearchField } from "../sheet/SearchField";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
+import { usePublishPluginsScreen } from "./pluginsScreenSlot";
 
 type Segment = "installed" | "marketplaces" | "browse";
 
@@ -133,10 +134,15 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	// updater then refused. Reading the same ref the entry lands in, in one
 	// synchronous block nothing can interleave, makes true structural.
 	const appliedRemovalGuardRef = useRef<AppliedRemovalGuard>(appliedRemovalGuard);
-	const appliedRemovalNames =
-		appliedRemovalGuard.client === client
-			? new Set(appliedRemovalGuard.publicationVersions.keys())
-			: EMPTY_APPLIED_REMOVALS;
+	// One set per guard, so a marketplace's page the Plugins page publishes it
+	// to re-renders only when the guard changes.
+	const appliedRemovalNames = useMemo(
+		() =>
+			appliedRemovalGuard.client === client
+				? new Set(appliedRemovalGuard.publicationVersions.keys())
+				: EMPTY_APPLIED_REMOVALS,
+		[appliedRemovalGuard, client],
+	);
 	const visibleMarketplaceWarning = marketplaceWarning?.client === client ? marketplaceWarning.text : null;
 	useEffect(() => {
 		// Assigned in an effect, never during render: mutating a ref mid-render
@@ -266,6 +272,11 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 		setMarketplaceWarning((current) => (current?.name === name ? null : current));
 	}, []);
 	const clearFocus = useCallback(() => navigation.setParams({ focus: undefined }), [navigation]);
+	const openMarketplace = useCallback(
+		(name: string, segment: "marketplaces" | "browse") =>
+			navigation.navigate("Marketplace", { hubId: route.params.hubId, name, segment }),
+		[navigation, route.params.hubId],
+	);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<GroupedPage>
@@ -295,6 +306,8 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 			onRemovedMarketplace={clearMarketplaceWarning}
 			focus={route.params.focus}
 			onFocused={clearFocus}
+			hubId={route.params.hubId}
+			onOpenMarketplace={openMarketplace}
 		/>
 	);
 }
@@ -313,6 +326,8 @@ function Plugins({
 	canUseConnection,
 	focus,
 	onFocused,
+	hubId,
+	onOpenMarketplace,
 }: {
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
@@ -335,9 +350,13 @@ function Plugins({
 	onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 	canUseConnection: () => boolean;
-	/** A plugin to open once, from a notice (ruling 25). */
+	/** A plugin to open once, from a notice (ruling 25) or a marketplace's
+	 * page. */
 	focus: PluginFocus | undefined;
 	onFocused(): void;
+	hubId: string;
+	/** Pushes a marketplace's page, from the segment it was chosen on. */
+	onOpenMarketplace(name: string, segment: "marketplaces" | "browse"): void;
 }) {
 	const model = useMemo(() => createPluginsStore(client, gate), [client, gate]);
 	// The hub's add answer is the one place that names what the write
@@ -378,6 +397,36 @@ function Plugins({
 	);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const ready = isReady(connectionState);
+	usePublishPluginsScreen(
+		useMemo(
+			() => ({
+				hubId,
+				client,
+				hubName,
+				installed: model,
+				marketplaces,
+				gate,
+				ready,
+				canUseConnection,
+				appliedRemovalNames,
+				onAppliedRemoval,
+				onRemovedMarketplace,
+			}),
+			[
+				hubId,
+				client,
+				hubName,
+				model,
+				marketplaces,
+				gate,
+				ready,
+				canUseConnection,
+				appliedRemovalNames,
+				onAppliedRemoval,
+				onRemovedMarketplace,
+			],
+		),
+	);
 	const [panel, setPanel] = useState<Segment>("installed");
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [selected, setSelected] = useState<PluginRefParams | null>(null);
@@ -558,21 +607,14 @@ function Plugins({
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
-					installed={model}
 					marketplaces={marketplaces}
 					lastAddMarketplaces={lastAddMarketplaces}
 					gate={gate}
 					ready={ready}
 					canUseConnection={canUseConnection}
-					onOpenPlugin={(target) => {
-						close();
-						setSelected(target);
-					}}
-					appliedRemovalNames={appliedRemovalNames}
-					onAppliedRemoval={onAppliedRemoval}
+					onOpenMarketplace={(name) => onOpenMarketplace(name, panel)}
 					onAuthoritativeMarketplaces={onAuthoritativeMarketplaces}
 					onMarketplaceAdded={onMarketplaceAdded}
-					onRemovedMarketplace={onRemovedMarketplace}
 				/>
 			)}
 			{entry && selected && (
