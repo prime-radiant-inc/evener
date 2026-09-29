@@ -61,41 +61,42 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 	seen := map[string]bool{}
 	pkgSeconds := map[string]float64{}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var ev timingEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			// A truncated or malformed line is not a measurement; the stream's
-			// completeness is proven by the package inventory, not by every
-			// line parsing.
-			continue
-		}
-		if !timingTerminalActions[ev.Action] || ev.Package == "" {
-			continue
-		}
-		if ev.Test == "" {
-			// Package-level terminal event: its Elapsed is the package's own
-			// wall time, the metric the budget compares.
-			seen[ev.Package] = true
-			rows = append(rows, "PKG\t"+ev.Package)
-			if ev.Elapsed != nil {
-				pkgSeconds[ev.Package] = *ev.Elapsed
+	// bufio.Reader, not Scanner: a Scanner caps a line at its buffer and would
+	// fail the whole measurement on one oversized `Output` event (go test -json
+	// embeds each output line in one), when an unreadable line is no worse than
+	// a malformed one. ReadString has no such cap; stream completeness is proven
+	// by the package inventory, not by every line being small.
+	reader := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if line = strings.TrimSpace(line); line != "" {
+			var ev timingEvent
+			// A truncated or malformed line is not a measurement.
+			if err := json.Unmarshal([]byte(line), &ev); err == nil &&
+				timingTerminalActions[ev.Action] && ev.Package != "" {
+				if ev.Test == "" {
+					// Package-level terminal event: its Elapsed is the package's
+					// own wall time, the metric the budget compares.
+					seen[ev.Package] = true
+					rows = append(rows, "PKG\t"+ev.Package)
+					if ev.Elapsed != nil {
+						pkgSeconds[ev.Package] = *ev.Elapsed
+					}
+				} else {
+					elapsed := 0.0
+					if ev.Elapsed != nil {
+						elapsed = *ev.Elapsed
+					}
+					rows = append(rows, "TEST\t"+ev.Package+"\t"+ev.Test+"\t"+formatSeconds(elapsed))
+				}
 			}
-			continue
 		}
-		elapsed := 0.0
-		if ev.Elapsed != nil {
-			elapsed = *ev.Elapsed
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("reading go test -json stream: %w", readErr)
 		}
-		rows = append(rows, "TEST\t"+ev.Package+"\t"+ev.Test+"\t"+formatSeconds(elapsed))
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading go test -json stream: %w", err)
 	}
 
 	pkgs := make([]string, 0, len(pkgSeconds))

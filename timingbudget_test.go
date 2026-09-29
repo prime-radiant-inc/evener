@@ -72,3 +72,32 @@ func TestTimingBudgetFailsOnWallTimeBudgets(t *testing.T) {
 		t.Fatalf("no FAIL for a wall-time budget over 1.5x:\n%s", out)
 	}
 }
+
+// TestTimingParseHelperEmitsTheRatchetsRows covers the glue the other tests do
+// not: test-timing-budget.sh reaches the parser through `go run
+// ./cmd/evener-dev/bin dev timing-parse`. A renamed subcommand, a changed flag,
+// or a wrong binary path would otherwise only surface when the gate ran, so
+// this drives the same command over a fixture stream — a data seam, not a faked
+// toolchain — and asserts the rows the ratchet reads.
+func TestTimingParseHelperEmitsTheRatchetsRows(t *testing.T) {
+	dir := t.TempDir()
+	stream := filepath.Join(dir, "stream.jsonl")
+	writeAuditScriptFixture(t, stream, `{"Action":"pass","Package":"example.com/mod","Test":"TestA","Elapsed":0.3}`+"\n"+
+		`{"Action":"pass","Package":"example.com/mod","Elapsed":0.45}`+"\n")
+	pkgs := filepath.Join(dir, "packages")
+	writeAuditScriptFixture(t, pkgs, "example.com/mod\n")
+	cmd := exec.Command("go", "run", "./cmd/evener-dev/bin", "dev", "timing-parse",
+		"--json", stream, "--packages", pkgs)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("timing-parse helper failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"TEST\texample.com/mod\tTestA\t0.3",
+		"SUM\texample.com/mod\t0.45",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("helper output missing %q:\n%s", want, out)
+		}
+	}
+}

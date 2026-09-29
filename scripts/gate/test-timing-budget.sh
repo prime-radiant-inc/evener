@@ -411,9 +411,17 @@ if bless:
 		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
 	}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
-	# A rebaseline measures the wall-time metric, so it records that this file's
-	# numbers are comparable to what the gate now reports and enforcement resumes.
-	budget["metric"] = WALL_METRIC
+	# The metric marker is only honest when EVERY recorded package was measured
+	# this run. A narrowed bless (--modules, --no-web, a frontend not checked out)
+	# preserves entries it did not measure, so stamping the marker there would
+	# re-enable ratio enforcement against old-unit numbers for exactly those
+	# packages. Only a full rebaseline records that the whole file is comparable
+	# to what the gate now reports and enforcement resumes; otherwise the marker
+	# stays absent so the stale-units warn path still holds.
+	if set(packages) <= set(sums):
+		budget["metric"] = WALL_METRIC
+	else:
+		budget.pop("metric", None)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
 		# does not reformat all ~130 lines and bury the real change in
