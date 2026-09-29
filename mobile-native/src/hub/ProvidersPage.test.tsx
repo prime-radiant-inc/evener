@@ -1091,6 +1091,27 @@ it("opens the provider a link names, once, without signing in", async () => {
 	expect(navigation.setParams).toHaveBeenCalledTimes(1);
 });
 
+it("acts on each new link while the page stays open", async () => {
+	// The Hosts page does the same: a second link reaches a page already open.
+	providersHub([instance({ authModes: ["apiKey"] })]);
+	const navigation = { setParams: vi.fn() };
+	const page = (params: { focus?: string }) =>
+		({ route: { params: { hubId: "hub-1", ...params } }, navigation }) as unknown as ComponentProps<
+			typeof ProvidersPage
+		>;
+	const tree = render(<ProvidersPage {...page({ focus: "work" })} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(navigation.setParams).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		tree.update(<ProvidersPage {...page({})} />);
+	});
+	await act(async () => {
+		tree.update(<ProvidersPage {...page({ focus: "work" })} />);
+	});
+	expect(navigation.setParams).toHaveBeenCalledTimes(2);
+});
+
 it("shows how each provider signs in, and the actions its sign-in allows", async () => {
 	providersHub([
 		instance({

@@ -161,6 +161,17 @@ it("stops polling on expiry and never automatically restarts", async () => {
 	expect(calls).toHaveLength(2);
 	flow.dispose();
 });
+it("says to look at Providers when a poll answers with a state it doesn't know", async () => {
+	vi.useFakeTimers();
+	const { flow, io } = boundary();
+	await flow.start();
+	io.request = async () => ({ state: "surprising" });
+	await vi.advanceTimersByTimeAsync(20000);
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
+	);
+	flow.dispose();
+});
 it("retains the flow after a poll transport failure and retries only on request", async () => {
 	vi.useFakeTimers();
 	const { flow, io, calls } = boundary();

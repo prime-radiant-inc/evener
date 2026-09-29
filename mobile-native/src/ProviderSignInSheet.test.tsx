@@ -11,6 +11,7 @@ const edges = vi.hoisted(() => ({
 	status: null as string | null,
 	dismissals: 0,
 	copies: true,
+	openFails: false,
 }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
@@ -26,6 +27,7 @@ vi.mock("expo-clipboard", () => ({
 }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async (url: string) => {
+		if (edges.openFails) throw new Error("No browser");
 		edges.events.push(`open ${url}`);
 		return { type: "opened" };
 	},
@@ -263,6 +265,18 @@ it("refuses a sign-in page that isn't plain http(s)", async () => {
 	await press(tree, "Open sign-in page");
 	expect(edges.events).toEqual([`copy ${device.userCode}`]);
 	expect(renderedText(tree)).toContain("Could not open the sign-in page.");
+});
+
+it("doesn't say it's waiting when the sign-in page couldn't open", async () => {
+	edges.openFails = true;
+	try {
+		const { tree } = await mount(deviceFlow);
+		await press(tree, "Open sign-in page");
+		expect(renderedText(tree)).toContain("Could not open the sign-in page.");
+		expect(renderedText(tree)).not.toContain("Waiting for you to finish signing in…");
+	} finally {
+		edges.openFails = false;
+	}
 });
 
 it("with no device flow, opens the page in the app and finishes from the pasted redirect URL", async () => {

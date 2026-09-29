@@ -392,11 +392,17 @@ function Providers({
 	}
 
 	// A notice's Sign in, or a link to one provider, acts once the list has
-	// it: a sign-in starts as the detail's Sign in does, and anything else
-	// opens the detail. A provider the list doesn't have opens nothing.
+	// it and could act on it (not held stale or mid-write, as the detail's
+	// own Sign in is disabled then): a sign-in starts as the detail's Sign in
+	// does, and anything else opens the detail. A provider the list doesn't
+	// have opens nothing. Each link acts once; clearing it readies the next.
 	const focusHandled = useRef(false);
 	useEffect(() => {
-		if (!focus || focusHandled.current || !core.listingEstablished) return;
+		if (!focus) {
+			focusHandled.current = false;
+			return;
+		}
+		if (focusHandled.current || !core.listingEstablished || stale || surface.busy) return;
 		focusHandled.current = true;
 		const target = core.instances.find((item) => item.name === focus);
 		if (target && signInFocus && target.authModes?.includes("oauth")) onSignIn(target.name);
@@ -405,7 +411,7 @@ function Providers({
 			setSelected(target.name);
 		}
 		onFocused();
-	}, [focus, signInFocus, core.listingEstablished, core.instances, onSignIn, onFocused]);
+	}, [focus, signInFocus, core.listingEstablished, core.instances, stale, surface.busy, onSignIn, onFocused]);
 
 	const writeHeld = surface.busy || core.writesRefused || stale || !ready;
 	return (

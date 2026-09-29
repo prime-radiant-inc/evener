@@ -56,14 +56,17 @@ export function ProviderSignInSheet({
 			setLocalError(COPY_FAILED);
 		}
 	}
-	async function open(url: string, onOpening?: () => void) {
+	// openBrowserAsync resolves only when the page closes, so the waiting state
+	// starts as it opens and is taken back if it couldn't.
+	async function open(url: string, onOpening?: (opening: boolean) => void) {
 		try {
 			const parsed = new URL(url);
 			if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password)
 				throw new Error("Unsupported URL");
-			onOpening?.();
+			onOpening?.(true);
 			await WebBrowser.openBrowserAsync(url);
 		} catch {
+			onOpening?.(false);
 			setLocalError(OPEN_FAILED);
 		}
 	}
@@ -73,7 +76,7 @@ export function ProviderSignInSheet({
 		if (!device) return;
 		setLocalError(null);
 		await copy(device.flowId, device.userCode);
-		await open(device.verificationUrl, () => setOpenedFlow(device.flowId));
+		await open(device.verificationUrl, (opening) => setOpenedFlow(opening ? device.flowId : null));
 	};
 	const startAgain = () => {
 		setLocalError(null);

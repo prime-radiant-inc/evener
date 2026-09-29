@@ -213,7 +213,7 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Authorization has not been confirmed. Check its status before starting again.",
+					error: "Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
 				});
 			}
 		} catch {
