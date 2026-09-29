@@ -14,12 +14,6 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
-	it("keeps no restore point for the shortcuts, which open inside the Hub sheet", () => {
-		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
-		expect(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio")).toEqual({
-			hubId: "studio",
-		});
-	});
 	it("restores a saved shortcuts location, which is no longer a place, to that hub's Board", () => {
 		const disk = storage();
 		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };

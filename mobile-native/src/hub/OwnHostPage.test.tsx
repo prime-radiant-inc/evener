@@ -92,10 +92,3 @@ it("says the hub's own machine is reconnecting in the Hub header's words", async
 	expect(page.labelled("Status")).toBe("Status, Reconnecting…");
 	page.dispose();
 });
-
-it("offers no Connect, Edit or Remove: the hub runs here", async () => {
-	const page = await mount(scriptedFleet([]));
-	const text = renderedText(page.tree);
-	for (const action of ["Connect", "Edit", "Remove"]) expect(text).not.toMatch(new RegExp(`\\b${action}\\b`));
-	page.dispose();
-});

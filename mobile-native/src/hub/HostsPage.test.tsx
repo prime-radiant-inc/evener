@@ -8,7 +8,6 @@ import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../host
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { render, renderedText } from "../renderNative.testkit";
 import { HostsPage } from "./HostsPage";
-import { hubConnectionWord } from "./hubHeader";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
@@ -95,14 +94,12 @@ it("puts the hub's own machine first, named after the hub, with its live session
 	page.dispose();
 });
 
-it("words the hub's own machine the way the Hubs page words the hub, through hubConnectionWord", async () => {
+it("words the hub's own machine the way the Hubs page words the hub", async () => {
 	// Connected but too old for this app: the connection line speaks while
 	// the connection still reads as ready.
 	status.line = UPDATE_NEEDED;
 	const page = await mount(scriptedFleet([], [liveSession("local:a", "local")]));
-	expect(page.row("magic-kingdom")?.props.accessibilityLabel).toBe(
-		`magic-kingdom, ${hubConnectionWord(true, UPDATE_NEEDED)} · 1 live, 0.9.412`,
-	);
+	expect(page.row("magic-kingdom")?.props.accessibilityLabel).toBe("magic-kingdom, Update needed · 1 live, 0.9.412");
 	page.dispose();
 });
 
