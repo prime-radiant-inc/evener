@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { PluginEntry } from "../../types.gen";
+import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsStore } from "./plugins";
 
 const LINTER: PluginEntry = {
@@ -19,9 +20,9 @@ const FORMATTER: PluginEntry = { ...LINTER, plugin: "formatter", installPath: "/
 const LIST = "evener/plugin/list";
 type ListResult = { plugins: PluginEntry[] };
 
-function storeWithFake() {
+function storeWithFake(gate: HubWriteGate = createHubWriteGate()) {
   const fake = new FakeClient("ready");
-  return { fake, store: createPluginsStore(fake) };
+  return { fake, store: createPluginsStore(fake, gate), gate };
 }
 
 describe("store shape", () => {
@@ -121,6 +122,28 @@ describe("fetches never throw, mutations reject", () => {
       ["evener/plugin/setAutoUpgrade", { ...target, autoUpgrade: true }],
       ["evener/plugin/remove", target],
     ]);
+  });
+});
+
+describe("the shared hub write gate serializes plugin writes", () => {
+  test("a plugin mutation is refused while another write already holds the gate", async () => {
+    const gate = createHubWriteGate();
+    const { fake, store } = storeWithFake(gate);
+    let settle!: () => void;
+    const held = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const holding = gate.run(() => held);
+
+    await expect(store.getState().installPlugin("linter", "acme")).rejects.toBeInstanceOf(HubWriteBusyError);
+    expect(store.getState().plugins).toBeNull();
+    expect(fake.calls).toEqual([]);
+
+    settle();
+    await holding;
+    fake.on("evener/plugin/install", () => ({ plugins: [LINTER] }));
+    await store.getState().installPlugin("linter", "acme");
+    expect(store.getState().plugins).toEqual([LINTER]);
   });
 });
 

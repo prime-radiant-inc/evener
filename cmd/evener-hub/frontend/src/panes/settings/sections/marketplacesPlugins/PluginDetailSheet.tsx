@@ -7,6 +7,7 @@
 // no-ops when the marketplace is already cached, so re-opens are free).
 
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { useEffect, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
@@ -35,14 +36,11 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const plugins = useExtensionsHostState((s) => s.plugins);
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
+  const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
-  const [toggleBusy, setToggleBusy] = useState(false);
-  const [autoUpgradeBusy, setAutoUpgradeBusy] = useState(false);
-  const [upgradeBusy, setUpgradeBusy] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
-  const [removeBusy, setRemoveBusy] = useState(false);
 
   const entry =
     target === null || plugins === null
@@ -70,45 +68,35 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
 
   async function handleToggleEnable(currentlyEnabled: boolean) {
     if (target === null) return;
-    setToggleBusy(true);
     try {
       if (currentlyEnabled) await store.getState().disablePlugin(target.plugin, target.marketplace);
       else await store.getState().enablePlugin(target.plugin, target.marketplace);
     } catch (err) {
-      toasts.push("error", `Toggle enable failed: ${errorText(err)}`);
-    } finally {
-      setToggleBusy(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Toggle enable failed: ${errorText(err)}`);
     }
   }
 
   async function handleToggleAutoUpgrade(currentlyAutoUpgrade: boolean) {
     if (target === null) return;
-    setAutoUpgradeBusy(true);
     try {
       await store.getState().setPluginAutoUpgrade(target.plugin, target.marketplace, !currentlyAutoUpgrade);
     } catch (err) {
-      toasts.push("error", `Toggle auto-upgrade failed: ${errorText(err)}`);
-    } finally {
-      setAutoUpgradeBusy(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Toggle auto-upgrade failed: ${errorText(err)}`);
     }
   }
 
   async function handleUpgrade() {
     if (target === null) return;
-    setUpgradeBusy(true);
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Checked ${target.plugin} for upgrades`);
     } catch (err) {
-      toasts.push("error", `Upgrade failed: ${errorText(err)}`);
-    } finally {
-      setUpgradeBusy(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Upgrade failed: ${errorText(err)}`);
     }
   }
 
   async function handleConfirmRemove() {
     if (target === null) return;
-    setRemoveBusy(true);
     try {
       await store.getState().removePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Removed ${target.plugin}`);
@@ -116,9 +104,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       // onClose fires via the entry-vanished effect above once the store's
       // updated plugin list lands - no explicit close here.
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorText(err)}`);
-    } finally {
-      setRemoveBusy(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Remove failed: ${errorText(err)}`);
     }
   }
 
@@ -141,7 +127,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         footer={
           entry !== undefined && (
             <>
-              <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={upgradeBusy}>
+              <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
                 Upgrade
               </Button>
               <Button variant="danger" onClick={() => setPendingRemove(true)}>
@@ -183,13 +169,13 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               <Switch
                 checked={entry.enabled}
                 onChange={() => void handleToggleEnable(entry.enabled)}
-                pending={toggleBusy}
+                pending={hubWriteBusy}
                 label="Enabled by default"
               />
               <Switch
                 checked={entry.autoUpgrade}
                 onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
-                pending={autoUpgradeBusy}
+                pending={hubWriteBusy}
                 label="Auto-upgrade"
               />
             </div>
@@ -200,7 +186,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         open={pendingRemove && target !== null}
         title="Remove plugin"
         confirmLabel="Remove"
-        busy={removeBusy}
+        busy={hubWriteBusy}
         onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPendingRemove(false)}
       >

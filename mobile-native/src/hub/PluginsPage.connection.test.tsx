@@ -13,12 +13,15 @@ import { act, type ReactTestInstance } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { ConnectionState, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	createHubWriteGate,
+	createMarketplacesStore,
+	createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { MarketplaceBrowser } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
-import { createPluginMutationGate } from "../pluginMutationGate";
 import { dropped, render, renderedText, screenConnection as connection } from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
@@ -238,7 +241,7 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	// The screen's half of the store wiring, in the minimal shape this
 	// browser-level test needs: one store held for the whole render, and a
 	// capture ref no add in this test ever fills.
-	const marketplaces = createMarketplacesStore(client);
+	const marketplaces = createMarketplacesStore(client, createHubWriteGate());
 	const lastAddMarketplaces: {
 		current: readonly MarketplaceEntry[] | null;
 	} = { current: null };
@@ -252,10 +255,10 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 			client={client}
 			connectionState={state}
 			hubName="Work hub"
-			installed={createPluginsStore(client)}
+			installed={createPluginsStore(client, createHubWriteGate())}
 			marketplaces={marketplaces}
 			lastAddMarketplaces={lastAddMarketplaces}
-			gate={createPluginMutationGate()}
+			gate={createHubWriteGate()}
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}

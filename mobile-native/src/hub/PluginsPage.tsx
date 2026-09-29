@@ -26,17 +26,18 @@ import type {
 	PluginEntry,
 	PluginRefParams,
 } from "@evener/appwire-client";
-import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	createHubWriteGate,
+	createMarketplacesStore,
+	createPluginsStore,
+	HUB_WRITE_BUSY,
+	type HubWriteGate,
+	runGatedMutation,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
-import {
-	createPluginMutationGate,
-	PLUGIN_MUTATION_BUSY,
-	runGatedMutation,
-	type PluginMutationGate,
-} from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { space } from "../design/tokens";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
@@ -99,7 +100,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	// client would let the next one start beside it - and is held the way the
 	// credential store is (credentialStore.ts), as committed state a discarded
 	// render cannot leave behind.
-	const [gate] = useState(createPluginMutationGate);
+	const [gate] = useState(createHubWriteGate);
 	const { activeProfile, client, state, display, canUseConnection, renderClient } = useRetainedScreenConnection(
 		route.params.hubId,
 	);
@@ -316,7 +317,7 @@ function Plugins({
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
 	hubName: string;
-	gate: PluginMutationGate;
+	gate: HubWriteGate;
 	appliedRemovalNames: ReadonlySet<string>;
 	marketplaceWarning: string | null;
 	onAppliedRemoval(
@@ -338,7 +339,7 @@ function Plugins({
 	focus: PluginFocus | undefined;
 	onFocused(): void;
 }) {
-	const model = useMemo(() => createPluginsStore(client), [client]);
+	const model = useMemo(() => createPluginsStore(client, gate), [client, gate]);
 	// The hub's add answer is the one place that names what the write
 	// registered, and the store cannot be trusted to hand it over: a newer
 	// list read holds its publication. Capture the answer as it passes
@@ -371,7 +372,10 @@ function Plugins({
 			onNotification: (callback: (notification: AnyNotification) => void) => client.onNotification(callback),
 		};
 	}, [client]);
-	const marketplaces = useMemo(() => createMarketplacesStore(marketplaceStoreClient), [marketplaceStoreClient]);
+	const marketplaces = useMemo(
+		() => createMarketplacesStore(marketplaceStoreClient, gate),
+		[marketplaceStoreClient, gate],
+	);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const ready = isReady(connectionState);
 	const [panel, setPanel] = useState<Segment>("installed");
@@ -434,7 +438,7 @@ function Plugins({
 	}, [focus, onFocused]);
 	async function act(action: () => Promise<void>, success?: () => string) {
 		const version = editorVersion.current;
-		const outcome = await runGatedMutation(gate, canUseConnection, action);
+		const outcome = await runGatedMutation(canUseConnection, action);
 		if (version !== editorVersion.current) return;
 		// A not-ready press never ran the action, so it must not retire the
 		// diagnostics an earlier outcome left either: the copy the user was
@@ -443,7 +447,7 @@ function Plugins({
 		if (outcome === "not-ready") return;
 		setActionError(null);
 		setNotice(null);
-		if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
+		if (outcome === "refused") setActionError(HUB_WRITE_BUSY);
 		else if (outcome === "failed")
 			setActionError("Could not confirm the change. Check this plugin’s status before trying again.");
 		else if (success) setNotice(success());

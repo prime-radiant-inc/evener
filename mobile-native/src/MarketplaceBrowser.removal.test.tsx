@@ -15,10 +15,13 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import { ErrorMarketplaceRemoveApplied, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	createHubWriteGate,
+	createMarketplacesStore,
+	createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
-import { createPluginMutationGate } from "./pluginMutationGate";
 import { ErrorMessage } from "./ui";
 import { alertRequests, render, renderedText } from "./renderNative.testkit";
 
@@ -77,7 +80,7 @@ function GuardedBrowser({
 	// captured beside it. Nothing here drives connection transitions - these
 	// tests hold a ready connection throughout.
 	const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
-	const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
+	const marketplaces = useMemo(() => createMarketplacesStore(client, createHubWriteGate()), [client]);
 	const names = useMemo(() => new Set([...guard.keys(), ...fenced]), [guard, fenced]);
 	return (
 		<>
@@ -86,10 +89,10 @@ function GuardedBrowser({
 				client={client}
 				connectionState="ready"
 				hubName="Work hub"
-				installed={createPluginsStore(client)}
+				installed={createPluginsStore(client, createHubWriteGate())}
 				marketplaces={marketplaces}
 				lastAddMarketplaces={lastAddMarketplaces}
-				gate={createPluginMutationGate()}
+				gate={createHubWriteGate()}
 				ready={true}
 				canUseConnection={canUseConnection}
 				onOpenPlugin={() => {}}
