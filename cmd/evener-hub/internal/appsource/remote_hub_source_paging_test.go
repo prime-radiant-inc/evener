@@ -1671,25 +1671,233 @@ func TestRemotePositionCompareOrdersBySub(t *testing.T) {
 	}
 }
 
-// A controller mints its own identity per remote page, so it has none to mint
-// a cursor under for a Before with no cursor: it refuses the request plainly
-// rather than serve the remote's latest window as if it were the page asked
-// for, and the remote is never called.
-func TestRemoteHubSourceRefusesBeforeWithoutACursor(t *testing.T) {
-	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
-		t.Error("the remote was called for a cursorless before")
-		return scriptedReply{result: itemPageWithCursor(5, "")}
+// itemEntryPositions reports the entry of every candidate, for asserting a
+// served page or the remote page a test scripted.
+func itemEntryPositions(candidates []appitempaging.TranscriptItemCandidate) []uint64 {
+	entries := make([]uint64, 0, len(candidates))
+	for _, candidate := range candidates {
+		entries = append(entries, candidate.Position.Entry)
+	}
+	return entries
+}
+
+// sameItemEntries reports whether candidates carry exactly the wanted entries.
+func sameItemEntries(candidates []appitempaging.TranscriptItemCandidate, want ...uint64) bool {
+	if len(candidates) != len(want) {
+		return false
+	}
+	for index, entry := range want {
+		if candidates[index].Position.Entry != entry {
+			return false
+		}
+	}
+	return true
+}
+
+// A cursorless before is forwarded to the remote hub, which mints its own cursor
+// at that boundary (#3176). The page is the continuation below the boundary the
+// client named, so the retained identity must survive it: a page below the
+// retained window does not rotate the incarnation, and a later continuation
+// walks further down.
+func TestRemoteHubSourceForwardsCursorlessBefore(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	beforeCursor := remoteItemCursor(t, 4)
+	var forwarded *appwire.ThreadTurnsListParams
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		switch {
+		case remote.Cursor == "" && remote.Before == nil:
+			return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+		case remote.Cursor == "" && remote.Before != nil:
+			forwarded = &remote
+			return scriptedReply{result: itemPageWithKeyedEntries(beforeCursor, 4, 5, 6)}
+		case remote.Cursor == beforeCursor:
+			return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
 	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if forwarded != nil {
+		t.Fatalf("a fresh page carried a before: %+v", forwarded)
+	}
+
+	before := appwire.ThreadItemPosition{Entry: 7}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	if err != nil {
+		t.Fatalf("before page: %v", err)
+	}
+	if forwarded == nil {
+		t.Fatal("the remote was not called for a cursorless before")
+	}
+	if forwarded.Before == nil || *forwarded.Before != before {
+		t.Fatalf("forwarded before = %v, want %+v", forwarded.Before, before)
+	}
+	if forwarded.Cursor != "" {
+		t.Fatalf("forwarded cursor = %q, want empty for a cursorless before", forwarded.Cursor)
+	}
+	if !sameItemEntries(page.Candidates.Candidates, 4, 5, 6) {
+		t.Fatalf("before page = %v, want [4 5 6]", itemEntryPositions(page.Candidates.Candidates))
+	}
+	if page.Identity != first.Identity {
+		t.Fatalf("before page identity = %+v, want the retained %+v (no rotation for other viewers)", page.Identity, first.Identity)
+	}
+	if page.Candidates.OlderCursor == "" {
+		t.Fatalf("before page = %+v, want a live continuation cursor", page)
+	}
+
+	cont, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: page.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("continuation below the before page: %v", err)
+	}
+	if !sameItemEntries(cont.Candidates.Candidates, 1, 2, 3) {
+		t.Fatalf("continuation = %v, want [1 2 3]", itemEntryPositions(cont.Candidates.Candidates))
+	}
+	if cont.Identity != first.Identity {
+		t.Fatalf("continuation identity = %+v, want the retained %+v", cont.Identity, first.Identity)
+	}
+	if !cont.Exhausted || cont.Candidates.OlderCursor != "" {
+		t.Fatalf("continuation = %+v, want exhaustion", cont)
+	}
+}
+
+// A before that names a position inside the retained window pages a region the
+// window already overlaps. The page merges without contradiction, so the
+// retained identity is kept and no observed item is duplicated.
+func TestRemoteHubSourceCursorlessBeforeInsideTheRetainedWindow(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor == "" && remote.Before != nil {
+			if *remote.Before != (appwire.ThreadItemPosition{Entry: 12}) {
+				t.Errorf("forwarded before = %+v, want entry 12", *remote.Before)
+			}
+			return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11)}
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	before := appwire.ThreadItemPosition{Entry: 12}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	if err != nil {
+		t.Fatalf("before page: %v", err)
+	}
+	if !sameItemEntries(page.Candidates.Candidates, 10, 11) {
+		t.Fatalf("before page = %v, want [10 11]", itemEntryPositions(page.Candidates.Candidates))
+	}
+	if page.Identity != first.Identity {
+		t.Fatalf("inside-window before rotated the identity: %+v, want %+v", page.Identity, first.Identity)
+	}
+}
+
+// A before page that re-reports an observed position with a different item is a
+// rewrite, not a continuation: the incarnation rotates so cursors minted
+// against the replaced history fail closed.
+func TestRemoteHubSourceCursorlessBeforeContradictionRotates(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor == "" && remote.Before != nil {
+			// itemPageWithPositions keys by per-page ordinal, so entry 11's
+			// fingerprint differs from the retained page's keyed entries.
+			return scriptedReply{result: itemPageWithPositions("", 11)}
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	before := appwire.ThreadItemPosition{Entry: 11}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	if err != nil {
+		t.Fatalf("before page: %v", err)
+	}
+	if page.Identity.Incarnation == first.Identity.Incarnation {
+		t.Fatalf("contradicting before page kept incarnation %q, want a rotation", page.Identity.Incarnation)
+	}
+}
+
+// A hub older than the before field decodes the request without it and refuses
+// with invalid params. That refusal is the same one a cursorless before got
+// before this source could forward one, not the remote's own wording.
+func TestRemoteHubSourceCursorlessBeforeOlderRemoteRefusal(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadTurnsList {
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		// An older hub never saw Before, so it decodes Cursor=="" and refuses.
+		return scriptedReply{wireErr: &appwire.WireError{
+			Code:    appwire.CodeInvalidParams,
+			Message: "cursor or before is required for thread/turns/list",
+		}}
+	})
+	before := appwire.ThreadItemPosition{Entry: 7}
 	_, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
-		Ref: "host:t1", ItemsView: "fragment", Before: &appwire.ThreadItemPosition{Entry: 3},
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
 	})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
-		t.Fatalf("cursorless before on a remote host: error = %T %v, want invalid params", err, err)
+		t.Fatalf("older remote refusing before: error = %T %v, want invalid params", err, err)
 	}
-	for _, call := range calls() {
-		if call.method == appwire.MethodThreadTurnsList {
-			t.Fatalf("remote calls = %+v, want no thread/turns/list", calls())
+	if !strings.Contains(wireErr.Message, "before without a cursor is not supported for a thread on another host") {
+		t.Fatalf("older remote refusing before: message = %q, want the cursorless-before refusal", wireErr.Message)
+	}
+}
+
+// A cursorless before with no retained window still forwards: the remote mints
+// its own cursor and the controller records the page under a fresh identity.
+func TestRemoteHubSourceCursorlessBeforeWithoutRetainedWindow(t *testing.T) {
+	beforeCursor := remoteItemCursor(t, 4)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
 		}
+		return scriptedReply{result: itemPageWithKeyedEntries(beforeCursor, 4, 5, 6)}
+	})
+	before := appwire.ThreadItemPosition{Entry: 7}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	if err != nil {
+		t.Fatalf("before page without a retained window: %v", err)
+	}
+	if !sameItemEntries(page.Candidates.Candidates, 4, 5, 6) {
+		t.Fatalf("before page = %v, want [4 5 6]", itemEntryPositions(page.Candidates.Candidates))
+	}
+	if page.Identity.ThreadRef == "" || page.Identity.Incarnation == "" || page.Identity.ProjectionVersion == 0 {
+		t.Fatalf("identity = %+v, want a complete controller-owned identity", page.Identity)
 	}
 }

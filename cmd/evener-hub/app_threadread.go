@@ -660,9 +660,11 @@ func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
 // thread/turns/list pages a thread from a before position, with or without a
 // cursor. This hub mints such pages for its local and saved threads. A thread
-// on another host refuses them until the controller can join one to its
-// remote paging window (#3176), and a live delegate is a read-only alias its
-// parent daemon owns (the same signal fork is fenced on).
+// on another host stays masked: the controller can now join such a page to its
+// remote paging window (#3176), but this hub cannot yet tell a remote that
+// answers for a before from one that predates the field, so it does not
+// advertise one. A live delegate is a read-only alias its parent daemon owns
+// (the same signal fork is fenced on).
 func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
 	parsed, err := appwire.ParseRef(ref)
 	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)

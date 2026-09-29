@@ -775,13 +775,6 @@ func remoteItemPagingKey(sourceID, threadID string) string {
 // page mints (or continues) a controller-owned identity, and the remote cursor
 // is retained behind it.
 func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
-	// Each remote page mints its own controller identity, so there is none to
-	// page a Before with no cursor under. Refuse it plainly rather than serve
-	// the remote's latest window as the page asked for (#3176). The phone
-	// never asks: remote threads don't advertise pageBefore.
-	if params.Cursor == "" && params.Before != nil {
-		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
-	}
 	// A before beside a cursor moves the cursor's boundary, whoever calls.
 	params, err := appitempaging.ApplyBefore(params)
 	if err != nil {
@@ -805,18 +798,23 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
-	// The remote pages with the controller's own boundaries; a before never
-	// travels, since an older remote rejects the field outright.
-	remote.Before = nil
+	// ApplyBefore spends a before that rode a cursor, so a before still set here
+	// is cursorless: forward it and let the remote hub mint its own cursor at
+	// that boundary (#3176). The page it returns is joined to the retained
+	// window below, so other viewers' cursors survive it.
+	remote.Before = params.Before
 
 	if params.Cursor == "" {
 		remote.Cursor = ""
 		candidates, native, history, err := s.remoteItemPage(ctx, remote)
 		if err != nil {
-			return ItemCandidateResult{}, err
+			return ItemCandidateResult{}, remoteCursorlessBeforeRefusal(params, err)
 		}
 		if err := validateRemotePageCursor(native, candidates); err != nil {
 			return ItemCandidateResult{}, err
+		}
+		if params.Before != nil {
+			return s.recordRemoteBeforePage(key, *params.Before, candidates, native, history)
 		}
 		identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
 		return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, nil)
@@ -1584,6 +1582,46 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
+}
+
+// recordRemoteBeforePage joins a cursorless-before page to the retained window
+// (#3176). The page is the continuation below the boundary the client named, so
+// it is recorded exactly as a cursor-fetched continuation is, with
+// from=&before so the page's observed run joins any recorded run that covers
+// the boundary: the retained identity is kept whenever the page merges without
+// contradiction, so other viewers' cursors survive, and only a real rewrite
+// rotates it. A page fetched with no retained window (or one the merge
+// contradicts) mints a fresh identity, as a fresh page does.
+func (s *RemoteHubSource) recordRemoteBeforePage(
+	key string,
+	before appwire.ThreadItemPosition,
+	candidates []appitempaging.TranscriptItemCandidate,
+	native string,
+	history HistoryIdentity,
+) (ItemCandidateResult, error) {
+	if state, ok := s.itemPaging.peek(key); ok {
+		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
+			return s.recordRemoteItemPage(key, state.identity, candidates, native, history, state.head, state.hasHead, &before)
+		}
+	}
+	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
+	return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, &before)
+}
+
+// remoteCursorlessBeforeRefusal maps a remote hub's refusal of a cursorless
+// before. A hub older than the before field decodes the request without it and
+// refuses with invalid params; surface the same refusal a cursorless before got
+// before this source could forward one, rather than the remote's wording. Every
+// other failure (a fresh page, or a transport failure) passes through unchanged.
+func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err error) error {
+	if params.Before == nil {
+		return err
+	}
+	var wireErr appwire.WireError
+	if errors.As(err, &wireErr) && wireErr.Code == appwire.CodeInvalidParams {
+		return appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
+	}
+	return err
 }
 
 // AdminCall forwards one hub-scoped admin RPC to this remote host's hub over
