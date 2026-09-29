@@ -201,13 +201,24 @@ type GlobBudgeter interface {
 // maxListDirWalkListings and maxListDirWalkEntries cap how much work one
 // ListDirectoryBudget walk may spend no matter how large a page its caller
 // asked for: the number of directories it reads and the total entries it
-// accumulates across them. They mirror GlobBudget's listing and entry bounds,
-// and matter for the same reason — a model-controlled depth over a huge tree
-// costs unbounded work even when the requested page is tiny.
-var (
+// accumulates across them. They exist for the same reason GlobBudget's bounds
+// do — a model-controlled depth over a huge tree costs unbounded work even when
+// the requested page is tiny — and, like GlobBudget, the walk reads each
+// directory in chunks so one oversized directory cannot materialize past the
+// remaining budget.
+const (
 	maxListDirWalkListings = 200_000
 	maxListDirWalkEntries  = 200_000
 )
+
+// maxListDirDirEntries caps how many entries a SINGLE directory may materialize
+// before the walk stops reading it and reports a truncated listing. It bounds
+// peak memory the way GlobBudget's per-listing cap does, but is set far above
+// any real directory so a listing can still be sorted whole and paged in the
+// order the tool promises; only a pathological directory exceeds it. A var, not
+// a const, so a test can shrink it below a fixture's size instead of building a
+// directory large enough to matter.
+var maxListDirDirEntries = 200_000
 
 // ListDirBudget bounds one ListDirectoryBudget walk's work. Callers supply it
 // and read afterwards whether the walk had to stop early; its fields stay
@@ -262,6 +273,16 @@ func (b *ListDirBudget) chargeEntry() bool {
 	}
 	b.entries++
 	return true
+}
+
+// dirReadCap reports how many entries one directory may materialize before the
+// walk truncates it: the hard per-listing cap for a budgeted call, or unbounded
+// for the zero budget an internal caller uses to get the whole listing.
+func (b *ListDirBudget) dirReadCap() int {
+	if b.maxEntries <= 0 {
+		return -1
+	}
+	return maxListDirDirEntries
 }
 
 // DirBudgeter is an optional capability an ExecutionEnvironment may implement,

@@ -39,13 +39,13 @@ func TestListDirectoryBudget_EntryBudgetBoundsWalk(t *testing.T) {
 		t.Fatalf("baseline ListDirectory returned %d entries, want 10", len(full))
 	}
 
-	orig := listReadDir
+	orig := listOpenDir
 	calls := 0
-	listReadDir = func(name string) ([]os.DirEntry, error) {
+	listOpenDir = func(name string) (*os.File, error) {
 		calls++
 		return orig(name)
 	}
-	defer func() { listReadDir = orig }()
+	defer func() { listOpenDir = orig }()
 
 	budget := NewListDirBudget(2)
 	got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
@@ -74,12 +74,12 @@ func TestListDirectoryBudget_CancelsWalk(t *testing.T) {
 	t.Cleanup(env.Cleanup)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	orig := listReadDir
-	listReadDir = func(name string) ([]os.DirEntry, error) {
+	orig := listOpenDir
+	listOpenDir = func(name string) (*os.File, error) {
 		cancel() // cancel during the walk's first listing
 		return orig(name)
 	}
-	defer func() { listReadDir = orig }()
+	defer func() { listOpenDir = orig }()
 
 	if _, err := env.ListDirectoryBudget(ctx, "", 1, &ListDirBudget{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled walk error = %v, want context.Canceled", err)
@@ -110,5 +110,60 @@ func TestListDirectoryBudget_UnboundedMatchesListDirectory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(full, got) {
 		t.Fatalf("unbounded budget diverged from ListDirectory:\nfull=%+v\ngot =%+v", full, got)
+	}
+}
+
+// The listing bound must stop the recursion, not only the entries: with a
+// listing budget that runs out during a depth-2 walk, the walk stops there
+// instead of descending into every subdirectory.
+func TestListDirectoryBudget_ListingBudgetBoundsWalk(t *testing.T) {
+	dir := t.TempDir()
+	for i := range 10 {
+		if err := os.Mkdir(filepath.Join(dir, fmt.Sprintf("d%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	// The top directory is listing 1; its first two children are listings 2 and
+	// 3, so the third child's recursion is refused and the walk stops after the
+	// top directory's first three entries.
+	budget := &ListDirBudget{maxListings: 3}
+	got, err := env.ListDirectoryBudget(context.Background(), "", 2, budget)
+	if err != nil {
+		t.Fatalf("ListDirectoryBudget: %v", err)
+	}
+	if !budget.Truncated() {
+		t.Fatal("walk with a 3-listing budget did not report truncation")
+	}
+	if len(got) != 3 {
+		t.Fatalf("listing-bound walk returned %d entries, want 3 (the top directory's first three before recursion was refused)", len(got))
+	}
+}
+
+// The per-listing bound must cap a single oversized directory: shrinking it
+// below a fixture's size makes the walk stop reading the directory and report a
+// truncated listing rather than materializing it whole.
+func TestListDirectoryBudget_SingleDirectoryCapBoundsRead(t *testing.T) {
+	dir := t.TempDir()
+	seedListDirTree(t, dir, 10)
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	restore := maxListDirDirEntries
+	maxListDirDirEntries = 3
+	defer func() { maxListDirDirEntries = restore }()
+
+	budget := NewListDirBudget(100) // page budget far above the per-listing cap
+	got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
+	if err != nil {
+		t.Fatalf("ListDirectoryBudget: %v", err)
+	}
+	if !budget.Truncated() {
+		t.Fatal("walk with a 3-entry per-listing cap over a 10-entry directory did not report truncation")
+	}
+	if len(got) != 3 {
+		t.Fatalf("per-listing cap returned %d entries, want the 3-entry cap", len(got))
 	}
 }

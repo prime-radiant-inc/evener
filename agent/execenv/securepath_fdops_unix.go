@@ -22,12 +22,13 @@ import (
 // the operations on platforms without a supported enforcement primitive.
 
 var (
-	secureOpenat         = unix.Openat
-	secureWrite          = unix.Write
-	secureClose          = unix.Close
-	secureRenameat       = unix.Renameat
-	secureUnlinkat       = unix.Unlinkat
-	secureReadDirEntries = readDirEntries
+	secureOpenat       = unix.Openat
+	secureWrite        = unix.Write
+	secureClose        = unix.Close
+	secureRenameat     = unix.Renameat
+	secureUnlinkat     = unix.Unlinkat
+	secureReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
+	secureDupDirFd     = func(fd int) (int, error) { return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0) }
 )
 
 // close releases every cached root fd. Safe to call more than once.
@@ -510,7 +511,12 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 	if !budget.chargeListing() {
 		return nil
 	}
-	ents, err := secureReadDirEntries(dirFd)
+	// Read the directory in chunks, capped by the per-listing bound, so a single
+	// huge directory cannot materialize without bound — the same hole GlobBudget
+	// closes with its per-listing cap. The listing is sorted whole when it fits
+	// the cap, so paging keeps the name order the tool promises; only a directory
+	// past the cap comes back as a truncated listing.
+	ents, more, err := readDirEntriesBounded(ctx, dirFd, budget.dirReadCap())
 	if err != nil {
 		return err
 	}
@@ -519,13 +525,15 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !budget.chargeEntry() {
-			return nil
-		}
 		name := ent.Name()
 		childAbs := filepath.Join(baseAbs, name)
 		if s.underMasked(childAbs) {
 			continue
+		}
+		// Charge only entries the listing retains: a masked or unreadable entry
+		// must not consume a page slot that a visible entry could fill.
+		if !budget.chargeEntry() {
+			return nil
 		}
 		relName := name
 		if relPrefix != "" {
@@ -558,6 +566,9 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 				return nil
 			}
 		}
+	}
+	if more {
+		budget.truncated = true
 	}
 	return nil
 }
@@ -620,17 +631,47 @@ func writeAllFd(fd int, data []byte) error {
 	return nil
 }
 
-// readDirEntries reads all directory entries from dirFd without consuming it: it
-// dups the fd (F_DUPFD_CLOEXEC), reads through the dup, and closes only the dup,
-// leaving dirFd valid for subsequent openat recursion.
-func readDirEntries(dirFd int) ([]os.DirEntry, error) {
-	dup, err := unix.FcntlInt(uintptr(dirFd), unix.F_DUPFD_CLOEXEC, 0)
+// readDirEntriesBounded reads directory entries from dirFd without consuming
+// it: it dups the fd (F_DUPFD_CLOEXEC), reads through the dup in chunks, and
+// closes only the dup, leaving dirFd valid for subsequent openat recursion. It
+// stops once it holds limit entries (limit < 0 means unbounded) and reports
+// whether the directory had more beyond what it read, observing ctx between chunks so a
+// huge directory can be cancelled mid-listing rather than read to EOF.
+func readDirEntriesBounded(ctx context.Context, dirFd, limit int) ([]os.DirEntry, bool, error) {
+	dup, err := secureDupDirFd(dirFd)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	f := os.NewFile(uintptr(dup), "")
 	defer func() { _ = f.Close() }()
-	return f.ReadDir(-1)
+	var ents []os.DirEntry
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		want := listDirChunk
+		if limit >= 0 {
+			remaining := limit - len(ents)
+			if remaining <= 0 {
+				batch, rerr := secureReadDirChunk(f, 1)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return nil, false, rerr
+				}
+				return ents, len(batch) > 0, nil
+			}
+			if want > remaining {
+				want = remaining
+			}
+		}
+		batch, rerr := secureReadDirChunk(f, want)
+		ents = append(ents, batch...)
+		if errors.Is(rerr, io.EOF) {
+			return ents, false, nil
+		}
+		if rerr != nil {
+			return nil, false, rerr
+		}
+	}
 }
 
 // ensureDirsBeneath creates each component of relDir beneath rootFd if missing,

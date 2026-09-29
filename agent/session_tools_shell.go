@@ -102,12 +102,7 @@ func formatDirListing(r listDirResult) string {
 // size), whichever binds first, and reports the totals. At least one entry is
 // always returned when any remain past offset. The page is a non-nil slice so it
 // serializes as [] rather than null when empty.
-//
-// A caller whose walk stopped at its budget passes partial=true: the entries it
-// holds are then a prefix of the listing rather than all of it, so the result is
-// marked Partial and always Truncated even when the collected prefix was fully
-// paged.
-func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int, partial ...bool) listDirResult {
+func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
 	if offset < 0 {
 		offset = 0
 	}
@@ -136,16 +131,25 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 		used += sz
 		end++
 	}
-	cut := len(partial) > 0 && partial[0]
 	return listDirResult{
 		Path:      path,
 		Entries:   page,
 		Total:     total,
 		Returned:  len(page),
 		Offset:    offset,
-		Truncated: end < total || cut,
-		Partial:   cut,
+		Truncated: end < total,
 	}
+}
+
+// paginateDirEntriesBudgeted is paginateDirEntries for a walk that stopped at
+// its budget before exhausting the subtree: the entries it holds are a prefix of
+// the full listing rather than all of it, so the page is marked Partial and
+// always Truncated, and its footer never claims a total the walk did not count.
+func paginateDirEntriesBudgeted(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
+	r := paginateDirEntries(path, entries, offset, limit)
+	r.Partial = true
+	r.Truncated = true
+	return r
 }
 
 func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
@@ -232,7 +236,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return nil, err
 				}
 			}
-			return formatDirListing(paginateDirEntries(path, entries, offset, limit, partial)), nil
+			if partial {
+				return formatDirListing(paginateDirEntriesBudgeted(path, entries, offset, limit)), nil
+			}
+			return formatDirListing(paginateDirEntries(path, entries, offset, limit)), nil
 		},
 	})
 

@@ -1437,7 +1437,8 @@ var (
 	shellStat              = os.Stat
 	grepReadFile           = fs.ReadFile
 	grepWalk               = fs.WalkDir
-	listReadDir            = os.ReadDir
+	listOpenDir            = os.Open
+	listReadDirChunk       = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
 	streamOutputCopyStart  = func() {}
@@ -1925,6 +1926,52 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 	return e.ListDirectoryBudget(context.Background(), path, depth, &ListDirBudget{})
 }
 
+// listDirChunk is how many directory entries one chunked listing reads per call.
+// A var, not a const, so a test can shrink it below a fixture's size to see the
+// chunk loop's bounds without building a directory large enough to matter.
+var listDirChunk = 512
+
+// listDirReadBounded reads a directory's entries in chunks, stopping once it
+// holds limit entries (limit < 0 means unbounded) and reporting whether the
+// directory had more beyond what it read. It observes ctx between chunks, so a
+// huge directory can be cancelled mid-listing rather than read to EOF, and it
+// bounds materialized memory the way boundedDirFS does for a glob.
+func listDirReadBounded(ctx context.Context, dir string, limit int) ([]os.DirEntry, bool, error) {
+	f, err := listOpenDir(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = f.Close() }()
+	var ents []os.DirEntry
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		want := listDirChunk
+		if limit >= 0 {
+			remaining := limit - len(ents)
+			if remaining <= 0 {
+				batch, rerr := listReadDirChunk(f, 1)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return nil, false, rerr
+				}
+				return ents, len(batch) > 0, nil
+			}
+			if want > remaining {
+				want = remaining
+			}
+		}
+		batch, rerr := listReadDirChunk(f, want)
+		ents = append(ents, batch...)
+		if errors.Is(rerr, io.EOF) {
+			return ents, false, nil
+		}
+		if rerr != nil {
+			return nil, false, rerr
+		}
+	}
+}
+
 // ListDirectoryBudget is the DirBudgeter capability: ListDirectory bounded by
 // ctx and budget. It observes ctx before each directory it reads and before
 // each entry it retains, and stops once the walk has spent its listing or entry
@@ -1958,7 +2005,12 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 		if !budget.chargeListing() {
 			return nil
 		}
-		ents, err := listReadDir(absDir)
+		// Read the directory in chunks, capped by the per-listing bound, so a
+		// single huge directory cannot materialize without bound — the same hole
+		// GlobBudget closes with its per-listing cap. The listing is sorted whole
+		// when it fits the cap, so paging keeps the name order the tool promises;
+		// only a directory past the cap comes back as a truncated listing.
+		ents, more, err := listDirReadBounded(ctx, absDir, budget.dirReadCap())
 		if err != nil {
 			return err
 		}
@@ -1996,6 +2048,9 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 					return nil
 				}
 			}
+		}
+		if more {
+			budget.truncated = true
 		}
 		return nil
 	}

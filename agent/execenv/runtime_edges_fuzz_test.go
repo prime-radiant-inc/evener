@@ -5,6 +5,7 @@ package execenv
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -263,13 +264,13 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		secureEntryInfo = entryInfoOrig
 		fakeEntry := fs.FileInfoToDirEntry(runtimeEdgeFileInfo{name: "exec", mode: 0o755})
-		readDirForInfo := secureReadDirEntries
-		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, nil }
+		readDirForInfo := secureReadDirChunk
+		secureReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, io.EOF }
 		var synthetic []DirEntry
 		if err := rootFS.walkDirFd(context.Background(), -1, "", root, 1, &ListDirBudget{}, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
 		}
-		secureReadDirEntries = readDirForInfo
+		secureReadDirChunk = readDirForInfo
 		missingRootPolicy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{WriteRoots: []string{filepath.Join(root, "missing-root")}}}
 		if _, _, err := newSandboxFS(&missingRootPolicy, "").openWriteParent("write_file", filepath.Join(root, "missing-root", "file"), true); err == nil {
 			t.Fatal("missing write root unexpectedly opened")
@@ -278,12 +279,12 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal("missing write parent unexpectedly opened")
 		}
 
-		readDirOrig := secureReadDirEntries
-		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return nil, fs.ErrPermission }
+		readDirOrig := secureReadDirChunk
+		secureReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) { return nil, fs.ErrPermission }
 		if _, err := rootFS.listDirBudget(context.Background(), "list_directory", root, 2, &ListDirBudget{}); err == nil {
 			t.Fatal("scripted readdir failure unexpectedly succeeded")
 		}
-		secureReadDirEntries = readDirOrig
+		secureReadDirChunk = readDirOrig
 		browseWalkOrig, browseReadOrig := secureBrowseWalkDir, secureBrowseReadFile
 		secureBrowseWalkDir = func(fsys fs.FS, root string, fn fs.WalkDirFunc) error {
 			_ = fn("denied", nil, fs.ErrPermission)
@@ -317,19 +318,19 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		if err := os.MkdirAll(filepath.Join(root, "list-child"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		listReadOrig := listReadDir
+		listOpenOrig := listOpenDir
 		listCalls := 0
-		listReadDir = func(name string) ([]os.DirEntry, error) {
+		listOpenDir = func(name string) (*os.File, error) {
 			listCalls++
 			if listCalls > 1 {
 				return nil, fs.ErrPermission
 			}
-			return listReadOrig(name)
+			return listOpenOrig(name)
 		}
 		if _, err := NewLocalExecutionEnvironment(root).ListDirectory(root, 2); err == nil {
 			t.Fatal("recursive list fault succeeded")
 		}
-		listReadDir = listReadOrig
+		listOpenDir = listOpenOrig
 		subdir := filepath.Join(root, "subdir")
 		if err := os.Mkdir(subdir, 0o755); err != nil {
 			t.Fatal(err)
@@ -341,17 +342,17 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		secureOpenat = openatOrig
 		readCalls := 0
-		secureReadDirEntries = func(fd int) ([]os.DirEntry, error) {
+		secureReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) {
 			readCalls++
 			if readCalls > 1 {
 				return nil, fs.ErrPermission
 			}
-			return readDirOrig(fd)
+			return readDirOrig(f, n)
 		}
 		if _, err := rootFS.listDirBudget(context.Background(), "list_directory", root, 2, &ListDirBudget{}); err == nil {
 			t.Fatal("recursive readdir failure unexpectedly succeeded")
 		}
-		secureReadDirEntries = readDirOrig
+		secureReadDirChunk = readDirOrig
 
 		openat2Orig := secureOpenat2
 		openat2Calls := 0
