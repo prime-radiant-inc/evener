@@ -67,7 +67,10 @@ export function currentLevel(
 	hubConfig: TranscriptDisplayConfigV1 | null,
 ): ContentLevel | "custom" | null {
 	if (chosen) return chosen;
-	if (!hubConfig) return null;
+	// No hub config yet (or ever): the transcript projects at the config-less
+	// show-everything config, which is Full content — so the menu marks that
+	// level rather than nothing (projectedRows.ts PROJECT_EVERYTHING_CONFIG).
+	if (!hubConfig) return "full";
 	return hubConfig.content.kind === "preset" ? hubConfig.content.level : "custom";
 }
 
