@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -115,6 +115,25 @@ native-preflight:
 ##   writes no iOS bundle.
 test-native-bundle: native-preflight
 	@scripts/native/test-native-bundle.sh
+
+# `pod install --deployment` refuses a lock missing a pod the Podfile asks for,
+# and only the TestFlight workflow runs it, on a tag: #3252 added a native
+# dependency without its pod and every PR check stayed green (#3294). This
+# compares the lock with what autolinking resolves, on any host.
+## Check that mobile-native/Podfile.lock locks exactly the iOS native modules
+## autolinking resolves.
+## proves: every module the Expo and React Native autolinking the generated
+##   Podfile runs would link has its pod in the lock's DEPENDENCIES, and every
+##   autolinked pod the lock lists is still linked.
+## trigger: Native CI; local pre-merge when mobile-native/package.json,
+##   package-lock.json or Podfile.lock change.
+## requires: Node 22.13+ and an already-installed mobile-native dependency
+##   tree; no macOS, CocoaPods, Xcode or generated ios/ project.
+## fails-when: an autolinked module has no pod in the lock, or the lock lists
+##   an autolinked pod nothing links; a version change inside an already
+##   locked pod is not checked.
+check-podfile-lock: native-preflight
+	@scripts/native/check-podfile-lock.mjs
 
 # api-package-preflight turns the misleading failure a fresh checkout gets into
 # a message naming the missing install and the command to run (or repairs a
