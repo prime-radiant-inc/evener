@@ -68,7 +68,7 @@ it("resets dependent selections and suppresses obsolete model catalogs", async (
 	store.getState().selectModel(model);
 	store.getState().setReasoning("high");
 	expect(store.getState().reasoning).toBe("high");
-	const third = store.getState().setHarness("agent");
+	const third = store.getState().setCwd("/three");
 	expect(store.getState()).toMatchObject({
 		model: null,
 		reasoning: "",
@@ -84,7 +84,7 @@ it("resets dependent selections and suppresses obsolete model catalogs", async (
 	store.getState().selectModel(store.getState().models[0] ?? null);
 	store.getState().setReasoning("high");
 	expect(store.getState().reasoning).toBe("");
-	expect(calls[2]?.params).toEqual({ cwd: "/two", harness: "agent" });
+	expect(calls[2]?.params).toEqual({ cwd: "/three" });
 });
 it("preserves input and explicitly reports failure without retry", async () => {
 	const { store, calls } = setup();
@@ -108,14 +108,12 @@ it("suppresses completion and metadata after disconnect", async () => {
 	const pending = store.getState().submit();
 	store.getState().bind(null);
 	calls[0]?.response.resolve({ data: ["/obsolete"] });
-	calls[1]?.response.resolve({ data: [{ id: "old", label: "Old" }] });
-	calls[2]?.response.resolve({ data: [model] });
-	calls[3]?.response.resolve({ thread: { evener: { ref: "old" } }, turn: {} });
+	calls[1]?.response.resolve({ data: [model] });
+	calls[2]?.response.resolve({ thread: { evener: { ref: "old" } }, turn: {} });
 	await metadata;
 	expect(await pending).toEqual({ status: "obsolete" });
 	expect(store.getState()).toMatchObject({
 		projects: [],
-		harnesses: [],
 		models: [],
 	});
 });
@@ -193,16 +191,14 @@ it("retains metadata failure across model success and clears it only after metad
 	const { store, calls } = setup();
 	const metadata = store.getState().loadMetadata();
 	calls[0]?.response.reject(new Error("projects unavailable"));
-	calls[1]?.response.resolve({ data: [] });
 	await metadata;
-	expect(store.getState().metadataError).toBeTruthy();
+	expect(store.getState().metadataError).toBe("Couldn't load this host's recent projects.");
 	const models = store.getState().loadModels();
-	calls[2]?.response.resolve({ data: [model] });
+	calls[1]?.response.resolve({ data: [model] });
 	await models;
 	expect(store.getState().metadataError).toBeTruthy();
 	const retry = store.getState().loadMetadata();
-	calls[3]?.response.resolve({ data: ["/project"] });
-	calls[4]?.response.resolve({ data: [] });
+	calls[2]?.response.resolve({ data: ["/project"] });
 	await retry;
 	expect(store.getState().metadataError).toBeNull();
 	expect(store.getState().projects).toEqual(["/project"]);
@@ -213,14 +209,13 @@ it("retains model failure across metadata success until model recovery", async (
 	const models = store.getState().loadModels();
 	calls[0]?.response.reject(new Error("models unavailable"));
 	await models;
-	expect(store.getState().modelError).toBeTruthy();
+	expect(store.getState().modelError).toBe("Couldn't load this host's models. The hub's default model still works.");
 	const metadata = store.getState().loadMetadata();
 	calls[1]?.response.resolve({ data: [] });
-	calls[2]?.response.resolve({ data: [] });
 	await metadata;
 	expect(store.getState().modelError).toBeTruthy();
 	const retry = store.getState().loadModels();
-	calls[3]?.response.resolve({ data: [model] });
+	calls[2]?.response.resolve({ data: [model] });
 	await retry;
 	expect(store.getState().modelError).toBeNull();
 });
@@ -597,6 +592,25 @@ it("applies a session's seed and finds its model once the host's models arrive",
 	expect(store.getState()).toMatchObject({ source: "local", cwd: "/project", model, reasoning: "low" });
 });
 
+it.each([
+	[
+		"a setup",
+		(store: ReturnType<typeof setup>["store"]) =>
+			store.getState().applySetup({ host: "local", cwd: "/project", model: null, effort: "", overrides: {} }),
+	],
+	[
+		"a seed",
+		(store: ReturnType<typeof setup>["store"]) => store.getState().applySeed({ host: "local", cwd: "/project" }),
+	],
+])("drops a stale per-launch model and effort when %s is applied, as choosing a model does", (_name, apply) => {
+	const { store } = setup();
+	store.getState().setLaunchOverrides({ model: "p/stale", reasoningEffort: "max", sandbox: "read-only" });
+	apply(store);
+	const overrides = store.getState().launchOverrides;
+	expect(overrides.model).toBeUndefined();
+	expect(overrides.reasoningEffort).toBeUndefined();
+});
+
 it("restores a draft's host, and a draft saved before hosts as the hub's own machine (ruling 28)", () => {
 	const saved = new Map<string, CreationDraft>();
 	const storage = () => ({
@@ -625,18 +639,6 @@ it("restores a draft's host, and a draft saved before hosts as the hub's own mac
 	expect(saved.get("remote")).toMatchObject({ source: "paradise-park", prompt: "hello" });
 });
 
-it("reads another host's harnesses through the hub", async () => {
-	const { store, calls } = setup();
-	const moving = store.getState().changeHost("paradise-park", "paradise-park");
-	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
-	await flush();
-	answer(calls, "evener/host/request", "model/list", { data: [model] });
-	await moving;
-	void store.getState().loadMetadata();
-	expect(calls.some((c) => c.method === "evener/harnesses/list")).toBe(false);
-	expect(calls.some((c) => (c.params as { method?: string }).method === "evener/harnesses/list")).toBe(true);
-});
-
 it("keeps the new host's projects when the old host's recent list answers late", async () => {
 	const { store, calls } = setup();
 	const metadata = store.getState().loadMetadata();
@@ -648,7 +650,6 @@ it("keeps the new host's projects when the old host's recent list answers late",
 	await moving;
 	if (staleRecent) calls.splice(calls.indexOf(staleRecent), 1);
 	staleRecent?.response.resolve({ data: ["/home/jesse/git/evener"] });
-	answer(calls, "evener/harnesses/list", null, { data: [] });
 	await metadata;
 	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
 });
@@ -710,7 +711,6 @@ it("reads the recent projects of the host an applied setup names, dropping the o
 	const { store, calls } = setup();
 	const metadata = store.getState().loadMetadata();
 	answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
-	answer(calls, "evener/harnesses/list", null, { data: [] });
 	await metadata;
 	expect(store.getState().projects).toEqual(["/home/jesse/git/evener"]);
 	store
@@ -718,7 +718,6 @@ it("reads the recent projects of the host an applied setup names, dropping the o
 		.applySetup({ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} });
 	expect(store.getState().projects).toEqual([]);
 	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
-	answer(calls, "evener/host/request", "evener/harnesses/list", { data: [] });
 	answer(calls, "evener/host/request", "model/list", { data: [model] });
 	await flush();
 	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
@@ -736,23 +735,6 @@ it("drops a model list for the place the form left when a setup is applied", asy
 	answer(calls, "model/list", null, { data: [model] });
 	await flush();
 	expect(store.getState().models).toEqual([model]);
-});
-
-it("keeps the new host's harnesses when the old host's list answers late, and drops them on a move", async () => {
-	const { store, calls } = setup();
-	const metadata = store.getState().loadMetadata();
-	answer(calls, "evener/projects/recent", null, { data: [] });
-	const staleHarnesses = calls.find((c) => c.method === "evener/harnesses/list");
-	const moving = store.getState().changeHost("paradise-park", "paradise-park");
-	expect(store.getState().harnesses).toEqual([]);
-	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
-	await flush();
-	answer(calls, "evener/host/request", "model/list", { data: [model] });
-	await moving;
-	if (staleHarnesses) calls.splice(calls.indexOf(staleHarnesses), 1);
-	staleHarnesses?.response.resolve({ data: [{ id: "local-only", label: "Local only" }] });
-	await metadata;
-	expect(store.getState().harnesses).toEqual([]);
 });
 
 it("restores a draft with an empty host as the hub's own machine", () => {
@@ -776,4 +758,170 @@ it("restores a draft with an empty host as the hub's own machine", () => {
 		unconfirmed: false,
 	});
 	expect(createNewSessionStore("hub", storage).getState().source).toBe("local");
+});
+
+function memoryDrafts() {
+	const saved = new Map<string, CreationDraft>();
+	const storage = () => ({
+		read: (hubId: string) => saved.get(hubId) ?? null,
+		write: (hubId: string, draft: CreationDraft) => {
+			saved.set(hubId, structuredClone(draft));
+		},
+		clear: (hubId: string) => saved.delete(hubId),
+	});
+	return { saved, storage };
+}
+
+it("discards the saved draft and empties the form, leaving other hubs' drafts alone", async () => {
+	const { saved, storage } = memoryDrafts();
+	const other = createNewSessionStore("hub-b", storage);
+	other.getState().setPrompt("keep me");
+	const store = createNewSessionStore("hub-a", storage);
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("throw me away");
+	store.getState().setLaunchOverrides({ enabledPlugins: ["superpowers"] });
+	expect(saved.get("hub-a")).toMatchObject({ prompt: "throw me away" });
+	store.getState().discard();
+	expect(store.getState()).toMatchObject({
+		source: "local",
+		cwd: "",
+		prompt: "",
+		images: [],
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		error: null,
+	});
+	expect(saved.has("hub-a")).toBe(false);
+	expect(saved.get("hub-b")).toMatchObject({ prompt: "keep me" });
+	expect(createNewSessionStore("hub-a", storage).getState().prompt).toBe("");
+});
+
+it("keeps the plugin selection and sends nothing when the plugin check fails", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/project", false);
+	store.getState().setLaunchOverrides({ enabledPlugins: ["superpowers"] });
+	const started = store.getState().submit();
+	const preview = calls.find((c) => c.method === "evener/plugin/preview");
+	preview?.response.reject(new Error("socket closed"));
+	expect(await started).toEqual({ status: "failed" });
+	expect(calls.some((c) => c.method === "thread/start")).toBe(false);
+	expect(store.getState().launchOverrides.enabledPlugins).toEqual(["superpowers"]);
+	expect(store.getState().error).toBe(
+		"Couldn't check the selected plugins, so no session was started. Your selection is kept.",
+	);
+});
+
+it("never asks the hub for harnesses, and starts with none", async () => {
+	const { store, calls } = setup();
+	const metadata = store.getState().loadMetadata();
+	answer(calls, "evener/projects/recent", null, { data: ["/project"] });
+	await metadata;
+	expect(calls.map((c) => c.method)).not.toContain("evener/harnesses/list");
+	await store.getState().setCwd("/project", false);
+	const started = store.getState().submit();
+	const start = calls.find((c) => c.method === "thread/start");
+	expect(start?.params).toEqual({ cwd: "/project" });
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "canonical/t" } }, turn: {} });
+	await started;
+});
+
+it("saves the empty form over the draft when the device won't delete it", async () => {
+	const { saved, storage } = memoryDrafts();
+	const store = createNewSessionStore("hub-a", () => ({
+		...storage(),
+		clear: () => {
+			throw new Error("disk full");
+		},
+	}));
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("throw me away");
+	store.getState().discard();
+	expect(store.getState()).toMatchObject({ cwd: "", prompt: "" });
+	expect(saved.get("hub-a")).toMatchObject({ cwd: "", prompt: "" });
+});
+
+it("keeps the host's recent models with its list, and drops both when the form moves", async () => {
+	const { store, calls } = setup();
+	const other = { provider: "q", model: "b" };
+	const loading = store.getState().setCwd("/project");
+	answer(calls, "model/list", null, { data: [model, other], recent: [other] });
+	await loading;
+	expect(store.getState().recentModels).toEqual([other]);
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	expect(store.getState().recentModels).toEqual([]);
+	answer(calls, "evener/host/request", "evener/path/validate", { path: "/project", valid: true });
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	expect(store.getState().recentModels).toEqual([]);
+});
+
+/** A store over `saved`, bound to a hub whose model list is `models`, with every
+ * request recorded. */
+function restored(draft: Partial<CreationDraft>, models: unknown[]) {
+	const { saved, storage } = memoryDrafts();
+	saved.set("hub-a", {
+		source: "local",
+		cwd: "/project",
+		prompt: "go",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+		...draft,
+	});
+	const requests: { method: string; params: unknown }[] = [];
+	const store = createNewSessionStore("hub-a", storage);
+	store.getState().bind(
+		createNewSessionService({
+			request: async (method: string, params: unknown) => {
+				requests.push({ method, params });
+				if (method === "model/list") return { data: models };
+				return { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} };
+			},
+		} as ConversationClientLike),
+	);
+	return { store, requests };
+}
+
+it("makes a saved per-launch model the form's choice when the host lists it", async () => {
+	const { store, requests } = restored({ launchOverrides: { model: "p/a", reasoningEffort: "high", maxRounds: 7 } }, [
+		model,
+	]);
+	await store.getState().loadModels(true);
+	expect(store.getState()).toMatchObject({ model, reasoning: "high", launchOverrides: { maxRounds: 7 } });
+	await store.getState().submit();
+	expect(requests.find((r) => r.method === "thread/start")?.params).toMatchObject({
+		model: "a",
+		modelProvider: "p",
+		reasoningEffort: "high",
+		launchOverrides: { maxRounds: 7 },
+	});
+});
+
+it("never sends a saved per-launch model the host doesn't list", async () => {
+	const { store, requests } = restored({ launchOverrides: { model: "gone/old", maxRounds: 7 } }, [model]);
+	await store.getState().loadModels(true);
+	expect(store.getState().model).toBeNull();
+	await store.getState().submit();
+	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
+	expect(start).not.toHaveProperty("model");
+	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
+});
+
+// A per-launch effort with no model, which only an older build could save,
+// is dropped: the form's effort belongs to its model, and with Hub default
+// there is no model whose levels could take it.
+it("drops a saved per-launch effort that came with no model", async () => {
+	const { store, requests } = restored({ launchOverrides: { reasoningEffort: "high", maxRounds: 7 } }, [model]);
+	await store.getState().loadModels(true);
+	expect(store.getState()).toMatchObject({ model: null, reasoning: "", launchOverrides: { maxRounds: 7 } });
+	await store.getState().submit();
+	const start = requests.find((r) => r.method === "thread/start")?.params as Record<string, unknown>;
+	expect(start).not.toHaveProperty("reasoningEffort");
+	expect(start.launchOverrides).toEqual({ maxRounds: 7 });
 });

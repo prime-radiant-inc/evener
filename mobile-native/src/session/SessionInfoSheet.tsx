@@ -43,6 +43,9 @@ export interface SessionInfoHost {
 	hostLabel(hostId: string): string;
 	/** The model and its effort, as the composer's chip names them. */
 	modelLabel: string;
+	/** How long a subagent has run at `now`, as its row times it; null for a
+	 * session that isn't one, which the turn's own age times instead. */
+	runMs(now: number): number | null;
 	/** Whether the session can take an action now: connected, open and idle. */
 	ready: boolean;
 	editGoal(): void;
@@ -159,7 +162,7 @@ function SessionInfoBody({
 					edit={(text) => setEditing(editing ? { ...editing, text } : null)}
 					submit={() => void rename()}
 				/>
-				<StateLine session={session} />
+				<StateLine session={session} runMs={host.runMs} />
 			</View>
 
 			<Section title="Where">
@@ -362,10 +365,11 @@ function Title({
 	);
 }
 
-function StateLine({ session }: { session: MobileConversation }) {
+function StateLine({ session, runMs }: { session: MobileConversation; runMs(now: number): number | null }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = sessionStateLine(session, Date.now());
+	const now = Date.now();
+	const line = sessionStateLine(session, now, runMs(now));
 	const mark = markFor(line.state, false);
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

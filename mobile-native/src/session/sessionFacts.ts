@@ -109,10 +109,14 @@ export function effortName(level: string): string {
 }
 
 /** A model as the catalog names it (a model is called one way everywhere
- * people read it). Before the catalog loads, the model id stands in. */
-function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined): string {
+ * people read it). While the catalog is away (it clears while it reloads and
+ * after a failed load) the hub's session row names it (S17's model_name, the
+ * same name model/list gives), and only then the id. Right after a switch the
+ * row may lag until the fleet re-reads it; that only shows while the catalog
+ * is away too. */
+function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined, rowName?: string): string {
 	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider);
-	return match?.displayName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
+	return match?.displayName || rowName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
 }
 
 /** The composer's chip: the model's name, then its effort when the model has
@@ -120,8 +124,10 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
 export function modelChipLabel(
 	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
 	catalog: readonly ModelDescriptor[] | undefined,
+	/** The session's Board row's model_name, when the fleet has the row. */
+	rowName?: string,
 ): string {
-	const name = modelName(session.modelProvider, catalog);
+	const name = modelName(session.modelProvider, catalog, rowName);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }

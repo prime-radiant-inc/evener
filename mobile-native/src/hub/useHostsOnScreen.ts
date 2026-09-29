@@ -1,41 +1,17 @@
-// What the Hub's host pages read: the hub's host rows, polled while the page
-// is on screen, each host's live-session count, read on focus and on each
-// return of the connection, and the hub's own version for the drift tag.
-import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import type { HostsState } from "../hosts/hostsController";
-import { liveCountsByHost } from "../hosts/liveCounts";
-import { useOptionalSnapshot } from "../hosts/useHubFleet";
+// What the Hub's host pages read: the fleet as any page on screen reads it
+// (useFleetOnScreen), and the hub's own version for the drift tag.
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import { type FleetOnScreen, useFleetOnScreen } from "../hosts/useFleetOnScreen";
 import { useHubSheet } from "./hubSheetContext";
 
-export interface HostsOnScreen {
-	/** Null until the hub has listed its hosts once. */
-	state: HostsState | null;
-	/** Why the hub hasn't listed its hosts yet, when it refused. */
-	loadError: string | null;
-	liveCount(host: string): number;
+export interface HostsOnScreen extends FleetOnScreen {
 	hubVersion: string | undefined;
 }
 
 export function useHostsOnScreen(): HostsOnScreen {
 	const { hosts, live, updates, ready } = useHubSheet();
 	const hubVersion = useSyncExternalStore(updates.subscribe, updates.getState).check?.currentVersion;
-	const state = useOptionalSnapshot(hosts);
-	const counts = liveCountsByHost(useOptionalSnapshot(live)?.rows ?? []);
-	useFocusEffect(useCallback(() => hosts?.start(), [hosts]));
-	// The live counts are read once per focus, and again whenever the
-	// connection comes back, so a read that failed while it was down recovers.
-	useFocusEffect(
-		useCallback(() => {
-			if (ready) void live?.load();
-		}, [live, ready]),
-	);
-	return {
-		state: state?.rows ? state : null,
-		loadError: state?.rows ? null : (state?.error ?? null),
-		liveCount: (host) => counts.get(host) ?? 0,
-		hubVersion,
-	};
+	return { ...useFleetOnScreen(hosts, live, ready), hubVersion };
 }
 
 /** Goes back, once, when the host a page shows leaves the hub's list (removed

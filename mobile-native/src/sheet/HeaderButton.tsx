@@ -1,6 +1,6 @@
 // A sheet's header action (Done, Cancel, Save): accent ink, semibold when it
-// finishes the page, a 44pt target that dims while pressed or while it can't
-// run, following Dynamic Type on iOS.
+// finishes the page, a 44pt target that dims while pressed and reads in ink-low
+// while it can't run, following Dynamic Type on iOS.
 import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
 import { allowFontScaling, useColors } from "../ui";
 
@@ -31,13 +31,13 @@ export function HeaderButton({
 				minWidth: 44,
 				justifyContent: "center",
 				paddingHorizontal: 8,
-				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+				opacity: pressed && !disabled ? 0.6 : 1,
 			})}
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{
-					color: palette.accentInk,
+					color: disabled ? palette.inkLow : palette.accentInk,
 					fontSize: 17 * scale,
 					lineHeight: 24 * scale,
 					fontWeight: strong ? "600" : "400",
