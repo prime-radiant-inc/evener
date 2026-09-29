@@ -72,7 +72,7 @@ import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
-import { BoardToolbar } from "./BoardToolbar";
+import { BoardToolbar, type ToolbarPlacement } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { type HeldAction, heldFor, heldProjectState, heldVerb, turnSeen, waitingLine } from "./boardHold";
@@ -131,6 +131,7 @@ import { organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
+import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
 import { destructiveButton, haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -201,6 +202,15 @@ function Board({
 	// Select mode (spec 7.1): on from Select until Done or one of its
 	// actions completes (ruling 26), with the refs chosen so far.
 	const [selecting, setSelecting] = useState(false);
+	// How tall the toolbar (or the select bar) stands over the Board's end.
+	const toolbar = useBarHeight();
+	const toolbarHeight = toolbar.height ?? 0;
+	const boardUnderBar = underBar(toolbarHeight);
+	const toolbarPlacement: ToolbarPlacement = {
+		testID: "board-toolbar",
+		style: { position: "absolute", left: 0, right: 0, bottom: 0 },
+		onLayout: toolbar.onLayout,
+	};
 	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
 	const leaveSelect = () => {
 		setSelecting(false);
@@ -1153,7 +1163,14 @@ function Board({
 					// iOS keeps that offset only while the content is taller than the
 					// viewport, so even a short Board (skeleton, empty, a few rows)
 					// is tall enough to keep the field hidden.
-					contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+					contentContainerStyle={{
+						paddingBottom: 24 + boardUnderBar.endPadding,
+						minHeight: windowHeight + searchFieldHeight,
+					}}
+					// The Board runs under its toolbar's glass, its end and its
+					// scroll indicator clear of the toolbar.
+					contentInset={boardUnderBar.contentInset}
+					scrollIndicatorInsets={boardUnderBar.scrollIndicatorInsets}
 					onScroll={onScroll}
 					onLayout={(event) => {
 						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
@@ -1220,13 +1237,18 @@ function Board({
 						</>
 					)}
 				</Animated.ScrollView>
-				{/* The toast floats 10pt above the toolbar. */}
-				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
+				<View
+					testID="board-toast"
+					pointerEvents="box-none"
+					style={{ position: "absolute", left: 0, right: 0, bottom: toolbarHeight + FLOAT_GAP }}
+				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
+			{/* The toolbar lies over the Board's end, so the Board runs under it. */}
 			{selecting ? (
 				<SelectBar
+					{...toolbarPlacement}
 					counts={{
 						archive: selection.archive.length,
 						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
@@ -1244,6 +1266,7 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
+					{...toolbarPlacement}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}

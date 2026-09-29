@@ -282,7 +282,7 @@ func sessionImageBySha(cfg hubcore.WebConfig, sessionID, sha string) (appwire.Se
 
 // sessionImageByPath answers the file-backed form: a session-relative path
 // inside the session's own working directory, refused on any escape and bounded
-// by outputImageMaxBytes at stat time (readOutputImageFile).
+// by outputImageMaxBytes at stat time (readOutputImageInRoot).
 func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.SessionImageResponse, error) {
 	// Path is session-relative by contract: an absolute path is refused even
 	// when it happens to resolve inside the session root.
@@ -300,7 +300,7 @@ func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.S
 		}
 		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
 	}
-	data, info, ok := readOutputImageFile(abs)
+	data, info, ok := readOutputImageInRoot(cwd, abs)
 	if !ok {
 		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
 	}

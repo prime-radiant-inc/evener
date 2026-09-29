@@ -663,7 +663,9 @@ it("holds banners while it's in front, and counts them on Back", async () => {
 	expect(navigation.goBack).toHaveBeenCalled();
 	expect(renderedText(button)).toContain("1");
 
-	harness.focused = false;
+	// Leaving the stack ends the hold on its own, with no blur event: a fast
+	// swipe can miss the focus change, and what waited must still drop in.
+	stack.state = { index: 1, routes: stack.state.routes.slice(0, 2) };
 	await rerender();
 	expect(alerts.holds.at(-1)).toEqual([false, "quiet"]);
 });
