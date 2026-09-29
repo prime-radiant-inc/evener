@@ -11,7 +11,7 @@ import {
 } from "./keybindingOfflineRecovery";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import type { Routes } from "./screens";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Spinner } from "./sheet/Spinner";
@@ -47,7 +47,7 @@ function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 export function KeybindingPreferencesScreen({
 	route,
 	navigation,
-}: NativeStackScreenProps<Routes, "KeybindingPreferences">) {
+}: NativeStackScreenProps<HubRoutes, "KeybindingPreferences">) {
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();

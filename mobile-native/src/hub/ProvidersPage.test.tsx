@@ -1985,3 +1985,20 @@ it("checks two providers back to back: only the newer check ends its Checking st
 	await act(async () => {});
 	expect(hasControl(tree, "Check for new models")).toBe(true);
 });
+
+it("keeps a failed check's copy on its own provider when a link then opens another", async () => {
+	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
+	const checks = heldChecks(fake);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	await relink("home");
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	await relink("work");
+	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+});

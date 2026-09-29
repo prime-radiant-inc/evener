@@ -8,11 +8,11 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
-import type { Routes } from "./screens";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 
-type Props = NativeStackScreenProps<Routes, "HubSettings">;
+type Props = NativeStackScreenProps<HubRoutes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
 // reconnect-retention state below - the banner's everReady, the last
 // client a retry's gap renders through, the recovered-overview read -

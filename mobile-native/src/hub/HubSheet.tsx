@@ -8,6 +8,9 @@ import { useCallback, useMemo } from "react";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
+import { HubSettingsScreen } from "../HubSettingsScreen";
+import { KeybindingPreferencesScreen } from "../KeybindingPreferencesScreen";
+import { LaunchSettingsScreen } from "../LaunchSettingsScreen";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { sheetStackOptions } from "../sheet/sheetStack";
@@ -24,6 +27,7 @@ import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
 import { HubsPage } from "./HubsPage";
 import { MarketplacePage } from "./MarketplacePage";
+import { OwnHostPage } from "./OwnHostPage";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsScreenSlotProvider } from "./pluginsScreenSlot";
 import { ProvidersPage } from "./ProvidersPage";
@@ -88,6 +92,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						component={HostDetailPage}
 						options={({ route }) => ({ title: route.params.name })}
 					/>
+					<HubStack.Screen name="OwnHost" component={OwnHostPage} options={{ title: activeProfile.name }} />
 					{/* The page sets its own title and its Cancel and Save. */}
 					<HubStack.Screen name="HostEdit" component={HostEditPage} />
 					<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
@@ -104,6 +109,17 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
 					/>
 					<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
+					<HubStack.Screen
+						name="KeybindingPreferences"
+						component={KeybindingPreferencesScreen}
+						options={{ title: "Keyboard shortcuts" }}
+					/>
+					<HubStack.Screen
+						name="LaunchSettings"
+						component={LaunchSettingsScreen}
+						options={{ title: "Launch defaults" }}
+					/>
+					<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
 				</HubStack.Navigator>
 			</PluginsScreenSlotProvider>
 		</HubSheetProvider>
