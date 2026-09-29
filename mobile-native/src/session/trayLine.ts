@@ -112,6 +112,9 @@ function currentStep(session: TraySource): Step | null {
 	return null;
 }
 
+// What toolStepProgress says for a shell call that names no command.
+const RUNNING_A_COMMAND = "Running a command";
+
 function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
@@ -124,9 +127,12 @@ function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type !== "commandExecution") return null;
 	// What the step is doing in the words its summary will use, live
 	// ("Reading agent/tree.go", "Running go test ./..."), never its tool's
-	// name. A command says itself; any other step says its intent first.
+	// name. A command says itself; any other step, and a shell call with no
+	// command to name, says its intent first.
 	const progress = toolStepProgress(item, { cwd });
-	const text = toolFamily(item.toolName ?? "") === "shell" ? progress : item.description?.trim() || progress;
+	const intent = item.description?.trim();
+	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
+	const text = namesCommand ? progress : intent || progress;
 	return { text, startedAt: timeOf(item.startedAt), waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? "") };
 }
 

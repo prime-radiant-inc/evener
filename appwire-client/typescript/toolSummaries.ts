@@ -237,10 +237,10 @@ export function useSkillSummary(step: ToolStep): string {
 
 // --- every other tool ---------------------------------------------------------
 
-/** A tool name's words: its underscores are spaces ("create_issue" reads
- * "create issue"). */
+/** A tool name's words: its underscores and hyphens are spaces
+ * ("create_issue" reads "create issue", "foo-bar" reads "foo bar"). */
 export function words(name: string): string {
-  return name.replaceAll("_", " ").trim();
+  return name.replace(/[_-]+/g, " ").trim();
 }
 
 /** An MCP tool's server and tool in words. The MCP manager names each tool

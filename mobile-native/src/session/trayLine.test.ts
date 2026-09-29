@@ -82,6 +82,19 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(text(step("shell", {}))).toBe("Running a command · 5s");
 	});
 
+	// A shell call whose command is missing or named otherwise still says its
+	// intent, as the web's row does, rather than a bare "Running a command".
+	it("keeps a command-less shell step's intent", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ description: "run the audit" }),
+			description: "Run the audit",
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		expect(trayLine(session({ turns: [turn([running])] }), NOW)?.text).toBe("Run the audit · 5s");
+	});
+
 	it("leaves out a running command's cd to the session's own directory", () => {
 		const running = item({
 			toolName: "shell",

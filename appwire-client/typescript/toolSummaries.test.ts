@@ -125,6 +125,8 @@ test("strips the session's own directory from a running command", () => {
   ).toBe("Running make test");
 });
 
-test("reads a tool name in words", () => {
+test("reads a tool name in words, hyphens and underscores alike", () => {
   expect(words("compact_context")).toBe("compact context");
+  expect(words("foo-bar_baz")).toBe("foo bar baz");
+  expect(toolStepSummary({ toolName: "foo-bar" })).toBe("Used foo bar");
 });
