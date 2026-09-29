@@ -854,15 +854,20 @@ describe("a warning", () => {
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
 	});
 
-	it("draws a warning item amber too", () => {
+	it("draws a warning item amber too, with no Resume or Retry even on a paused session", () => {
 		const tree = render(
 			<TimelineItem
-				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true }}
+				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true, turnId: "turn_2" }}
 				hubId="hub"
 				sessionRef="warning"
+				errorActionFor={(failed) =>
+					errorAction(failed, { resumeRequired: true, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)
+				}
+				onErrorAction={() => {}}
 			/>,
 		);
 		expect(rule(tree)).toBe(AMBER);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
 	});
 
 	it("keeps a loop detection red", () => {

@@ -119,6 +119,16 @@ describe("attentionWarningNotice", () => {
     expect(attentionWarningNotice(notice(undefined))).toEqual({});
   });
 
+  // A warning with nothing to show draws no block: it stays the (empty)
+  // quiet line, as a blank type:"warning" item draws nothing.
+  test("is null for a warning notice with no text, title or hint", () => {
+    expect(
+      attentionWarningNotice(
+        warningItem({ type: "systemMessage", eventKind: "warning", text: "  ", raw: { warning: { title: " " } } }),
+      ),
+    ).toBeNull();
+  });
+
   test("is null for an informational warning, and for anything but a warning notice", () => {
     expect(
       attentionWarningNotice(notice({ warning: { title: "Context budget", code: WarningCodeContextBudget } })),

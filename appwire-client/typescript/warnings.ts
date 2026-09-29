@@ -75,11 +75,13 @@ export interface AttentionWarning {
  * treatment rather than as a quiet system line (#3387). Returns its title and
  * hint from raw.warning (internal/appoverlay/notices.go warningAnnouncement),
  * each only when it is a non-blank string; null for an informational
- * warning or anything but a warning notice.
+ * warning, one with no text, title or hint, or anything but a warning notice.
  */
 export function attentionWarningNotice(item: ItemModel): AttentionWarning | null {
   if (item.type !== "systemMessage" || item.eventKind !== "warning" || isInformationalWarning(item)) return null;
   const fields = isPlainObject(item.raw) && isPlainObject(item.raw.warning) ? item.raw.warning : {};
+  // A warning with nothing to show draws no block.
+  if (!hasWarningText(item.text) && !hasWarningText(fields.title) && !hasWarningText(fields.hint)) return null;
   return {
     ...(hasWarningText(fields.title) ? { title: fields.title } : {}),
     ...(hasWarningText(fields.hint) ? { hint: fields.hint } : {}),

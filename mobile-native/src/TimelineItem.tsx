@@ -189,7 +189,8 @@ export function TimelineItem({
 				<ErrorRow
 					title={item.title}
 					detail={item.detail}
-					action={errorActionFor?.(item) ?? null}
+					// A warning reports; Retry and Resume answer a failure.
+					action={item.attention ? null : (errorActionFor?.(item) ?? null)}
 					onAction={onErrorAction}
 					attention={item.attention}
 				/>
