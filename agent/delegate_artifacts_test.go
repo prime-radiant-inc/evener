@@ -258,6 +258,38 @@ func TestRemoveDelegateArtifacts_EmptyStateDirIsNoOp(t *testing.T) {
 	}
 }
 
+// TestEnsureDelegateArtifactsDir_RefusesSymlinkedSessionsDir pins the create
+// path's outermost guard: a symlink planted at the shared sessions dir is
+// refused before any traversal, leaving both the link and the target's
+// artifacts tree untouched.
+func TestEnsureDelegateArtifactsDir_RefusesSymlinkedSessionsDir(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	target := t.TempDir()
+	child := "sess_nested_create"
+	if err := os.MkdirAll(filepath.Join(target, child, delegateArtifactsSubdir), 0o700); err != nil {
+		t.Fatalf("mkdir target tree: %v", err)
+	}
+	keep := filepath.Join(target, child, delegateArtifactsSubdir, "keep.md")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write target artifact: %v", err)
+	}
+	sessions := filepath.Join(stateDir, sessionsSubdir)
+	if err := os.Symlink(target, sessions); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if _, err := ensureDelegateArtifactsDir(stateDir, child); err == nil {
+		t.Fatal("symlinked sessions dir accepted")
+	}
+	if _, err := os.Lstat(sessions); err != nil {
+		t.Fatalf("sessions symlink removed: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("target artifact deleted through the sessions symlink: %v", err)
+	}
+}
+
 // TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir pins that a delegate
 // disposed before adoption takes its artifacts with it, via the existing
 // unadopted-child disposal path.
