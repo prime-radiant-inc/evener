@@ -148,6 +148,16 @@ export type {
   DelegateTimingFields,
 } from "./delegateDetails";
 export { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export {
+  type DelegateSendFooterInfo,
+  type DelegateSendRawState,
+  type DelegateSendStep,
+  delegateSendBase,
+  delegateSendFooter,
+  delegateSendSummary,
+  delegateSendTarget,
+  isDelegateSendResult,
+} from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
@@ -577,6 +587,7 @@ export {
   applyPatchSummary,
   askUserSummary,
   BINARY_PAYLOAD_HEADER,
+  delegateSummary,
   editFileSummary,
   fallbackToolSummary,
   filePathArg,

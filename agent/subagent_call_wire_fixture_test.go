@@ -93,14 +93,20 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}) {
 	return s, stateDir, reached
 }
 
-// run executes one call on the session, failing the test on an error result.
-func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
+// arguments is the call's arguments as the model sends them.
+func (c subagentWireCall) arguments(t *testing.T) json.RawMessage {
 	t.Helper()
 	args, err := json.Marshal(c.args)
 	if err != nil {
 		t.Fatalf("%s arguments: %v", c.id, err)
 	}
-	res := s.reg.ExecuteCall(context.Background(), s.currentEnv(), llm.ToolCallData{ID: c.id, Name: c.tool, Arguments: args})
+	return args
+}
+
+// run executes one call on the session, failing the test on an error result.
+func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
+	t.Helper()
+	res := s.reg.ExecuteCall(context.Background(), s.currentEnv(), llm.ToolCallData{ID: c.id, Name: c.tool, Arguments: c.arguments(t)})
 	if res.IsError {
 		t.Fatalf("%s: the %s call failed: %s", c.id, c.tool, res.Output)
 	}
@@ -157,13 +163,9 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	announce := llm.Message{Role: llm.RoleAssistant}
 	results := llm.Message{Role: llm.RoleTool}
 	for _, call := range calls {
-		args, err := json.Marshal(call.args)
-		if err != nil {
-			t.Fatalf("%s arguments: %v", call.id, err)
-		}
 		announce.Content = append(announce.Content, llm.ContentPart{
 			Kind:     llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args},
+			ToolCall: &llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: call.arguments(t)},
 		})
 		results.Content = append(results.Content, llm.ContentPart{
 			Kind:       llm.ContentToolResult,
