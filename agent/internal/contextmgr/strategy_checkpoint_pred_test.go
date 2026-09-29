@@ -127,8 +127,9 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 
 	// The fallback already worked, so its warning is an informational
 	// context notice ("no action needed"), coded so clients show it only at
-	// their most detailed level, with the cause still in its message.
-	if len(warnings) != 1 || !strings.HasPrefix(warnings[0].Message, "Predictive checkpoint failed, using deterministic: ") ||
+	// their most detailed level. Its message stays bare: the error can carry
+	// a provider body echoing the conversation (#3386).
+	if len(warnings) != 1 || warnings[0].Message != "Predictive checkpoint failed, using deterministic" ||
 		warnings[0].Code != events.WarningCodeContextBudget {
 		t.Fatalf("fallback warnings = %+v, want one context_budget notice naming the failure", warnings)
 	}
