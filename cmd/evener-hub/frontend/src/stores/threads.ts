@@ -2171,6 +2171,20 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "notes/human/set": "Notes aren't available until this session is resumed",
 };
 
+// The composer's four send verbs - exactly the routes composerMutationIntent
+// builds (turn/start, turn/queue, turn/steer, turn/drainAsSteer). These are the
+// only mutations the direct fallback answers when the durable outbox cannot be
+// written: each has no response-side local commit beyond the wire call itself,
+// so a plain RPC looks to the rest of the store exactly like the dispatched row
+// would have. Every other durable write keeps its own contract and stays
+// fail-closed - see the catch in enqueueMutationIntent.
+const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
+  "turn/start",
+  "turn/queue",
+  "turn/steer",
+  "turn/drainAsSteer",
+]);
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
@@ -2236,31 +2250,33 @@ async function enqueueMutationIntent(
     notifyMutationPersistence([ref], { record });
     return record;
   } catch (error) {
-    // The direct fallback answers ONLY the enqueue path. A Stop
-    // (interruptAndCancel) stays fail-closed: its durable write is the one
-    // transaction in which the ref's cancelable rows turn "canceled" AND the
-    // turn/interrupt record is written - both land or neither does
-    // (enqueueInterruptAndCancel) - so a Stop that could not commit it has
-    // cancelled nothing. Falling back would dispatch the interrupt while
-    // writing no cancels, and the queued messages the click was cancelling
-    // would dispatch later anyway: exactly the outcome the click asked to
-    // prevent. A storage-unavailable failure therefore propagates like every
+    // The direct fallback answers ONLY a durable enqueue whose method is one of
+    // the composer's four send verbs (DIRECT_FALLBACK_METHODS). Every other
+    // durable write keeps its own contract and fails closed here:
+    // turn/interrupt is Stop - its enqueue is enqueueInterruptAndCancel, the
+    // one transaction in which the ref's cancelable rows turn "canceled" AND
+    // the interrupt record is written, both land or neither does, so falling
+    // back would dispatch the interrupt while writing no cancels and leave the
+    // queued messages the click was cancelling still queued for a later
+    // dispatch. thread/clear needs its response applied locally
+    // (applyClearResponse) and notes/human/set needs its onCommitted to mark
+    // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
+    // A storage-unavailable failure on any of those propagates exactly as every
     // other submission failure: the ref this click armed is disarmed and the
-    // caller sees the refusal. Every non-enqueue durable write is excluded
-    // here, and every failure that is not the storage-unavailable timeout is
-    // excluded below; only a timeout on an enqueue reaches the fallback.
-    if (durableWrite !== "enqueue" || !isStorageUnavailable(error)) {
+    // caller sees the refusal. (A Stop therefore lands here, not in the
+    // fallback below, so its fail-closed decision lives with its invariant.)
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
       if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
   }
-  // Persistent storage failure on an enqueue: the durable write could not be
-  // made, so send the mutation as a plain RPC right now, exactly as the
-  // non-durable operations do (setModel, rename, compact, ...). The outbox
-  // row, the dispatcher, the receipt/settle machinery and the recovery list
-  // are all skipped - there is nothing durable to settle or replay. The click
-  // armed the ref's dispatch bookkeeping for a durable row that now does not
-  // exist, so disarm it first (a pin, if any, is not this click's to drop).
+  // Persistent storage failure on a composer send: the durable write could not
+  // be made, so send it as a plain RPC right now, exactly as the non-durable
+  // operations do (setModel, rename, compact, ...). The outbox row, the
+  // dispatcher, the receipt/settle machinery and the recovery list are all
+  // skipped - there is nothing durable to settle or replay. The click armed
+  // the ref's dispatch bookkeeping for a durable row that now does not exist,
+  // so disarm it first (a pin, if any, is not this click's to drop).
   //
   // The forfeited cross-tab Stop fence: this send carries no click-time stop
   // epoch when the capture read itself timed out, so a Stop landing in another
@@ -4328,12 +4344,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async clearThread(ref) {
     const runtime = requireMutationRuntime();
     await runtime.start;
-    const record = await enqueueMutationIntent(clearMutationIntent(ref));
-    // undefined: storage was unavailable and the clear went out as a plain RPC
-    // (enqueueMutationIntent's fallback). There is no durable row to dispatch
-    // or pin, and applyClearResponse was skipped, so the pane takes the
-    // replacement session on its next read.
-    if (record === undefined) return;
+    await enqueueMutationIntent(clearMutationIntent(ref));
     // A clear is fenced by the model's instance id, so it can dispatch while
     // an older resync read is in flight. Its response is the newer cut and
     // retires that read in applyClearResponse.

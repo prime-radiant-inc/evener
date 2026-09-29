@@ -12656,6 +12656,82 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // thread/clear and notes/human/set carry their own durable contracts and must
+  // NOT take the direct fallback: a fallback clear would skip applyClearResponse
+  // (leaving stale local state until the next read) and a fallback note would
+  // never fire setHumanNote's onCommitted (so the note panel never marks the
+  // draft saved). Only the composer's four send verbs fall back; both of these
+  // stay fail-closed.
+  test("a Clear whose storage never answers stays fail-closed: no thread/clear reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-clear-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a")));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const clear = threadsStore.getState().clearThread("ref_a");
+      const rejection = expect(clear).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      // The click-time capture read is the clear's first storage call; its
+      // watchdog ends the attempt.
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // The clear must not fall back: it never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a note save whose storage never answers stays fail-closed: no notes/human/set reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-note-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("notes/human/set", (params) => ({ note: "a note", receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const save = threadsStore.getState().setHumanNote("ref_a", "a note");
+      const rejection = expect(save).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // The note save must not fall back: it never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "notes/human/set")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
   // §4's stop barrier is the click's OWN storage observation. When the durable
   // write times out, the enqueue retries it - but the retry must reuse the
   // capture taken at the click, never re-read the epoch, or a Stop landing
