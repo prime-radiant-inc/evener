@@ -79,6 +79,17 @@ function interruptIntent(targetRef = TARGET): MutationIntent {
 	};
 }
 
+function noteIntent(note: string, targetRef = TARGET): MutationIntent {
+	return {
+		targetRef,
+		threadId: "thread-1",
+		method: "notes/human/set",
+		payload: { ref: targetRef, expectedInstanceId: "instance-1", note },
+		attachments: [],
+		optimisticDisplay: null,
+	};
+}
+
 // Oracle: "reload restores the complete persisted intent" (mutationOutbox.test.ts:105).
 test("enqueueIntent persists a submitting record with the full intent", async () => {
 	const persisted = await storage.enqueueIntent(intent("survive reload"));
@@ -485,6 +496,44 @@ test("settleReceipt drops a receipt-only control with no optimistic input to car
 
 test("settleReceipt reports false for a record that is in none of the three tables", async () => {
 	await expect(storage.settleReceipt("missing", "pending")).resolves.toBe(false);
+});
+
+// The supersede sweep runs BEFORE the settlement's own deletes, so the test
+// faults the settlement delete (the outbox row), not the sweep itself: the
+// sweep's successful removal of the earlier note must roll back with the
+// failed settlement. Faulting the sweep instead would prove nothing about the
+// shared transaction, since SQLite already aborts that one statement's delete
+// on its own. The trigger is dropped in the finally so no schema state leaks
+// past the contract. The web adapter's beforeCommit seam proves general
+// settlement atomicity (mutationOutbox.test.ts), but it seeds no note recovery
+// row, so this sweep-within-settlement rollback is verified here only.
+async function expectFailedSettlementRollsBackSweep(settle: (clientMutationId: string) => Promise<boolean>) {
+	const older = await storage.enqueueIntent(noteIntent("refused older"));
+	await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
+	const settling = await storage.enqueueIntent(noteIntent("accepted now"));
+
+	database.exec(
+		`CREATE TRIGGER reject_settle_delete BEFORE DELETE ON mutation_outbox
+		 WHEN OLD.client_mutation_id = '${settling.clientMutationId}'
+		 BEGIN SELECT RAISE(ABORT, 'settle failed'); END`,
+	);
+	try {
+		await expect(settle(settling.clientMutationId)).rejects.toThrow("settle failed");
+		// The sweep already deleted the earlier note; only a shared savepoint
+		// restores it once the settlement delete fails.
+		expect(rawRow("mutation_recovery", older.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+		expect(rawRow("mutation_outbox", settling.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+	} finally {
+		database.exec("DROP TRIGGER reject_settle_delete");
+	}
+}
+
+test("a failed settlement delete rolls settleReceipt's supersede sweep back", async () => {
+	await expectFailedSettlementRollsBackSweep((id) => storage.settleReceipt(id, "pending"));
+});
+
+test("a failed settlement delete rolls settleApplied's supersede sweep back", async () => {
+	await expectFailedSettlementRollsBackSweep((id) => storage.settleApplied(id));
 });
 
 // Oracle: settleReceipt resolves "outbox ?? recovery ?? optimistic" as its
