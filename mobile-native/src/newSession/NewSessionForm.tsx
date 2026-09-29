@@ -24,8 +24,8 @@ import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../../../mobile/src/services/newSession";
 import { effortLabel, knownAccess, projectName } from "./launchSetup";
-import { type NewSessionRoutes, type NewSessionStore, useNewSession } from "./newSessionContext";
-import { creationRetired } from "./retiredCreations";
+import { formFront, showForm } from "./creations";
+import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
 import { useHostRead } from "./useHostRead";
@@ -39,17 +39,6 @@ const readBranch = (service: NewSessionService, host: string, cwd: string) => se
 
 /** The launch settings More options sets. */
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
-
-interface FormFront {
-	navigation: NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"];
-	latest: { current: { ready: boolean; client: unknown } };
-}
-
-/** The form showing each hub's creation store, newest first (#3104). A start
- * keeps running after its sheet closes, so when it lands, the form in front
- * then (perhaps a sheet reopened meanwhile) opens the session or shows why it
- * failed, and with none in front an alert says so. */
-const fronts = new WeakMap<NewSessionStore, FormFront>();
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
 	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
@@ -98,13 +87,9 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
 	useEffect(() => {
-		const front = { navigation, latest };
-		fronts.set(store, front);
 		// This form shows the store's own error, so an alert saying the same goes.
 		startFailureSeen();
-		return () => {
-			if (fronts.get(store) === front) fronts.delete(store);
-		};
+		return showForm(store, { navigation, latest });
 	}, [store, navigation, startFailureSeen]);
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
 	const start = useCallback(async () => {
@@ -113,10 +98,10 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		const setup = startedSetup(store.getState());
 		const outcome = await store.getState().submit();
 		// A removed hub's start has no one left to tell.
-		if (creationRetired(store)) return;
+		if (store.getState().retired) return;
 		// The form in front now: this one, or a sheet reopened while the start
 		// was on its way, whether or not the hub is reachable from it.
-		const front = fronts.get(store);
+		const front = formFront(store);
 		const inFront = !!front && front.navigation.isFocused();
 		if (outcome.status !== "created") {
 			// A form in front shows the store's error itself; else an alert says

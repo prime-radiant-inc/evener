@@ -1057,3 +1057,17 @@ describe("a start that may already exist (#3104)", () => {
 		expect(store.getState().startMayRepeat()).toBe(false);
 	});
 });
+
+it("retires for a removed hub: unbound, marked retired, and starts nothing more (#3104)", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	const started = store.getState().submit();
+	await flush();
+	expect(store.getState().retired).toBe(false);
+	store.getState().retire();
+	expect(store.getState()).toMatchObject({ retired: true, submitting: false });
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await started).toEqual({ status: "obsolete" });
+	expect(await store.getState().submit()).toEqual({ status: "blocked" });
+});

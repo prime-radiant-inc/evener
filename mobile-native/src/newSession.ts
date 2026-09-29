@@ -71,6 +71,9 @@ interface Form {
 	 * confirmed), so starting it again could make a second session. Changing
 	 * the draft makes it a new start. */
 	startMayRepeat(): boolean;
+	/** The hub was removed: nothing of this store's lands or starts again. */
+	retired: boolean;
+	retire(): void;
 }
 /** The place a model list answers for. */
 function modelContext(source: string, cwd: string): string {
@@ -345,6 +348,7 @@ export function createNewSessionStore(
 			const { source, cwd, prompt, model, reasoning, submitting, launchOverrides } = get();
 			if (
 				!current ||
+				get().retired ||
 				submitting ||
 				get().movingHost ||
 				refreshingModels ||
@@ -523,6 +527,11 @@ export function createNewSessionStore(
 			});
 			if (seed.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);
+		},
+		retired: false,
+		retire() {
+			get().bind(null);
+			set({ retired: true });
 		},
 		startMayRepeat() {
 			return get().unconfirmedCreation && unconfirmedContent !== null && draftContent() === unconfirmedContent;

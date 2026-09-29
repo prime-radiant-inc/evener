@@ -12,6 +12,7 @@ import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
+import { nativeDrafts } from "../nativeDrafts";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
@@ -38,7 +39,7 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
-	const store = creationStore(hubId);
+	const store = creationStore(hubId, () => nativeDrafts().creation);
 	const memory = useMemo(() => launchMemory(hubId), [hubId]);
 
 	// The form is placed once, as it opens with its draft loaded.

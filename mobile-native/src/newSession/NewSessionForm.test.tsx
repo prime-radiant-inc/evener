@@ -19,10 +19,6 @@ import type { NewSessionRoutes } from "./newSessionContext";
 import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
-// The hub's creation store reads its draft through nativeDrafts; a test that
-// takes the hub's own store (creations.ts) points it at the test's drafts.
-const hubDrafts = vi.hoisted(() => ({ creation: null as unknown }));
-vi.mock("../nativeDrafts", () => ({ nativeDrafts: () => ({ creation: hubDrafts.creation }) }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
@@ -144,9 +140,10 @@ async function mount(options: Options = {}) {
 		write: (hubId: string, draft: CreationDraft) => void drafts.set(hubId, structuredClone(draft)),
 		clear: (hubId: string) => void drafts.delete(hubId),
 	};
-	hubDrafts.creation = repository;
 	if (options.hubStore) forgetCreationForHub("hub-1");
-	const store = options.hubStore ? creationStore("hub-1") : createNewSessionStore("hub-1", () => repository);
+	const store = options.hubStore
+		? creationStore("hub-1", () => repository)
+		: createNewSessionStore("hub-1", () => repository);
 	store.getState().bind(createNewSessionService(client as never));
 	void store.getState().loadMetadata();
 	void store.getState().loadModels(true);
