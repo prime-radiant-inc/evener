@@ -15,13 +15,16 @@ export type Notice = { key: string; text: string } & (
  * new notice and not again when its count moves (spec 13.3).
  *
  * A notice names the sessions it blocks when the hub counts them, as
- * " · N sessions". A host goes by its label from the manifest's sources,
- * or by its id before the manifest lists it; two broken plugins sharing a
- * name each name their marketplace. A kind this phone doesn't know is left
- * out. */
+ * " · N sessions" with a no-break space in "N sessions". A host goes by its
+ * label from the manifest's sources, or by its id before the manifest lists
+ * it; two broken plugins sharing a name each name their marketplace. A kind
+ * this phone doesn't know is left out. */
 export function notices(input: { hubNotices: readonly HubNotice[]; sources: readonly Source[] }): Notice[] {
+	// The count keeps its noun on its line: a no-break space joins them.
 	const withCount = (sentence: string, notice: HubNotice) =>
-		notice.affectedSessions ? `${sentence} · ${plural(notice.affectedSessions, "session")}` : sentence;
+		notice.affectedSessions
+			? `${sentence} · ${plural(notice.affectedSessions, "session").replace(" ", "\u00a0")}`
+			: sentence;
 	const brokenPlugins = input.hubNotices.filter((notice) => notice.kind === "pluginBroken");
 	return input.hubNotices.flatMap((notice): Notice[] => {
 		const key = notice.id;

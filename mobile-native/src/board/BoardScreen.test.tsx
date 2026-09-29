@@ -2578,7 +2578,7 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	const tree = await mount(nav);
 	expect(noticeTexts(tree)).toEqual([
 		"openai sign-in expiredSign in",
-		"Studio Mac is offline · 2 sessionsDetails",
+		"Studio Mac is offline · 2\u00a0sessionsDetails",
 		"superpowers is brokenPlugins",
 	]);
 	// The notices sit in the scroller, before the Live block.
@@ -2592,7 +2592,7 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		params: { hubId: id, focus: "openai", signIn: true },
 		initial: false,
 	});
-	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
+	pressLabel(tree, "Details, Studio Mac is offline · 2\u00a0sessions");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
 		screen: "Hosts",
 		params: { hubId: id, focus: "studio" },
@@ -2624,7 +2624,7 @@ it("hides notice actions while the hub is out of reach, keeping the notice rows"
 	rerender(tree, nav);
 	expect(noticeTexts(tree)).toEqual([
 		"openai sign-in expired",
-		"Studio Mac is offline · 2 sessions",
+		"Studio Mac is offline · 2\u00a0sessions",
 		"superpowers is broken",
 	]);
 	act(() => tree.unmount());
@@ -2639,7 +2639,7 @@ it("drops a notice once evener/notices/changed leaves it out, reading nothing fo
 	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
 	act(() => fake.noticesChanged([hostNotice, pluginNotice]));
 	await settle();
-	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2 sessionsDetails", "superpowers is brokenPlugins"]);
+	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2\u00a0sessionsDetails", "superpowers is brokenPlugins"]);
 	expect(fake.noticeReads).toHaveLength(1);
 	act(() => tree.unmount());
 });

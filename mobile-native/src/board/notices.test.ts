@@ -28,7 +28,7 @@ it("names each provider whose sign-in expired, with the sessions it blocks when 
 		{
 			key: "signInRequired:codex-jesse-fsck.com",
 			kind: "signIn",
-			text: "codex-jesse-fsck.com sign-in expired · 3 sessions",
+			text: "codex-jesse-fsck.com sign-in expired · 3\u00a0sessions",
 			action: "Sign in",
 			providerId: "codex-jesse-fsck.com",
 		},
@@ -55,7 +55,7 @@ it("names an offline host by its label from the manifest, with the hub's count",
 		{
 			key: "hostOffline:studio",
 			kind: "host",
-			text: "Studio Mac is offline · 1 session",
+			text: "Studio Mac is offline · 1\u00a0session",
 			action: "Details",
 			sourceId: "studio",
 		},
@@ -63,7 +63,7 @@ it("names an offline host by its label from the manifest, with the hub's count",
 		{
 			key: "hostOffline:rack",
 			kind: "host",
-			text: "rack is offline · 2 sessions",
+			text: "rack is offline · 2\u00a0sessions",
 			action: "Details",
 			sourceId: "rack",
 		},
@@ -110,6 +110,16 @@ it("names each broken plugin, and its marketplace when two broken plugins share 
 			marketplace: "evener",
 		},
 	]);
+});
+
+// A wrapped notice keeps its count with its noun, never "· 1" at a line's
+// end and "session" starting the next.
+it("joins a count to its noun with a no-break space", () => {
+	const [signIn] = notices({
+		hubNotices: [notice("signInRequired", "codex-jesse-fsck.com", { affectedSessions: 1 })],
+		sources: [],
+	});
+	expect(signIn?.text).toBe("codex-jesse-fsck.com sign-in expired · 1\u00a0session");
 });
 
 it("keeps the hub's order, and leaves out a kind it doesn't know", () => {
