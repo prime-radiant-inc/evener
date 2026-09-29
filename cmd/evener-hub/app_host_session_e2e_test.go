@@ -301,7 +301,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+	row, err := hostAddCommittedRow(ctx, client, appwire.HostAddParams{
 		Entry: appwire.HostEntry{
 			Name:       hostE2EName,
 			Address:    dest,
