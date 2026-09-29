@@ -72,13 +72,17 @@ func rollupContribution(state string, isSubagent bool) string {
 // lets a live approval change recompute the group without a tree fetch.
 func dashboardGroupState(sessions []hubRow) string {
 	state := ""
+	seeded := false
 	for _, row := range sessions {
 		if row.kind != hubRowSession {
 			continue
 		}
 		contribution := stateLabel(rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent))
-		if attentionRankLabel(contribution) > attentionRankLabel(state) {
+		// Seed from the first session unconditionally: a rank-0 state ("ended",
+		// "notLoaded") still names the group, and seeding "" would lose it.
+		if !seeded || attentionRankLabel(contribution) > attentionRankLabel(state) {
 			state = contribution
+			seeded = true
 		}
 	}
 	return state

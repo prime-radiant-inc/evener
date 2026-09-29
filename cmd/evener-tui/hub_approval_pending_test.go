@@ -263,6 +263,31 @@ func TestAttentionState_FailureOutranksApproval(t *testing.T) {
 	}
 }
 
+// An all-ended project folds to rank 0; the fold must still name it "ended",
+// not drop the rank-0 state and read "Not loaded" (roborev #3129 round 5).
+func TestDashboardGroupState_AllEndedProjectReadsEnded(t *testing.T) {
+	tree := hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "p", Name: "evener",
+		Sessions: []hubTreeNode{
+			{Ref: "local:e1", State: "ended", Live: false},
+			{Ref: "local:e2", State: "ended", Live: false},
+		},
+	}}}
+	m := hubModel{tree: tree, rows: buildDashboardRows(tree)}
+	if got := projectRowState(m.rows); got != "ended" {
+		t.Fatalf("all-ended project state = %q, want ended", got)
+	}
+	var project hubRow
+	for _, row := range m.rows {
+		if row.kind == hubRowProject {
+			project = row
+		}
+	}
+	if got := projectSummary(project, m.rows); !strings.Contains(got, "Ended") {
+		t.Fatalf("all-ended project summary = %q, want it to read Ended", got)
+	}
+}
+
 func projectRowState(rows []hubRow) string {
 	for _, row := range rows {
 		if row.kind == hubRowProject {
