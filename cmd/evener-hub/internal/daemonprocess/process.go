@@ -232,7 +232,10 @@ func (p *process) Kill() error {
 		// there is nothing to signal, and Wait confirms the exit (#3383).
 		// Generation plus exiting is enough: the OS handle (a pidfd on Linux)
 		// is bound to the process Open verified, so a reused PID can't answer.
-		if v, inspectErr := p.handle.inspect(p.target); inspectErr == nil && v.exiting && v.generation == p.generation {
+		// It may also finish exiting between the checks: the re-inspect then
+		// reports it gone, and the stop is done.
+		v, inspectErr := p.handle.inspect(p.target)
+		if errors.Is(inspectErr, ErrExited) || (inspectErr == nil && v.exiting && v.generation == p.generation) {
 			return nil
 		}
 		return err

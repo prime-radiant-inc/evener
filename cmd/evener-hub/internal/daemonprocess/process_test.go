@@ -426,3 +426,26 @@ func TestKillKeepsTheVerifyErrorWhenReinspectFails(t *testing.T) {
 		t.Fatal("an unverified process was signaled")
 	}
 }
+
+// The daemon can finish exiting between the failed verify and the
+// re-inspect: the re-inspect then reports it gone, and the stop is done, as
+// the verify and exited() paths already treat a gone process.
+func TestKillOfADaemonThatExitsDuringReinspectSucceeds(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	unverified := validIdentity()
+	unverified.argv = []string{""}
+	unverified.exiting = true
+	k.snapshots = []identity{unverified}
+	k.laterErr = ErrExited
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill of a daemon that exited mid-check = %v, want success", err)
+	}
+	if k.signals != 0 {
+		t.Fatal("an exited daemon was signaled")
+	}
+}
