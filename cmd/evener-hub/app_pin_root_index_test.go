@@ -118,3 +118,13 @@ func TestResolveTopLevelSessionRefPinsRemoteSessionsWithoutASnapshot(t *testing.
 		t.Fatalf("resolver built %d navigation snapshots, want 0", *calls)
 	}
 }
+
+func TestResolveTopLevelSessionRefRefusesEmptyRefEvenWithBlankLiveEntry(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		Past:   hubcore.NewPastIndex(""),
+		Roster: hubcore.NewRosterWithEntries(liveForPinTest("")),
+	})
+	if session, err := web.resolveTopLevelSessionRef(t.Context(), ""); err == nil {
+		t.Fatalf("resolve empty ref = %+v, want refusal", session)
+	}
+}

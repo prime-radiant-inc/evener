@@ -205,13 +205,10 @@ func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested str
 	// carries rows for is a missing session on that source; a ref that names
 	// no source at all is refused as an unknown source instead of being
 	// resolved against the controller's own rows.
-	if hubcore.NormalizeDecisionSource(ref.HostID) != "" {
-		if hostHasTopLevel {
-			return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
-		}
-		return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
+	if hostHasTopLevel {
+		return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
 	}
-	return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
+	return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
 }
 
 // resolveLocalTopLevelSession resolves a bare or "local:" ref against the
@@ -240,7 +237,7 @@ func (s *WebServer) resolveLocalTopLevelSession(requested string) (pinSession, e
 		if !s.cfg.Past.RootIndex().TopLevel(id) {
 			return pinSession{}, refused
 		}
-	} else if !slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool { return entry.SessionID == id }) {
+	} else if !slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool { return entry.SessionID != "" && entry.SessionID == id }) {
 		return pinSession{}, refused
 	}
 	key := hubcore.SessionPinIdentity(id)

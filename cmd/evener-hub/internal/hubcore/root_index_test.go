@@ -3,6 +3,7 @@ package hubcore
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -81,7 +82,7 @@ func TestGuardsHoldWhenSubagentMetaIsDropped(t *testing.T) {
 	}
 
 	// Roster before meta: once the meta folds in, the answer is unchanged.
-	withMeta := append(metas, schema.SessionMeta{ID: "01CHILD", IsSubagent: true, ParentSessionID: "01ROOT", UpdatedAt: now})
+	withMeta := append(slices.Clone(metas), schema.SessionMeta{ID: "01CHILD", IsSubagent: true, ParentSessionID: "01ROOT", UpdatedAt: now})
 	attention, sum = DeriveAttention(withMeta, live, nil)
 	if _, ok := attention["01CHILD"]; ok || sum.NeedsYou != 0 {
 		t.Fatalf("subagent with meta reached attention: %v %+v", attention, sum)
