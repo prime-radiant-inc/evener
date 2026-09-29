@@ -8,6 +8,7 @@ import {
 	createHostMutations,
 	friendlyErrorMessage,
 	HOST_GATE_TIMEOUT_MS,
+	HostMutationOutcomeError,
 	type HostEntry,
 	type HostMutationPair,
 	type HostMutations,
@@ -155,16 +156,30 @@ export class HostsController {
 	 * so the edit page can put it under the field it names, or say the host
 	 * changed since it opened. */
 	async update(name: string, entry: HostEntry, expected: HostMutationPair): Promise<void> {
-		await this.mutations.update({ name, entry, expected });
-		await this.read();
+		await this.commitThenRead(() => this.mutations.update({ name, entry, expected }));
 	}
 
 	/** Removes a host (evener/host/remove), then re-reads the rows. */
 	async remove(name: string): Promise<void> {
-		await this.mutations.remove(name);
+		await this.commitThenRead(() => this.mutations.remove(name));
 		// The hub has forgotten it: the rows drop it now, so its page leaves
-		// even when the read after this fails.
+		// even when the read above fails.
 		this.publish({ rows: this.state.rows?.filter((row) => row.name !== name) ?? null });
+	}
+
+	/** Runs an edit's or removal's commit and then re-reads the rows: on
+	 * success, and on a non-commit arm of the mutation-result union
+	 * (HostMutationOutcomeError, hostMutations.ts), which may still have
+	 * committed, so its row has to appear. Any other rejection - a hub refusal
+	 * - passes through without a read, exactly as before. */
+	private async commitThenRead(commit: () => Promise<unknown>): Promise<void> {
+		try {
+			await commit();
+		} catch (error) {
+			if (!(error instanceof HostMutationOutcomeError)) throw error;
+			await this.read();
+			throw error;
+		}
 		await this.read();
 	}
 
