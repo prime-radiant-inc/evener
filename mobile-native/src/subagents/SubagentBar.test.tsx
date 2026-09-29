@@ -22,7 +22,8 @@ it("stacks its buttons full width, each label on one line", () => {
 	for (const button of tree.root.findAll(
 		(node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button",
 	)) {
-		const style = typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style;
+		const style =
+			typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style;
 		expect(style.flex ?? 0).toBe(0);
 		expect(style.alignSelf ?? "stretch").toBe("stretch");
 	}
