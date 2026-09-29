@@ -23,8 +23,11 @@ func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
 	return s.navigation.EmptyMutation()
 }
 
+// projectKeyForStateDir names the project a PastEntry.StateDir belongs to. The
+// state dir is the project bucket itself (<state>/projects/<id>), so its base
+// is the project ID that keys navigation project resources.
 func projectKeyForStateDir(stateDir string) string {
-	return filepath.Base(filepath.Dir(stateDir))
+	return filepath.Base(stateDir)
 }
 
 var (
