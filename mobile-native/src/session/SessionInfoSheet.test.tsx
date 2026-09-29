@@ -115,7 +115,7 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 	const host: SessionInfoHost = {
 		session,
 		controls: controls as unknown as SessionControls,
-		hostLabel: (id) => (id === "local" ? "Work hub" : id),
+		host: (id) => ({ label: id === "local" ? "Work hub" : id, online: true }),
 		modelLabel: "Claude Sonnet 5 · High",
 		runMs: () => null,
 		ready: true,
@@ -204,6 +204,13 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(renderedText(tree)).toContain("Finished");
 	});
 
+	it("dims the host's dot while the host is offline", () => {
+		provide(conversation(), { host: (id) => ({ label: id === "local" ? "Work hub" : id, online: false }) });
+		const tree = sheet();
+		const hostRow = tree.root.find((node) => node.props.accessibilityLabel === "Work hub, offline");
+		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.inkLow);
+	});
+
 	it("says where the session runs", () => {
 		provide(conversation());
 		const tree = sheet();
@@ -213,6 +220,9 @@ describe("what the sheet shows (spec 8.6)", () => {
 		const directory = textNode(tree, "/​Users/​jesse/​git/​evener");
 		expect(styleOf(directory)).toMatchObject({ fontFamily: "Menlo" });
 		expect(symbols(tree)).toEqual(expect.arrayContaining(["server.rack", "folder", "arrow.triangle.branch"]));
+		// The host with its connection dot (spec 8.6).
+		const hostRow = tree.root.find((node) => node.props.accessibilityLabel === "Work hub, connected");
+		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.alive);
 	});
 
 	it("labels its sections 12pt semibold uppercase in ink-mid", () => {
