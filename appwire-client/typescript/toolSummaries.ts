@@ -8,8 +8,8 @@
 // ("Used github: create issue", "Used compact context"), never its raw name.
 
 import { parseAskUserQuestions } from "./askShared";
-import { diffStats, editDiffText } from "./editDiff";
 import { delegateSendWords } from "./delegateSteps";
+import { diffStats, editDiffText } from "./editDiff";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";

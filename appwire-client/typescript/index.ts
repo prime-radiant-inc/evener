@@ -148,6 +148,17 @@ export type {
   DelegateTimingFields,
 } from "./delegateDetails";
 export { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export {
+  type DelegateSendFooterInfo,
+  type DelegateSendRawState,
+  type DelegateSendStep,
+  delegateSendBase,
+  delegateSendFooter,
+  delegateSendSummary,
+  delegateSendTarget,
+  isDelegateSendResult,
+  statusWordFromText,
+} from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
@@ -251,17 +262,6 @@ export {
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
-export {
-  type DelegateSendFooterInfo,
-  type DelegateSendRawState,
-  type DelegateSendStep,
-  delegateSendBase,
-  delegateSendFooter,
-  delegateSendSummary,
-  delegateSendTarget,
-  isDelegateSendResult,
-  statusWordFromText,
-} from "./delegateSteps";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   createdWatchNote,
