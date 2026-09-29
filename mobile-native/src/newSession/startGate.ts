@@ -33,7 +33,8 @@ export interface StartInput {
 	 * the hub can't be asked for it (submit needs the list to start on it). */
 	unconfirmedModel: string | null;
 	/** A start of this very draft may already exist (the store's
-	 * startMayRepeat), so starting it again could make a second session. */
+	 * startMayRepeat), so starting it again could make a second session. The
+	 * store refuses it; this only holds Start. */
 	startMayRepeat: boolean;
 }
 
@@ -47,12 +48,9 @@ export interface StartBlock {
 
 export function startBlock(input: StartInput): StartBlock | null {
 	if (!input.ready || input.busy) return { field: null, message: null };
-	if (input.startMayRepeat)
-		return {
-			field: null,
-			message:
-				"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
-		};
+	// The store refuses to start such a draft, and its error already says why
+	// and what to do, so Start is held here without a second line.
+	if (input.startMayRepeat) return { field: null, message: null };
 	if (input.reach === "offline")
 		return { field: "host", message: `${input.hostLabel} is offline. Connect it or choose another host.` };
 	if (input.reach === "missing")

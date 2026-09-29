@@ -6,17 +6,22 @@
  * forgotten. What the first get passes after the hub goes to the maker, so an
  * instance keeps what it was made with. */
 export function perHub<T, A extends unknown[] = []>(make: (hubId: string, ...args: A) => T) {
-	const instances = new Map<string, T>();
+	// Each instance sits in its own entry, so one that is falsy is still made.
+	const instances = new Map<string, { instance: T }>();
 	return {
 		get(hubId: string, ...args: A): T {
-			if (!instances.has(hubId)) instances.set(hubId, make(hubId, ...args));
-			return instances.get(hubId) as T;
+			let entry = instances.get(hubId);
+			if (!entry) {
+				entry = { instance: make(hubId, ...args) };
+				instances.set(hubId, entry);
+			}
+			return entry.instance;
 		},
 		/** Drops the hub's instance, returning it so its owner can close it. */
 		forget(hubId: string): T | undefined {
-			const instance = instances.get(hubId);
+			const entry = instances.get(hubId);
 			instances.delete(hubId);
-			return instance;
+			return entry?.instance;
 		},
 	};
 }

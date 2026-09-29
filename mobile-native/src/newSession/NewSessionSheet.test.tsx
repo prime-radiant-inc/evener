@@ -21,6 +21,8 @@ const harness = vi.hoisted(() => ({
 	drafts: null as unknown as CreationDraftRepository,
 	memory: null as unknown,
 	context: null as unknown,
+	// The phone's saved hubs.
+	profiles: [{ id: "hub-1", name: "magic-kingdom" }] as { id: string; name: string }[],
 	// A thread/start the test answers itself, as a slow hub would.
 	heldStart: null as null | ((response: unknown) => void),
 }));
@@ -33,6 +35,7 @@ const client = {
 	},
 	onNotification: () => () => {},
 };
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ profiles: harness.profiles }) }));
 vi.mock("../retainedScreen", () => ({
 	useRetainedScreenConnection: () => ({
 		activeProfile: { id: "hub-1", name: "magic-kingdom" },
@@ -103,6 +106,7 @@ beforeEach(() => {
 	harness.memory = new LaunchMemory(memoryStorage(), "hub-1");
 	harness.context = null;
 	harness.heldStart = null;
+	harness.profiles = [{ id: "hub-1", name: "magic-kingdom" }];
 });
 
 it("names the hub's own machine after the hub (ruling 3)", async () => {
@@ -239,4 +243,22 @@ it("shows a reopened sheet the start still on its way, and never starts it twice
 	await settle();
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: false, prompt: "", cwd: "" });
 	reopened.tree.unmount();
+});
+
+it("makes no store for a hub that has been removed (#3104)", async () => {
+	harness.profiles = [];
+	// A store made for the hub would read its draft first.
+	let reads = 0;
+	harness.drafts = {
+		read: () => {
+			reads++;
+			return null;
+		},
+		write: () => {},
+		clear: () => {},
+	} as unknown as CreationDraftRepository;
+	const sheet = await mount();
+	expect(harness.context).toBeNull();
+	expect(reads).toBe(0);
+	sheet.tree.unmount();
 });

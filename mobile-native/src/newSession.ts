@@ -6,6 +6,7 @@ import {
 	pluginSelectionFromOverrides,
 	pluginSelectionIssues,
 	resolveScalars,
+	refusedBeforeRunning,
 	stripMarker,
 	WireError,
 } from "@evener/appwire-client";
@@ -23,12 +24,20 @@ import {
 	withOwnedOverrides,
 } from "./newSession/launchSetup";
 
-/** The store's own words when a start may exist but couldn't be confirmed:
- * a new connection took over mid-start, or a draft reopened with such a start. */
-export const START_UNCONFIRMED =
-	"Creation could not be confirmed. Check the session list before trying again; the session may exist.";
-export const EARLIER_START_UNCONFIRMED =
-	"An earlier creation could not be confirmed. Check the session list before trying again; the session may exist.";
+/** Why Start holds a draft whose start may exist. Every message that leaves
+ * such a draft ends with it, so the form shows one line that says what to do. */
+const MAY_HAVE_STARTED = "It may have started: check the Board before starting this draft again, or change the draft.";
+/** A new connection took over mid-start, or a draft reopened with such a start. */
+const START_UNCONFIRMED = `Creation could not be confirmed. ${MAY_HAVE_STARTED}`;
+const EARLIER_START_UNCONFIRMED = `An earlier creation could not be confirmed. ${MAY_HAVE_STARTED}`;
+/** A start landed but its draft couldn't be cleared: the draft stays, held,
+ * and this says why for as long as it does. */
+const CREATED_NOT_CLEARED =
+	"The session was created, but this draft couldn't be cleared from the device. Check the Board before starting it again, or change the draft.";
+
+/** Where a hub's store keeps its draft: the device's draft storage in the app,
+ * a double in tests. */
+export type DraftStorage = () => Pick<CreationDraftRepository, "read" | "write" | "clear">;
 
 type Outcome = { status: "created"; hubId: string; thread: Thread } | { status: "blocked" | "failed" | "obsolete" };
 interface Form {
@@ -124,10 +133,7 @@ function withoutModelChoice(layer: LaunchConfigLayer): LaunchConfigLayer {
 	return next;
 }
 
-export function createNewSessionStore(
-	hubId: string,
-	storage?: () => Pick<CreationDraftRepository, "read" | "write" | "clear">,
-) {
+export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	let service: NewSessionService | null = null;
 	let connection = 0;
 	let catalog = 0;
@@ -146,11 +152,19 @@ export function createNewSessionStore(
 	// model list to find it (applySeed). A move drops it, so it never lands in
 	// another project's or host's list.
 	let pendingModelId: string | null = null;
-	// The draft's content when its start became unconfirmed, for startMayRepeat.
+	// The draft's content when its start became unconfirmed (isUnconfirmedDraft),
+	// moved along by the host's own fill-ins, never by the person's edits.
 	let unconfirmedContent: string | null = null;
-	// The saved draft a start in flight sent, as the host's own fill-ins have
-	// moved it since: its landing clears that draft and no other.
-	let sentDraft: string | null = null;
+	/** Runs `fn` with the draft's autosave off, for changes the store saves
+	 * itself or must not save at all. */
+	function withoutSaving<T>(fn: () => T): T {
+		saving = true;
+		try {
+			return fn();
+		} finally {
+			saving = false;
+		}
+	}
 	/** The form moves: to another host or project, the latest start, a seed, or an
 	 * empty form after a start. Answers for the old place are dropped, a
 	 * session's model waiting for them goes, and a host change still answering
@@ -334,21 +348,18 @@ export function createNewSessionStore(
 					// The host's list filling in or clearing the model and effort isn't
 					// the person editing the draft: a draft whose start may exist stays
 					// that draft (#3104).
-					const unedited = unconfirmedContent !== null && draftContent() === unconfirmedContent;
-					if (unedited) saving = true;
-					set({
+					const listed = {
 						models: result.data,
 						recentModels: result.recent ?? [],
 						model,
 						reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning) ? reasoning : "",
 						modelError: null,
-					});
-					if (unedited) {
+					};
+					if (isUnconfirmedDraft()) {
+						withoutSaving(() => set(listed));
 						unconfirmedContent = draftContent();
-						saving = false;
 						saveDraft();
-						if (get().submitting) sentDraft = lastSaved;
-					}
+					} else set(listed);
 				}
 			} catch {
 				if (generation === catalog)
@@ -370,6 +381,9 @@ export function createNewSessionStore(
 				!current ||
 				get().retired ||
 				submitting ||
+				// A start of this very draft may exist: starting it again could
+				// make a second session (the form's Start only says so).
+				get().startMayRepeat() ||
 				get().movingHost ||
 				refreshingModels ||
 				!cwd.trim() ||
@@ -417,18 +431,12 @@ export function createNewSessionStore(
 				// Recorded before the save, which marks the saved draft unconfirmed
 				// only while its content is what this start sends.
 				unconfirmedContent = draftContent();
-				saving = true;
-				set({ unconfirmedCreation: true });
-				saving = false;
+				withoutSaving(() => set({ unconfirmedCreation: true }));
 				if (!saveDraft()) {
-					saving = true;
 					unconfirmedContent = previousContent;
-					set({ unconfirmedCreation: previouslyUnconfirmed });
-					saving = false;
+					withoutSaving(() => set({ unconfirmedCreation: previouslyUnconfirmed }));
 					return { status: "blocked" };
 				}
-				// The draft as this start sent it; only that draft is cleared when it lands.
-				sentDraft = lastSaved;
 				startDispatched = true;
 				creationRequested = true;
 				const result = await current.start({
@@ -441,39 +449,43 @@ export function createNewSessionStore(
 					...(Object.keys(launchOverrides).length ? { launchOverrides } : {}),
 				});
 				if (generation !== connection) return { status: "obsolete" };
-				if (storage) {
-					saving = true;
-					try {
-						// Another form on this hub may have saved a newer draft while
-						// the start was on its way; that draft, and this form, stay.
-						const stored = storage().read(hubId);
-						if (stored === null || creationDraftMetadata(stored) === sentDraft) {
+				if (storage)
+					withoutSaving(() => {
+						try {
+							// This store is the hub's one writer and refuses edits while its
+							// start is out, so the stored draft is the one this start sent,
+							// unless saving the host's fill-ins on the way failed. Then the
+							// draft stays as it is, still held, rather than be cleared
+							// unmatched or started twice.
+							const stored = storage().read(hubId);
+							if (stored !== null && creationDraftMetadata({ ...stored, unconfirmed: false }) !== unconfirmedContent) {
+								set({ error: CREATED_NOT_CLEARED });
+								return;
+							}
 							storage().clear(hubId);
 							emptyForm();
-						} else {
-							// The start is known to have worked, so the newer draft no
-							// longer says one may exist; it is otherwise left as it is.
-							storage().write(hubId, { ...stored, unconfirmed: false });
-							unconfirmedContent = null;
-							set({ unconfirmedCreation: false, error: null });
+							lastSaved = creationDraftMetadata(snapshot());
+						} catch {
+							set({ error: CREATED_NOT_CLEARED });
 						}
-						lastSaved = creationDraftMetadata(snapshot());
-					} catch {
-						set({
-							storageError:
-								"The session was created, but its local draft could not be cleared. Check the session list before reusing this draft.",
-						});
-					} finally {
-						saving = false;
-					}
-				}
+					});
 				return { status: "created", hubId, thread: result.thread };
 			} catch (error) {
 				if (generation !== connection) return { status: "obsolete" };
+				if (startDispatched && refusedBeforeRunning(error)) {
+					// The hub refused the start before running it: no session exists,
+					// so this draft isn't one that may have started, and Start stays.
+					unconfirmedContent = null;
+					set({
+						unconfirmedCreation: false,
+						error: `${error.message}\n\nNo session was started. Your input is kept.`,
+					});
+					return { status: "failed" };
+				}
 				set({
 					error: startDispatched
 						? (error instanceof WireError ? `${error.message}\n\n` : "") +
-							"Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist."
+							`Creation failed or could not be confirmed. Your input is kept. ${MAY_HAVE_STARTED}`
 						: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
 				});
 				return { status: "failed" };
@@ -560,7 +572,7 @@ export function createNewSessionStore(
 			get().bind(null);
 		},
 		startMayRepeat() {
-			return get().unconfirmedCreation && unconfirmedContent !== null && draftContent() === unconfirmedContent;
+			return get().unconfirmedCreation && isUnconfirmedDraft();
 		},
 		discard() {
 			if (get().submitting) return;
@@ -568,17 +580,15 @@ export function createNewSessionStore(
 				emptyForm();
 				return;
 			}
-			saving = true;
 			try {
-				storage().clear(hubId);
-				emptyForm();
-				lastSaved = creationDraftMetadata(snapshot());
+				withoutSaving(() => {
+					storage().clear(hubId);
+					emptyForm();
+					lastSaved = creationDraftMetadata(snapshot());
+				});
 			} catch {
 				// The empty form saves over the draft instead, or says it couldn't.
-				saving = false;
 				emptyForm();
-			} finally {
-				saving = false;
 			}
 		},
 	}));
@@ -609,8 +619,16 @@ export function createNewSessionStore(
 	 * app mustn't hold it as the one that may have started. */
 	function snapshot(): CreationDraft {
 		const draft = draftFields();
-		const sent = unconfirmedContent === null || creationDraftMetadata(draft) === unconfirmedContent;
-		return { ...draft, unconfirmed: store.getState().unconfirmedCreation && sent };
+		return {
+			...draft,
+			unconfirmed: store.getState().unconfirmedCreation && isUnconfirmedDraft(creationDraftMetadata(draft)),
+		};
+	}
+	/** Whether the draft (`content`, the form's by default) is still what a
+	 * start that couldn't be confirmed sent. With no such start, it isn't. */
+	function isUnconfirmedDraft(content = draftContent()): boolean {
+		if (unconfirmedContent === null) return false;
+		return content === unconfirmedContent;
 	}
 	function draftFields(): CreationDraft {
 		const state = store.getState();
@@ -634,60 +652,58 @@ export function createNewSessionStore(
 		const draft = snapshot();
 		const signature = creationDraftMetadata(draft);
 		if (signature === lastSaved && !store.getState().storageError) return true;
-		saving = true;
-		try {
-			storage().write(hubId, draft);
-			lastSaved = signature;
-			store.setState({ storageError: null });
-			return true;
-		} catch {
-			store.setState({
-				storageError:
-					"Changes could not be saved on this device. Keep this form open and retry saving before creating a session.",
-			});
-			return false;
-		} finally {
-			saving = false;
-		}
+		return withoutSaving(() => {
+			try {
+				storage().write(hubId, draft);
+				lastSaved = signature;
+				store.setState({ storageError: null });
+				return true;
+			} catch {
+				store.setState({
+					storageError:
+						"Changes could not be saved on this device. Keep this form open and retry saving before creating a session.",
+				});
+				return false;
+			}
+		});
 	}
 	function restoreDraft(): void {
 		if (!storage) return;
-		saving = true;
-		try {
-			const draft = storage().read(hubId);
-			if (draft) {
-				const { unconfirmed, source, harness: _harness, launchOverrides, ...fields } = draft;
-				// A per-launch model or effort, which only an older build could set,
-				// becomes the form's own choice, as a session's does (applySeed): the
-				// host's list finds the model, or the form says Hub default and sends
-				// none, so the form never shows one model while sending another.
-				const savedModel = launchOverrides.model?.trim();
-				const savedEffort = launchOverrides.reasoningEffort?.trim();
-				if (savedModel) pendingModelId = savedModel;
+		withoutSaving(() => {
+			try {
+				const draft = storage().read(hubId);
+				if (draft) {
+					const { unconfirmed, source, harness: _harness, launchOverrides, ...fields } = draft;
+					// A per-launch model or effort, which only an older build could set,
+					// becomes the form's own choice, as a session's does (applySeed): the
+					// host's list finds the model, or the form says Hub default and sends
+					// none, so the form never shows one model while sending another.
+					const savedModel = launchOverrides.model?.trim();
+					const savedEffort = launchOverrides.reasoningEffort?.trim();
+					if (savedModel) pendingModelId = savedModel;
+					store.setState({
+						...fields,
+						...(savedModel ? { model: null } : {}),
+						...(savedEffort ? { reasoning: savedEffort } : {}),
+						launchOverrides: withoutModelChoice(launchOverrides),
+						// A draft saved before hosts has none: the hub's own machine
+						// (ruling 28).
+						source: source || LOCAL_HOST,
+						unconfirmedCreation: unconfirmed,
+						error: unconfirmed ? EARLIER_START_UNCONFIRMED : null,
+					});
+				}
+				if (draft?.unconfirmed) unconfirmedContent = draftContent();
+				store.setState({ storageLoaded: true, storageError: null });
+				lastSaved = creationDraftMetadata(snapshot());
+			} catch {
 				store.setState({
-					...fields,
-					...(savedModel ? { model: null } : {}),
-					...(savedEffort ? { reasoning: savedEffort } : {}),
-					launchOverrides: withoutModelChoice(launchOverrides),
-					// A draft saved before hosts has none: the hub's own machine
-					// (ruling 28).
-					source: source || LOCAL_HOST,
-					unconfirmedCreation: unconfirmed,
-					error: unconfirmed ? EARLIER_START_UNCONFIRMED : null,
+					storageLoaded: false,
+					storageError:
+						"The saved creation draft could not be loaded. Retry loading it before editing or creating a session.",
 				});
 			}
-			if (draft?.unconfirmed) unconfirmedContent = draftContent();
-			store.setState({ storageLoaded: true, storageError: null });
-			lastSaved = creationDraftMetadata(snapshot());
-		} catch {
-			store.setState({
-				storageLoaded: false,
-				storageError:
-					"The saved creation draft could not be loaded. Retry loading it before editing or creating a session.",
-			});
-		} finally {
-			saving = false;
-		}
+		});
 	}
 	if (storage) {
 		restoreDraft();

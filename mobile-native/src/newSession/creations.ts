@@ -13,18 +13,11 @@
 // every store still bound to the old client (releaseCreations): a start sent
 // there reads as uncertain at once rather than starting forever, and Start
 // holds that draft until it changes (startMayRepeat).
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { createNewSessionService, type NewSessionService } from "../../../mobile/src/services/newSession";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { perHub } from "../board/perHub";
-import type { CreationDraftRepository } from "../creationDraftRepository";
-import { createNewSessionStore } from "../newSession";
-import type { NewSessionRoutes, NewSessionStore } from "./newSessionContext";
-
-/** Where a hub's store keeps its draft: the device's draft storage in the
- * app (NewSessionSheet hands it in), a double in tests. Handed in rather than
- * imported, so the form can reach this module without loading native storage. */
-export type DraftStorage = () => Pick<CreationDraftRepository, "read" | "write" | "clear">;
+import { createNewSessionStore, type DraftStorage } from "../newSession";
+import type { NewSessionStore } from "./newSessionContext";
 
 const stores = perHub((hubId, storage: DraftStorage) => createNewSessionStore(hubId, storage));
 const services = new WeakMap<ConversationClientLike, NewSessionService>();
@@ -32,7 +25,9 @@ const services = new WeakMap<ConversationClientLike, NewSessionService>();
 const bound = new Map<NewSessionStore, ConversationClientLike>();
 
 /** The hub's creation store, made on first use with `storage`, which it
- * keeps, and kept until the hub is removed. */
+ * keeps, and kept until the hub is removed. The storage is handed in (by
+ * NewSessionSheet) rather than imported, so the form can reach this module
+ * without loading native storage. */
 export function creationStore(hubId: string, storage: DraftStorage): NewSessionStore {
 	return stores.get(hubId, storage);
 }
@@ -69,31 +64,4 @@ export function forgetCreationForHub(hubId: string): void {
 	if (!store) return;
 	bound.delete(store);
 	store.getState().retire();
-}
-
-/** The form showing a store: when a start lands, the form in front then
- * (perhaps a sheet reopened meanwhile) opens the session or shows why it
- * failed. With none in front, a session made is announced, and a failure
- * waits on the store for the form to show when it opens. */
-export interface FormFront {
-	navigation: Pick<NativeStackNavigationProp<NewSessionRoutes, "Form">, "isFocused" | "getParent">;
-	latest: { current: { ready: boolean; client: unknown } };
-}
-
-/** Each store's forms, oldest first: the last is in front. */
-const fronts = new WeakMap<NewSessionStore, FormFront[]>();
-
-/** Makes `front` the store's form in front until the returned release runs;
- * then the form under it, if any, is in front again. */
-export function showForm(store: NewSessionStore, front: FormFront): () => void {
-	fronts.set(store, [...(fronts.get(store) ?? []), front]);
-	return () => {
-		const rest = (fronts.get(store) ?? []).filter((shown) => shown !== front);
-		if (rest.length > 0) fronts.set(store, rest);
-		else fronts.delete(store);
-	};
-}
-
-export function formFront(store: NewSessionStore): FormFront | undefined {
-	return fronts.get(store)?.at(-1);
 }

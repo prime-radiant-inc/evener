@@ -90,11 +90,7 @@ describe("a chosen model the host couldn't list", () => {
 });
 
 describe("a draft whose last start may have worked (#3104)", () => {
-	it("holds Start and says why, so it isn't started twice", () => {
-		expect(startBlock({ ...ready, startMayRepeat: true })).toEqual({
-			field: null,
-			message:
-				"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
-		});
+	it("holds Start, leaving the store's own error as the one line that says why", () => {
+		expect(startBlock({ ...ready, startMayRepeat: true })).toEqual({ field: null, message: null });
 	});
 });

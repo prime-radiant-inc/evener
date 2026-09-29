@@ -10,6 +10,7 @@ import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
@@ -34,7 +35,14 @@ import { useSheetLaunchDefaults } from "./useLaunchDefaults";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
-export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSession">) {
+export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSession">) {
+	const { profiles } = useConnection();
+	// A removed hub has no store: none is made for it while rendering.
+	if (!profiles.some((profile) => profile.id === props.route.params.hubId)) return null;
+	return <NewSessionSheetBody {...props} />;
+}
+
+function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSession">) {
 	const { hubId, hubName, like } = route.params;
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const { palette } = useColors();
