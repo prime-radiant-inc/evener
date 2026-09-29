@@ -43,7 +43,17 @@ export const keyboard = (() => {
 	const emit = (event: string) => {
 		for (const listener of listeners.get(event) ?? []) listener();
 	};
+	let visible = false;
 	return {
+		get visible() {
+			return visible;
+		},
+		/** How many listeners are subscribed to `event`. */
+		listening(event: string) {
+			return listeners.get(event)?.size ?? 0;
+		},
+		/** Sends one Keyboard event on its own, as a platform would. */
+		emit,
 		addListener(event: string, listener: () => void) {
 			const set = listeners.get(event) ?? new Set();
 			set.add(listener);
@@ -51,10 +61,12 @@ export const keyboard = (() => {
 			return { remove: () => set.delete(listener) };
 		},
 		show() {
+			visible = true;
 			emit("keyboardWillShow");
 			emit("keyboardDidShow");
 		},
 		hide() {
+			visible = false;
 			emit("keyboardWillHide");
 			emit("keyboardDidHide");
 		},
@@ -176,7 +188,7 @@ export function nativeModuleMock() {
 
 	return {
 		AccessibilityInfo: {
-			announceForAccessibility: () => {},
+			announceForAccessibility: vi.fn(),
 			isReduceMotionEnabled: () => Promise.resolve(false),
 			addEventListener: () => ({ remove: () => {} }),
 		},
@@ -189,7 +201,11 @@ export function nativeModuleMock() {
 		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
 		Image: "Image",
-		Keyboard: { addListener: keyboard.addListener, dismiss: vi.fn(() => keyboard.hide()) },
+		Keyboard: {
+			addListener: keyboard.addListener,
+			dismiss: vi.fn(() => keyboard.hide()),
+			isVisible: () => keyboard.visible,
+		},
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },

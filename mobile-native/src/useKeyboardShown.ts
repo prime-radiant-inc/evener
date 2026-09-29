@@ -5,7 +5,8 @@ import { Keyboard, Platform } from "react-native";
  * so a layout that answers it moves with the keyboard; Android says so once
  * it has moved. */
 export function useKeyboardShown(): boolean {
-	const [shown, setShown] = useState(false);
+	// A screen that mounts with the keyboard already up starts from that.
+	const [shown, setShown] = useState(() => Keyboard.isVisible());
 	useEffect(() => {
 		const ios = Platform.OS === "ios";
 		const subscriptions = [

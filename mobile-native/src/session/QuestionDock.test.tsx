@@ -5,10 +5,11 @@
 import type { AskQuestionRef } from "@evener/appwire-client";
 import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
 import type { QuestionSelections } from "../questionAnswers";
-import { dockBody, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
+import { AccessibilityInfo } from "react-native";
+import { dockBody, keyboard, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
@@ -77,13 +78,12 @@ function mount(
 		ready = true,
 		folded = false,
 		error = null,
-		typing = false,
-	}: { ready?: boolean; folded?: boolean; error?: string | null; typing?: boolean } = {},
+		composerUp = false,
+	}: { ready?: boolean; folded?: boolean; error?: string | null; composerUp?: boolean } = {},
 ) {
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
 	const onOtherAnswer = vi.fn();
-	const onShowOptions = vi.fn();
 	function Dock() {
 		const draft = useQuestionDraft(destination, questions);
 		const [isFolded, setFolded] = useState(folded);
@@ -101,13 +101,12 @@ function mount(
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
 				error={error}
-				typing={typing}
-				onShowOptions={onShowOptions}
+				composerUp={composerUp}
 			/>
 		);
 	}
 	const tree = render(<Dock />);
-	return { tree, onSend, onFold, onOtherAnswer, onShowOptions };
+	return { tree, onSend, onFold, onOtherAnswer };
 }
 
 function press(tree: ReactTestRenderer, label: string) {
@@ -259,8 +258,16 @@ describe("a question taller than the room the screen gives the dock", () => {
 });
 
 describe("while you type your own answer (spec 8.4, Other answer…)", () => {
+	// The composer is back under the dock and the keyboard is up for it.
+	function typing() {
+		const mounted = mount(two, { composerUp: true });
+		act(() => keyboard.show());
+		return mounted;
+	}
+	afterEach(() => act(() => keyboard.hide()));
+
 	it("shows only the header and the scrolling question, with no options or answer controls", () => {
-		const { tree } = mount(two, { typing: true });
+		const { tree } = typing();
 		const body = dockBody(tree, "question-dock");
 		expect(textOf(body.scroller)).toContain("Flags?");
 		expect(textOf(body.scroller)).toContain("Why flags");
@@ -271,11 +278,28 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 			expect(pressable(tree, label)).toBeUndefined();
 	});
 
-	it("offers Show options, which hides the keyboard so the options come back", () => {
-		const { tree, onShowOptions } = mount(two, { typing: true });
+	it("offers Show options, which lowers the keyboard, brings the options back and says so", () => {
+		const { tree } = typing();
 		expect(pressable(tree, "Show options")?.props.accessibilityHint).toBe("Hides the keyboard");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
 		press(tree, "Show options");
-		expect(onShowOptions).toHaveBeenCalledTimes(1);
+		expect(optionLabels(tree)).toEqual(["Keep them", "Drop them"]);
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		expect(announced).toHaveBeenCalledWith("Options shown");
+	});
+
+	it("keeps the options while the keyboard is up for something else, or down under the composer", () => {
+		const other = mount(two);
+		act(() => keyboard.show());
+		expect(optionLabels(other.tree)).toEqual(["Keep them", "Drop them"]);
+		act(() => keyboard.hide());
+		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual(["Keep them", "Drop them"]);
+	});
+
+	it("opens already typing when the keyboard was up before the dock mounted", () => {
+		act(() => keyboard.show());
+		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual([]);
 	});
 
 	it("has no Show options while the options are showing", () => {

@@ -92,7 +92,6 @@ import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
-import { useKeyboardShown } from "./session/useKeyboardShown";
 import { useQuestionDraft } from "./session/useQuestionDraft";
 import { QuestionBatches } from "./questionBatches";
 import {
@@ -2382,7 +2381,6 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	const keyboardShown = useKeyboardShown();
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
@@ -2827,10 +2825,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									// Typing your own answer with the keyboard up, the room is
-									// short: the dock keeps only the question (spec 8.4).
-									typing={composerShown && keyboardShown}
-									onShowOptions={Keyboard.dismiss}
+									composerUp={composerShown}
 								/>
 							) : null}
 						</View>

@@ -634,12 +634,27 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
 		await press(tree, "Other answer…");
 		act(() => keyboard.show());
-		await press(tree, "Show options");
+		act(() => pressable(tree, "Show options")?.props.onPress());
 		expect(pressable(tree, "Send answer")).toBeDefined();
 		expect(pressable(tree, "Show options")).toBeUndefined();
 	});
 
-	it("lowers the keyboard when you drag the transcript", async () => {
+	it("sends what you typed as the answer while the keyboard is up", async () => {
+		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		await type(tree, "Drop them");
+		const send = composerSend(tree, "Send your answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "turn/start").map((request) => request.params.input),
+		).toEqual([[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }]]);
+		act(() => keyboard.hide());
+	});
+
+	it("lets a drag lower the keyboard", async () => {
 		const { tree } = await mount(thread("ref-question-drag", "awaiting", true));
 		const [list] = tree.root.findAll(
 			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
@@ -1732,6 +1747,15 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const body = dockBody(tree, "approval-dock");
 		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
 		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("keeps Allow and Deny while the keyboard is up", async () => {
+		const { tree } = await mount(withApproval("ref-approval-keyboard"));
+		act(() => keyboard.show());
+		expect(pressable(tree, "Allow this file only")).toBeDefined();
+		expect(pressable(tree, "Deny")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		act(() => keyboard.hide());
 	});
 
 	it("wires only the approval dock's slot to shrink", async () => {
