@@ -41,7 +41,7 @@ import { useConnection } from "../ConnectionProvider";
 import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
-import { useReduceMotion } from "../reduceMotion";
+import { useReduceMotion } from "../accessibilitySettings";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";

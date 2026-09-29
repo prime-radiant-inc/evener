@@ -59,7 +59,7 @@ func TestRosterReadSpawnedThreadCarriesTheThreadRowsFields(t *testing.T) {
 	}
 	// The full probe builds its ProbeResult with this same constructor, so the
 	// two paths agree on every field the thread row carries (#2962).
-	want := probeResultFromThread(thread)
+	want := ProbeResultFromThread(thread)
 	if want.Subagents != live.Subagents || !reflect.DeepEqual(want.Activity, live.Activity) ||
 		!want.LastTurnEndedAt.Equal(live.LastTurnEndedAt) {
 		t.Fatalf("probe result %+v and spawned read %+v disagree on the thread row's fields", want, live)
