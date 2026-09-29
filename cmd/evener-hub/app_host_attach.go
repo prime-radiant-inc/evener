@@ -95,15 +95,6 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 				name, remnantID))
 		}
 	}
-	// §8's admission fence, beside the remnant fence and before any dial: a
-	// quarantined host refuses with the fencing-failure form, and a host holding
-	// an open orphan-unverified record refuses transient busy — the quarantine
-	// form wins wherever the marker is present.
-	if cfg.HostOrphanFence != nil {
-		if err := cfg.HostOrphanFence(name); err != nil {
-			return appwire.HostAttachResponse{}, err
-		}
-	}
 	// The dialing seam is wired by main.go for every production hub. A hub with
 	// no seam (an embedder or a hermetic test) cannot attach anything.
 	if cfg.RemoteHostClient == nil {
