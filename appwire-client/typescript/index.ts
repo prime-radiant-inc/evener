@@ -444,6 +444,19 @@ export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSch
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export {
+  decodeNotificationEntities,
+  escapeNotificationEntities,
+  isNotificationRemnant,
+  isValidTranscriptRef,
+  type NotificationOutcome,
+  type NotificationTone,
+  type ParsedNotification,
+  parseSteeringNotifications,
+  type SteeringFragment,
+  steeringNotificationFragments,
+  stripSystemReminder,
+} from "./steeringNotifications";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,

@@ -28,7 +28,7 @@ const VERDICTS: readonly { verdict: Verdict; label: string }[] = [
 ];
 
 export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes, "ReviewSheet">) {
-	const { hubId, sessionRef, path, reviewRef, reviewTitle } = route.params;
+	const { hubId, sessionRef, path, sessionTitle } = route.params;
 	const { client, state } = useConnection();
 	const online = state === "ready" && client !== null;
 	const memory = documentMemory(hubId);
@@ -51,7 +51,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		setSend(null);
 		if (!online || !client) return;
 		let current = true;
-		readSendAction(getNativeMutationRuntime(), client, hubId, reviewRef)
+		readSendAction(getNativeMutationRuntime(), client, hubId, sessionRef)
 			.then((next) => {
 				if (current) setSend(next);
 			})
@@ -61,7 +61,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		return () => {
 			current = false;
 		};
-	}, [online, client, hubId, reviewRef]);
+	}, [online, client, hubId, sessionRef]);
 
 	const canSend = online && send !== null && send.action !== "none";
 	const submit = async () => {
@@ -72,7 +72,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			// The session may have started or stopped working since the sheet
 			// read it, so Send asks again: queue while it works, never steer.
 			const runtime = getNativeMutationRuntime();
-			const now = await readSendAction(runtime, client, hubId, reviewRef);
+			const now = await readSendAction(runtime, client, hubId, sessionRef);
 			setSend(now);
 			if (now.action === "none") {
 				setSending(false);
@@ -91,7 +91,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle }));
+		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
 	};
 
 	const why = !online
@@ -106,7 +106,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			numberOfLines={1}
 			style={{ ...small, color: palette.inkMid, paddingHorizontal: 16, paddingBottom: 8, textAlign: "center" }}
 		>
-			{`To ${reviewTitle} · ${basename(path)}`}
+			{`To ${sessionTitle} · ${basename(path)}`}
 		</Text>
 	);
 	return (

@@ -32,9 +32,15 @@ function stateFromRow(row: Activity): SubagentLine["state"] {
 	return row.state === "running" ? "running" : row.state === "failed" ? "failed" : "done";
 }
 
-function titleOf(row: Activity, delegate: EvenerDelegateInfo | undefined): string {
+/** A subagent's title from its own record: its description, else its task's
+ * first line. Undefined when it has neither. */
+export function delegateTitle(delegate: EvenerDelegateInfo | undefined): string | undefined {
 	const task = delegate?.task?.split("\n")[0]?.trim();
-	return delegate?.description?.trim() || task || row.detail.description?.trim() || "Subagent";
+	return delegate?.description?.trim() || task || undefined;
+}
+
+function titleOf(row: Activity, delegate: EvenerDelegateInfo | undefined): string {
+	return delegateTitle(delegate) || row.detail.description?.trim() || "Subagent";
 }
 
 export function subagentLine(

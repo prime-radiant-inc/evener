@@ -28,7 +28,6 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -165,14 +164,6 @@ type hostTOMLRecords struct {
 	// the file's older record would ride back over the raise — and for a
 	// tombstoned name the twin pair would then disagree and refuse the write.
 	raisedHighWater map[string]struct{}
-	// provisioning is the bootstrap half of the per-host machine records the
-	// write carries (crash-fencing §6:131-137), keyed by host name: the durable
-	// bootstrap-attempt fence and the converged helperInstalled flag with the
-	// version record its finalize wrote. It is derived from the store's snapshot
-	// and merged by the derivation's own change, so the two bootstrap writes are
-	// staged and installed under the same derive-then-install rule as every
-	// other record set.
-	provisioning map[string]hostfence.Provisioning
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

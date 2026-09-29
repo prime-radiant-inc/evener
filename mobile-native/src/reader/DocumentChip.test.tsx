@@ -107,6 +107,12 @@ it("shows the kind and file name at once, then the title, the length and the age
 	);
 });
 
+it("shows the file name once before its summary lands", () => {
+	const tree = chip({ updatedAt: new Date(Date.now() - 3 * MINUTE).toISOString() });
+	expect(renderedText(tree).match(/settle-race\.md/g)).toHaveLength(1);
+	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, 3 minutes ago");
+});
+
 it("shows no age for a file the session only named", async () => {
 	const tree = chip();
 	await settle();
@@ -126,6 +132,21 @@ it("reads a document once for every chip that shows it", async () => {
 	chip();
 	await settle();
 	expect(fetchSpy).toHaveBeenCalledOnce();
+});
+
+it("forgets an older write's summary once the document is written again", async () => {
+	const older = new Date(Date.now() - 10 * MINUTE).toISOString();
+	const newer = new Date(Date.now() - 3 * MINUTE).toISOString();
+	chip({ updatedAt: older });
+	await settle();
+	expect(fetchSpy).toHaveBeenCalledTimes(1);
+	chip({ updatedAt: newer });
+	await settle();
+	expect(fetchSpy).toHaveBeenCalledTimes(2);
+	// The older write's summary is gone, so a chip still naming it reads afresh.
+	chip({ updatedAt: older });
+	await settle();
+	expect(fetchSpy).toHaveBeenCalledTimes(3);
 });
 
 it("waits for the hub's origin before it reads, then reads from it", async () => {
@@ -160,7 +181,7 @@ describe("since you last read it", () => {
 	const read = (updatedAt: string) =>
 		memory.left(
 			{ sessionRef: "local:fix", path: PATH },
-			{ title: "Plan", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix", updatedAt },
+			{ title: "Plan", blocks: [], position: null, sessionTitle: "Fix", updatedAt },
 		);
 	const dots = (tree: ReactTestRenderer) =>
 		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill");

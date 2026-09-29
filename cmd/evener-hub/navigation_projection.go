@@ -1896,7 +1896,6 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),
-		MoreSubagents:       node.MoreSubagents,
 		Subagents:           navigationSubagentTally(node.Subagents),
 		TurnEndedAt:         optionalTime(node.TurnEndedAt),
 		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),

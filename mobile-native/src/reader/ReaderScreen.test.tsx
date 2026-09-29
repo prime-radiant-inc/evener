@@ -176,7 +176,7 @@ beforeEach(() => {
 		index: 2,
 		routes: [
 			{ key: "board", name: "Sessions" },
-			{ key: "coord", name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Coordinator" } },
+			{ key: "fix", name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ key: "reader-1", name: "Reader" },
 		],
 	};
@@ -220,8 +220,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 		...extra,
 	};
 	const element = (
@@ -352,8 +351,7 @@ it("marks what changed since your last read, and steps through the changes", asy
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	clockOffset = 0;
 	const { tree } = await mount();
@@ -381,10 +379,9 @@ it("keeps Send review on one line beside the change stepper", async () => {
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:fix",
-		reviewTitle: "Fix race",
+		sessionTitle: "Fix race",
 	});
-	const { tree, rerender } = await mount(PATH, { reviewRef: "local:fix", reviewTitle: "Fix race" });
+	const { tree, rerender } = await mount(PATH, { sessionTitle: "Fix race" });
 	act(() =>
 		client.emitNotification({
 			method: "thread/status/changed",
@@ -415,8 +412,7 @@ it("starts the steps over when a re-read changes what changed", async () => {
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	const { tree } = await mount();
 	act(() => pressable(tree, "Previous change")?.props.onPress());
@@ -435,8 +431,7 @@ it("keeps your step when a re-read finds the same changes", async () => {
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	const { tree } = await mount();
 	act(() => pressable(tree, "Next change")?.props.onPress());
@@ -513,8 +508,7 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 		sessionRef: "local:fix",
 		path: PATH,
 		title: "Settle the race",
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 		progress: 0.5,
 	});
 });
@@ -538,8 +532,7 @@ it("keeps the version you last read when you leave a document that didn't load",
 		title: "Settle the race",
 		blocks: older,
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	served[PATH] = { status: 500, body: "boom" };
 	await mount();
@@ -594,8 +587,7 @@ it("says why it can't show a binary, a missing file, or another host's document"
 						hubId: "studio",
 						sessionRef: "laptop:fix",
 						path: PATH,
-						reviewRef: "laptop:fix",
-						reviewTitle: "Fix",
+						sessionTitle: "Fix",
 					},
 				} as never
 			}

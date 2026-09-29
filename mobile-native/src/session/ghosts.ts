@@ -26,7 +26,9 @@ export type RecoveryGhostRow = Pick<
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
 	| { kind: "pending"; clientMutationId: string }
-	| { kind: "draft" }
+	// A draft that stands in for a matched outbox row carries that row's id, so
+	// its Discard can clear both (the draft's uncertainty and the row).
+	| { kind: "draft"; clientMutationId?: string }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -127,7 +129,9 @@ export function ghosts(
 			caption: sending && !connected ? WAITING_TO_SEND : CAPTIONS[state],
 			buttons: sending ? [] : confirmButtons,
 			menu: sending ? [] : ["edit"],
-			origin: { kind: "draft" },
+			// The outbox row this ghost stands in for, when there is one: Discard
+			// must clear both, or the row returns as its own ghost.
+			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
 		});
 	}
 	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));

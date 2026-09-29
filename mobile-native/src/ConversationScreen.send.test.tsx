@@ -46,6 +46,7 @@ import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetT
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 
@@ -311,10 +312,19 @@ const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) =
 		stop: () => ({ outcome: "stopping" }),
 		readFails: null,
 	};
+// Whether thread/read answers with a history identity, as a v6 hub does:
+// only then does the store take live pushes (overlay streams among them).
+const readHistory = { live: false };
+const READ_HISTORY_IDENTITY = {
+	bootGeneration: "1",
+	epoch: 1,
+	snapshot: { incarnation: "inc-1", length: 0 },
+} as const;
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
 afterEach(() => {
 	catalogHub.fails = false;
+	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
 	coordinatorHub.tree = null;
@@ -362,7 +372,11 @@ function hubClient(
 				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
-				return { thread, ...(olderCursor ? { olderCursor } : {}) };
+				return {
+					thread,
+					...(olderCursor ? { olderCursor } : {}),
+					...(readHistory.live ? READ_HISTORY_IDENTITY : {}),
+				};
 			}
 			// The page before the first read: older turns, and the start of history.
 			if (method === "thread/turns/list") return { data: olderTurns };
@@ -1084,6 +1098,178 @@ function scrollTo(tree: ReactTestRenderer, y: number) {
 	);
 }
 
+describe("following the live end (spec 8.2)", () => {
+	// scrollTo's list is 4,000pt tall in a 600pt viewport: 3,400 is its end.
+	const END = 3_400;
+	const at = (y: number, content = 4_000) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: content }, layoutMeasurement: { height: 600 } },
+	});
+	const list = (tree: ReactTestRenderer) => transcriptList(tree);
+	// A drag the way a finger makes one: it begins, the list scrolls through
+	// each offset, and it ends at the last.
+	function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
+		for (const y of offsets) scrollTo(tree, y);
+		act(() => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+	}
+	// A reply streaming into the session: a new row below whatever you read.
+	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
+		const key = `stream:${id}:agentMessage`;
+		act(() =>
+			hub.notify({
+				method: "overlay/upserted",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					item: {
+						key,
+						kind: "stream",
+						turnId: "turn_2",
+						roundId: id,
+						streamId: id,
+						item: { id: key, type: "agentMessage", text: `streamed ${id}`, status: "inProgress" },
+					},
+				},
+			} as unknown as AnyNotification),
+		);
+	}
+	// The list growing, as it does when a row lands. Whether the screen
+	// answered by scrolling to the end says whether it follows.
+	function contentGrows(tree: ReactTestRenderer, height: number) {
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onContentSizeChange(390, height));
+		return flatListCalls.some((call) => call.method === "scrollToEnd");
+	}
+	beforeEach(() => {
+		readHistory.live = true;
+	});
+	// Two turns, the second still running, so replies can stream into it.
+	function working(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1"),
+			{ ...askReplyTurn("turn_2"), status: "inProgress" },
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnId = "turn_2";
+		return served;
+	}
+	const pill = (tree: ReactTestRenderer) =>
+		tree.root.findAll((node) =>
+			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
+		)[0];
+
+	it("stops following when you drag up, and says what landed below", async () => {
+		const served = working("ref-follow-away");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "s1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
+		const served = working("ref-follow-again");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		act(() => list(tree).props.onScrollBeginDrag(at(100)));
+		scrollTo(tree, END);
+		stream(hub, served, "s2");
+		// A row landing mid-drag doesn't pull the list from under the finger.
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onScrollEndDrag(at(END)));
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "s2b");
+		expect(contentGrows(tree, 4_400)).toBe(true);
+	});
+
+	it("doesn't follow after a drag that reached the end and came back up", async () => {
+		const served = working("ref-follow-back-up");
+		const { tree } = await mount(served);
+		drag(tree, 100, END, 1_000);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again when a flick's momentum carries you to the end", async () => {
+		const served = working("ref-follow-flick");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		drag(tree, 1_000);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, END);
+		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
+		stream(hub, served, "s3");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
+		const served = working("ref-follow-coast");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100, END);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, 2_000);
+		stream(hub, served, "m1");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onMomentumScrollEnd(at(2_000)));
+		expect(contentGrows(tree, 4_400)).toBe(false);
+	});
+
+	it("follows a transcript shorter than the screen once you let go", async () => {
+		const served = working("ref-follow-short");
+		const { tree } = await mount(served);
+		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
+		act(() => list(tree).props.onScrollEndDrag(at(0, 300)));
+		expect(contentGrows(tree, 320)).toBe(true);
+	});
+
+	it("stays unfollowed when the app itself scrolls to the end", async () => {
+		const served = working("ref-follow-app-scroll");
+		const { tree } = await mount(served);
+		drag(tree, 100);
+		// No finger: a restore or the list settling lands at the end.
+		scrollTo(tree, END);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("counts what landed since you last left the end", async () => {
+		const served = working("ref-follow-counts");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "c1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		drag(tree, END);
+		expect(pill(tree)).toBeUndefined();
+		drag(tree, 100);
+		stream(hub, served, "c2");
+		stream(hub, served, "c3");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
+	});
+
+	it("follows again from the pill, which then goes", async () => {
+		const served = working("ref-follow-pill");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "p1");
+		flatListCalls.length = 0;
+		act(() => pill(tree)?.props.onPress());
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "p2");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("keeps the end in view when the viewport changes while following, as the keyboard does", async () => {
+		const served = working("ref-follow-viewport");
+		const { tree } = await mount(served);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		drag(tree, 100);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
+	});
+});
+
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
 	const { tree } = await mount(thread("ref-empty", "idle"));
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
@@ -1759,6 +1945,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1772,6 +1959,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
@@ -1784,7 +1974,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
 		const served = withApproval("ref-approval-long");
-		const deniedPath = `/home/jesse/sites/${"docs/reference/appwire/protocol/".repeat(6)}index.html`;
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
 		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
 			.pendingEscalations;
 		if (!escalation) throw new Error("no escalation");
@@ -2254,8 +2444,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
-			reviewRef: "ref-chips",
-			reviewTitle: "Session",
+			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
 	});
@@ -2638,9 +2827,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
-	/** The coordinator's thread, as the phone reads it without following it. */
-	function coordinator(stopSubagent: boolean) {
+	/** The coordinator's thread, as the phone reads it without following it.
+	 * `id` models a coordinator that restarted under a new thread. */
+	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
 		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { id: string }).id = id;
 		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
 			...CAPABILITIES,
 			...(stopSubagent ? { stopSubagent: true } : {}),
@@ -2660,9 +2851,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2822,6 +3016,16 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		// The screen opened with the route's thread, but the coordinator has
+		// since restarted under a new one: its tree comes back under that new
+		// thread, so the panel must ask for it by the thread it reads now.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
@@ -3011,8 +3215,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race in tree settle",
+			sessionTitle: "Fix race in tree settle",
 		});
 	});
 
@@ -3208,4 +3411,33 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		expect(hub.mutations()).toEqual(["turn/queue"]);
 		expect(pressable(tree, "Discard")).toBeDefined();
 	});
+});
+
+it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
+	const ref = "ref-draft-lost";
+	const key = nativeMutationTargetKey("hub-1", ref);
+	const runtime = getNativeMutationRuntime();
+	// The draft kept a send the outbox also holds, and the outbox couldn't
+	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
+	// the blockedUnknown row. Seed that exact pair before mounting.
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { clientMutationId } = await runtime.storage.enqueueIntent({
+		targetRef: key,
+		method: "turn/start",
+		payload: { ref, input: [{ type: "text", text: "lost send" }] },
+		attachments: [],
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
+	});
+	await runtime.storage.markAttempted(clientMutationId);
+	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
+
+	const { tree } = await mount(thread(ref, "idle"));
+	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await press(tree, "Discard");
+
+	// One Discard clears both: the draft's uncertainty and the row it stood in
+	// for, which otherwise returns as its own ghost.
+	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
+	await settle();
+	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
 });

@@ -109,14 +109,17 @@ fuzz:
 # commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
 # The third line is the same idea one layer up: the hub's recorded credential-
 # wire answers, which the TUI and the React pane decode instead of hand-building
-# InstanceEntry/AuthStatusResponse values of their own.
+# InstanceEntry/AuthStatusResponse values of their own. The fourth records the
+# daemon's delegate and job notification frames as steering items, which the
+# AppWire package and the phone parse instead of hand-building frames.
 ## Regenerate the decode SNAPSHOT goldens from the current decoders, and the
-## hub credential-wire fixtures its clients decode. Run ONLY after an intended
-## change, then commit the diff.
+## hub credential-wire and notification-frame fixtures its clients decode. Run
+## ONLY after an intended change, then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
+	@sh -c "cd agent && go test -run '^TestSteeringNotificationWireFixtures' . -update-notificationwire"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
