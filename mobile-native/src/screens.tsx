@@ -2681,9 +2681,13 @@ export function ConversationScreen({
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							data={timelineRows}
-							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to show or hide its fold control.
-							extraData={liveRun}
+							// Cells re-render only for a new renderItem or new rows, and
+							// renderItem changes with everything a row reads (the live run
+							// included): a screen render that changes nothing a row reads
+							// (the bottom bar re-laying out as the keyboard folds the queue)
+							// leaves them alone, where FlatList otherwise rebuilds its
+							// renderer, and so every visible cell, on every render (#3247).
+							strictMode
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
 							// A row keeps its reader key when history records it, so the
@@ -3003,7 +3007,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerShown}
+									composerUp={composerKeyboard}
 								/>
 							) : null}
 						</View>
