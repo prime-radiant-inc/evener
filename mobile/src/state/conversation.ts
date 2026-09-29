@@ -936,9 +936,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 	// Whether the reader follows the live end (setFollowingLiveEnd).
 	let followingLiveEnd = true;
-	// Whether the hub last said it pages this thread from a before
-	// position (ThreadCapabilities.pageBefore), on a read or a status frame it
-	// relayed; a frame straight from a daemon names none. A hub that doesn't say
+	// Whether the last read said the hub pages this thread from a before
+	// position (ThreadCapabilities.pageBefore). Taken from reads only: a status
+	// frame straight from a daemon names no pageBefore. A hub that doesn't say
 	// so (an older hub, or a thread on another host until #3176) keeps every
 	// row, since trimmed rows couldn't come back: a memory trade-off that lasts
 	// until it does.
@@ -3164,13 +3164,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
-				// A status frame the hub relays names pageBefore, and that is the
-				// hub's answer as much as a read's; one straight from a daemon
-				// names none and leaves the read's answer standing.
-				if (n.method === "thread/status/changed") {
-					const said = n.params.capabilities?.pageBefore;
-					if (said !== undefined) pagesBefore = said;
-				}
 
 				// Every frame about this thread folds into the package reducer's
 				// model, and the display rows are a projection of that model: one
