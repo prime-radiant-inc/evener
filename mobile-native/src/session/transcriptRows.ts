@@ -387,6 +387,10 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "transcript":
+			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
+		case "sessions":
+			return n === 1 ? "searched sessions" : `searched sessions ${n} times`;
 		case "mcp":
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;

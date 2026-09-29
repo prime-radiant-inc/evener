@@ -447,6 +447,22 @@ describe("a run's one line", () => {
 	});
 });
 
+describe("a run's transcript reads and session searches", () => {
+	const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+
+	it("counts the transcripts a run read", () => {
+		expect(texts([step("a", "read_transcript")])).toEqual(["read a transcript"]);
+		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual(["read 2 transcripts"]);
+	});
+
+	it("says how often a run searched sessions", () => {
+		expect(texts([step("a", "find_session_transcripts")])).toEqual(["searched sessions"]);
+		expect(texts([step("a", "find_session_transcripts"), step("b", "find_session_transcripts")])).toEqual([
+			"searched sessions 2 times",
+		]);
+	});
+});
+
 describe("a step's target", () => {
 	it.each([
 		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],

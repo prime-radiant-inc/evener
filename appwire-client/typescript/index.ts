@@ -217,6 +217,7 @@ export {
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
   hostChangedSinceOpened,
   rootsFromText,
@@ -652,6 +653,13 @@ export type {
   TranscriptProjection,
 } from "./transcriptProjector";
 export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export {
+  findSessionsSummary,
+  readTranscriptEnvelope,
+  readTranscriptSummary,
+  type TranscriptEnvelope,
+  type TranscriptStep,
+} from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

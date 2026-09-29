@@ -1,14 +1,17 @@
 // Edit a host in the Hub (spec 12): every field the web's Edit dialog has,
-// under its labels and help lines, filled from the host's row. Save sends the
-// guarded update and goes back; the hub is the one validator, so Save holds
-// only while it saves or the hub is away, and a refusal that names a field
-// lands under it. The page goes back if its host leaves the list.
+// under its labels, filled from the host's row; the address keeps its help
+// line, and each optional field says in its placeholder what empty means.
+// Save sends the guarded update and goes back; the hub is the one validator,
+// so Save holds only while it saves or the hub is away, and a refusal that
+// names a field lands under it. The page goes back if its host leaves the
+// list.
 import {
 	type EditableHostField,
 	friendlyErrorMessage,
 	HOST_CHANGED_MESSAGE,
 	HOST_ENTRY_FIELD_ORDER,
 	HOST_ENTRY_FIELD_TEXT,
+	HOST_ENTRY_FIELD_WHEN_EMPTY,
 	type HostEntry,
 	type HostRow,
 	hostChangedSinceOpened,
@@ -146,6 +149,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 					/>
 				</View>
 			))}
+			<GroupFooter>Only the SSH address is required.</GroupFooter>
 		</GroupedPage>
 	);
 }
@@ -164,6 +168,9 @@ function Field({
 	onChange(text: string): void;
 }) {
 	const { label, help } = HOST_ENTRY_FIELD_TEXT[field];
+	// An optional field says in its placeholder what empty means; the one
+	// required field says what it takes beneath it.
+	const whenEmpty = HOST_ENTRY_FIELD_WHEN_EMPTY[field];
 	return (
 		<>
 			<Group label={label}>
@@ -173,9 +180,10 @@ function Field({
 					onChangeText={onChange}
 					multiline={field === "roots"}
 					disabled={disabled}
+					placeholder={whenEmpty}
 				/>
 			</Group>
-			<GroupFooter>{help}</GroupFooter>
+			{whenEmpty ? null : <GroupFooter>{help}</GroupFooter>}
 			{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 		</>
 	);
