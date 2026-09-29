@@ -10,6 +10,8 @@ const harness = vi.hoisted(() => ({
 	notices: new Map<string, unknown>(),
 	opened: [] as unknown[][],
 	selected: [] as string[],
+	// The selected hub, or none (disconnected, or the selected one removed).
+	active: { id: "hub-1", name: "magic-kingdom" } as { id: string; name: string } | null,
 }));
 vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
@@ -46,7 +48,7 @@ vi.mock("@react-navigation/native", async () => ({
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({
 		selectHub: (id: string) => harness.selected.push(id),
-		activeProfile: { id: "hub-1", name: "magic-kingdom" },
+		activeProfile: harness.active,
 		profiles: [
 			{ id: "hub-1", name: "magic-kingdom" },
 			{ id: "hub-2", name: "paradise-park" },
@@ -94,6 +96,7 @@ beforeEach(() => {
 	harness.notices.clear();
 	harness.opened.length = 0;
 	harness.selected.length = 0;
+	harness.active = { id: "hub-1", name: "magic-kingdom" };
 });
 
 it("sits just below the nav bar, and shows nothing without a banner", () => {
@@ -183,4 +186,28 @@ it("opens the selected hub's New session without selecting it again (#3104)", ()
 	act(() => card().props.onPress());
 	expect(harness.selected).toEqual([]);
 	expect(dispatched).toHaveLength(1);
+});
+
+it("opens a failed start's New session with no hub selected, selecting its hub (#3104)", () => {
+	harness.active = null;
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: true }));
+	act(() => card().props.onPress());
+	expect(harness.selected).toEqual(["hub-2"]);
+	expect(dispatched).toEqual([
+		expect.objectContaining({
+			type: "PUSH",
+			payload: expect.objectContaining({ name: "NewSession", params: { hubId: "hub-2", hubName: "paradise-park" } }),
+		}),
+	]);
+});
+
+it("says a removed hub's failed start opens nothing even with no hub selected (#3104)", () => {
+	harness.active = null;
+	const { card, dispatched } = mount();
+	alertRequests.length = 0;
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(dispatched).toEqual([]);
+	expect(alertRequests).toEqual([expect.objectContaining({ title: "attic was removed" })]);
 });

@@ -25,17 +25,14 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 
 	const open = () => {
 		const target = center.tap();
-		// The center is reset for every hub, so what it names is this hub's.
-		const hubId = activeProfile?.id;
-		if (target === null || hubId === undefined) return;
-		if (target.kind === "session")
-			// Pushed, so Back returns to where you were (spec 6).
-			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
-		else if (target.kind === "newSession") {
-			// The draft waits in that hub's creation store (#3104); a hub removed
-			// since took its draft with it, so the tap says so rather than doing
-			// nothing. A start on another hub than the one selected opens once
-			// that hub is selected, so its sheet has its own connection.
+		if (target === null) return;
+		if (target.kind === "newSession") {
+			// A failed start names its own hub, and survives a hub switch or a
+			// disconnect, so it opens whichever hub is selected, or none. Its draft
+			// waits in that hub's creation store (#3104); a hub removed since took
+			// its draft with it, so the tap says so rather than doing nothing. A
+			// start on another hub opens once that hub is selected, so its sheet has
+			// its own connection.
 			if (!hasHub(profiles, target.hubId)) {
 				Alert.alert(
 					`${target.hubName} was removed`,
@@ -43,9 +40,18 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 				);
 				return;
 			}
-			if (target.hubId !== hubId) selectHub(target.hubId);
+			if (target.hubId !== activeProfile?.id) selectHub(target.hubId);
 			navigation.dispatch(StackActions.push("NewSession", { hubId: target.hubId, hubName: target.hubName }));
-		} else if (target.kind === "needsYou") {
+			return;
+		}
+		// The center is reset for every hub, so what else it names is the
+		// selected hub's.
+		const hubId = activeProfile?.id;
+		if (hubId === undefined) return;
+		if (target.kind === "session")
+			// Pushed, so Back returns to where you were (spec 6).
+			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
+		else if (target.kind === "needsYou") {
 			navigation.dispatch(StackActions.popTo("Sessions"));
 			requestBoardJump("needsYou");
 		} else {
