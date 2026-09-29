@@ -167,6 +167,58 @@ describe("splitLiveMarkdownSegments", () => {
       spy.mockRestore();
     }
   });
+
+  // Issue #3208: a settled head with a closed diagram used to re-lex the whole
+  // prose tail on every token. Now the settled prefix of the tail is cached and
+  // only the bounded window re-lexes. The marker in the settled prefix proves
+  // the cache serves it: a miss would lex a string containing "SETTLEDTAIL".
+  it("does not re-lex the settled prose tail on a cache hit", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    const head = `intro\n\n${MERMAID}`;
+    // A settled prefix long enough that a blank-line boundary sits past the
+    // window edge (LIVE_TAIL_WINDOW), then a window of its own.
+    const settled = `${"SETTLEDTAIL ".repeat(100)}\n\n`;
+    const first = `${head}${settled}${"middle prose ".repeat(70)}`;
+    const spy = vi.spyOn(markdownLexer, "lexer");
+    try {
+      // First render is a miss for both the head and the settled prefix, so the
+      // prefix IS lexed here - this keeps the assertion below from being vacuous.
+      splitLiveMarkdownSegments(first, cache);
+      expect(spy.mock.calls.some((call) => (call[0] ?? "").includes("SETTLEDTAIL"))).toBe(true);
+
+      spy.mockClear();
+      // A grown window with the same head and settled prefix: the prefix's text
+      // is unchanged, so nothing containing the marker may be lexed again...
+      const second = splitLiveMarkdownSegments(`${first} plus more`, cache);
+      expect(spy.mock.calls.some((call) => (call[0] ?? "").includes("SETTLEDTAIL"))).toBe(false);
+      // ...while the window itself still re-lexes.
+      expect(spy.mock.calls.some((call) => (call[0] ?? "").includes("plus more"))).toBe(true);
+      // One markdown run carrying both parts, after the diagram: the settled
+      // tokens plus the streaming window, rendered in one div.
+      expect(second.map((s) => s.kind)).toEqual(["markdown", "mermaid", "markdown"]);
+      const secondTail = second[2];
+      expect(secondTail?.kind === "markdown" ? secondTail.window : undefined).toContain("plus more");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The windowed tail holds only when the split is sound. A definition in the
+  // window, or an open fence there, must still fall back to the whole-source
+  // lex (the same gate the single-root path applies), not split at a blank line.
+  it("falls back to the whole-source lex when the tail window is unsound", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const head = `intro\n\n${MERMAID}`;
+    const settled = `${"SETTLEDTAIL ".repeat(100)}\n\n`;
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    // An open mermaid fence in the window trips TAIL_BLOCK_MARKER, so the whole
+    // source lexes as one document, exactly as before this change.
+    const withOpenFence = `${head}${settled}${"middle prose ".repeat(70)}\n\n\`\`\`mermaid\ngraph TD; A-->B`;
+    const segments = splitLiveMarkdownSegments(withOpenFence, cache);
+    // The trailing open fence demotes to a markdown slice; no windowed segment.
+    expect(segments.some((s) => s.kind === "markdown" && s.window !== undefined)).toBe(false);
+  });
 });
 
 describe("messageMayContainMermaid", () => {
