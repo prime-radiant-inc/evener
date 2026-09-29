@@ -35,6 +35,7 @@ import {
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { guardLeave } from "./sheet/confirmDiscard";
+import { SearchField } from "./sheet/SearchField";
 import { Spinner } from "./sheet/Spinner";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
@@ -46,24 +47,9 @@ const CATALOG_FAILED = "Could not load this catalog.";
 export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins.";
 const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
 
-export function MarketplaceBrowser({
-	segment = "browse",
-	client,
-	connectionState,
-	hubName,
-	installed,
-	marketplaces,
-	lastAddMarketplaces,
-	gate,
-	ready,
-	canUseConnection,
-	onOpenPlugin,
-	appliedRemovalNames,
-	onAppliedRemoval,
-	onAuthoritativeMarketplaces,
-	onMarketplaceAdded,
-	onRemovedMarketplace,
-}: {
+/** What the Plugins page hands its marketplace views: the list and add flow
+ * take the list's half, and a marketplace's own page the writes' half. */
+type MarketplaceProps = {
 	/** Which half of the browser the Plugins page shows: "marketplaces" lists
 	 * each marketplace with its source, adds one, and opens one to update its
 	 * source or remove it; "browse" opens a marketplace's catalog to install
@@ -91,7 +77,8 @@ export function MarketplaceBrowser({
 	gate: HubWriteGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
-	onOpenPlugin(target: PluginRefParams): void;
+	/** Opens a marketplace's own page, pushed over the list. */
+	onOpenMarketplace(name: string): void;
 	/** The applied removals this client already recorded: a name in it is one
 	 * the hub says is already gone, so the write that would remove it again
 	 * stays fenced. */
@@ -149,16 +136,185 @@ export function MarketplaceBrowser({
 	 * raised, the same way an applied outcome with nothing to say does
 	 * (onAppliedRemoval's null notice). */
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
+};
+
+export function MarketplaceBrowser({
+	segment = "browse",
+	client,
+	connectionState,
+	hubName,
+	marketplaces,
+	lastAddMarketplaces,
+	gate,
+	ready,
+	canUseConnection,
+	onOpenMarketplace,
+	onAuthoritativeMarketplaces,
+	onMarketplaceAdded,
+}: Omit<MarketplaceProps, "installed" | "appliedRemovalNames" | "onAppliedRemoval" | "onRemovedMarketplace">) {
+	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
+	// Marketplace writes take the same gate an install does; see
+	// createHubWriteGate (the package's hubWriteGate.ts) for why the gate exists.
+	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
+	const [adding, setAdding] = useState(false);
+	useEffect(() => {
+		if (state.marketplaces !== null)
+			onAuthoritativeMarketplaces(state.marketplaces, client, state.marketplacesPublicationVersion);
+	}, [client, onAuthoritativeMarketplaces, state.marketplaces, state.marketplacesPublicationVersion]);
+	useEffect(() => {
+		void marketplaces.getState().fetchMarketplaces();
+	}, [marketplaces]);
+	const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
+	// A failed read keeps the last list in the store; rows a failed read
+	// cannot vouch for stay hidden until a fresh read lands, and the error copy
+	// and Retry speak instead. The empty-state copy claims only what the
+	// retained list itself says: a non-empty list a failed read hides must not
+	// also read as "no marketplaces" beside that error, while a list the last
+	// trusted read left genuinely empty may still say so.
+	const rows = state.marketplacesError === null ? (state.marketplaces ?? []) : [];
+	return (
+		<>
+			<MarketplaceProblems
+				problem={listError}
+				listError={listError}
+				busy={busy}
+				ready={ready}
+				canUseConnection={canUseConnection}
+				retry={() => void state.fetchMarketplaces()}
+			/>
+			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
+			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
+				<GroupFooter>No marketplaces on this hub.</GroupFooter>
+			) : null}
+			{rows.length > 0 ? (
+				<Group>
+					{rows.map((item) =>
+						segment === "browse" ? (
+							<Row
+								key={item.name}
+								label={item.name}
+								accessibilityLabel={`Browse ${item.name}`}
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
+							/>
+						) : (
+							<Row
+								key={item.name}
+								label={item.name}
+								sub={marketplaceSourceLabel(item.source)}
+								machineSub
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
+							/>
+						),
+					)}
+				</Group>
+			) : null}
+			{segment === "marketplaces" ? (
+				<Group>
+					<Row
+						label="Add marketplace…"
+						accessibilityLabel="Add marketplace"
+						tone="accent"
+						disabled={busy || !ready}
+						onPress={whenReady(canUseConnection, () => setAdding(true))}
+					/>
+				</Group>
+			) : null}
+			{adding && (
+				<AddMarketplace
+					client={client}
+					connectionState={connectionState}
+					hubName={hubName}
+					ready={ready}
+					canUseConnection={canUseConnection}
+					onClose={() => setAdding(false)}
+					onAdd={async (params) => {
+						// The list the screen last carried, to tell the add's own
+						// registration from the rows that were already there - null when
+						// no read has ever landed, in which case nothing here can tell
+						// new from old and the fence waits for the next authoritative
+						// read instead.
+						const before = marketplaces.getState().marketplaces;
+						await state.addMarketplace(params);
+						if (params.name) {
+							onMarketplaceAdded(params.name, client);
+							return;
+						}
+						// A blank submitted name is one the hub assigns from the
+						// source's own catalog, and the store's publication of the add
+						// cannot be trusted to name it: a newer list read holds it. Name
+						// the registration off the add's own answer, captured as it
+						// passed through the client - independent of every store.
+						const after = lastAddMarketplaces.current;
+						if (after === null || before === null) return;
+						for (const name of addedMarketplaceNames(before, after)) onMarketplaceAdded(name, client);
+						// Nothing else names anything here. A re-registration the wire
+						// cannot tell from the stale row it replaced - the same key in
+						// the answer as in the list before the add - is invisible to
+						// every diff, and the add's submitted source proves nothing
+						// about a row the answer still carries unchanged. No name is
+						// reported for it: its fence retires without one, under the
+						// fallback ruling - the add's own answer publishes as a trusted
+						// whole-list write, and its report, like any read that follows,
+						// retires the fence whatever it carries. A publication the
+						// answer itself cannot make - held behind a newer read -
+						// leaves the fence to the next one: the read that holds it, or
+						// the remount's own.
+					}}
+				/>
+			)}
+		</>
+	);
+}
+
+/** What a marketplace's page writes through: the Plugins page's stores, gate
+ * and applied-removal guard. */
+export type MarketplaceWrites = Pick<
+	MarketplaceProps,
+	| "client"
+	| "hubName"
+	| "installed"
+	| "marketplaces"
+	| "gate"
+	| "ready"
+	| "canUseConnection"
+	| "appliedRemovalNames"
+	| "onAppliedRemoval"
+	| "onRemovedMarketplace"
+>;
+
+/** One marketplace's page, pushed over the Plugins page's list: its source,
+ * Update source and Remove, and on Browse its catalog to install from. The
+ * Plugins page owns everything it writes through (MarketplaceBrowser's props
+ * say why), and hands it down. */
+export function MarketplaceDetail({
+	segment,
+	name,
+	client,
+	hubName,
+	installed,
+	marketplaces,
+	gate,
+	ready,
+	canUseConnection,
+	appliedRemovalNames,
+	onAppliedRemoval,
+	onRemovedMarketplace,
+	onOpenPlugin,
+	onGone,
+}: MarketplaceWrites & {
+	segment: "marketplaces" | "browse";
+	name: string;
+	onOpenPlugin(target: PluginRefParams): void;
+	/** The marketplace left the hub's list, removed here or elsewhere. */
+	onGone(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
 	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
-	// Marketplace writes take the same gate an install does; see
-	// createHubWriteGate (the package's hubWriteGate.ts) for why the gate exists.
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
-	const [selected, setSelected] = useState<string | null>(null);
-	const [adding, setAdding] = useState(false);
 	const [query, setQuery] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const revision = useRef(0);
@@ -172,29 +328,20 @@ export function MarketplaceBrowser({
 	useEffect(() => {
 		appliedRemovalNamesRef.current = appliedRemovalNames;
 	}, [appliedRemovalNames]);
-	useEffect(() => {
-		if (state.marketplaces !== null)
-			onAuthoritativeMarketplaces(state.marketplaces, client, state.marketplacesPublicationVersion);
-	}, [client, onAuthoritativeMarketplaces, state.marketplaces, state.marketplacesPublicationVersion]);
-	useEffect(() => {
-		void marketplaces.getState().fetchMarketplaces();
-		return () => {
+	// A write or a Remove confirmation belongs to the stores it began on: when
+	// the Plugins page hands down new ones (a reconnect's new client) or this
+	// page goes, the bump fences it, so it neither runs nor reports here.
+	useEffect(
+		() => () => {
 			revision.current += 1;
-		};
-	}, [marketplaces]);
-	// A new selection starts clean: the filter and the last action's error
-	// belong to the marketplace they were typed against.
-	function select(name: string | null) {
-		revision.current += 1;
-		setSelected(name);
-		setError(null);
-		setQuery("");
-	}
+		},
+		[marketplaces],
+	);
 	// The selected catalog is read from the store's cache. A mutation here or a
 	// change from another client retires the entry, and an empty slot is this
 	// view's cue to request it again - the web's expanded node does the same.
 	// Only Browse shows a catalog, so only Browse reads one.
-	const catalogName = segment === "browse" ? selected : null;
+	const catalogName = segment === "browse" ? name : null;
 	const catalog = catalogName ? state.browseCatalogs.get(catalogName) : undefined;
 	const loaded = catalog?.status === "loaded" ? catalog : undefined;
 	const browseTarget = catalogToBrowse(catalogName, state.marketplaces, state.browseCatalogs);
@@ -202,10 +349,13 @@ export function MarketplaceBrowser({
 		if (browseTarget) void state.browseMarketplace(browseTarget);
 	}, [browseTarget, state.browseMarketplace]);
 	// A marketplace removed here or by another client leaves the list; its
-	// selection goes with it.
+	// page goes with it, once, however often the list changes while it leaves.
+	const gone = useRef(false);
 	useEffect(() => {
-		if (selected && state.marketplaces && !state.marketplaces.some((item) => item.name === selected)) setSelected(null);
-	}, [selected, state.marketplaces]);
+		if (gone.current || !state.marketplaces || state.marketplaces.some((item) => item.name === name)) return;
+		gone.current = true;
+		onGone();
+	}, [name, state.marketplaces, onGone]);
 	// Every write goes through the gate; a refusal reads as busy, a throw as
 	// failure. A not-ready press runs nothing and retires nothing - the copy
 	// the user was reading survives the no-op. remove() runs its own copy of
@@ -223,7 +373,7 @@ export function MarketplaceBrowser({
 	function install(target: PluginRefParams) {
 		void act(() => plugins.installPlugin(target.plugin, target.marketplace));
 	}
-	const marketplace = state.marketplaces?.find((item) => item.name === selected);
+	const marketplace = state.marketplaces?.find((item) => item.name === name);
 	function refresh() {
 		if (!marketplace || busy || !canUseConnection()) return;
 		void act(() => state.refreshMarketplace(marketplace.name));
@@ -323,16 +473,120 @@ export function MarketplaceBrowser({
 	const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
 	const installedError = plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
 	const browsing = catalog?.status === "loading";
-	// A failed read keeps the last list in the store; rows a failed read
-	// cannot vouch for stay hidden until a fresh read lands, and the error copy
-	// and Retry speak instead. The empty-state copy claims only what the
-	// retained list itself says: a non-empty list a failed read hides must not
-	// also read as "no marketplaces" beside that error, while a list the last
-	// trusted read left genuinely empty may still say so.
-	const rows = state.marketplacesError === null ? (state.marketplaces ?? []) : [];
-	const problem = error || listError;
 	const catalogProblem = catalogError || installedError;
-	const problems = (
+	return (
+		<>
+			<MarketplaceProblems
+				problem={error || listError}
+				listError={listError}
+				busy={busy}
+				ready={ready}
+				canUseConnection={canUseConnection}
+				retry={() => void state.fetchMarketplaces()}
+			/>
+			{/* The page's title names the marketplace. */}
+			<Group>
+				{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
+				{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
+				<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
+				<Row
+					label="Remove"
+					accessibilityLabel="Remove marketplace"
+					tone="danger"
+					disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")}
+					onPress={remove}
+				/>
+			</Group>
+			{segment === "browse" ? (
+				<>
+					{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
+					<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
+						<SearchField label="Filter this catalog" value={query} onChangeText={setQuery} />
+					</View>
+					{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
+					{catalogProblem ? (
+						<Group>
+							{catalogError ? (
+								<Row
+									label="Retry catalog"
+									tone="accent"
+									disabled={!ready}
+									onPress={whenReady(canUseConnection, () => {
+										void state.reloadCatalog(name);
+									})}
+								/>
+							) : null}
+							{installedError ? (
+								<Row
+									label="Retry installed status"
+									tone="accent"
+									disabled={!ready}
+									onPress={whenReady(canUseConnection, () => {
+										void plugins.fetchPlugins();
+									})}
+								/>
+							) : null}
+						</Group>
+					) : null}
+					{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
+					{!browsing && loaded && catalogPlugins.length === 0 ? (
+						<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
+					) : null}
+					{catalogPlugins.length > 0 ? (
+						<Group>
+							{catalogPlugins.map((item) => {
+								const target = { plugin: item.name, marketplace: name };
+								const existing = plugins.plugins?.some(
+									(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
+								);
+								return (
+									<Row
+										key={item.name}
+										label={item.name}
+										sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
+										value={
+											<Text
+												allowFontScaling={allowFontScaling}
+												style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
+											>
+												{existing ? "Installed · Open" : "Install"}
+											</Text>
+										}
+										accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
+										disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
+										onPress={() => {
+											if (existing) onOpenPlugin(target);
+											else install(target);
+										}}
+									/>
+								);
+							})}
+						</Group>
+					) : null}
+				</>
+			) : null}
+		</>
+	);
+}
+
+/** The error both marketplace views lead with, Retry when the list failed to
+ * load, and the spinner while a marketplace or plugin write runs. */
+function MarketplaceProblems({
+	problem,
+	listError,
+	busy,
+	ready,
+	canUseConnection,
+	retry,
+}: {
+	problem: string | null;
+	listError: string | null;
+	busy: boolean;
+	ready: boolean;
+	canUseConnection: LiveReadiness;
+	retry(): void;
+}) {
+	return (
 		<>
 			{problem ? <GroupFooter tone="danger">{problem}</GroupFooter> : null}
 			{listError ? (
@@ -341,209 +595,11 @@ export function MarketplaceBrowser({
 						label="Retry marketplaces"
 						tone="accent"
 						disabled={!ready}
-						onPress={whenReady(canUseConnection, () => {
-							void state.fetchMarketplaces();
-						})}
+						onPress={whenReady(canUseConnection, retry)}
 					/>
 				</Group>
 			) : null}
 			{busy ? <Spinner label="Updating marketplace or plugin" /> : null}
-		</>
-	);
-	return (
-		<>
-			{problems}
-			{selected ? (
-				<>
-					<Group>
-						<Row label="All marketplaces" tone="accent" onPress={() => select(null)} />
-					</Group>
-					<Group label={selected} machineLabel>
-						{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
-						{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
-						<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
-						<Row
-							label="Remove"
-							accessibilityLabel="Remove marketplace"
-							tone="danger"
-							disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")}
-							onPress={remove}
-						/>
-					</Group>
-					{segment === "browse" ? (
-						<>
-							{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
-							<Group label="Catalog">
-								<TextInput
-									accessibilityLabel="Filter marketplace plugins"
-									placeholder="Filter this catalog"
-									placeholderTextColor={palette.inkLow}
-									value={query}
-									onChangeText={setQuery}
-									autoCapitalize="none"
-									autoCorrect={false}
-									allowFontScaling={allowFontScaling}
-									style={{
-										minHeight: 44,
-										paddingHorizontal: space.rowInset,
-										fontSize: uiType.listRow.fontSize * scale,
-										color: palette.inkHi,
-									}}
-								/>
-							</Group>
-							{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
-							{catalogProblem ? (
-								<Group>
-									{catalogError ? (
-										<Row
-											label="Retry catalog"
-											tone="accent"
-											disabled={!ready}
-											onPress={whenReady(canUseConnection, () => {
-												void state.reloadCatalog(selected);
-											})}
-										/>
-									) : null}
-									{installedError ? (
-										<Row
-											label="Retry installed status"
-											tone="accent"
-											disabled={!ready}
-											onPress={whenReady(canUseConnection, () => {
-												void plugins.fetchPlugins();
-											})}
-										/>
-									) : null}
-								</Group>
-							) : null}
-							{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
-							{!browsing && loaded && catalogPlugins.length === 0 ? (
-								<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
-							) : null}
-							{catalogPlugins.length > 0 ? (
-								<>
-									<Group>
-										{catalogPlugins.map((item) => {
-											const target = { plugin: item.name, marketplace: selected };
-											const existing = plugins.plugins?.some(
-												(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
-											);
-											return (
-												<Row
-													key={item.name}
-													label={item.name}
-													sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
-													value={
-														<Text
-															allowFontScaling={allowFontScaling}
-															style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
-														>
-															{existing ? "Installed · Open" : "Install"}
-														</Text>
-													}
-													accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
-													disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
-													onPress={() => {
-														if (existing) onOpenPlugin(target);
-														else install(target);
-													}}
-												/>
-											);
-										})}
-									</Group>
-								</>
-							) : null}
-						</>
-					) : null}
-				</>
-			) : (
-				<>
-					{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
-					{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
-						<GroupFooter>No marketplaces on this hub.</GroupFooter>
-					) : null}
-					{rows.length > 0 ? (
-						<Group>
-							{rows.map((item) =>
-								segment === "browse" ? (
-									<Row
-										key={item.name}
-										label={item.name}
-										accessibilityLabel={`Browse ${item.name}`}
-										chevron
-										onPress={() => select(item.name)}
-									/>
-								) : (
-									<Row
-										key={item.name}
-										label={item.name}
-										sub={marketplaceSourceLabel(item.source)}
-										machineSub
-										chevron
-										onPress={() => select(item.name)}
-									/>
-								),
-							)}
-						</Group>
-					) : null}
-					{segment === "marketplaces" ? (
-						<>
-							<Group>
-								<Row
-									label="Add marketplace…"
-									accessibilityLabel="Add marketplace"
-									tone="accent"
-									disabled={busy || !ready}
-									onPress={whenReady(canUseConnection, () => setAdding(true))}
-								/>
-							</Group>
-						</>
-					) : null}
-				</>
-			)}
-			{adding && (
-				<AddMarketplace
-					client={client}
-					connectionState={connectionState}
-					hubName={hubName}
-					ready={ready}
-					canUseConnection={canUseConnection}
-					onClose={() => setAdding(false)}
-					onAdd={async (params) => {
-						// The list the screen last carried, to tell the add's own
-						// registration from the rows that were already there - null when
-						// no read has ever landed, in which case nothing here can tell
-						// new from old and the fence waits for the next authoritative
-						// read instead.
-						const before = marketplaces.getState().marketplaces;
-						await state.addMarketplace(params);
-						if (params.name) {
-							onMarketplaceAdded(params.name, client);
-							return;
-						}
-						// A blank submitted name is one the hub assigns from the
-						// source's own catalog, and the store's publication of the add
-						// cannot be trusted to name it: a newer list read holds it. Name
-						// the registration off the add's own answer, captured as it
-						// passed through the client - independent of every store.
-						const after = lastAddMarketplaces.current;
-						if (after === null || before === null) return;
-						for (const name of addedMarketplaceNames(before, after)) onMarketplaceAdded(name, client);
-						// Nothing else names anything here. A re-registration the wire
-						// cannot tell from the stale row it replaced - the same key in
-						// the answer as in the list before the add - is invisible to
-						// every diff, and the add's submitted source proves nothing
-						// about a row the answer still carries unchanged. No name is
-						// reported for it: its fence retires without one, under the
-						// fallback ruling - the add's own answer publishes as a trusted
-						// whole-list write, and its report, like any read that follows,
-						// retires the fence whatever it carries. A publication the
-						// answer itself cannot make - held behind a newer read -
-						// leaves the fence to the next one: the read that holds it, or
-						// the remount's own.
-					}}
-				/>
-			)}
 		</>
 	);
 }

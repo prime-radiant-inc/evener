@@ -21,7 +21,7 @@ import {
 	createPluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { MarketplaceBrowser } from "./MarketplaceBrowser";
+import { MarketplaceBrowser, MarketplaceDetail } from "./MarketplaceBrowser";
 import { ErrorMessage } from "./ui";
 import { alertRequests, render, renderedText } from "./renderNative.testkit";
 
@@ -85,7 +85,11 @@ function GuardedBrowser({
 	// reads its busy state from.
 	const gate = useMemo(() => createHubWriteGate(), []);
 	const marketplaces = useMemo(() => createMarketplacesStore(client, gate), [client, gate]);
+	const installed = useMemo(() => createPluginsStore(client, gate), [client, gate]);
 	const names = useMemo(() => new Set([...guard.keys(), ...fenced]), [guard, fenced]);
+	// The marketplace the list opened, drawn beside it the way the Hub's stack
+	// keeps the list mounted under a marketplace's page.
+	const [opened, setOpened] = useState<string | null>(null);
 	return (
 		<>
 			<ErrorMessage message={warning} />
@@ -93,29 +97,12 @@ function GuardedBrowser({
 				client={client}
 				connectionState="ready"
 				hubName="Work hub"
-				installed={createPluginsStore(client, gate)}
 				marketplaces={marketplaces}
 				lastAddMarketplaces={lastAddMarketplaces}
 				gate={gate}
 				ready={true}
 				canUseConnection={canUseConnection}
-				onOpenPlugin={() => {}}
-				appliedRemovalNames={names}
-				onAppliedRemoval={(name, notice, _owner, marketplaces, publicationVersion) => {
-					// The production screen's recording rule, in this harness's
-					// minimal shape: an accepted snapshot that already omits the
-					// target is the outcome's own reconciliation and leaves no fence,
-					// and a fence records the publication baseline the outcome read.
-					setGuard((current) => {
-						const next = new Map(current);
-						if (marketplaces === null || marketplaces.some((item) => item.name === name))
-							next.set(name, publicationVersion);
-						else next.delete(name);
-						return next;
-					});
-					if (notice !== null) setWarning(notice);
-					return true;
-				}}
+				onOpenMarketplace={setOpened}
 				onAuthoritativeMarketplaces={(_marketplaces, _owner, publicationVersion) => {
 					// The screen's fallback ruling, in this harness's minimal shape:
 					// a fence retires with the first publication NEWER than its own
@@ -141,8 +128,39 @@ function GuardedBrowser({
 						return next;
 					});
 				}}
-				onRemovedMarketplace={() => setWarning(null)}
 			/>
+			{opened ? (
+				<MarketplaceDetail
+					segment="browse"
+					name={opened}
+					client={client}
+					hubName="Work hub"
+					installed={installed}
+					marketplaces={marketplaces}
+					gate={gate}
+					ready={true}
+					canUseConnection={canUseConnection}
+					appliedRemovalNames={names}
+					onAppliedRemoval={(name, notice, _owner, marketplaces, publicationVersion) => {
+						// The production screen's recording rule, in this harness's
+						// minimal shape: an accepted snapshot that already omits the
+						// target is the outcome's own reconciliation and leaves no fence,
+						// and a fence records the publication baseline the outcome read.
+						setGuard((current) => {
+							const next = new Map(current);
+							if (marketplaces === null || marketplaces.some((item) => item.name === name))
+								next.set(name, publicationVersion);
+							else next.delete(name);
+							return next;
+						});
+						if (notice !== null) setWarning(notice);
+						return true;
+					}}
+					onRemovedMarketplace={() => setWarning(null)}
+					onOpenPlugin={() => {}}
+					onGone={() => setOpened(null)}
+				/>
+			) : null}
 		</>
 	);
 }
