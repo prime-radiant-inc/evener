@@ -485,3 +485,17 @@ test("an informational daemon warning keeps the quiet line", () => {
   expect(screen.getByTestId("system-notice-line").textContent).toBe("Output clamped to fit the context window");
   expect(screen.queryByTestId("warning-item")).toBeNull();
 });
+
+// Like a failure, a daemon warning a human should see never folds into a run
+// of lifecycle notices: at a collapsed level the group's summary would hide
+// it behind "N system events" (#3387).
+test("a daemon warning among lifecycle notices is never folded into their collapsed group", () => {
+  const warning = item("w", {
+    eventKind: "warning",
+    text: "inspect delegate attention: permission denied",
+    raw: { warning: { title: "Evener error" } },
+  });
+  renderTurnTools(turnWith([item("a"), item("b"), warning, item("c"), item("d")]));
+  expect(screen.getByTestId("warning-item")).toBeTruthy();
+  expect(screen.queryByTestId("system-notice-group")).toBeNull();
+});

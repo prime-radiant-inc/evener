@@ -44,6 +44,7 @@ import {
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
+	isInformationalWarning,
 	isSuppressedSteeringKind,
 	jobWatchEvidence,
 	joinedReasoningParagraphs,
@@ -446,8 +447,8 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 	if (it.type === "systemMessage") return { ...systemNotice(it), ...identity };
 
 	if (it.type === "warning") {
-		const failure = warningFailure(it);
-		return failure === null ? null : { ...failure, ...identity };
+		const row = isInformationalWarning(it) ? informationalWarningNotice(it) : warningFailure(it);
+		return row === null ? null : { ...row, ...identity };
 	}
 
 	// Unknown / forward-compatible type: a neutral collapsed activity that
@@ -787,6 +788,15 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
+}
+
+// An informational warning item (a coded "no action needed" notice): one quiet
+// line, as the web's WarningItem draws it, never the amber attention row
+// (#3387); null when it carries nothing to show.
+function informationalWarningNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
+	const text = [it.text, it.warning?.hint, it.warning?.title].find(hasWarningText);
+	if (text === undefined) return null;
+	return { kind: "notice", id: it.id, origin: "system", family: "informational", tone: "system", text };
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web

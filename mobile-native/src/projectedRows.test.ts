@@ -420,6 +420,26 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "notice", family: "unknown-system", tone: "system" });
 	});
 
+	// An informational warning item (a coded "no action needed" notice) is a
+	// quiet line, as the web draws it, never the amber attention row (#3387).
+	it("reads an informational warning item as a quiet line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "warning",
+					text: "Output clamped to fit the context window",
+					warning: { title: "Context budget", code: "context_budget" },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+		});
+	});
+
 	it("drops a warning whose every part is blank", () => {
 		expect(projectedRow(itemEntry(item({ type: "warning" })))).toBeNull();
 	});
