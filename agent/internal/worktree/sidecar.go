@@ -92,20 +92,30 @@ func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 
 // removeOwnedResidue deletes the sidecar at path — the residue of a create
 // whose O_EXCL open succeeded but whose write or close failed — and returns
-// cause. It first confirms the pathname still names the file this call created
-// (created, captured from the open handle): if a concurrent actor unlinked this
+// cause. It removes nothing unless it can confirm the pathname still names the
+// file this call created (created, captured from the open handle): if the fresh
+// handle had no usable identity, or a concurrent actor unlinked this
 // reservation and recreated or replaced the path before cleanup ran, the path
-// now names their sidecar, and removing it would destroy a file this call does
-// not own. When identity cannot be confirmed (Stat failed on the fresh handle,
-// which in practice does not happen) the removal is attempted as before. If the
-// removal itself fails the reservation really does persist, so cause is wrapped
-// with that failure rather than dropped; the wrap preserves cause for
-// errors.Is/As.
+// either cannot be trusted or names someone else's sidecar, and removing it
+// would destroy a file this call does not own. Unremoved residue is not lost:
+// it is an undecodable reservation that prune sweep 2 surfaces for repair, and
+// its own name stays reserved. If the removal itself fails the reservation
+// really does persist, so cause is wrapped with that failure rather than
+// dropped; the wrap preserves cause for errors.Is/As.
+//
+// A concurrent actor could still swap the pathname in the two syscalls between
+// that confirmation and os.Remove; POSIX offers no unlink-if-inode-matches to
+// close it. No evener path performs that swap on a failed create's residue —
+// create's O_EXCL fails while the file exists and never deletes it, and every
+// collection or update path only removes a sidecar it has already decoded — so
+// the swap would take an external actor deleting the file by hand.
 func removeOwnedResidue(path string, created os.FileInfo, statErr error, cause error) error {
-	if statErr == nil {
-		if current, curErr := os.Stat(path); curErr == nil && !os.SameFile(created, current) {
-			return cause
-		}
+	if statErr != nil {
+		return cause // no identity for the file we created: never remove by path
+	}
+	current, curErr := os.Stat(path)
+	if curErr != nil || !os.SameFile(created, current) {
+		return cause // gone, unreadable, or replaced: not our residue to delete
 	}
 	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 		return fmt.Errorf("%w (removing partial sidecar %s: %w)", cause, path, rmErr)
@@ -154,21 +164,26 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 }
 
 // replaceSidecar atomically replaces the file at path with raw: it writes a
-// temporary file in the destination directory, closes it, and renames it over
-// path. os.Rename replaces an existing target atomically within a directory,
-// so a reader sees either the old bytes or the new ones, never a torn mix. The
-// replacement keeps the target's existing permission bits (a systematic
-// os.WriteFile would too); only a missing target falls back to 0o644. The
-// temporary name carries a non-".json" suffix so ListSidecars, which only
-// considers ".json" files, ignores it while it exists; a crash between the
-// create and the rename leaves one such inert file behind — it reserves no
-// name and is invisible to every listing, so it needs no in-band cleanup.
+// temporary file in the destination directory, fsyncs it, closes it, and
+// renames it over path. os.Rename replaces an existing target atomically within
+// a directory, so a reader sees either the old bytes or the new ones, never a
+// torn mix, and the file fsync makes the new bytes durable before the rename so
+// a crash cannot land the name on a zero-length or partial inode. The directory
+// is then fsynced where the platform supports it, so the rename itself survives
+// power loss (mirroring writeFileDurably in agent/schema). The replacement
+// keeps the target's existing permission bits (a systematic os.WriteFile would
+// too); only a missing target falls back to 0o644. The temporary name carries a
+// non-".json" suffix so ListSidecars, which only considers ".json" files,
+// ignores it while it exists; a crash between the create and the rename leaves
+// one such inert file behind — it reserves no name and is invisible to every
+// listing, so it needs no in-band cleanup.
 func replaceSidecar(path string, raw []byte) error {
 	mode := os.FileMode(0o644)
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".sidecar-tmp-*")
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".sidecar-tmp-*")
 	if err != nil {
 		return err
 	}
@@ -187,6 +202,10 @@ func replaceSidecar(path string, raw []byte) error {
 		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
@@ -194,7 +213,7 @@ func replaceSidecar(path string, raw []byte) error {
 		return err
 	}
 	committed = true
-	return nil
+	return syncDir(dir)
 }
 
 // DeleteSidecar removes name's sidecar from metaDir. A missing file returns
