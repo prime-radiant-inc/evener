@@ -8,7 +8,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useState } from "react";
 import { Button, Chevron } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { subagentIsCurrent } from "../rail/railNodes";
+import { subagentChildrenOf, subagentIsCurrent } from "../rail/railNodes";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
 import styles from "./activitybar.module.css";
@@ -31,7 +31,9 @@ function drill(leaf: NavigationSessionSummary, sub: NavigationSessionSummary): v
 }
 
 export function AgentsTab({ scope }: { scope: ActivityScope }) {
-  const children = scope.leaf.children ?? [];
+  // Subagents only: the wire's children also carry fork originals, which the
+  // rail renders as nested session rows - they are not agents.
+  const children = subagentChildrenOf(scope.leaf);
   // One pass: subagentIsCurrent walks the child's subtree, so two filter()
   // passes would pay that walk twice (railNodes' splitChildren precedent).
   const current: NavigationSessionSummary[] = [];

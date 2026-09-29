@@ -9,7 +9,7 @@ import { humanizeState, jobStatusDisplay, watchMeta, watchName } from "@evener/a
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { cadenceStateFor, WatchGlyph } from "../rail/RailRow";
-import { activeWatchCount, displayState } from "../rail/railNodes";
+import { activeWatchCount, displayState, subagentChildrenOf } from "../rail/railNodes";
 import styles from "./activitybar.module.css";
 
 const CLASS = {
@@ -75,9 +75,10 @@ function agentStateText(sub: NavigationSessionSummary): string {
  * tasks 1/4". */
 export function agentRollupLine(sub: NavigationSessionSummary): string {
   const parts: string[] = [];
-  // The TRUE total, like the Agents tab's fold: loaded rows plus the wire's
-  // omitted remainder, or the line understates the scope beside that fold.
-  const agents = (sub.children ?? []).length + (sub.more_subagents ?? 0);
+  // The TRUE total, like the Agents tab's fold: loaded subagent rows (fork
+  // originals are not agents) plus the wire's omitted remainder, or the line
+  // understates the scope beside that fold.
+  const agents = subagentChildrenOf(sub).length + (sub.more_subagents ?? 0);
   const jobs = (sub.running_jobs ?? []).length;
   const watches = activeWatchCount(sub);
   if (agents > 0) parts.push(`${agents} agent${agents === 1 ? "" : "s"}`);

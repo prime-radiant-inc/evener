@@ -429,6 +429,13 @@ const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
   "notLoaded",
 ]);
 
+// The wire's children carry fork originals (kind "fork") beside subagents -
+// the rail renders those as nested session rows, and the activity surfaces
+// count and list agents only.
+export function subagentChildrenOf(session: NavigationSessionSummary): NavigationSessionSummary[] {
+  return (session.children ?? []).filter((child) => child.kind === "subagent");
+}
+
 // The activity sidebar's Agents tab splits its scope's children on this; the
 // rail itself no longer does (its rows follow the wire's order below).
 export function subagentIsCurrent(child: NavigationSessionSummary): boolean {

@@ -246,6 +246,35 @@ describe("ActivitySidebar", () => {
     expect(screen.getByText("No subagents at this level.")).toBeTruthy();
   });
 
+  test("fork originals in the wire's children never list as agents", () => {
+    // The hub's tree carries fork originals (kind "fork") in children beside
+    // subagents; the rail renders those as nested session rows. The Agents
+    // tab lists subagents only, or a fork reads as an agent.
+    const { ROOT_D } = sampleTree();
+    const fork = { ...ROOT_D, ref: "local:fork", title: "FORK SNAP", state: "active", kind: "fork" };
+    const agent = { ...ROOT_D, ref: "local:agent", title: "AGENT ROW", state: "active", kind: "subagent" };
+    const leaf = { ...ROOT_D, ref: "local:leaf", title: "L", children: [fork, agent] };
+    const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: "local:leaf" } as const;
+    navigationStore.setState({
+      resources: new Map([
+        [keyID(liveKey), resource(liveKey, { sessions: [leaf] })],
+        [
+          keyID(locationKey),
+          resource(locationKey, { ref: "local:leaf", top_level_ref: "local:leaf", top_level: true, session: leaf }),
+        ],
+      ]),
+    });
+    workspaceStore.getState().openPane("session", { ref: "local:leaf" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    expect(screen.getByText("AGENT ROW")).toBeTruthy();
+    expect(screen.queryByText("FORK SNAP")).toBeNull();
+    // The fork is not in the fold's true total either: only the subagent
+    // exists, and it is current, so no fold renders at all.
+    expect(screen.queryByRole("button", { name: /Inactive subagents/ })).toBeNull();
+  });
+
   test("the open transition is read once per mount, not re-read on every render", () => {
     // getComputedStyle forces a style pass; calling it per render taxes every
     // scope change and tab switch for a token that changes with the theme, if

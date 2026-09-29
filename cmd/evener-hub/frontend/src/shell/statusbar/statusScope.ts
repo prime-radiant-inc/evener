@@ -10,7 +10,7 @@
 
 import type { NavigationSessionLocation, NavigationSessionSummary } from "@evener/appwire-client";
 import { type NavigationStoreState, selectLocation, selectSessionSummary } from "../../stores/navigation/selectors";
-import { activeWatchCount, subagentIsCurrent } from "../rail/railNodes";
+import { activeWatchCount, subagentChildrenOf, subagentIsCurrent } from "../rail/railNodes";
 
 export type ActivityTab = "agents" | "jobs" | "watches" | "tasks";
 
@@ -40,7 +40,7 @@ function locationOf(ref: string, navigation: NavigationStoreState): NavigationSe
 
 export function scopeCounts(session: NavigationSessionSummary): ScopeCounts {
   return {
-    activeSubagents: (session.children ?? []).filter(subagentIsCurrent).length,
+    activeSubagents: subagentChildrenOf(session).filter(subagentIsCurrent).length,
     runningJobs: session.running_jobs?.length ?? 0,
     armedWatches: activeWatchCount(session),
     tasksDone: session.tasks?.done ?? 0,

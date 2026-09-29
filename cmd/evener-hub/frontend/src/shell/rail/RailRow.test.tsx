@@ -18,6 +18,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -1892,15 +1893,30 @@ describe("session row", () => {
     expect(panes).toContain("sessionDetails");
   });
 
-  test("the Activity check marks a sessionActivity pane open for this session", async () => {
+  test("the Activity check marks a sessionActivity pane open for this session on mobile", async () => {
     // The ✓ names what the row's own Activity action opens. On mobile that
     // is the sessionActivity pane (the desktop sidebar retarget never
     // reaches the tree drawer), so the pane predicate marks the item there,
     // beside the desktop sidebar predicate.
+    const restoreViewport = installMobileViewport();
+    try {
+      workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+      renderRow();
+      await openMenu(/actions for/i);
+      expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  test("on desktop a leftover sessionActivity pane does not mark the Activity item", async () => {
+    // The chrome treats such a pane as an orphan on desktop (opening the
+    // sidebar retires it) and never marks it; the rail reads the same state
+    // per viewport, or the two menus disagree about the same session.
     workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
   });
 
   test("shut down confirms through onShutdownSession", async () => {

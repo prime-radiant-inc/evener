@@ -1854,9 +1854,9 @@ describe("resource-backed Rail", () => {
       render(<Rail />);
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      // The open pane marks the item (the ✓ names what the action opens -
-      // RailRow.test.tsx pins the predicate); the supersede still fires.
-      fireEvent.click(screen.getByRole("menuitem", { name: "Activity ✓" }));
+      // Desktop never marks the orphan pane (RailRow.test.tsx pins that);
+      // the supersede still fires.
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
       await waitFor(() => {
         expect(activitySidebarStore.getState().open).toBe(true);
       });

@@ -31,4 +31,14 @@ describe("agentRollupLine", () => {
   test("a lone loaded child still reads 1 agent", () => {
     expect(agentRollupLine(sub({ children: [sub({ ref: "local:child" })] }))).toContain("1 agent");
   });
+
+  test("fork originals never count as agents", () => {
+    expect(
+      agentRollupLine(
+        sub({
+          children: [sub({ ref: "local:fork", kind: "fork" }), sub({ ref: "local:child", kind: "subagent" })],
+        }),
+      ),
+    ).toContain("1 agent");
+  });
 });

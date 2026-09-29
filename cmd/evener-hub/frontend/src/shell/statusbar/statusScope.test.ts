@@ -120,6 +120,20 @@ describe("scopeCounts", () => {
     });
     expect(scopeCounts(s).armedWatches).toBe(2);
   });
+
+  test("fork originals in children never count as agents", () => {
+    // The wire's children carry fork originals (kind "fork") beside
+    // subagents; the chip counts subagents only, or a live fork inflates it.
+    const s = summary({
+      ref: "local:x",
+      title: "X",
+      children: [
+        summary({ ref: "local:fork", title: "Fork", state: "active", kind: "fork" }),
+        summary({ ref: "local:sub", title: "Sub", state: "active", kind: "subagent" }),
+      ],
+    });
+    expect(scopeCounts(s).activeSubagents).toBe(1);
+  });
 });
 
 describe("scopePath", () => {

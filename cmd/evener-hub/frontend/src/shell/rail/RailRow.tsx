@@ -65,6 +65,7 @@ import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { useIsMobile } from "../useIsMobile";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
@@ -516,14 +517,16 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  // The Activity ✓ marks what this row's Activity action opens: the desktop
-  // sidebar (the predicate is shared with the session chrome so the two menus
-  // can never disagree), or the sessionActivity pane the mobile rail still
-  // opens from the tree drawer. Two unconditional hook calls - combining
-  // inside one expression would short-circuit the second hook.
+  // The Activity ✓ marks what this row's Activity action opens, per viewport:
+  // the desktop sidebar (the predicate is shared with the session chrome so
+  // the two menus can never disagree), or the sessionActivity pane the mobile
+  // rail still opens from the tree drawer. On desktop a leftover pane is an
+  // orphan the chrome never marks (opening the sidebar retires it), so the
+  // pane half is mobile-only. Unconditional hook calls throughout.
+  const isMobile = useIsMobile();
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
   const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const activityOpen = activitySidebarOpen || activityPaneOpen;
+  const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
   const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
