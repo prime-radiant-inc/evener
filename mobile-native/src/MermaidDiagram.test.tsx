@@ -186,3 +186,73 @@ it("gives the fullscreen WebView the same lockdown and posts mode:zoom", () => {
 		mode: "zoom",
 	});
 });
+
+it("routes touches through a pointerEvents=none layer to the opener", () => {
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />);
+	const webview = tree.root.findByType("WebView" as never);
+	// On device the WebView would swallow the tap; the immediate parent disables
+	// its pointer events so the touch reaches the Pressable.
+	const layer = webview.parent;
+	expect(layer?.props.pointerEvents).toBe("none");
+	let node = layer;
+	let pressable: typeof node = null;
+	while (node) {
+		if (String(node.type) === "Pressable" && node.props.testID === "mermaid-open") {
+			pressable = node;
+			break;
+		}
+		node = node.parent;
+	}
+	expect(pressable).not.toBeNull();
+	// The touch routed to the Pressable still opens the viewer.
+	act(() => {
+		expect(pressable).not.toBeNull();
+		pressable?.props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+});
+
+it("re-posts the zoom render when the palette changes", () => {
+	clipboard.setStringAsync.mockClear();
+	mode.scheme = "light";
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	act(() => {
+		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
+	});
+	act(() => {
+		for (const view of tree.root.findAllByType("WebView" as never)) {
+			view.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+		}
+	});
+	const zoomCalls = () =>
+		postMessage.mock.calls.map((call) => JSON.parse(call[0] as string)).filter((msg) => msg.mode === "zoom");
+	expect(zoomCalls()).toHaveLength(1);
+
+	mode.scheme = "dark";
+	act(() => {
+		// A fresh callback identity busts the component's memo, so it re-reads
+		// useColorScheme the way a real appearance subscription would.
+		tree.update(<MermaidDiagram source="graph TD; A-->B" onAccessibilityAction={() => {}} />);
+	});
+	expect(zoomCalls()).toHaveLength(2);
+	expect(zoomCalls().at(-1)?.theme.dark).toBe("true");
+	mode.scheme = "light";
+});
+
+it("does not open the viewer from the error fallback", () => {
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />);
+	act(() => {
+		tree.root.findByType("WebView" as never).props.onMessage({
+			nativeEvent: { data: JSON.stringify({ type: "error", message: "Parse error" }) },
+		});
+	});
+	// The fallback is plain text with no tap target, so nothing can open a modal.
+	expect(tree.root.findAllByProps({ testID: "mermaid-open" })).toHaveLength(0);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});

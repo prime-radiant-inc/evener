@@ -62,16 +62,25 @@ function mermaidTheme(colors: ReturnType<typeof useColors>): Record<string, stri
 // The fullscreen viewer's WebView: the same page and lockdown as the inline
 // one, but sized to fill the modal and posted mode:"zoom" so the page scales
 // the diagram to the taller viewport instead of measuring a fit height.
-function ZoomWebView({ source, theme }: { source: string; theme: Record<string, string> }) {
+function ZoomWebView({ source }: { source: string }) {
+	const colors = useColors();
 	const webView = useRef<WebView>(null);
 	const pageReady = useRef(false);
+
+	function postRender() {
+		if (!pageReady.current) return;
+		webView.current?.postMessage(JSON.stringify({ type: "render", source, theme: mermaidTheme(colors), mode: "zoom" }));
+	}
 
 	function handleMessage(event: WebViewMessageEvent) {
 		const message = parsePageMessage(event.nativeEvent.data);
 		if (message?.type !== "ready") return;
 		pageReady.current = true;
-		webView.current?.postMessage(JSON.stringify({ type: "render", source, theme, mode: "zoom" }));
+		postRender();
 	}
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, same discipline as the inline view
+	useEffect(postRender, [colors.palette, source]);
 
 	return (
 		<WebView
@@ -157,6 +166,13 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, same discipline as MarkdownResponse
 	useEffect(postRender, [colors.palette, source]);
 
+	// Closing the viewer resets the source toggle, so a reopen starts on the
+	// diagram rather than wherever the last visit left it.
+	function close() {
+		setOpen(false);
+		setShowSource(false);
+	}
+
 	if (failed) {
 		return (
 			<View
@@ -173,9 +189,12 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	}
 	return (
 		<>
-			{/* The inline WebView owns its region (the spec's documented dead
-			zone), so the Pressable adds only the tap: VoiceOver keeps the inner
-			accessible View as its element. */}
+			{/* On device the WebView is the native touch responder over its
+				region, so a tap would never reach the Pressable underneath. The
+				diagram offers no interaction of its own (scrollEnabled=false, no
+				surviving anchors), so a pointerEvents="none" layer hands every
+				touch in the region to the Pressable's tap-to-open. VoiceOver still
+				keeps the inner accessible View as its element. */}
 			<Pressable accessible={false} testID="mermaid-open" onPress={() => setOpen(true)}>
 				<View
 					accessible={true}
@@ -184,24 +203,21 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 					onAccessibilityAction={onAccessibilityAction}
 					style={{ height: height ?? PLACEHOLDER_HEIGHT }}
 				>
-					<WebView
-						ref={webView}
-						originWhitelist={["about:blank"]}
-						source={{ html: MERMAID_PAGE_HTML }}
-						onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
-						scrollEnabled={false}
-						style={styles.webView}
-						onMessage={handleMessage}
-					/>
+					<View pointerEvents="none" style={styles.fill}>
+						<WebView
+							ref={webView}
+							originWhitelist={["about:blank"]}
+							source={{ html: MERMAID_PAGE_HTML }}
+							onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+							scrollEnabled={false}
+							style={styles.webView}
+							onMessage={handleMessage}
+						/>
+					</View>
 				</View>
 			</Pressable>
 			{open ? (
-				<Modal
-					visible={true}
-					animationType="slide"
-					presentationStyle="fullScreen"
-					onRequestClose={() => setOpen(false)}
-				>
+				<Modal visible={true} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
 					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 						<View style={styles.header}>
 							<Action onPress={() => setShowSource((showing) => !showing)}>
@@ -209,7 +225,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 							</Action>
 							<View style={styles.headerRight}>
 								<Action onPress={() => void copyText(source)}>Copy source</Action>
-								<Action onPress={() => setOpen(false)}>Done</Action>
+								<Action onPress={close}>Done</Action>
 							</View>
 						</View>
 						{showSource ? (
@@ -217,7 +233,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 								<Text style={[styles.source, { color: colors.text }]}>{source}</Text>
 							</ScrollView>
 						) : (
-							<ZoomWebView source={source} theme={mermaidTheme(colors)} />
+							<ZoomWebView source={source} />
 						)}
 					</SafeAreaView>
 				</Modal>
