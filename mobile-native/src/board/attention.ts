@@ -11,7 +11,7 @@
 // session's Subagents list holds the detail.
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
-import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { relativeAge } from "@evener/appwire-client/state/navigation";
 
 export type BoardState =
 	| "failed"
@@ -319,24 +319,17 @@ export function workingActivity(row: NavigationSessionSummary): string {
 	return commandOrWorking(row);
 }
 
-export interface SubagentChipContent {
-	text: string;
-	/** Failures read in the danger ink, never the attention ink (D2): a failed
-	 * subagent is not something the user must act on. */
-	failed: boolean;
-}
-
-/** The subagent count chip for a live root (S3), or null when there is nothing
- * to show. It reads the same gate the web rail's chip does
- * (subagentTallyToShow): only a live root with a running or failed subagent,
- * never a done-only history. "3 running", "2 failed", or both. */
-export function subagentChip(session: NavigationSessionSummary): SubagentChipContent | null {
-	const tally = subagentTallyToShow(session);
-	if (!tally) return null;
+/** The subagent chip's text from the counts the shared gate shows
+ * (subagentTallyToShow, the same one the web rail reads): "3 running",
+ * "2 failed", or "2 running · 3 failed". The chip colors each run on its own,
+ * so the running count stays in the neutral ink and only the failure reads in
+ * the danger ink (D2): a failed subagent is not something the user must act
+ * on, so it must not wear the Needs you attention ink. */
+export function subagentChipText(tally: { running: number; failed: number }): string {
 	const parts: string[] = [];
 	if (tally.running > 0) parts.push(`${tally.running} running`);
 	if (tally.failed > 0) parts.push(`${tally.failed} failed`);
-	return { text: parts.join(" · "), failed: tally.failed > 0 };
+	return parts.join(" · ");
 }
 
 export interface Usual {

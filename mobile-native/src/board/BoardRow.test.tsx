@@ -234,6 +234,13 @@ describe("a Board row (spec 7.2)", () => {
 		const chipText = textWith(failed, "3 failed")[0];
 		expect(styleOf(chipText)).toMatchObject({ color: palette.dangerInk });
 
+		// A mixed tally keeps the running run neutral and colors only the failure.
+		const mixed = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 3, done: 1 } }),
+		});
+		expect(styleOf(textWith(mixed, "2 running")[0])).toMatchObject({ color: palette.inkMid });
+		expect(styleOf(textWith(mixed, "3 failed")[0])).toMatchObject({ color: palette.dangerInk });
+
 		// A done-only tally is history (as the web rail's chip reads it), and a
 		// past row carries no tally at all (D6): neither shows a chip.
 		for (const settled of [

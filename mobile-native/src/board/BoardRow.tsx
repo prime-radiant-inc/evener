@@ -1,4 +1,5 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import { type ReactElement, useEffect, useState } from "react";
@@ -17,7 +18,7 @@ import {
 	type ClassifiedRow,
 	lastLine,
 	stateWord,
-	subagentChip,
+	subagentChipText,
 	type Usual,
 	type WhyLine,
 	whyLine,
@@ -158,10 +159,14 @@ export function BoardRow({
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
-	const chip = subagentChip(row);
+	// The chip reads the navigation row's tally (the shared gate the web rail
+	// uses), which the hub revises on invalidation; it is not the Board's S5
+	// activity read, which is Board-only and can lag behind this count.
+	const tally = subagentTallyToShow(row);
+	const chipText = tally ? subagentChipText(tally) : undefined;
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, waiting ?? reason, chip?.text, age && spokenAge(age)].filter(Boolean).join(", ");
+	const label = [row.title, word, waiting ?? reason, chipText, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -222,7 +227,7 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age || chip ? (
+					{hasDraft || age || tally ? (
 						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
 							<SubagentChip session={row} />
 							{hasDraft ? (
@@ -269,18 +274,20 @@ export function BoardRow({
 }
 
 /** The subagent count chip on a live root row (S3). It never takes the Needs
- * you color (D2): a failure reads in the danger ink, not the attention ink. */
+ * you background (D2), and only the failure run reads in the danger ink: the
+ * running count stays in the neutral ink, as the web rail's chip does. */
 export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const chip = subagentChip(session);
-	if (!chip) return null;
+	const tally = subagentTallyToShow(session);
+	if (!tally) return null;
+	const failed = tally.failed > 0;
 	return (
 		<View
 			testID="subagent-chip"
-			accessibilityLabel={chip.text}
+			accessibilityLabel={subagentChipText(tally)}
 			style={{
-				backgroundColor: chip.failed ? palette.dangerBg : palette.inset,
+				backgroundColor: palette.inset,
 				borderRadius: 4,
 				paddingHorizontal: 4,
 			}}
@@ -291,10 +298,12 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 					fontSize: 11 * scale,
 					lineHeight: 13 * scale,
 					fontWeight: "600",
-					color: chip.failed ? palette.dangerInk : palette.inkMid,
+					color: palette.inkMid,
 				}}
 			>
-				{chip.text}
+				{tally.running > 0 ? <Text style={{ color: palette.inkMid }}>{`${tally.running} running`}</Text> : null}
+				{tally.running > 0 && failed ? " · " : null}
+				{failed ? <Text style={{ color: palette.dangerInk }}>{`${tally.failed} failed`}</Text> : null}
 			</Text>
 		</View>
 	);
@@ -304,7 +313,7 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
  * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
  * row has no chip, so a list can tell whether it has one. */
 export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
-	subagentChip(session) ? <SubagentChip session={session} /> : null;
+	subagentTallyToShow(session) ? <SubagentChip session={session} /> : null;
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):

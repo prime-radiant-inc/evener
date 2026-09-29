@@ -11,7 +11,7 @@ import {
 	liveBands,
 	liveSummary,
 	stateWord,
-	subagentChip,
+	subagentChipText,
 	summaryText,
 	taskLine,
 	usualPlace,
@@ -331,26 +331,10 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("builds the subagent chip from a live root's tally", () => {
-		expect(subagentChip(row("s", { state: "active" }))).toBeNull();
-		// Only a live root carries a tally (D6): a past row's shows nothing.
-		expect(
-			subagentChip(row("s", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } })),
-		).toBeNull();
-		expect(subagentChip(row("s", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }))).toEqual({
-			text: "2 running",
-			failed: false,
-		});
-		expect(subagentChip(row("s", { state: "active", subagents: { running: 0, failed: 3, done: 4 } }))).toEqual({
-			text: "3 failed",
-			failed: true,
-		});
-		expect(subagentChip(row("s", { state: "active", subagents: { running: 2, failed: 3, done: 1 } }))).toEqual({
-			text: "2 running · 3 failed",
-			failed: true,
-		});
-		// A done-only tally is history, as the web rail's chip reads it too.
-		expect(subagentChip(row("s", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }))).toBeNull();
+	it("words the subagent chip from the counts the shared gate shows", () => {
+		expect(subagentChipText({ running: 2, failed: 0 })).toBe("2 running");
+		expect(subagentChipText({ running: 0, failed: 3 })).toBe("3 failed");
+		expect(subagentChipText({ running: 2, failed: 3 })).toBe("2 running · 3 failed");
 	});
 });
 
