@@ -408,9 +408,10 @@ describe("a run's one line", () => {
 		).toEqual(["fetched 1 page", "used task list once", "searched the web once", "used skill brainstorming"]);
 	});
 
-	// Never "N other steps": each MCP server, and each tool no summary
-	// covers, gets a part of its own in words.
-	it("names each MCP server and each tool no summary covers", () => {
+	// Never "N other steps": MCP tools share one part, which names their
+	// server when there is one, and each tool no summary covers gets a part
+	// of its own in words.
+	it("names the MCP tools and each tool no summary covers", () => {
 		expect(
 			runSummary([
 				step("a", "github__create_issue"),
@@ -422,11 +423,15 @@ describe("a run's one line", () => {
 				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
 			]).parts.map((part) => [part.key, part.text]),
 		).toEqual([
-			["mcp:github", "used github 2 times"],
-			["mcp:linear app", "used linear app once"],
+			["mcp", "used 3 MCP tools"],
 			["tool:compact context", "used compact context 2 times"],
 			["skill", "used 2 skills"],
 		]);
+		expect(
+			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map(
+				(part) => part.text,
+			),
+		).toEqual(["used github 2 times"]);
 	});
 });
 

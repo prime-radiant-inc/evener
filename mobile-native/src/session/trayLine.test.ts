@@ -70,6 +70,30 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([reading])] }), NOW)?.text).toBe("Reading agent/retirement_test.go · 5s");
 	});
 
+	// A step with no intent says what it is doing in the step's own words'
+	// live form (the package's toolStepProgress), never its raw tool name.
+	it("says a running step with no intent in words, never its tool's name", () => {
+		const step = (toolName: string, args: Record<string, unknown>) =>
+			item({ toolName, argumentsJSON: JSON.stringify(args), status: "inProgress", startedAt: ago(5_000) });
+		const text = (running: ReturnType<typeof item>) => trayLine(session({ turns: [turn([running])] }), NOW)?.text;
+		expect(text(step("read_file", { file_path: "agent/tree.go" }))).toBe("Reading agent/tree.go · 5s");
+		expect(text(step("github__create_issue", { title: "x" }))).toBe("Using github: create issue · 5s");
+		expect(text(step("compact_context", {}))).toBe("Using compact context · 5s");
+		expect(text(step("shell", {}))).toBe("Running a command · 5s");
+	});
+
+	it("leaves out a running command's cd to the session's own directory", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ command: "cd /repo && make test" }),
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		expect(trayLine({ ...session({ turns: [turn([running])] }), cwd: "/repo" }, NOW)?.text).toBe(
+			"Running make test · 5s",
+		);
+	});
+
 	it("says Thinking with a token estimate and no clock", () => {
 		const thought = item({ type: "reasoning", text: "x".repeat(4_800), status: "inProgress" });
 		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");

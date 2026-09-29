@@ -1,3 +1,4 @@
+import { toolStepSummary } from "@evener/appwire-client";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
@@ -22,8 +23,9 @@ const where = { hubId: "hub-1", sessionRef: "ref-1" };
 const DANGER_INK = "#C51D23";
 const INK_LOW = "#6D6D64";
 
+// A step as projectedRows builds it: its words read from the whole step.
 function step(id: string, label: string, args: Record<string, unknown>, over: Partial<RunStep> = {}): RunStep {
-	return {
+	const built: RunStep = {
 		kind: "activity",
 		id,
 		label,
@@ -32,6 +34,8 @@ function step(id: string, label: string, args: Record<string, unknown>, over: Pa
 		detail: { arguments: JSON.stringify(args) },
 		...over,
 	};
+	const { arguments: argumentsJSON, output } = built.detail;
+	return { ...built, detail: { ...built.detail, summary: toolStepSummary({ toolName: label, argumentsJSON, output }) } };
 }
 
 const run: Run = {
@@ -110,7 +114,7 @@ describe("a run expanded into its steps", () => {
 		// The model's intent when there is one, else the step's words (the
 		// package's toolStepSummary), which already name what it acted on.
 		expect(all).toEqual(
-			expect.arrayContaining(["Read the session loop", "Ran go test ./agent/...", 'Searched "Turn" in agent · 0 hits']),
+			expect.arrayContaining(["Read the session loop", "Ran go test ./agent/...", 'Searched "Turn" in agent']),
 		);
 		const target = (value: string) => texts(tree.root).find((node) => textOf(node) === value);
 		expect(target("agent/session.go")?.props.style).toMatchObject({
@@ -231,7 +235,7 @@ describe("a step's evidence", () => {
 		const tree = render(
 			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-none" />,
 		);
-		const grep = line(tree.root, 'Searched "" in agent · 0 hits, done');
+		const grep = line(tree.root, 'Searched files, done');
 		expect(grep.props.onPress).toBeUndefined();
 		expect(grep.props.accessibilityRole).toBeUndefined();
 		expect(chevrons(tree.root)).toHaveLength(1);

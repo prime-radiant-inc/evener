@@ -4,8 +4,7 @@
 // session rows, then TimelineItem for each row. A step with no intent reads
 // the package's summary (the web's words), and neither a step nor a run's
 // line ever shows a raw tool name or "N other steps".
-import { hydrateThread } from "@evener/appwire-client";
-import { toolWireThread } from "@evener/appwire-client/testing/toolWireFixtures";
+import { toolWireModel } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
@@ -35,7 +34,7 @@ const RAW_NAMES =
 	/\b(read_file|grep|glob|list_dir|edit_file|write_file|apply_patch|shell|web_fetch|web_search|use_skill|github__create_issue|linear_app__list_issues|compact_context)\b/;
 
 function rowsAt(level: Level): TimelineRow[] {
-	const model = hydrateThread({ thread: toolWireThread() }, "ref-tools", 0);
+	const model = toolWireModel();
 	const { config, justTheConversation } = displayForLevel(level, null);
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
@@ -90,8 +89,7 @@ describe("no raw tool name, anywhere", () => {
 		const all = lines.join("\n");
 		for (const part of [
 			"used skill systematic-debugging",
-			"used github once",
-			"used linear app once",
+			"used 2 MCP tools",
 			"used compact context once",
 		]) {
 			expect(all).toContain(part);

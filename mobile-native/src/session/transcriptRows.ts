@@ -10,17 +10,18 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	filePathOf,
 	type ItemModel,
 	mcpToolParts,
 	parseArgs,
 	parseAskUserQuestions,
+	shellCommand,
 	skillName,
-	str,
 	type ThreadModel,
 	type ToolFamily,
 	type TurnModel,
 	toolFamily,
-	toolStepSummary,
+	words,
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
@@ -308,19 +309,15 @@ export function stepTarget(
 	parsed?: Record<string, unknown>,
 ): string | undefined {
 	const args = parsed ?? parseArgs(argumentsJSON);
-	return toolFamily(label) === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
+	if (toolFamily(label) === "shell") return shellCommand(args) || undefined;
+	return filePathOf(args);
 }
 
-/** What a tool step says it did, never its raw tool name: the words its row
- * was built with (projectedRows reads them from the whole step), else the
- * package's toolStepSummary over what the row still carries. Any other
- * activity keeps its label. */
-export function stepWords(step: Pick<RunStep, "label" | "family" | "detail">): string {
-	if (step.family !== "tool") return step.label;
-	return (
-		step.detail.summary ??
-		toolStepSummary({ toolName: step.label, argumentsJSON: step.detail.arguments, output: step.detail.output })
-	);
+/** What a step says it did: the words its row was built with (projectedRows
+ * reads them once from the whole step with the package's toolStepSummary),
+ * else its label. The one place a renderer reads a step's words from. */
+export function stepWords(step: Pick<RunStep, "label" | "detail">): string {
+	return step.detail.summary ?? step.label;
 }
 
 interface Group {
@@ -343,26 +340,23 @@ function programOf(command: string | undefined): string | undefined {
 	return second && /^[a-z][\w-]*$/i.test(second) ? `${first} ${second}` : first;
 }
 
-// A step's part: one per family, except that each MCP server, and each tool
-// no summary covers, gets its own ("used github 3 times").
+// A step's part: one per family, except that each tool no summary covers gets
+// its own ("used compact context once"). MCP tools share one part.
 function partOf(label: string): { key: string; family: ToolFamily; name: string } {
 	const family = toolFamily(label);
-	if (family === "mcp") {
-		const server = mcpToolParts(label)?.server ?? label;
-		return { key: `mcp:${server}`, family, name: server };
-	}
 	if (family === "tool") {
-		const name = label.replaceAll("_", " ").trim() || "a tool";
+		const name = words(label) || "a tool";
 		return { key: `tool:${name}`, family, name };
 	}
 	return { key: family, family, name: "" };
 }
 
 // What a step contributes to its part's words: the program a shell command
-// ran, or the skill a skill step activated.
+// ran, the skill a skill step activated, or the server an MCP tool is on.
 function namedBy(family: ToolFamily, step: RunStep): string | undefined {
 	if (family === "shell") return programOf(stepTarget(step.label, step.detail.arguments));
 	if (family === "skill") return skillName({ argumentsJSON: step.detail.arguments }) || undefined;
+	if (family === "mcp") return mcpToolParts(step.label)?.server;
 	return undefined;
 }
 
@@ -389,6 +383,8 @@ function partText(group: Group): string {
 		case "skill":
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "mcp":
+			// One server reads by name; several read as how many MCP tools ran.
+			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
 		case "tool":
 			return `used ${group.name} ${times}`;
 	}
@@ -424,7 +420,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			group.failed += 1;
 			failed += 1;
 		}
-		if (part.family === "shell" || part.family === "skill") {
+		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
 			const name = namedBy(part.family, step);
 			if (name) group.names.add(name);
 			else group.unnamed += 1;

@@ -521,13 +521,15 @@ it("renders a missing-description tool call in full rather than second-guessing 
 	expect(result.activityPresentation.get("missing")).toEqual({ mode: "full" });
 });
 
+// The row's words come from projectedRows (toolStepSummary over the whole
+// step), which name the file and never its contents.
 it.each([
-	["completed", "wrote 26 bytes to /tmp/request-16.txt", "Write"],
-	["failed", "permission denied", "Write"],
-	["running", undefined, "Write"],
+	["completed", "wrote 26 bytes to /tmp/request-16.txt"],
+	["failed", "permission denied"],
+	["running", undefined],
 ] as const)(
-	"derives a bounded write_file action summary from its target path when description is absent (%s)",
-	(state, output, label) => {
+	"says a write_file step with no description in its own words (%s)",
+	(state, output) => {
 		const result = projectNativeTranscript(
 			conversation([
 				{
@@ -545,6 +547,7 @@ it.each([
 							file_path: "/tmp/request-16.txt",
 							content: "private file contents",
 						}),
+						summary: "Wrote /tmp/request-16.txt",
 						...(output ? { output } : {}),
 						error: state === "failed" ? output : undefined,
 					},
@@ -553,7 +556,7 @@ it.each([
 			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 		);
 		const presentation = result.activityPresentation.get("write");
-		expect(presentation?.summary).toBe(`${label} /tmp/request-16.txt`);
+		expect(presentation?.summary).toBe("Wrote /tmp/request-16.txt");
 		expect(presentation?.summary).not.toContain("private file contents");
 	},
 );
@@ -624,60 +627,25 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 	expect(hidden.items.map((item) => item.id)).toEqual(["user", "warning", "a", "image-a", "b", "image-b", "reply"]);
 });
 
-it("falls back safely for malformed or empty write_file arguments", () => {
-	for (const argumentsValue of [
-		"{",
-		"null",
-		"{}",
-		JSON.stringify({ file_path: "   " }),
-		JSON.stringify({ file_path: 42 }),
-		JSON.stringify({ path: "/tmp/unsupported-field.txt" }),
-		JSON.stringify({ content: "private" }),
-	]) {
-		const result = projectNativeTranscript(
-			conversation([
-				{
-					kind: "activity",
-					id: argumentsValue,
-					label: "write_file",
-					family: "tool",
-					state: "completed",
-					// The shape the seam produces for a summarized write_file
-					// at a compact level (the operator's summary-only ruling):
-					// the presentation derives the summary line this test
-					// exercises from exactly such a row.
-					summaryOnly: true,
-					detail: { arguments: argumentsValue },
-				},
-			]),
-			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
-		);
-		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe("Action summary unavailable");
-	}
-});
-
-it("bounds a derived write_file target without exposing its content", () => {
-	const target = `/tmp/${"a".repeat(300)}`;
+// A summary-only tool row with no rationale of its own says the words its
+// row was built with (projectedRows' toolStepSummary), the one path to a
+// step's words; a row that carries none says the projector's placeholder.
+it("shows a summary-only step's own words, else the placeholder", () => {
+	const row = (id: string, summary?: string): MobileTimelineItem => ({
+		kind: "activity",
+		id,
+		label: "write_file",
+		family: "tool",
+		state: "completed",
+		summaryOnly: true,
+		detail: { arguments: JSON.stringify({ file_path: "/tmp/x", content: "private" }), ...(summary ? { summary } : {}) },
+	});
 	const result = projectNativeTranscript(
-		conversation([
-			{
-				kind: "activity",
-				id: "write-long",
-				label: "write_file",
-				family: "tool",
-				state: "completed",
-				summaryOnly: true,
-				detail: {
-					arguments: JSON.stringify({ file_path: target, content: "private" }),
-				},
-			},
-		]),
+		conversation([row("worded", "Wrote /tmp/x"), row("bare")]),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 	);
-	const summary = result.activityPresentation.get("write-long")?.summary;
-	expect(summary).toHaveLength("Write ".length + 256);
-	expect(summary?.endsWith("...")).toBe(true);
-	expect(summary).not.toContain("private");
+	expect(result.activityPresentation.get("worded")?.summary).toBe("Wrote /tmp/x");
+	expect(result.activityPresentation.get("bare")?.summary).toBe("Action summary unavailable");
 });
 
 it("keeps an authoritative write_file description ahead of derived details", () => {

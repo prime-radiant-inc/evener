@@ -435,7 +435,8 @@ describe("a run in the transcript", () => {
 				label: "read_file",
 				family: "tool",
 				state: "completed",
-				detail: { arguments: '{"file_path":"agent/session.go"}' },
+				// Its words, as projectedRows builds them from the whole step.
+				detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
 			},
 		],
 	};

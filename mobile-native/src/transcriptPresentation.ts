@@ -79,29 +79,11 @@ export interface NativeTranscriptPresentation {
 }
 
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
-const MAX_ACTION_DETAIL_LENGTH = 256;
-
-function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string | undefined {
-	if (item.family !== "tool" || item.label !== "write_file") return undefined;
-	if (!item.detail.arguments) return undefined;
-	try {
-		const args: unknown = JSON.parse(item.detail.arguments);
-		if (typeof args !== "object" || args === null) return undefined;
-		const record = args as Record<string, unknown>;
-		const path = typeof record.file_path === "string" ? record.file_path.trim() : "";
-		if (!path) return undefined;
-		const boundedPath =
-			path.length > MAX_ACTION_DETAIL_LENGTH ? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...` : path;
-		return `Write ${boundedPath}`;
-	} catch {
-		return undefined;
-	}
-}
 
 function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
-	return (
-		item.detail.description?.trim() || writeFileActionSummary(item) || item.detail.summary || ACTION_SUMMARY_UNAVAILABLE
-	);
+	// The step's own words when it has no rationale: the one path to them
+	// (projectedRows builds them with the package's toolStepSummary).
+	return item.detail.description?.trim() || item.detail.summary || ACTION_SUMMARY_UNAVAILABLE;
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality
