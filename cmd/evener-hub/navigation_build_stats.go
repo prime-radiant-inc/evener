@@ -47,11 +47,11 @@ func (s *navigationBuildStats) countNavigationSessions(metas []schema.SessionMet
 	s.Dirs = len(dirs)
 	s.Live = len(live)
 	for _, project := range tree.Projects {
-		rows, _ := project.TierRows("archived")
+		rows, _ := project.TierRows("archived") // "archived" is always a known tier
 		s.ArchivedRootsInActiveProjects += len(rows)
 	}
 	for _, project := range tree.ArchivedProjects {
-		rows, _ := project.TierRows("archived")
+		rows, _ := project.TierRows("archived") // "archived" is always a known tier
 		s.ArchivedRootsInArchivedProjects += len(rows)
 	}
 	s.ArchivedRoots = s.ArchivedRootsInActiveProjects + s.ArchivedRootsInArchivedProjects
@@ -72,6 +72,7 @@ func (s navigationBuildStats) fields() string {
 // Its methods are called only from the single in-flight build.
 type navigationBuildStatsLog struct {
 	logf       func(format string, args ...any)
+	slow       time.Duration // zero means navigationBuildStatsSlow
 	lastLogged time.Time
 }
 
@@ -79,7 +80,11 @@ func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time
 	if l.logf == nil {
 		return
 	}
-	if stats.Total < navigationBuildStatsSlow && !l.lastLogged.IsZero() && now.Sub(l.lastLogged) < navigationBuildStatsInterval {
+	slow := l.slow
+	if slow == 0 {
+		slow = navigationBuildStatsSlow
+	}
+	if stats.Total < slow && !l.lastLogged.IsZero() && now.Sub(l.lastLogged) < navigationBuildStatsInterval {
 		return
 	}
 	l.lastLogged = now

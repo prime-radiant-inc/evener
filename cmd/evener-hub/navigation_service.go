@@ -102,6 +102,8 @@ type navigationServiceConfig struct {
 	// tests set them to force eviction with small fixtures.
 	historyEntries int
 	historyBytes   int64
+	// statsSlow overrides the slow-build threshold for build stats lines.
+	statsSlow time.Duration
 }
 
 type navigationTimer interface {
@@ -233,7 +235,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		now:              now,
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
-		statsLog:         navigationBuildStatsLog{logf: cfg.Logf},
+		statsLog:         navigationBuildStatsLog{logf: cfg.Logf, slow: cfg.statsSlow},
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
@@ -598,7 +600,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		s.mu.Unlock()
 	}()
 	started := time.Now()
-	var stats navigationBuildStats
+	stats := navigationBuildStats{phase: "capture"}
 	defer func() {
 		if flight.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			stats.Total = time.Since(started)

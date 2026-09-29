@@ -44,7 +44,7 @@ func statsFields(t *testing.T, line string) map[string]string {
 		t.Fatalf("stats line has no fields: %q", line)
 	}
 	fields := map[string]string{}
-	for _, part := range strings.Fields(rest) {
+	for part := range strings.FieldsSeq(rest) {
 		key, value, ok := strings.Cut(part, "=")
 		if !ok {
 			t.Fatalf("malformed field %q in %q", part, line)
@@ -129,7 +129,10 @@ func TestNavigationBuildLogsCountsForFixture(t *testing.T) {
 func TestNavigationBuildLogIsRateLimited(t *testing.T) {
 	logs := &navigationStatsLog{}
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) { cfg.Logf = logs.Logf })
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Logf = logs.Logf
+		cfg.statsSlow = time.Hour
+	})
 	for _, title := range []string{"one", "two", "three"} {
 		source.changeTitle(title)
 		if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
@@ -171,7 +174,7 @@ type restartingNavigationSource struct {
 
 func (s *restartingNavigationSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
 	snapshot, err := s.testNavigationSource.Capture(ctx, generation, now)
-	s.once.Do(func() { s.testNavigationSource.changeTitle("moved mid-capture") })
+	s.once.Do(func() { s.changeTitle("moved mid-capture") })
 	return snapshot, err
 }
 
