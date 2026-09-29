@@ -490,14 +490,20 @@ feeds [goal failure handling](../../agent/session_goal.go#L408); continuation
 requires active status. User interrupt and root shutdown already have distinct
 handling and should retain their meaning.
 
-**Discuss.** Separate waiting for a recoverable dependency from an objective that
-needs a user decision. Choose a bounded recovery policy and visible waiting state
-that respects budgets, explicit Stop and genuine authentication or capability
-loss. Avoid turning every terminal error into endless provider calls.
+**Decision.** A temporary provider failure leaves the authorized goal waiting
+rather than blocked. Continue retrying with backoff and honor provider retry
+timing; a fixed attempt count or elapsed time must not abandon the objective.
+Preserve the goal and completed work, show a quiet and accurate waiting status,
+and automatically continue when the provider recovers, even after a long outage.
+Waiting alone does not expire the user's instruction. Recheck cancellation,
+applicable budgets and newer instructions before resuming, so recovery continues
+the user's current intent. Implementation remains pending.
 
-**Acceptance.** Let a temporary scripted provider failure outlast normal retries,
-then heal it. An authorized goal continues under the selected policy without
-re-entering the objective; stopped and budget-exhausted goals do not resume.
+**Acceptance.** Let a temporary scripted provider failure persist well beyond
+normal retries, then heal it. Requests remain paced during the outage,
+and the authorized goal continues with its preserved progress without a repair
+click or re-entering the objective. Canceled and budget-exhausted goals do not
+resume; newer instructions take precedence over the objective that was waiting.
 
 ### R06 Read-only goal progress
 
