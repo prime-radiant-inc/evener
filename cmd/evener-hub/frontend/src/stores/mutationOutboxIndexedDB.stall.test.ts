@@ -7,7 +7,6 @@ import {
   MutationOutboxIndexedDB,
   MutationStorageClosedError,
   MutationStorageTimeoutError,
-  MutationStorageWedgedError,
 } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
 
@@ -19,9 +18,9 @@ const intent: MutationIntent = {
   optimisticDisplay: null,
 };
 
-// The open ladder (#openWithRecovery, #runTransaction) adds await hops over a
-// bare #open, so a single microtask no longer reaches IndexedDB. Flush a
-// bounded number of turns; the bound is a tripwire, not the mechanism.
+// A transaction's path through #runTransaction adds await hops over a bare
+// #open, so a single microtask does not always reach IndexedDB. Flush a bounded
+// number of turns; the bound is a tripwire, not the mechanism.
 async function flushMicrotasks(turns = 5): Promise<void> {
   for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
@@ -107,25 +106,30 @@ test("a timed-out open does not abort its upgrade and cannot install the late co
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = new MutationOutboxIndexedDB({ indexedDB });
-  const read = storage.listOutbox();
+  const read = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   if (!hold) throw new Error("open did not reach IndexedDB");
   await hold.reached;
-  await vi.runOnlyPendingTimersAsync();
-  // The timeout hands off to the non-destructive retry, which opens its own
-  // connection. Release the withheld late success so its abandoned connection
-  // closes rather than lingering.
-  hold.release();
-  expect(await read).toEqual([]);
+  await vi.runOnlyPendingTimersAsync(); // the watchdog: this attempt fails
+  expect(await read).toBeInstanceOf(MutationStorageTimeoutError);
+  // The upgrade committed - the schema the adapter created is present, and an
+  // aborted upgrade would never have fired success at all.
   expect(lateStores).toContain("outbox");
-  const record = await storage.enqueueIntent(intent);
+  // Release the withheld late success: its abandoned connection closes rather
+  // than being installed.
+  hold.release();
   expect(() => lateDatabase?.transaction("outbox")).toThrow();
+  // The open answers again: a later call attempts it and succeeds.
+  const record = await storage.enqueueIntent(intent);
   expect(await storage.listOutbox()).toEqual([record]);
   storage.close();
 });
 
-test("a single transient open timeout retries without deleting the database or losing records", async () => {
+test("a timeout fails the call without deleting anything, and a later call succeeds once the open answers", async () => {
   const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-transient-retry";
+  const databaseName = "evener-mutation-outbox-timeout-recovers";
   const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
   const seeded = await seeder.enqueueIntent(intent);
   // close() is terminal, so a second adapter is what must open the database
@@ -133,24 +137,30 @@ test("a single transient open timeout retries without deleting the database or l
   seeder.close();
   const deleteDatabase = vi.spyOn(IDBFactory.prototype, "deleteDatabase");
   const open = indexedDB.open.bind(indexedDB);
-  let opens = 0;
+  let mainOpens = 0;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    opens += 1;
-    // Exactly one open wedges, the way a tab frozen mid-open trips the
-    // watchdog and answers on the very next request.
-    if (opens === 1) return neverSettlingRequest();
+    if (name === databaseName) {
+      mainOpens += 1;
+      // The first open wedges; the open answers again afterwards.
+      if (mainOpens === 1) return neverSettlingRequest();
+    }
     return open(name, version);
   });
   const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const enqueue = storage.enqueueIntent(intent);
+  const stalled = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   await vi.advanceTimersByTimeAsync(10_000);
-  const committed = await enqueue;
-  // The one timeout was transient: the plain retry reopened the existing
-  // database, so the new record committed and the earlier one survived.
-  expect(await storage.listOutbox()).toEqual([seeded, committed]);
+  const error = await stalled;
+  expect(error).toBeInstanceOf(MutationStorageTimeoutError);
+  // The failure is the ordinary send error: the draft is kept and a retry may
+  // succeed. Nothing is deleted and nothing refuses: the very next call
+  // attempts the open again and succeeds, and the earlier record survived.
+  expect((error as Error).message).toBe("The message could not be saved; your draft has been kept. Try again.");
+  expect(await storage.listOutbox()).toEqual([seeded]);
   expect(deleteDatabase).not.toHaveBeenCalled();
-  expect(opens).toBe(2);
   storage.close();
 });
 
@@ -161,12 +171,11 @@ test("a single transient open timeout retries without deleting the database or l
 test("a capture read stalled by a timeout rejects rather than reading a Stop committed after the click", async () => {
   const indexedDB = new IDBFactory();
   const open = indexedDB.open.bind(indexedDB);
-  const databaseName = "evener-mutation-outbox-capture-no-retry";
+  const databaseName = "evener-mutation-outbox-capture-timeout";
   let mainOpens = 0;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
     if (name === databaseName) {
       mainOpens += 1;
-      // The capture read's one attempt wedges; a second attempt would answer.
       if (mainOpens === 1) return neverSettlingRequest();
     }
     return open(name, version);
@@ -178,33 +187,30 @@ test("a capture read stalled by a timeout rejects rather than reading a Stop com
     () => undefined,
     (error: unknown) => error,
   );
-  // The sibling tab's Stop commits while the capture is stalled. A retry would
-  // answer with the bumped epoch, compare it as the click-time epoch, and let
-  // the row commit submitting after the Stop.
+  // The sibling tab's Stop commits while the capture is stalled. There is no
+  // retry to answer with the bumped epoch, so the capture must fail.
   await sibling.cancelUnattempted("local:thread-1");
-  await vi.advanceTimersByTimeAsync(10_000); // the capture's single open watchdog
-  // Safe outcome: the capture fails, so the send fails; the epoch the sibling
-  // raised during the stall is never read.
+  await vi.advanceTimersByTimeAsync(10_000);
   expect(await capture).toBeInstanceOf(MutationStorageTimeoutError);
-  // The Stop really landed: a retry would have read its bumped epoch (1) and
-  // let the row commit after the Stop. The capture read a timeout instead.
+  // The Stop really landed: a later read (after the open answers) sees its
+  // bumped epoch, but the click-time capture never did.
   expect(await sibling.readStopEpoch("local:thread-1")).toBe(1);
   sender.close();
   sibling.close();
 });
 
-test("the retry click's capture does not retry a timed-out open", async () => {
+test("the retry click's capture rejects on a timed-out open", async () => {
   const indexedDB = new IDBFactory();
   const open = indexedDB.open.bind(indexedDB);
-  let opens = 0;
+  let mainOpens = 0;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    opens += 1;
-    if (opens === 1) return neverSettlingRequest();
+    mainOpens += 1;
+    if (mainOpens === 1) return neverSettlingRequest();
     return open(name, version);
   });
   const storage = new MutationOutboxIndexedDB({
     indexedDB,
-    databaseName: "evener-mutation-outbox-release-capture-no-retry",
+    databaseName: "evener-mutation-outbox-release-capture-timeout",
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const capture = storage.getOutboxWithStopEpoch("mutation-1").then(
@@ -213,141 +219,60 @@ test("the retry click's capture does not retry a timed-out open", async () => {
   );
   await vi.advanceTimersByTimeAsync(10_000);
   expect(await capture).toBeInstanceOf(MutationStorageTimeoutError);
-  expect(opens).toBe(1);
   storage.close();
 });
 
-test("concurrent operations share one retry and both settle successfully", async () => {
+test("concurrent operations share one open attempt and both settle successfully", async () => {
   const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-concurrent-retry";
+  const databaseName = "evener-mutation-outbox-concurrent";
   const open = indexedDB.open.bind(indexedDB);
   let mainOpens = 0;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    if (name === databaseName) {
-      mainOpens += 1;
-      // ONE wedged open: both callers share it, and one shared retry heals both.
-      if (mainOpens === 1) return neverSettlingRequest();
-    }
+    if (name === databaseName) mainOpens += 1;
     return open(name, version);
   });
   const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const read = storage.listOutbox();
   const enqueue = storage.enqueueIntent(intent);
-  await vi.advanceTimersByTimeAsync(10_000); // the shared first open's watchdog
   const [before, record] = await Promise.all([read, enqueue]);
   expect(Array.isArray(before)).toBe(true);
   expect(record.intentSequence).toBe(1);
   expect(await storage.listOutbox()).toEqual([record]);
-  // One initial open and one shared retry: the callers did not each open.
-  expect(mainOpens).toBe(2);
+  // Both callers shared one connection: the second did not open its own.
+  expect(mainOpens).toBe(1);
   storage.close();
 });
 
-test("the wedged latch clears after the cooldown so a recovered origin heals", async () => {
+test("close() while an open is in flight closes the late connection and does not install it", async () => {
   const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-cooldown";
+  const databaseName = "evener-mutation-outbox-close-mid-open";
   const open = indexedDB.open.bind(indexedDB);
-  let wedged = true;
-  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) =>
-    wedged ? neverSettlingRequest() : open(name, version),
-  );
-  let now = 0;
-  const states: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB,
-    databaseName,
-    now: () => now,
-    onStorageWedged: (value) => states.push(value),
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const first = storage.listOutbox().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
-  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
-  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
-  expect(states).toEqual([true]);
-  // The origin recovers and the cooldown elapses: the latch fails fast only for
-  // the cooldown, so the normal ladder runs again and unwedges on success.
-  wedged = false;
-  now = 15_000;
-  expect(await storage.listOutbox()).toEqual([]);
-  expect(states).toEqual([true, false]);
-  storage.close();
-});
-
-test("a caller arriving during the retry window joins the in-flight recovery", async () => {
-  const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-join-recovery";
-  const open = indexedDB.open.bind(indexedDB);
-  let retryHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let mainOpens = 0;
+  let late: IDBDatabase | undefined;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    if (name !== databaseName) return open(name, version);
-    mainOpens += 1;
-    if (mainOpens === 1) return neverSettlingRequest();
     const request = open(name, version);
-    if (mainOpens === 2) retryHold = holdIndexedDBEvent(request, "success");
-    return request;
-  });
-  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const first = storage.listOutbox();
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog; the retry is issued
-  await flushMicrotasks();
-  if (!retryHold) throw new Error("recovery did not reach its retry");
-  const opensBefore = mainOpens;
-  // The retry is in flight: a caller that opened beside the recovery would race
-  // it, so it joins instead and opens none.
-  const second = storage.listOutbox();
-  await flushMicrotasks();
-  expect(mainOpens).toBe(opensBefore);
-  retryHold.release();
-  const [a, b] = await Promise.all([first, second]);
-  expect(a).toEqual([]);
-  expect(b).toEqual([]);
-  expect(mainOpens).toBe(2);
-  storage.close();
-});
-
-test("close() during the recovery retry closes the late connection and does not install it", async () => {
-  const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-close-mid-recovery";
-  const open = indexedDB.open.bind(indexedDB);
-  let retried: IDBDatabase | undefined;
-  let retryHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let mainOpens = 0;
-  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    if (name !== databaseName) return open(name, version);
-    mainOpens += 1;
-    if (mainOpens === 1) return neverSettlingRequest();
-    const request = open(name, version);
-    if (mainOpens === 2) {
+    if (name === databaseName) {
       request.addEventListener("success", () => {
-        retried = request.result;
+        late = request.result;
       });
-      retryHold = holdIndexedDBEvent(request, "success");
+      hold = holdIndexedDBEvent(request, "success");
     }
     return request;
   });
   const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const read = storage.listOutbox().then(
     () => undefined,
     (error: unknown) => error,
   );
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog; the retry is in flight
-  await flushMicrotasks();
-  if (!retryHold) throw new Error("recovery did not reach its retry");
+  if (!hold) throw new Error("open did not reach IndexedDB");
+  await hold.reached;
   storage.close();
-  retryHold.release();
+  hold.release();
   const failure = await read;
   expect(failure).toBeInstanceOf(MutationStorageClosedError);
-  // The retry landed after close(): its connection is closed, not installed.
-  expect(retried).toBeDefined();
-  expect(() => retried?.transaction("outbox")).toThrow();
+  // The open landed after close(): its connection is closed, not installed.
+  expect(late).toBeDefined();
+  expect(() => late?.transaction("outbox")).toThrow();
   storage.close();
 });
 
@@ -371,66 +296,7 @@ test("a call after close() throws the closed error and installs no connection", 
   expect(opens).toBe(1);
 });
 
-test("close() while wedged clears the latch and notifies false", async () => {
-  const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  const states: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB,
-    databaseName: "evener-mutation-outbox-close-wedged",
-    onStorageWedged: (value) => states.push(value),
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const first = storage.listOutbox().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
-  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
-  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
-  expect(states).toEqual([true]);
-  storage.close();
-  // The retired adapter is not wedged, so the banner must not stay latched.
-  expect(states).toEqual([true, false]);
-  await expect(storage.listOutbox()).rejects.toBeInstanceOf(MutationStorageClosedError);
-});
-
-test("the wedged latch stays true through a cooldown retry that re-wedges", async () => {
-  const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-cooldown-retry-stays-wedged";
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  let now = 0;
-  const states: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB,
-    databaseName,
-    now: () => now,
-    onStorageWedged: (value) => states.push(value),
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const first = storage.listOutbox().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
-  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
-  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
-  expect(states).toEqual([true]);
-  // Cooldown elapses but the origin is still stuck: the attempt is allowed, the
-  // latch (and the banner) stays true throughout, and a re-wedge adds no flicker.
-  now = 15_000;
-  const second = storage.listOutbox().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  await vi.advanceTimersByTimeAsync(10_000); // the cooldown attempt's watchdog
-  await vi.advanceTimersByTimeAsync(10_000); // its recovery retry's watchdog
-  expect(await second).toBeInstanceOf(MutationStorageWedgedError);
-  expect(states).toEqual([true]);
-  storage.close();
-});
-
-test("a stalled upgrade during recovery latches wedged rather than healing", async () => {
+test("a stalled upgrade times out and fails the call", async () => {
   const indexedDB = new IDBFactory();
   const createObjectStore = IDBDatabase.prototype.createObjectStore;
   let keepAlive = true;
@@ -451,60 +317,26 @@ test("a stalled upgrade during recovery latches wedged rather than healing", asy
     pulse();
     return store;
   });
-  const wedged: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB,
-    onStorageWedged: (value) => wedged.push(value),
-  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let settled = false;
   const failure = storage.listOutbox().then(
     () => undefined,
-    (error: unknown) => error,
+    (error: unknown) => {
+      settled = true;
+      return error;
+    },
   );
   try {
     await upgrading;
-    await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+    await vi.advanceTimersByTimeAsync(10_000); // the open watchdog
     await nextRealTask();
-    await vi.advanceTimersByTimeAsync(10_000); // the recovery retry's watchdog
-    await settleRealTasks(() => wedged.length > 0);
-    expect(await failure).toBeInstanceOf(MutationStorageWedgedError);
-    expect(wedged).toEqual([true]);
+    await settleRealTasks(() => settled);
+    expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
   } finally {
     keepAlive = false;
     storage.close();
   }
-});
-
-test("a double timeout latches wedged, calls onStorageWedged(true), and never deletes", async () => {
-  const indexedDB = new IDBFactory();
-  const deleteDatabase = vi.spyOn(IDBFactory.prototype, "deleteDatabase");
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  const wedged: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB,
-    databaseName: "evener-mutation-outbox-latch",
-    onStorageWedged: (value) => wedged.push(value),
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const first = storage.listOutbox().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
-  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
-  const error = await first;
-  expect(error).toBeInstanceOf(MutationStorageWedgedError);
-  expect((error as Error).name).toBe("MutationStorageWedgedError");
-  expect(wedged).toEqual([true]);
-  // Fast fail during the cooldown: the latched adapter rejects without
-  // scheduling any watchdog, so a caller does not wait the open timeout again.
-  const timersBefore = vi.getTimerCount();
-  const second = await storage.listOutbox().catch((again: unknown) => again);
-  expect(second).toBeInstanceOf(MutationStorageWedgedError);
-  expect(vi.getTimerCount()).toBe(timersBefore);
-  // Nothing is ever deleted by the latch or the ladder.
-  expect(deleteDatabase).not.toHaveBeenCalled();
-  storage.close();
 });
 
 test.each([undefined, true, false])(

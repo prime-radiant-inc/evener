@@ -74,7 +74,6 @@ import {
   recoveryFence,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
-import { STORAGE_WEDGED_GUIDANCE } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import {
   hasBlockedUnknown,
@@ -225,7 +224,6 @@ export function Composer({ ref, focused }: ComposerProps) {
   // turn/start for that window, so the resume-only carve-out does not apply.
   const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
-  const mutationStorageWedged = useThreadsStore((s) => s.mutationStorageWedged);
   const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
@@ -1601,11 +1599,6 @@ export function Composer({ ref, focused }: ComposerProps) {
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
           confirmation.
-        </div>
-      )}
-      {mutationStorageWedged && (
-        <div className={CLASS.storageStatus} role="alert" aria-label="Message storage stuck">
-          {STORAGE_WEDGED_GUIDANCE}
         </div>
       )}
       {/* The ask dock no longer renders here: pending questions are the

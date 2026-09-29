@@ -5810,19 +5810,3 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
   expect(await storage.listOptimistic(ref)).toEqual([]);
   expect(await storage.listRecovery(ref)).toEqual([]);
 });
-
-// The store's mutationStorageWedged field drives an actionable role="alert":
-// once the adapter latches wedged, the user needs the reload/clear-site-data
-// instruction rather than only the transient per-send failure.
-test("the wedged storage state renders an actionable alert banner", async () => {
-  await mountComposer("ref_a");
-  expect(screen.queryByRole("alert", { name: "Message storage stuck" })).toBeNull();
-  act(() => {
-    threadsStore.setState({ mutationStorageWedged: true });
-  });
-  expect(screen.getByRole("alert", { name: "Message storage stuck" })).toBeTruthy();
-  act(() => {
-    threadsStore.setState({ mutationStorageWedged: false });
-  });
-  expect(screen.queryByRole("alert", { name: "Message storage stuck" })).toBeNull();
-});

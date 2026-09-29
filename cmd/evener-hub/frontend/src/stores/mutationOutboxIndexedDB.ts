@@ -33,7 +33,6 @@ export interface MutationOutboxIndexedDBOptions {
   createPresentationId?: () => string;
   now?: () => number;
   onWriteStalled?: (waiting: boolean) => void;
-  onStorageWedged?: (wedged: boolean) => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
 }
@@ -53,35 +52,20 @@ const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
-// How long the wedged latch fails fast before the normal ladder is allowed to
-// try the origin again. A stuck coordinator usually stays stuck, but a released
-// multi-tab hold or a recovered origin can heal, and the cooldown is what lets
-// it self-heal instead of needing a reload.
-const WEDGED_RETRY_MS = 15_000;
 // The store scope every enqueue transaction opens: the three active record
 // stores plus the sequence store. All three record stores are locked so the
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
+// The one actionable message for a stuck open: the message was not saved, the
+// draft is kept, and a later try may succeed. It is a bare retryable detail,
+// never a gate - a stuck open is not remembered, so every later operation
+// still attempts the open and a send after the open recovers succeeds.
 export class MutationStorageTimeoutError extends Error {
   constructor() {
-    super("Browser message storage is not responding. Your draft has been kept. Try again when storage recovers.");
+    super("The message could not be saved; your draft has been kept. Try again.");
     this.name = "MutationStorageTimeoutError";
-  }
-}
-
-// The wedged case: two consecutive open() timeouts, and the adapter has latched
-// (the cooldown in #open lets a later call retry after a while). Unlike the
-// timeout above, retrying immediately cannot help - the storage coordinator is
-// stuck and only a reload or clearing the site's data recovers it.
-export const STORAGE_WEDGED_GUIDANCE =
-  "Message storage is stuck and cannot be recovered automatically. Reload the page; if it stays stuck, clear this site's data in your browser settings.";
-
-export class MutationStorageWedgedError extends Error {
-  constructor() {
-    super(STORAGE_WEDGED_GUIDANCE);
-    this.name = "MutationStorageWedgedError";
   }
 }
 
@@ -150,12 +134,8 @@ export class MutationOutboxIndexedDB {
   readonly #now: () => number;
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
-  readonly #onStorageWedged: ((wedged: boolean) => void) | undefined;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
-  #wedged = false;
-  #wedgedRetryAt = 0;
-  #recoveryPromise: Promise<IDBDatabase> | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
   // Terminal once set by close(): no open is issued and no connection installs.
@@ -171,22 +151,15 @@ export class MutationOutboxIndexedDB {
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
-    this.#onStorageWedged = options.onStorageWedged;
   }
 
   close(): void {
     // Terminal and idempotent: the adapter is retired and never reopens. Drop
-    // every connection and the in-flight recovery so a post-close call cannot
-    // join a stale ladder or install a connection.
+    // every connection so a post-close call cannot install one.
     this.#closed = true;
-    this.#recoveryPromise = undefined;
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
-    this.#wedgedRetryAt = 0;
-    // Clear the latch and tell the UI, so the wedged banner does not stay
-    // shown for a retired adapter.
-    this.#unwedge();
   }
 
   // §6's note-row supersede discard (below) is the one write this class
@@ -237,14 +210,11 @@ export class MutationOutboxIndexedDB {
   // ref's sequence row, never cached - another tab's Stop is invisible to
   // this tab's memory.
   //
-  // NON-RECOVERING by rule: this read is the click's first storage
-  // observation, so a first-open timeout must reject it (the send fails) rather
-  // than retry and return an epoch that a Stop committed during the stall has
-  // since bumped - which would let the row commit submitting after the Stop.
+  // This read is the click's first storage observation; a timeout rejects it
+  // (the send fails), which is the safe outcome - there is no retry to answer
+  // later with an epoch a Stop may have since bumped.
   async readStopEpoch(targetRef: string): Promise<number> {
-    return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef), {
-      recovering: false,
-    });
+    return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
   }
 
   async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
@@ -270,32 +240,25 @@ export class MutationOutboxIndexedDB {
   async getOutboxWithStopEpoch(
     clientMutationId: string,
   ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
-    // NON-RECOVERING for the same reason as readStopEpoch: this is the Retry
-    // click's first storage observation, so a timeout must fail the release
-    // rather than retry into a post-Stop epoch.
-    return this.#read(
-      [OUTBOX_STORE, SEQUENCE_STORE],
-      async (transaction) => {
-        // The sequences row is keyed by the ref, which only the row read
-        // carries - but the pair must issue together, so the epoch side reads
-        // the whole (small, one-row-per-ref) store and picks the row's ref out of
-        // the result. It issues first so the pair cannot leave one request's
-        // promise unconsumed: the row read is the request a caller's abort seam
-        // can strike mid-creation, and both promises always meet Promise.all.
-        const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
-        const recordRequest = requestResult<MutationOutboxRecord | undefined>(
-          transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
-        );
-        const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
-        // A missing row has no ref to fence; the caller's absent-row refusal
-        // never reaches the comparison.
-        const stopEpoch = record
-          ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
-          : 0;
-        return { record, stopEpoch };
-      },
-      { recovering: false },
-    );
+    return this.#read([OUTBOX_STORE, SEQUENCE_STORE], async (transaction) => {
+      // The sequences row is keyed by the ref, which only the row read
+      // carries - but the pair must issue together, so the epoch side reads
+      // the whole (small, one-row-per-ref) store and picks the row's ref out of
+      // the result. It issues first so the pair cannot leave one request's
+      // promise unconsumed: the row read is the request a caller's abort seam
+      // can strike mid-creation, and both promises always meet Promise.all.
+      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+      const recordRequest = requestResult<MutationOutboxRecord | undefined>(
+        transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
+      );
+      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
+      // A missing row has no ref to fence; the caller's absent-row refusal
+      // never reaches the comparison.
+      const stopEpoch = record
+        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch };
+    });
   }
 
   // Stop's durable write: the ref's cancelable rows turn "canceled" in the
@@ -792,15 +755,10 @@ export class MutationOutboxIndexedDB {
   }
 
   async #open(): Promise<IDBDatabase> {
-    // Terminal close: the adapter is retired, so no operation may run.
+    // Terminal close: the adapter is retired, so no operation may run. Nothing
+    // else refuses an attempt: a stuck open is not remembered, so a send after
+    // storage recovers still succeeds.
     if (this.#closed) throw new MutationStorageClosedError();
-    // The wedged latch fails fast only for the cooldown: a stuck connection
-    // coordinator never fires success, error, or blocked, so retrying
-    // immediately can only repeat the same timeout. Once the cooldown elapses
-    // an attempt is allowed, but the latch stays set - and the banner stays
-    // shown - until an open actually succeeds, so a retry that re-wedges cannot
-    // flicker the status false-then-true. Only a successful open unwedges.
-    if (this.#wedged && this.#now() < this.#wedgedRetryAt) throw new MutationStorageWedgedError();
     if (this.#database) return this.#database;
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
@@ -811,7 +769,11 @@ export class MutationOutboxIndexedDB {
         clearTimeout(timer);
         reject(error);
       };
-      const timer = setTimeout(() => fail(new MutationStorageTimeoutError()), STORAGE_WAIT_MS);
+      const timer = setTimeout(() => {
+        // The watchdog fired: fail this one attempt with the actionable error.
+        // A later call attempts the open again.
+        fail(new MutationStorageTimeoutError());
+      }, STORAGE_WAIT_MS);
       request.addEventListener(
         "upgradeneeded",
         () => {
@@ -856,8 +818,6 @@ export class MutationOutboxIndexedDB {
           this.#database = database;
           database.addEventListener("versionchange", () => this.#retire(database));
           database.addEventListener("close", () => this.#retire(database));
-          // A healthy open clears any prior wedge latch: the user's send healed.
-          this.#unwedge();
           resolve(database);
         },
         { once: true },
@@ -885,17 +845,8 @@ export class MutationOutboxIndexedDB {
     this.#databasePromise = undefined;
   }
 
-  // `recovering: false` is the click-time capture's escape hatch: §4's stop
-  // barrier requires the capture read to be the click's FIRST storage
-  // observation, so it must NOT ride the open retry, which could answer with a
-  // post-Stop epoch ~10s later and let the row commit submitting after the
-  // Stop. See readStopEpoch / getOutboxWithStopEpoch.
-  async #read<T>(
-    stores: string | string[],
-    body: (transaction: IDBTransaction) => Promise<T>,
-    options: { recovering?: boolean } = {},
-  ): Promise<T> {
-    return this.#transaction(stores, "readonly", undefined, body, options);
+  async #read<T>(stores: string | string[], body: (transaction: IDBTransaction) => Promise<T>): Promise<T> {
+    return this.#transaction(stores, "readonly", undefined, body);
   }
 
   async #write<T>(
@@ -916,9 +867,8 @@ export class MutationOutboxIndexedDB {
     mode: "readonly" | "readwrite",
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
-    options: { recovering?: boolean } = {},
   ): Promise<T> {
-    return trackProjectionWork(this.#runTransaction(stores, mode, operation, body, options));
+    return trackProjectionWork(this.#runTransaction(stores, mode, operation, body));
   }
 
   async #runTransaction<T>(
@@ -926,12 +876,10 @@ export class MutationOutboxIndexedDB {
     mode: "readonly" | "readwrite",
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
-    options: { recovering?: boolean } = {},
   ): Promise<T> {
-    // Ordinary reads and writes keep the one-shot recovery retry; the
-    // click-time captures take a single attempt, so a timeout still fails the
-    // send exactly as it did before the retry existed.
-    const database = options.recovering === false ? await this.#open() : await this.#openWithRecovery();
+    // One attempt: a timeout fails this call (the caller retries by acting
+    // again), and every later call attempts the open afresh.
+    const database = await this.#open();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -982,84 +930,6 @@ export class MutationOutboxIndexedDB {
         if (this.#stalledWrites === 0) this.#notifyWriteStalled(false);
       }
     }
-  }
-
-  // The single gate every transaction passes. A first open timeout hands off to
-  // #runOpenRecovery below, deduped so concurrent callers share one ladder.
-  async #openWithRecovery(): Promise<IDBDatabase> {
-    // Join an in-flight recovery BEFORE opening: while the retry is in flight a
-    // fresh open here would race the ladder, and a close() (or latch) could then
-    // leave this caller with a connection the recovery closes. The recovery
-    // owns the connection until it settles.
-    if (this.#recoveryPromise) return await this.#recoveryPromise;
-    try {
-      return await this.#open();
-    } catch (error) {
-      // VersionError/blocked/InvalidStateError are real faults this path must
-      // not treat as a wedge. Only a timeout can be the coordinator stalling.
-      if (!(error instanceof MutationStorageTimeoutError)) throw error;
-    }
-    return await this.#startRecovery();
-  }
-
-  // Starts the one recovery, or joins the one already running. The promise is
-  // assigned synchronously before #runOpenRecovery's first await, so a caller
-  // that arrives while the retry is in flight joins instead of opening beside
-  // it. Cleared when it settles.
-  #startRecovery(): Promise<IDBDatabase> {
-    if (this.#recoveryPromise) return this.#recoveryPromise;
-    const recovery = this.#runOpenRecovery();
-    this.#recoveryPromise = recovery;
-    const clear = () => {
-      if (this.#recoveryPromise === recovery) this.#recoveryPromise = undefined;
-    };
-    recovery.then(clear, clear);
-    return recovery;
-  }
-
-  // The retry ladder, kept out of #open so a failed retry cannot recurse into
-  // itself or split the wedged-latch invariant.
-  async #runOpenRecovery(): Promise<IDBDatabase> {
-    // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
-    // watchdog and answer on the very next request. Retry once.
-    try {
-      return await this.#open();
-    } catch (retryError) {
-      if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
-    }
-    // After the awaited retry, a close() that landed mid-recovery retires the
-    // adapter: propagate the closed error rather than the wedged one.
-    if (this.#closed) throw new MutationStorageClosedError();
-    // Two timeouts in a row are the wedged-coordinator signature. Latch wedged
-    // and report the actionable error; nothing is deleted. The cooldown in
-    // #open is what lets a later call retry the ladder once the origin heals.
-    this.#wedge();
-    throw new MutationStorageWedgedError();
-  }
-
-  // Latch wedged and drop the connection state. The notification fires once,
-  // on the false -> true transition only. The cooldown is stamped here so
-  // #open fails fast for its length, then lets the normal ladder retry.
-  #wedge(): void {
-    // A retired adapter never latches: the UI was already told it is not wedged.
-    if (this.#closed) return;
-    const wasWedged = this.#wedged;
-    this.#wedged = true;
-    this.#wedgedRetryAt = this.#now() + WEDGED_RETRY_MS;
-    this.#database?.close();
-    this.#database = undefined;
-    this.#databasePromise = undefined;
-    if (!wasWedged) this.#notifyStorageWedged(true);
-  }
-
-  #unwedge(): void {
-    if (!this.#wedged) return;
-    this.#wedged = false;
-    this.#notifyStorageWedged(false);
-  }
-
-  #notifyStorageWedged(wedged: boolean): void {
-    this.#notifyQuietly(() => this.#onStorageWedged?.(wedged));
   }
 
   #notifyWriteStalled(waiting: boolean): void {

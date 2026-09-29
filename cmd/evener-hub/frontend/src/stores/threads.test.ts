@@ -50,7 +50,7 @@ import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -13557,17 +13557,4 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     threadsStore.getState().releaseThread("ref_gone");
     expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
   });
-});
-
-// The wedged latch is a storage status the runtime reports to the store, the
-// same way onWriteStalled reports a stalled write. A double open timeout never
-// resolves, so the adapter latches and the store must show it: the Composer's
-// actionable banner reads this field.
-test("the store latches mutationStorageWedged when a wedged adapter double-times-out", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  vi.spyOn(globalThis.indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  const read = readMutationPersistence("ref_a").catch(() => undefined);
-  await vi.runAllTimersAsync();
-  expect(threadsStore.getState().mutationStorageWedged).toBe(true);
-  await read;
 });
