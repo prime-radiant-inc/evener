@@ -61,6 +61,7 @@ import type {
 	TurnModel,
 } from "@evener/appwire-client";
 import { hubTime } from "./board/attention";
+import { CONTEXT_SUMMARY_LABEL, contextCompactedText, pluginLoadedText } from "./session/systemEventCopy";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -188,6 +189,11 @@ export type MobileTimelineItem =
 				family: NoticeFamily;
 				tone: NoticeTone;
 				text: string;
+				// Shown in place of the text, with a chevron, until opened: a
+				// daemon steer's kind, or a compaction's summary.
+				label?: string;
+				// The text is markdown, and opens rendered as markdown.
+				rendersMarkdown?: boolean;
 				// A steer that delivers <delegate-notification> or
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
@@ -685,10 +691,27 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		origin: "system",
 		family,
 		tone,
-		text: it.text,
+		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
+}
+
+// What a system event says (spec 8.2 "System event"). A plugin load carries
+// its summary in the description and no text; a compaction pass's text is the
+// engine's "Layer/Turns/Estimated tokens" report; a compaction's summary is a
+// whole markdown document. Each reads from its structured detail instead.
+function systemEventWords(it: ItemModel): { text: string; label?: string; rendersMarkdown?: boolean } {
+	switch (it.eventKind) {
+		case "plugin_loaded":
+			return { text: pluginLoadedText(it.raw) };
+		case "context_compaction":
+			return { text: contextCompactedText(it.raw) };
+		case "compaction":
+			return { text: it.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
+		default:
+			return { text: it.text };
+	}
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web

@@ -1188,6 +1188,8 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "lifecycle",
 		tone: "system",
 		text: "context compacted",
+		label: "Context summary",
+		rendersMarkdown: true,
 		eventKind: "compaction",
 		turnId: "t1",
 	},

@@ -2,9 +2,13 @@ import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
-// Task-control instructions stay available without crowding the conversation.
-export function steeringNoticeLabel(item: Notice): string | undefined {
-	if (item.origin !== "steering" || isCriticalNotice(item)) return undefined;
+// A labelled notice folds to its label until opened: a compaction's summary,
+// and task-control instructions, which stay available without crowding the
+// conversation.
+export function noticeLabel(item: Notice): string | undefined {
+	if (isCriticalNotice(item)) return undefined;
+	if (item.label !== undefined) return item.label;
+	if (item.origin !== "steering") return undefined;
 	switch (item.steeringKind) {
 		case "interrupted":
 			return "Interrupted";
@@ -30,7 +34,6 @@ export function isCriticalNotice(item: Notice): boolean {
 		item.tone === "warning" ||
 		item.family === "warning" ||
 		item.eventKind === "error" ||
-		item.eventKind === "tool_repair" ||
 		(item.eventKind === "hook_completed" && item.exitCode !== undefined && item.exitCode !== 0)
 	);
 }
@@ -82,7 +85,7 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		item.kind === "run" ||
 		item.kind === "time" ||
 		item.kind === "note" ||
-		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
+		(item.kind === "notice" && noticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }
 

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "./projectedRows";
-import { groupTimeline, isInterruptedNotice, steeringNoticeLabel, timelineGap, type TimelineRow } from "./timeline";
+import { groupTimeline, isCriticalNotice, isInterruptedNotice, noticeLabel, timelineGap, type TimelineRow } from "./timeline";
 
 const setup: MobileTimelineItem = {
 	kind: "notice",
@@ -136,10 +136,10 @@ it.each([
 		origin: "steering" as const,
 		steeringKind,
 	};
-	expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
+	expect(noticeLabel(notice)).toEqual(expect.any(String));
 	expect(timelineGap(message, notice)).toBeLessThan(timelineGap(message, message));
-	expect(steeringNoticeLabel({ ...notice, origin: "system" })).toBeUndefined();
-	expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
+	expect(noticeLabel({ ...notice, origin: "system" })).toBeUndefined();
+	expect(noticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
 });
 
 it("labels interrupted salvage as a draft", () => {
@@ -149,7 +149,7 @@ it("labels interrupted salvage as a draft", () => {
 		origin: "steering" as const,
 		steeringKind: "interrupted-salvage" as const,
 	};
-	expect(steeringNoticeLabel(interruptedSalvage)).toBe("Interrupted draft");
+	expect(noticeLabel(interruptedSalvage)).toBe("Interrupted draft");
 	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(timelineGap(message, message));
 });
 
@@ -165,16 +165,19 @@ it("keeps unknown steering, untyped notices, and critical diagnostics visible", 
 		{ steeringKind: "notification" },
 		{ family: "warning" as const },
 		{ eventKind: "error" },
-		{ eventKind: "tool_repair" },
 		{ eventKind: "hook_completed", exitCode: 3 },
 	])
-		expect(steeringNoticeLabel({ ...task, ...override })).toBeUndefined();
-	expect(steeringNoticeLabel({ ...setup, text: "tasks-done" })).toBeUndefined();
+		expect(noticeLabel({ ...task, ...override })).toBeUndefined();
+	expect(noticeLabel({ ...setup, text: "tasks-done" })).toBeUndefined();
+});
+
+// A tool repair is a quiet system event (spec 8.2): the call ran, corrected.
+it("never reads a tool repair as critical", () => {
+	expect(isCriticalNotice({ ...setup, origin: "system" as const, eventKind: "tool_repair" })).toBe(false);
 });
 
 it.each([
 	{ eventKind: "error" },
-	{ eventKind: "tool_repair" },
 	{ eventKind: "hook_completed", exitCode: 3 },
 	{ family: "warning" as const },
 ])("keeps typed critical notices outside collapsed diagnostic groups: %j", (metadata) => {

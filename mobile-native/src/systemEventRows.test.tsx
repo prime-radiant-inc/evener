@@ -8,15 +8,23 @@ import {
 	makeTranscriptDisplayConfig,
 	shippedConfig,
 	type Thread,
+	type ThreadItem,
 	type Turn,
 } from "@evener/appwire-client";
-import { systemEventWireFailedTurn } from "@evener/appwire-client/testing/systemEventWireFixtures";
+import {
+	type SystemEventWireCase,
+	systemEventWireFailedTurn,
+	systemEventWireItem,
+} from "@evener/appwire-client/testing/systemEventWireFixtures";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
+import { render, renderedText } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { errorAction } from "./session/errorAction";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
-import { groupTimeline } from "./timeline";
+import { TimelineItem } from "./TimelineItem";
+import { groupTimeline, isCriticalNotice, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 vi.mock("react-native", async () => ({
@@ -28,6 +36,7 @@ vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "Enrich
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
+const DANGER_INK = "#C51D23";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 type Level = (typeof LEVELS)[number];
@@ -50,6 +59,17 @@ function thread(turns: Turn[]): Thread {
 	} as unknown as Thread;
 }
 
+function completedTurn(items: ThreadItem[]): Turn {
+	return {
+		id: "turn_1",
+		itemsView: "full",
+		status: "completed",
+		startedAt: T0,
+		completedAt: T0 + 60_000,
+		items: [{ id: "u1", turnId: "turn_1", type: "userMessage", text: "Fix the flaky test" }, ...items],
+	} as unknown as Turn;
+}
+
 // The hub's display settings with system events on (Hub > Display), so a
 // system event shows at every level.
 function rowsAt(level: Level, turns: Turn[], systemEvents = true) {
@@ -60,6 +80,29 @@ function rowsAt(level: Level, turns: Turn[], systemEvents = true) {
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return { rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)), model };
+}
+
+function rowFor(name: SystemEventWireCase, level: Level = "intent"): TimelineRow | undefined {
+	const item = systemEventWireItem(name);
+	return rowsAt(level, [completedTurn([item])]).rows.find((row) => row.id === item.id);
+}
+
+function show(name: SystemEventWireCase, level: Level = "intent"): ReactTestRenderer {
+	const row = rowFor(name, level);
+	if (!row) throw new Error(`no row for ${name}`);
+	return render(<TimelineItem item={row} hubId="hub" sessionRef={`system-${name}`} />);
+}
+
+function press(tree: ReactTestRenderer) {
+	act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
+}
+
+function inked(tree: ReactTestRenderer, color: string): boolean {
+	return tree.root.findAll(
+		(node) =>
+			(node.props.style?.color === color || node.props.style?.borderLeftColor === color) &&
+			typeof node.type === "string",
+	).length > 0;
 }
 
 describe("a failed turn (G5)", () => {
@@ -79,5 +122,42 @@ describe("a failed turn (G5)", () => {
 	it("still shows a failure row with system events on", () => {
 		const { rows } = rowsAt("full", [systemEventWireFailedTurn()], true);
 		expect(rows.filter((row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error"))).toHaveLength(1);
+	});
+});
+
+describe("system events (G7, G9)", () => {
+	// The shared projector shows a repair only at high verbosity.
+	it("reads a tool repair as a quiet event: never red, never an action", () => {
+		const row = rowFor("tool-repair", "full");
+		if (row?.kind !== "notice") throw new Error("no tool repair notice");
+		expect(isCriticalNotice(row)).toBe(false);
+		const tree = show("tool-repair", "full");
+		expect(renderedText(tree)).toContain('Fixed the shell call: removed the unrecognized "timeout" field.');
+		expect(inked(tree, DANGER_INK)).toBe(false);
+		expect(renderedText(tree)).not.toMatch(/Retry|Resume|Sign in/);
+	});
+
+	it.each(["compaction-summary", "compaction-checkpoint"] as const)(
+		"collapses a %s to Context summary, which opens to the summary as markdown",
+		(name) => {
+			const tree = show(name);
+			expect(renderedText(tree)).toBe("Context summary");
+			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
+			press(tree);
+			const markdown = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText");
+			expect(markdown).toHaveLength(1);
+			expect(markdown[0]?.props.markdown).toBe(systemEventWireItem(name).text);
+		},
+	);
+
+	it("names a loaded plugin, or says a plugin loaded, with no counts", () => {
+		expect(renderedText(show("plugin-loaded"))).toBe("Plugin superpowers loaded");
+		expect(renderedText(show("plugin-loaded-unnamed"))).toBe("Plugin loaded");
+	});
+
+	it("says how far a compaction brought the context: tokens, else turns, else just that it ran", () => {
+		expect(renderedText(show("context-compaction"))).toBe("Context compacted · 412K → 38K tokens");
+		expect(renderedText(show("context-compaction-turns"))).toBe("Context compacted · 40 → 5 turns");
+		expect(renderedText(show("context-compaction-bare"))).toBe("Context compacted");
 	});
 });
