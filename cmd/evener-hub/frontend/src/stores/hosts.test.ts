@@ -53,12 +53,17 @@ describe("client replacement", () => {
     // That is a replacement even though the two clients were never both present:
     // the new hub's registry has published nothing.
     connectionStore.setState({ client: null });
-    const b = connectFakeClient();
+    const b = new FakeClient("ready");
     b.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    connectionStore.getState().connect(b);
 
     expect(hostsStore.getState().publishedRevision).toBeNull();
     expect(hostsStore.getState().load.phase).toBe("loading");
     expect(hostsStore.getState().revision).toBeGreaterThan(revision);
+
+    // Its own registry answer is what republishes.
+    await hostsStore.getState().fetch();
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
   });
 
   test("a reconnect of the same client does not clear the published marker", async () => {
@@ -74,6 +79,27 @@ describe("client replacement", () => {
 
     expect(hostsStore.getState().publishedRevision).not.toBeNull();
     expect(hostsStore.getState().revision).toBe(revision);
+  });
+
+  test("a replacement drops the old connection's in-flight registry gate", async () => {
+    const a = connectFakeClient();
+    // A registry read that never settles: it owns the `reading` gate and the
+    // quiet-read slot.
+    a.on("evener/host/list", () => new Promise<HostListResponse>(() => {}));
+    void hostsStore.getState().refresh();
+    await Promise.resolve();
+    expect(hostsStore.getState().reading).toBe(1);
+
+    const b = new FakeClient("ready");
+    b.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    connectionStore.getState().connect(b);
+
+    // The old connection's in-flight read no longer holds the new connection's
+    // gate, and a refresh issues its OWN request on the new client.
+    expect(hostsStore.getState().reading).toBe(0);
+    await hostsStore.getState().refresh();
+    expect(b.calls.filter((call) => call.method === "evener/host/list").length).toBeGreaterThanOrEqual(1);
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
   });
 });
 

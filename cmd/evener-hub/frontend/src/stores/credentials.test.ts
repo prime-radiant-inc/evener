@@ -2832,11 +2832,11 @@ test("a replaced client does not carry the previous connection's published marke
   // A connection-banner retry wires a fresh client in. The new connection's
   // registry has answered nothing, so the listing is re-read on this connection
   // alone and is NOT stamped as read under a published snapshot.
-  let b!: FakeClient;
-  await act(async () => {
-    b = connectFakeClient();
-  });
+  const b = new FakeClient("ready");
   serveRemoteList(b, REMOTE_LIST);
+  await act(async () => {
+    connectionStore.getState().connect(b);
+  });
   await waitFor(() => expect(remoteReads(b)).toBe(1));
   expect(hostPartition(hostInstancesStore.getState(), "buildbox").readPublished).toBe(false);
 
@@ -2871,13 +2871,16 @@ test("a client swap whose new registry answers on a quiet refresh publishes and 
   const { result } = renderHook(() => useHostInstances("buildbox"));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
 
-  // Replace the client; the new connection's registry answers the SAME
-  // registration, through refresh alone.
-  let b!: FakeClient;
-  await act(async () => {
-    b = connectFakeClient();
-  });
+  // Replace the client; its registry has answered nothing yet.
+  const b = new FakeClient("ready");
   serveRemoteList(b, REMOTE_LIST);
+  await act(async () => {
+    connectionStore.getState().connect(b);
+  });
+  await act(async () => {});
+
+  // The new connection's registry answers the SAME registration on a quiet
+  // refresh (which never flips the load off what publishReady sees).
   b.on("evener/host/list", () => ({ hosts: [registryRow({ name: "buildbox" })] }));
   await act(async () => {
     await hostsStore.getState().refresh();
