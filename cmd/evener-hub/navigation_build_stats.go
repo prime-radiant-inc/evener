@@ -11,7 +11,8 @@ import (
 
 const (
 	// A completed build is logged when it took at least this long, or when no
-	// build has been logged for navigationBuildStatsInterval. Timeouts always log.
+	// build has been logged for navigationBuildStatsInterval (measured from the
+	// service's start, so the first build alone never logs). Timeouts always log.
 	navigationBuildStatsSlow     = 500 * time.Millisecond
 	navigationBuildStatsInterval = 10 * time.Minute
 )
@@ -76,7 +77,7 @@ type navigationBuildStatsLog struct {
 	mu         sync.Mutex // guards lastLogged
 	logf       func(format string, args ...any)
 	slow       time.Duration // zero means navigationBuildStatsSlow
-	lastLogged time.Time
+	lastLogged time.Time     // the last line, or the service's start
 }
 
 func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time.Time) {
@@ -89,7 +90,7 @@ func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time
 	if slow == 0 {
 		slow = navigationBuildStatsSlow
 	}
-	if stats.Total < slow && !l.lastLogged.IsZero() && now.Sub(l.lastLogged) < navigationBuildStatsInterval {
+	if stats.Total < slow && now.Sub(l.lastLogged) < navigationBuildStatsInterval {
 		return
 	}
 	l.lastLogged = now

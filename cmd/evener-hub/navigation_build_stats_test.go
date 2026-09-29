@@ -87,8 +87,9 @@ func TestNavigationBuildLogsCountsForFixture(t *testing.T) {
 	logs := &navigationStatsLog{}
 	web := navigationStatsFixture(t, logs)
 	service := newNavigationService(navigationServiceConfig{
-		Source: webNavigationSource{web: web},
-		Logf:   logs.Logf,
+		Source:    webNavigationSource{web: web},
+		Logf:      logs.Logf,
+		statsSlow: time.Nanosecond,
 	})
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
 		t.Fatal(err)
@@ -124,9 +125,9 @@ func TestNavigationBuildLogsCountsForFixture(t *testing.T) {
 	}
 }
 
-// Fast builds inside the interval stay quiet: a chatty hub must not log every
-// invalidation.
-func TestNavigationBuildLogIsRateLimited(t *testing.T) {
+// Fast builds stay quiet, including the first: a chatty hub must not log every
+// invalidation, and a test that builds a hub must print nothing.
+func TestNavigationFastBuildsDoNotLog(t *testing.T) {
 	logs := &navigationStatsLog{}
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
@@ -139,8 +140,37 @@ func TestNavigationBuildLogIsRateLimited(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if lines := logs.buildLines(); len(lines) != 0 {
+		t.Errorf("build lines = %q, want none", lines)
+	}
+}
+
+// A fast build logs once the periodic interval has passed since the service
+// started or last logged.
+func TestNavigationFastBuildLogsPeriodically(t *testing.T) {
+	logs := &navigationStatsLog{}
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Logf = logs.Logf
+		cfg.statsSlow = time.Hour
+		cfg.Now = func() time.Time { return now }
+	})
+	source.changeTitle("before the interval")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(navigationBuildStatsInterval)
+	source.changeTitle("after the interval")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("right after the periodic line")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
 	if lines := logs.buildLines(); len(lines) != 1 {
-		t.Errorf("build lines = %q, want only the first build logged", lines)
+		t.Errorf("build lines = %q, want exactly the periodic line", lines)
 	}
 }
 
@@ -154,6 +184,7 @@ func TestNavigationBuildLogCountsRestarts(t *testing.T) {
 		Generation: func() (string, error) { return "00112233445566778899aabbccddeeff", nil },
 		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 		Logf:       logs.Logf,
+		statsSlow:  time.Nanosecond,
 	})
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
 		t.Fatal(err)
@@ -226,11 +257,11 @@ func TestNavigationBuildTimeoutNamesProjectionPhase(t *testing.T) {
 // the log's last-logged time must tolerate concurrent callers (run with -race).
 func TestNavigationBuildStatsLogToleratesConcurrentBuilds(t *testing.T) {
 	logs := &navigationStatsLog{}
-	statsLog := navigationBuildStatsLog{logf: logs.Logf}
+	statsLog := navigationBuildStatsLog{logf: logs.Logf, lastLogged: time.Unix(1_700_000_000, 0)}
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			statsLog.completed(navigationBuildStats{}, time.Unix(1_700_000_000, 0))
+			statsLog.completed(navigationBuildStats{}, time.Unix(1_700_000_000, 0).Add(navigationBuildStatsInterval))
 			statsLog.timedOut(navigationBuildStats{phase: "capture"})
 		})
 	}

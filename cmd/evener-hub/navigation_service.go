@@ -235,7 +235,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		now:              now,
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
-		statsLog:         navigationBuildStatsLog{logf: cfg.Logf, slow: cfg.statsSlow},
+		statsLog:         navigationBuildStatsLog{logf: cfg.Logf, slow: cfg.statsSlow, lastLogged: now()},
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
