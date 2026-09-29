@@ -2594,9 +2594,6 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
-			{/* The keyboard controller's avoiding view moves the composer with
-			    the keyboard frame by frame, and with the finger while a drag
-			    lowers it; React Native's own jumps to where the keyboard ends. */}
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}

@@ -15,9 +15,8 @@
 //   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
 //   element, as the suites that mock it themselves draw it.
 // - react-native-keyboard-controller: the App's KeyboardProvider and the
-//   Session's KeyboardAvoidingView, which move with the keyboard frame by
-//   frame on a device. Inert host elements that keep their props, so a suite
-//   can see which avoiding view a screen uses and how.
+//   Session's KeyboardAvoidingView, as inert host elements that keep their
+//   props, so a suite can see which avoiding view a screen uses and how.
 import { vi } from "vitest";
 
 // react-test-renderer logs a deprecation warning through console.error on
