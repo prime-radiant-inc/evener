@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { documentPath, documentReferences, fileWrites, messageDocuments } from "./documentReferences";
+import { documentPath, documentReferences, fileWrites, messageDocuments, writtenPaths } from "./documentReferences";
 
 const cwd = "/home/jesse/git/evener";
 const FENCE = "`".repeat(3);
-const none = new Map<string, string>();
+const none = new Set<string>();
 
 const said = (id: string, text: string): ItemModel => ({ id, turnId: "t", type: "agentMessage", text });
 const wrote = (id: string, tool: string, path: string, completedAt?: string, error?: string): ItemModel => ({
@@ -80,9 +80,13 @@ describe("the documents a message names (spec 8.2)", () => {
 
 	it("takes a bare file name only when the session wrote that file", () => {
 		expect(messageDocuments("Updated `README.md`.", cwd, none)).toEqual([]);
-		expect(messageDocuments("Updated `README.md`.", cwd, new Map([["README.md", "2026-09-26T11:39:00.000Z"]]))).toEqual(
-			["README.md"],
-		);
+		expect(messageDocuments("Updated `README.md`.", cwd, new Set(["README.md"]))).toEqual(["README.md"]);
+	});
+
+	it("takes a bare file name the session wrote with no time it can read", () => {
+		const turns = [turn("t1", [wrote("w", "write_file", "README.md")])];
+		expect(writtenPaths(turns, cwd)).toEqual(new Set(["README.md"]));
+		expect(messageDocuments("Updated `README.md`.", cwd, writtenPaths(turns, cwd))).toEqual(["README.md"]);
 	});
 });
 

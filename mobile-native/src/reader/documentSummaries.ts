@@ -53,6 +53,10 @@ export function summaryEntry(
 		}),
 	};
 	entries.set(key, entry);
+	// A file written again gets a new key; the older write's summary would
+	// otherwise stay in the map forever.
+	const prefix = `${JSON.stringify([sessionRef, path]).slice(0, -1)},`;
+	for (const other of entries.keys()) if (other !== key && other.startsWith(prefix)) entries.delete(other);
 	return entry;
 }
 

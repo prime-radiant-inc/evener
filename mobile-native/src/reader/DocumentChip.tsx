@@ -56,7 +56,11 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 	// A chip marks only a change (8.2); Files and its chip mark what's new.
 	const changed = freshness === "changed" ? "changed since you last read" : null;
 	const facts = [lines, age, changed].filter((fact) => fact !== null);
-	const label = [kind, title, name, lines, spokenAge, changed].filter((part) => part !== null).join(", ");
+	// Until its summary lands the title is the file name, so a second copy
+	// would name it twice on screen and in VoiceOver.
+	const secondary = title === name ? null : name;
+	const label = [kind, title, secondary, lines, spokenAge, changed].filter((part) => part !== null).join(", ");
+	const details = secondary === null ? facts.join(" · ") : facts.map((fact) => ` · ${fact}`).join("");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
 		<Pressable
@@ -97,23 +101,29 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					{title}
 				</Text>
 			</View>
-			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, fontVariant: ["tabular-nums"] }}>
-				<Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{name}</Text>
-				{facts.map((fact) => ` · ${fact}`).join("")}
-			</Text>
+			{secondary === null && facts.length === 0 ? null : (
+				<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, fontVariant: ["tabular-nums"] }}>
+					{secondary === null ? null : (
+						<Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{secondary}</Text>
+					)}
+					{details}
+				</Text>
+			)}
 		</Pressable>
 	);
 }
 
 /** The chips under one agent's message: the documents it names inside the
  * session's folder, each once, in reading order. `writes` is when the session
- * last wrote each file (fileWrites), which gives a chip its age. */
+ * last wrote each file (fileWrites), which gives a chip its age; `written` is
+ * the paths the session wrote, which lets a bare name become a chip. */
 export function MessageDocuments({
 	hubId,
 	sessionRef,
 	markdown,
 	cwd,
 	writes,
+	written,
 	open,
 }: {
 	hubId: string;
@@ -121,9 +131,11 @@ export function MessageDocuments({
 	markdown: string;
 	cwd: string;
 	writes: ReadonlyMap<string, string>;
+	/** The paths the session wrote, whatever their write time. */
+	written: ReadonlySet<string>;
 	open(path: string, updatedAt: string | undefined): void;
 }) {
-	const paths = useMemo(() => messageDocuments(markdown, cwd, writes), [markdown, cwd, writes]);
+	const paths = useMemo(() => messageDocuments(markdown, cwd, written), [markdown, cwd, written]);
 	return paths.map((path) => {
 		const updatedAt = writes.get(path);
 		return (
