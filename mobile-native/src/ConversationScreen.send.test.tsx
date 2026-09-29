@@ -2835,7 +2835,26 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		await reach(tree, route, true);
 		await vi.waitFor(() => expect(hub.mutations()).toHaveLength(1));
 		await settle();
-		expect(hub.mutations()).toHaveLength(1);
+		// Queued, it runs as your next turn: the daemon runs queued input
+		// ahead of everything else while awaiting, superseding the question
+		// as an online answer's turn/start does.
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(hub.requests.find((request) => request.method === "turn/queue")?.params.input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+	});
+
+	it("offers no Send offline where the session can't take it when it arrives", async () => {
+		const ref = "ref-cannot-queue";
+		const served = thread(ref, "awaiting", true);
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, queue: false };
+		const { tree, route } = await mount(served);
+		await reach(tree, route, false);
+		// Nothing there can act, so nothing offers to (Calm).
+		for (const label of ["Drop them", "Send answer when you're back online"])
+			expect(pressable(tree, label)?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(await outbox(ref)).toEqual([]);
 	});
 
 	it("shows a held message refused once a restarted session answers it, with Discard", async () => {

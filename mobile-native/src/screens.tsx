@@ -2152,9 +2152,17 @@ export function ConversationScreen({
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
 	const action = conversation ? sendAction(conversation, snapshot.pendingMutations, connected) : "none";
+	// What Send does once the connection is there, which the placeholder
+	// describes offline too: it describes the session, not the outbox.
+	const onlineAction = connected
+		? action
+		: conversation
+			? sendAction(conversation, snapshot.pendingMutations, true)
+			: "none";
 	// Offline, Send keeps the message in the phone's outbox, for a session
 	// this phone has read since launch (ruling 12).
-	const offlineAdmits = !connected && focused && offlineTarget(snapshot) !== null;
+	const offlineAdmits =
+		!connected && focused && offlineTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
 		(ready || offlineAdmits) &&
 		draft.loaded &&
@@ -3023,12 +3031,7 @@ export function ConversationScreen({
 										document.edit(text);
 									}}
 									inputRef={composerInput}
-									// It describes the session, not the outbox: what Send
-									// does once the connection is there.
-									placeholder={composerPlaceholder(
-										conversation ? sendAction(conversation, snapshot.pendingMutations, true) : "none",
-										answering,
-									)}
+									placeholder={composerPlaceholder(onlineAction, answering)}
 									// Under an open dock, whose own button reads "Send answer",
 									// this Send says it sends what you typed.
 									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}

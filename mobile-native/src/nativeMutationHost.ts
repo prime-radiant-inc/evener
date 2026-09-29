@@ -26,11 +26,11 @@ export interface NativeMutationHost extends ConversationMutationSubmitter {
 
 /** The refusal a mutation gets while no host is live: durable submission is
  * unavailable, so the store must surface a failure rather than durably accept
- * a message that no registered client can dispatch. Offline sends go to the
+ * a message (or a Stop) that no registered client can dispatch. Offline sends go to the
  * runtime directly, so this shows only when the host couldn't be created
  * (the mutations database or the client binding) or the connection dropped
  * in the same instant; trying again covers both. */
-export const NATIVE_MUTATION_HOST_UNAVAILABLE = "Couldn't keep this message on the phone. Try again.";
+export const NATIVE_MUTATION_HOST_UNAVAILABLE = "Couldn't save this on the phone. Try again.";
 
 /** A submitter bound to a host that may not be live yet (or any more): while
  * the host lookup is null it refuses, so a submission is never admitted
