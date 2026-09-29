@@ -948,14 +948,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		pagesBefore = conversation.capabilities?.pageBefore === true;
 	}
 
-	function trimsRows(): boolean {
-		return followingLiveEnd && pagesBefore;
-	}
-
-	// The rows the timeline keeps: the newest RETAINED_ITEM_CAP while the cap
-	// trims (trimsRows), every row otherwise.
+	// The rows the timeline keeps: the newest RETAINED_ITEM_CAP while the
+	// reader follows the live end of a thread the hub pages from a before
+	// position, every row otherwise.
 	function retainedRows(rows: MobileTimelineItem[]): MobileTimelineItem[] {
-		return trimsRows() ? capItems(rows) : rows;
+		return followingLiveEnd && pagesBefore ? capItems(rows) : rows;
 	}
 
 	function capAndTruncate(conversation: MobileConversation): MobileConversation {
