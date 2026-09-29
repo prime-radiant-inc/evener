@@ -47,6 +47,12 @@ type Provisioning struct {
 	// HelperVersion is the version the finalize recorded (§6:131's "prior helper
 	// version record"). Zero means no version record.
 	HelperVersion uint64
+	// AttemptToken is the durable ownership token the fence write minted for the
+	// attempt that won it. Delivery must revalidate it immediately before the
+	// delivery step, and recovery invalidates it on the verified-gone path, so a
+	// paused owner cannot deliver after recovery concluded (its epoch still
+	// matches; only the token tells the two apart).
+	AttemptToken string
 }
 
 // Provisioned reports whether the host carries the whole converged record: the
@@ -103,14 +109,27 @@ type BootstrapStore interface {
 	// attempt, so two concurrent first-contacts cannot both deliver. won is true
 	// exactly when this call performed the fence write, so ownership is explicit
 	// and never inferred from the epoch (two attempts of one operation may share
-	// one persisted epoch). A record returned without the fence is refused by the
-	// caller, never delivered behind.
+	// one persisted epoch). The winning record carries the durable AttemptToken
+	// the caller revalidates before delivering. A record returned without the
+	// fence is refused by the caller, never delivered behind.
 	PersistAttemptFence(host string, epoch Epoch) (Provisioning, bool, error)
 	// FinalizeBootstrap converges helperInstalled with the delivered version in
 	// the same atomic hub.toml write that finalizes bootstrap (§6:137). A
 	// failure refuses finalize: the attempt fence stays and helperInstalled is
 	// never converged behind it.
 	FinalizeBootstrap(host string, helperVersion uint64) (Provisioning, error)
+	// RevalidateAttemptFence reports whether token still stands for the attempt
+	// at epoch on host: the record still carries the fence, names that epoch,
+	// carries that token, and has not converged helperInstalled. The delivery
+	// path calls it after winning its claim and before its first delivery step.
+	RevalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, bool, error)
+	// InvalidateAttemptFence retires token in the same atomic write discipline as
+	// the other record writes, preconditioned on the record still naming that
+	// attempt and not having converged helperInstalled. Recovery calls it on the
+	// verified-gone path, while it holds its claim, before releasing and
+	// returning the fenced path. It returns the record as it stands after the
+	// call.
+	InvalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, error)
 }
 
 // QuiesceReport is the atomic claim-plus-quiesce primitive's answer (§6:135):
@@ -267,28 +286,6 @@ func (e *AttemptOrphanError) Error() string {
 		e.Host, e.Epoch.BootID, e.Epoch.OpSeq, detail)
 }
 
-// AttemptActiveError reports §6:135's claim arbiter finding a live attempt this
-// caller did not win: another attempt owns the fence and may be mid-delivery, so
-// this caller must not deliver (it lost) and must not open the fenced path
-// either (the owner's remote work may still be starting or running). It rides
-// the transient busy class — retry with backoff — and is deliberately neither
-// `fencing-helper-absent` (the helper is not the problem) nor `probe-failed`.
-type AttemptActiveError struct {
-	Host   string
-	Epoch  Epoch
-	Detail string
-}
-
-// Error renders the refusal naming the host and the attempt epoch.
-func (e *AttemptActiveError) Error() string {
-	detail := e.Detail
-	if detail == "" {
-		detail = "another attempt holds the host's bootstrap claim"
-	}
-	return fmt.Sprintf("host %q: bootstrap attempt %s/%d is active: %s; retry once it completes",
-		e.Host, e.Epoch.BootID, e.Epoch.OpSeq, detail)
-}
-
 // Bootstrap runs §6's first-contact attempt for the host's current record. It
 // decides from the store's record (re-read at entry, so a retry racing the
 // finalize replays under dedup rather than delivering again, §6:139); on an
@@ -369,6 +366,12 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		// fence owner's epoch.
 		return recoverFencedAttempt(ctx, req, fenced)
 	}
+	token := fenced.AttemptToken
+	if token == "" {
+		// The fence write must bind ownership durably; without a token the
+		// pre-delivery revalidation cannot tell a retired attempt from a live one.
+		return BootstrapOutcome{}, fmt.Errorf("hostfence: the attempt-fence write for host %q returned no ownership token; no delivery was attempted", req.Host)
+	}
 
 	// §6:135 — delivery is permitted only through the atomic claim-plus-quiesce.
 	if req.Quiesce == nil {
@@ -408,21 +411,14 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		}
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
 	}
-	if !report.Claimed {
-		// The claim arbiter found another claimant: an attempt is active on the
-		// host and this one lost. The helper is not absent — reporting the absent
-		// class here would tell the operator to provision out-of-band while
-		// another attempt is mid-flight — so the honest class is the transient
-		// busy one (retry with backoff).
-		return BootstrapOutcome{}, &AttemptActiveError{
-			Host: req.Host, Epoch: req.Epoch,
-			Detail: "another attempt holds the host's bootstrap claim (a lost claim race)",
-		}
-	}
-	if len(report.ForeignProcesses) > 0 || len(report.ForeignGuardHolders) > 0 {
-		// §6:135: any live foreign presence refuses fail-closed with the typed
-		// absent class, and the exemption never degrades to overwrite.
-		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeForeignPresence(report))
+	if !report.Bare() {
+		// §6:135/:162 pin every non-bare answer to the typed absent class: a lost
+		// claim race, an unavailable primitive, and any live foreign/guard
+		// presence all refuse fail-closed with `fencing-helper-absent`, whose
+		// client surface is the one-time out-of-band migration step. The detail
+		// names the observation factually; the exemption never degrades to
+		// overwrite.
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaimObservation(report))
 	}
 	if claim == nil {
 		// A winning report with no held claim is a point-in-time answer, not the
@@ -430,6 +426,18 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		// any delivery rather than deliver outside a hold.
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the host's claim-plus-quiesce primitive returned no held claim, so the delivery could not run under one")
+	}
+	// The last pre-delivery check, made while this attempt holds its claim: the
+	// token under its own held claim, so a paused owner that resumes after
+	// recovery concluded finds it retired here and refuses instead of delivering.
+	// The two holds cannot overlap (the claim arbiter is exactly-one-wins), so a
+	// pre-claim owner can only resume after recovery released, and this read is
+	// what observes the invalidation.
+	if _, ok, err := req.Store.RevalidateAttemptFence(req.Host, req.Epoch, token); err != nil {
+		return BootstrapOutcome{}, err
+	} else if !ok {
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the attempt fence no longer names this attempt (a lost or retired bootstrap claim; another attempt recovered it)")
 	}
 
 	// The one exempt delivery step: ship the deployed payload with the helper
@@ -491,10 +499,12 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 //  2. requires the claim-plus-quiesce primitive and refuses without it as
 //     absent (an active attempt cannot be excluded);
 //  3. tries the claim. A lost claim (Claimed=false) or any non-bare answer means
-//     an attempt is active or foreign work lives: refuse with AttemptActiveError
-//     (the transient busy class), never a clean fenced/provisioned outcome;
+//     an attempt is active or foreign work lives: refuse with the typed absent
+//     refusal (§6:135/:162), never a clean fenced/provisioned outcome;
 //  4. holding the won claim across the read-only re-probe and the decision,
-//     probes the epoch the fence persisted, and releases on every path.
+//     probes the epoch the fence persisted, retires the attempt's ownership
+//     token on the verified-gone path (so a paused owner's own pre-delivery
+//     revalidation refuses), and releases on every path.
 //
 // The probe names the fence's own attempt epoch, not the request's, so a restart
 // cannot make it miss the crashed attempt's process. A live process refuses with
@@ -540,15 +550,12 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
 	}
 	if !report.Bare() {
-		// Not bare means either another claimant holds the claim (an active
-		// attempt) or foreign work lives. Recovery must not conclude while an
-		// attempt may be active, so it refuses with the honest busy class rather
-		// than reporting a fenced posture.
-		detail := "an attempt holds the host's bootstrap claim"
-		if report.Claimed {
-			detail = describeForeignPresence(report)
-		}
-		return BootstrapOutcome{}, &AttemptActiveError{Host: req.Host, Epoch: attempt, Detail: detail}
+		// §6:135/:162's class: a lost claim race, an unavailable primitive, or any
+		// live foreign/guard presence refuses recovery with the typed absent
+		// refusal, whose detail names the observation. Recovery must not conclude
+		// while an attempt may be active, and the operator's surface is the
+		// out-of-band migration step.
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaimObservation(report))
 	}
 	if claim == nil {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
@@ -571,17 +578,21 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 			Detail: "a bootstrapped process from the crashed attempt is live",
 		}
 	}
-	// The probe answered about the remote, not the record: a concurrent finalize
-	// may have converged the record meanwhile, so re-read it and replay as
-	// provisioned instead of reporting a stale fenced posture.
-	fresh, err := req.Store.Provisioning(req.Host)
+	// The attempt is verified gone: retire its ownership token while this recovery
+	// still holds its claim, in the record machinery's atomic write discipline
+	// (preconditioned on the fence still naming that attempt and helperInstalled
+	// not having converged). The paused owner then finds the token retired at its
+	// own pre-delivery revalidation and refuses; the record it returns is the
+	// record as it stands, so a concurrent finalize replays as provisioned here
+	// rather than being reported as a stale fenced posture.
+	retired, err := req.Store.InvalidateAttemptFence(req.Host, attempt, record.AttemptToken)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
-	if fresh.Provisioned() {
-		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: fresh}, nil
+	if retired.Provisioned() {
+		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: retired}, nil
 	}
-	return BootstrapOutcome{Kind: BootstrapFenced, Provisioning: fresh}, nil
+	return BootstrapOutcome{Kind: BootstrapFenced, Provisioning: retired}, nil
 }
 
 // errNoDeliveryRunner reports a Bootstrap request with no remote runner: a
@@ -616,11 +627,14 @@ func runDelivery(ctx context.Context, req BootstrapRequest) error {
 // S17 recorded the contract: "S21's bootstrap ships these bytes to the host and
 // converges helperInstalled" (helper.go). The bytes cross the command line
 // base64-encoded and single-quoted, so the script can never become shell syntax;
-// the remote must provide a POSIX shell and `base64`, and a remote that cannot
-// run the helper at all is §6's absent class. The encoded bytes travel as one
-// command-line argument, so the helper script's growth must stay under the
-// platform's single-argument bound (128 KiB on Linux); a script past that bound
-// needs a chunked transfer, which this one-step delivery does not have.
+// the remote must provide a POSIX shell, `base64`, and `mktemp`, and a remote
+// that cannot run the helper at all is §6's absent class. The temporary file is
+// created by `mktemp` (exclusive, unpredictable) and only that path is written,
+// chmodded, and renamed, so a predictable name can never be pre-created as a
+// symlink and followed. The encoded bytes travel as one command-line argument,
+// so the helper script's growth must stay under the platform's single-argument
+// bound (128 KiB on Linux); a script past that bound needs a chunked transfer,
+// which this one-step delivery does not have.
 func DeliveryCommand() (string, error) { return deliveryCommand(HelperRemotePath) }
 
 // deliveryCommand builds the delivery for one already-quoted remote path.
@@ -630,13 +644,13 @@ func deliveryCommand(remotePath string) (string, error) {
 		return "", errors.New("hostfence: the embedded helper script is empty")
 	}
 	encoded := base64.StdEncoding.EncodeToString(script)
-	// The temp path is the quoted path plus an unquoted suffix: shell
-	// concatenation keeps a caller-supplied quoted override intact while `$$`
-	// still expands to the remote shell's pid.
-	tmp := remotePath + ".tmp.$$"
+	// The template is the quoted path plus an unquoted suffix: shell
+	// concatenation keeps a caller-supplied quoted override intact while the
+	// XXXX characters stay literal for mktemp.
+	tmpTemplate := remotePath + ".tmp.XXXXXX"
 	return fmt.Sprintf(
-		`umask 077; mkdir -p "$(dirname %s)" && printf '%%s' %s | base64 -d > %s && chmod 700 %s && mv -f %s %s`,
-		remotePath, shellQuote(encoded), tmp, tmp, tmp, remotePath,
+		`umask 077; d="$(dirname %s)"; mkdir -p "$d" && t="$(mktemp %s)" && printf '%%s' %s | base64 -d > "$t" && chmod 700 "$t" && mv -f "$t" %s`,
+		remotePath, tmpTemplate, shellQuote(encoded), remotePath,
 	), nil
 }
 
@@ -655,10 +669,13 @@ func helperGateRefusal(err error) bool {
 	return ok
 }
 
-// describeForeignPresence renders the foreign presence a bare-claiming report
-// observed, for the absent refusal's detail.
-func describeForeignPresence(report QuiesceReport) string {
+// describeClaimObservation renders a non-bare claim report factually for the
+// absent refusal's detail: a lost claim race names the other claimant, foreign
+// presence names what is live.
+func describeClaimObservation(report QuiesceReport) string {
 	switch {
+	case !report.Claimed:
+		return "another attempt holds the host's bootstrap claim (a lost claim race)"
 	case len(report.ForeignProcesses) > 0:
 		return "a foreign process is live outside the claim: " + strings.Join(report.ForeignProcesses, ", ")
 	default:

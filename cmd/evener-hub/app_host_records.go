@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -62,6 +64,12 @@ type HostRecord struct {
 	// any restart; a fence without it cannot identify the crashed attempt.
 	BootstrapEpochBoot  string `toml:"bootstrap_epoch_boot,omitempty"`
 	BootstrapEpochOpSeq uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
+	// BootstrapAttemptToken is the durable ownership token the fence write minted
+	// for the attempt that won it (crash-fencing §6:135). Delivery revalidates it
+	// immediately before its first delivery step, and recovery retires it on the
+	// verified-gone path, so a paused owner cannot deliver after recovery
+	// concluded while a fresh attempt can never win the fence again.
+	BootstrapAttemptToken string `toml:"bootstrap_attempt_token,omitempty"`
 }
 
 // provisioning projects the record's bootstrap half (crash-fencing §6) into the
@@ -71,6 +79,7 @@ func (r HostRecord) provisioning() hostfence.Provisioning {
 	return hostfence.Provisioning{
 		AttemptFenced:   r.BootstrapAttempted,
 		AttemptEpoch:    hostfence.Epoch{BootID: r.BootstrapEpochBoot, OpSeq: r.BootstrapEpochOpSeq},
+		AttemptToken:    r.BootstrapAttemptToken,
 		HelperInstalled: r.HelperInstalled,
 		HelperVersion:   r.HelperVersion,
 	}
@@ -83,6 +92,7 @@ func (r HostRecord) withProvisioning(p hostfence.Provisioning) HostRecord {
 	r.BootstrapAttempted = p.AttemptFenced
 	r.BootstrapEpochBoot = p.AttemptEpoch.BootID
 	r.BootstrapEpochOpSeq = p.AttemptEpoch.OpSeq
+	r.BootstrapAttemptToken = p.AttemptToken
 	r.HelperInstalled = p.HelperInstalled
 	r.HelperVersion = p.HelperVersion
 	return r
@@ -405,6 +415,8 @@ func validateHostProvisioning(record HostRecord) error {
 		return errors.New("carries the bootstrap-attempt fence without the attempt's fencing epoch")
 	case !record.BootstrapAttempted && !epoch.IsZero():
 		return errors.New("carries a bootstrap-attempt epoch without the attempt fence")
+	case !record.BootstrapAttempted && record.BootstrapAttemptToken != "":
+		return errors.New("carries a bootstrap-attempt token without the attempt fence")
 	case !epoch.IsZero():
 		if err := epoch.Validate(); err != nil {
 			return fmt.Errorf("carries an invalid bootstrap-attempt epoch: %w", err)
@@ -598,6 +610,10 @@ func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epo
 	if err := epoch.Validate(); err != nil {
 		return hostfence.Provisioning{}, false, err
 	}
+	token, err := newBootstrapAttemptToken()
+	if err != nil {
+		return hostfence.Provisioning{}, false, err
+	}
 	// won is set under persistProvisioning's mutation lock, together with the
 	// read the conditional write compares against: it is the explicit ownership
 	// signal, never inferred from the epoch.
@@ -612,12 +628,49 @@ func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epo
 		won = true
 		p.AttemptFenced = true
 		p.AttemptEpoch = epoch
+		p.AttemptToken = token
 		return p, nil
 	})
 	if err != nil {
 		return hostfence.Provisioning{}, false, err
 	}
 	return record, won, nil
+}
+
+// RevalidateAttemptFence reports whether token still stands for the attempt at
+// epoch on host: the record still carries the fence, names that epoch, carries
+// that token, and has not converged helperInstalled.
+func (s hostBootstrapStore) RevalidateAttemptFence(host string, epoch hostfence.Epoch, token string) (hostfence.Provisioning, bool, error) {
+	s.m.cfg.mu.Lock()
+	defer s.m.cfg.mu.Unlock()
+	record := s.m.cfg.store.provisioningFor(host)
+	ok := record.AttemptFenced && record.AttemptEpoch == epoch && record.AttemptToken == token && !record.HelperInstalled
+	return record, ok, nil
+}
+
+// InvalidateAttemptFence retires token in the same atomic write discipline as
+// the other record writes, preconditioned on the record still naming that
+// attempt (fence set, same epoch, same token) and not having converged
+// helperInstalled. A failed precondition writes nothing and returns the record
+// as it stands, so a concurrent finalize or a moved fence is never clobbered.
+func (s hostBootstrapStore) InvalidateAttemptFence(host string, epoch hostfence.Epoch, token string) (hostfence.Provisioning, error) {
+	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
+		if !p.AttemptFenced || p.AttemptEpoch != epoch || p.AttemptToken != token || p.HelperInstalled {
+			return p, nil
+		}
+		p.AttemptToken = ""
+		return p, nil
+	})
+}
+
+// newBootstrapAttemptToken mints the durable ownership token one fence write
+// records: opaque, random, and never reused.
+func newBootstrapAttemptToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("mint the bootstrap-attempt token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 // FinalizeBootstrap converges helperInstalled with the delivered version in the

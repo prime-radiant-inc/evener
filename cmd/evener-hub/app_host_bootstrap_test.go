@@ -151,6 +151,9 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 	if !won {
 		t.Fatal("the first fence write did not win the conditional")
 	}
+	if fenced.AttemptToken == "" {
+		t.Fatal("the fence write minted no ownership token")
+	}
 	if !fenced.AttemptFenced || fenced.HelperInstalled {
 		t.Fatalf("after the attempt fence = %+v, want attempt-fenced without helperInstalled", fenced)
 	}
@@ -168,6 +171,9 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 	}
 	if !strings.Contains(raw, `bootstrap_epoch_boot = "boot-1"`) || !strings.Contains(raw, "bootstrap_epoch_op_seq = 1") {
 		t.Fatalf("the attempt's fencing epoch is not durable in hub.toml:\n%s", raw)
+	}
+	if record.BootstrapAttemptToken == "" || !strings.Contains(raw, "bootstrap_attempt_token = ") {
+		t.Fatalf("the attempt's ownership token is not durable in hub.toml:\n%s", raw)
 	}
 	if strings.Contains(raw, "helper_installed") {
 		t.Fatalf("the attempt-fence write converged helperInstalled:\n%s", raw)
@@ -357,15 +363,15 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 	if wire.Code != appwire.CodeConflict {
 		t.Fatalf("absent gate code = %d, want the conflict class %d", wire.Code, appwire.CodeConflict)
 	}
-	data, ok := wire.Data.(appwire.FencingHelperGateErrorData)
+	data, ok := wire.Data.(appwire.FencingHelperErrorData)
 	if !ok {
-		t.Fatalf("absent gate data = %T, want FencingHelperGateErrorData", wire.Data)
+		t.Fatalf("absent gate data = %T, want FencingHelperErrorData", wire.Data)
 	}
 	if data.EvenerErrorInfo != appwire.ErrorFencingHelperAbsent {
 		t.Fatalf("absent discriminator = %q, want %q", data.EvenerErrorInfo, appwire.ErrorFencingHelperAbsent)
 	}
-	if data.Host != "alpha" || data.PinnedVersion != hostfence.HelperVersion {
-		t.Fatalf("absent data = %+v, want the host and pinned version", data)
+	if data.Host != "alpha" || data.Version != strconv.Itoa(hostfence.HelperVersion) {
+		t.Fatalf("absent data = %+v, want the host and the pinned version string", data)
 	}
 
 	// The wire message carries the refusal's own detail — helperAbsentRefusal
@@ -386,7 +392,7 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 	if !ok {
 		t.Fatalf("untrusted gate refusal classified as %T (%v), want an appwire.WireError", err, err)
 	}
-	data, ok = wire.Data.(appwire.FencingHelperGateErrorData)
+	data, ok = wire.Data.(appwire.FencingHelperErrorData)
 	if !ok || data.EvenerErrorInfo != appwire.ErrorFencingHelperUntrusted {
 		t.Fatalf("untrusted data = %#v, want the %s arm", wire.Data, appwire.ErrorFencingHelperUntrusted)
 	}
@@ -540,12 +546,15 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	owner := hostfence.Epoch{BootID: "boot-a", OpSeq: 5}
-	_, won, err := store.PersistAttemptFence("alpha", owner)
+	first, won, err := store.PersistAttemptFence("alpha", owner)
 	if err != nil {
 		t.Fatalf("first PersistAttemptFence: %v", err)
 	}
 	if !won {
 		t.Fatal("the first fence write did not win the conditional")
+	}
+	if first.AttemptToken == "" {
+		t.Fatal("the fence write minted no ownership token")
 	}
 	before := readHostFileBytes(t, f.path)
 
@@ -556,8 +565,9 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	if delayedWon {
 		t.Fatal("the delayed fence write won the conditional, want the first owner to keep it")
 	}
-	if delayed.AttemptEpoch != owner {
-		t.Fatalf("the delayed fence write returned %+v, want the first owner's %+v", delayed.AttemptEpoch, owner)
+	if delayed.AttemptEpoch != owner || delayed.AttemptToken != first.AttemptToken {
+		t.Fatalf("the delayed fence write returned %+v, want the first owner's epoch %+v and token %q",
+			delayed, owner, first.AttemptToken)
 	}
 	if after := readHostFileBytes(t, f.path); !bytes.Equal(before, after) {
 		t.Fatalf("the delayed fence write rewrote hub.toml on a lost race:\nbefore:\n%s\nafter:\n%s", before, after)
@@ -615,24 +625,54 @@ func TestOrphanAttemptRefusalIsTransientBusy(t *testing.T) {
 	}
 }
 
-// TestAttemptActiveRefusalIsTransientBusy pins the wire class for an active
-// bootstrap attempt: the transient busy refusal (retry with backoff), never
-// fencing-helper-absent and never probe-failed, naming the attempt's epoch.
-func TestAttemptActiveRefusalIsTransientBusy(t *testing.T) {
-	m := testHostManager(nil, nil)
-	active := &hostfence.AttemptActiveError{
-		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-2", OpSeq: 4}, Detail: "another attempt holds the claim",
+// TestHostBootstrapTokenLifecycle pins the durable ownership token at the record
+// layer: the fence write mints it, revalidation accepts it while the attempt
+// stands, invalidation retires it atomically, and after helperInstalled converges
+// invalidation writes nothing.
+func TestHostBootstrapTokenLifecycle(t *testing.T) {
+	f := newBootstrapFixture(t)
+	store := f.m.bootstrapStore()
+	epoch := hostfence.Epoch{BootID: "boot-3", OpSeq: 11}
+	fenced, won, err := store.PersistAttemptFence("alpha", epoch)
+	if err != nil || !won {
+		t.Fatalf("PersistAttemptFence = (%+v, %v, %v), want a won write", fenced, won, err)
 	}
-	err := m.operationProbeRefusal("alpha", active)
-	wire, ok := errors.AsType[appwire.WireError](err)
-	if !ok || wire.Code != appwire.CodeConflict {
-		t.Fatalf("active refusal = (%v, %v), want a conflict-class wire error", wire, err)
+	if fenced.AttemptToken == "" {
+		t.Fatal("the fence write minted no token")
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
-		t.Fatalf("active refusal data = %#v, want the %s arm", wire.Data, appwire.ErrorHostBusyTransient)
+	if _, ok, err := store.RevalidateAttemptFence("alpha", epoch, fenced.AttemptToken); err != nil || !ok {
+		t.Fatalf("RevalidateAttemptFence = (%v, %v), want the token to stand", ok, err)
 	}
-	if !strings.Contains(wire.Message, "boot-2/4") {
-		t.Fatalf("active refusal message = %q, want the attempt epoch named", wire.Message)
+	if _, ok, _ := store.RevalidateAttemptFence("alpha", epoch, "another-token"); ok {
+		t.Fatal("a foreign token revalidated")
+	}
+	retired, err := store.InvalidateAttemptFence("alpha", epoch, fenced.AttemptToken)
+	if err != nil {
+		t.Fatalf("InvalidateAttemptFence: %v", err)
+	}
+	if retired.AttemptToken != "" || !retired.AttemptFenced {
+		t.Fatalf("after invalidation = %+v, want the fence kept with no token", retired)
+	}
+	if _, ok, _ := store.RevalidateAttemptFence("alpha", epoch, fenced.AttemptToken); ok {
+		t.Fatal("the retired token still revalidates")
+	}
+	if record := liveRecord(t, f.path, "alpha"); record.BootstrapAttemptToken != "" || !record.BootstrapAttempted {
+		t.Fatalf("host_records[alpha] = %+v, want the fence kept and the token gone", record)
+	}
+
+	// Once helperInstalled converges, invalidation writes nothing.
+	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
+		t.Fatalf("FinalizeBootstrap: %v", err)
+	}
+	before := readHostFileBytes(t, f.path)
+	after, err := store.InvalidateAttemptFence("alpha", epoch, fenced.AttemptToken)
+	if err != nil {
+		t.Fatalf("InvalidateAttemptFence after finalize: %v", err)
+	}
+	if !after.HelperInstalled {
+		t.Fatalf("after finalize invalidation = %+v, want the converged record", after)
+	}
+	if bytes.Equal(before, readHostFileBytes(t, f.path)) == false {
+		t.Fatal("the post-finalize invalidation rewrote hub.toml")
 	}
 }

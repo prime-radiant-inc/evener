@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -481,15 +482,6 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
 			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan))
 	}
-	if active, ok := errors.AsType[*hostfence.AttemptActiveError](err); ok {
-		// An active bootstrap attempt (the claim arbiter found another claimant)
-		// is the same transient busy family: the host is fenced until the holder
-		// completes, and the client retries. Never `fencing-helper-absent`, since
-		// the helper is not the problem, and never `probe-failed`.
-		return appwire.HostBusyTransient(fmt.Sprintf(
-			"host %q: a bootstrap attempt at epoch %s/%d is active, so this attempt refused: %v",
-			name, active.Epoch.BootID, active.Epoch.OpSeq, active))
-	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -525,9 +517,13 @@ func helperGateWireRefusal(err error) (appwire.WireError, bool) {
 	message := err.Error()
 	switch gate.Discriminator {
 	case hostfence.DiscriminatorHelperAbsent:
-		return appwire.FencingHelperAbsent(gate.Host, gate.PinnedVersion, message), true
+		// §8's data names the version to act on: the pinned version the operator
+		// must install out-of-band.
+		return appwire.FencingHelperAbsent(gate.Host, strconv.Itoa(gate.PinnedVersion), message), true
 	case hostfence.DiscriminatorHelperUntrusted:
-		return appwire.FencingHelperUntrusted(gate.Host, gate.PinnedVersion, gate.ObservedVersion, message), true
+		// The untrusted arm names the distrusted version in place of the absent
+		// one.
+		return appwire.FencingHelperUntrusted(gate.Host, strconv.Itoa(gate.ObservedVersion), message), true
 	default:
 		// A discriminator this build does not know is not the absent class: the
 		// caller refuses it explicitly (operationProbeRefusal's guard) rather

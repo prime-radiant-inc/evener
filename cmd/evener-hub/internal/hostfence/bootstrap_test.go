@@ -55,11 +55,25 @@ func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning
 	s.writes = append(s.writes, "attempt")
 	s.record.AttemptFenced = true
 	s.record.AttemptEpoch = epoch
+	s.record.AttemptToken = "tok-attempt"
 	if s.racingFinalize {
 		s.record.HelperInstalled = true
 		s.record.HelperVersion = HelperVersion
 	}
 	return s.record, true, nil
+}
+
+func (s *scriptedStore) RevalidateAttemptFence(_ string, epoch Epoch, token string) (Provisioning, bool, error) {
+	ok := s.record.AttemptFenced && s.record.AttemptEpoch == epoch && s.record.AttemptToken == token && !s.record.HelperInstalled
+	return s.record, ok, nil
+}
+
+func (s *scriptedStore) InvalidateAttemptFence(_ string, epoch Epoch, token string) (Provisioning, error) {
+	if s.record.AttemptFenced && s.record.AttemptEpoch == epoch && s.record.AttemptToken == token && !s.record.HelperInstalled {
+		s.record.AttemptToken = ""
+		s.writes = append(s.writes, "invalidate")
+	}
+	return s.record, nil
 }
 
 func (s *scriptedStore) FinalizeBootstrap(_ string, version uint64) (Provisioning, error) {
@@ -253,23 +267,21 @@ func TestBootstrapRefusesWithoutClaimPrimitive(t *testing.T) {
 	}
 }
 
-// TestBootstrapRefusesLostClaimRaceAndForeignPresence pins §6:135's refusal
-// arms: a lost claim race is the honest transient busy class (an attempt is
-// active — reporting the absent class would send the operator out-of-band while
-// another attempt is mid-flight), while any live foreign process or guard
-// holder refuses fail-closed with the typed fencing-helper-absent, and neither
-// degrades to overwrite.
+// TestBootstrapRefusesLostClaimRaceAndForeignPresence pins §6:135/:162's
+// class: a lost claim race and any live foreign process or guard holder all
+// refuse fail-closed with the typed fencing-helper-absent, whose detail names
+// the observation, and none degrades to overwrite.
 func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 	cases := []struct {
-		name     string
-		report   QuiesceReport
-		err      error
-		wantBusy bool
+		name    string
+		report  QuiesceReport
+		err     error
+		wantSub string
 	}{
-		{name: "lost claim race", report: QuiesceReport{Claimed: false}, wantBusy: true},
-		{name: "foreign process", report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}},
-		{name: "foreign guard holder", report: QuiesceReport{Claimed: true, ForeignGuardHolders: []string{"boot-9"}}},
-		{name: "primitive failed", err: errors.New("claim primitive unavailable")},
+		{name: "lost claim race", report: QuiesceReport{Claimed: false}, wantSub: "lost claim race"},
+		{name: "foreign process", report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}, wantSub: "hub@h1"},
+		{name: "foreign guard holder", report: QuiesceReport{Claimed: true, ForeignGuardHolders: []string{"boot-9"}}, wantSub: "boot-9"},
+		{name: "primitive failed", err: errors.New("claim primitive unavailable"), wantSub: "claim primitive unavailable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,15 +291,12 @@ func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 				Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 				Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: tc.report, err: tc.err},
 			})
-			if tc.wantBusy {
-				if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
-					t.Fatalf("err = %v, want an AttemptActiveError for the lost claim race", err)
-				}
-			} else {
-				var gate *HelperGateError
-				if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
-					t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
-				}
+			var gate *HelperGateError
+			if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+				t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("err = %v, want the detail naming %q", err, tc.wantSub)
 			}
 			if len(runner.calls) != 0 {
 				t.Fatalf("remote calls = %v, want none after a refused claim", runner.calls)
@@ -416,8 +425,14 @@ func TestBootstrapCrashWindowBeforeFirstSideEffect(t *testing.T) {
 	if retryQuiesce.calls != 1 || len(retryRunner.calls) != 0 {
 		t.Fatalf("recovery claims once and never delivers: quiesce=%d runner=%v", retryQuiesce.calls, retryRunner.calls)
 	}
-	if len(store.writes) != 1 {
-		t.Fatalf("store writes = %v, want no second attempt fence", store.writes)
+	attempts := 0
+	for _, write := range store.writes {
+		if write == "attempt" {
+			attempts++
+		}
+	}
+	if attempts != 1 {
+		t.Fatalf("store writes = %v, want exactly one attempt fence", store.writes)
 	}
 }
 
@@ -647,6 +662,14 @@ func (s *unlandedFenceStore) PersistAttemptFence(string, Epoch) (Provisioning, b
 	return Provisioning{}, false, nil
 }
 
+func (s *unlandedFenceStore) RevalidateAttemptFence(string, Epoch, string) (Provisioning, bool, error) {
+	return Provisioning{}, false, nil
+}
+
+func (s *unlandedFenceStore) InvalidateAttemptFence(string, Epoch, string) (Provisioning, error) {
+	return Provisioning{}, nil
+}
+
 // TestBootstrapRefusesAFenceThatDidNotLand pins §6:133's ordering: a store that
 // answers without the fence cannot be delivered behind, because the delivery
 // would then run unfenced.
@@ -827,23 +850,17 @@ func TestBootstrapSurfacesAReleaseFailure(t *testing.T) {
 	}
 }
 
-// convergingStore answers Provisioning with the plain record on the first read
-// and a converged record from the second on: a concurrent finalize landing while
-// recovery runs.
+// convergingStore answers the recovery invalidation with a converged record: a
+// concurrent finalize landing while recovery invalidates.
 type convergingStore struct {
 	*scriptedStore
-	reads int
 }
 
-func (s *convergingStore) Provisioning(host string) (Provisioning, error) {
-	s.reads++
-	if s.reads >= 2 {
-		return Provisioning{
-			AttemptFenced: true, AttemptEpoch: s.record.AttemptEpoch,
-			HelperInstalled: true, HelperVersion: HelperVersion,
-		}, nil
-	}
-	return s.scriptedStore.Provisioning(host)
+func (s *convergingStore) InvalidateAttemptFence(string, Epoch, string) (Provisioning, error) {
+	return Provisioning{
+		AttemptFenced: true, AttemptEpoch: s.record.AttemptEpoch,
+		HelperInstalled: true, HelperVersion: HelperVersion,
+	}, nil
 }
 
 // TestBootstrapDoesNotDeliverWhenTwoAttemptsShareTheEpoch pins explicit fence
@@ -911,8 +928,8 @@ func TestBootstrapRecoveryReplaysWhenTheRecordConverged(t *testing.T) {
 
 // TestBootstrapRecoveryRefusesWhileAnAttemptIsActive pins the recovery arbiter's
 // losing arm: when the claim is already held (an attempt is active), recovery
-// refuses with the transient busy class and never reports a fenced posture, and
-// its probe never runs.
+// refuses with the typed absent class — never a fenced posture — and its probe
+// never runs.
 func TestBootstrapRecoveryRefusesWhileAnAttemptIsActive(t *testing.T) {
 	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
 	probe := &scriptedProbe{}
@@ -920,8 +937,12 @@ func TestBootstrapRecoveryRefusesWhileAnAttemptIsActive(t *testing.T) {
 		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}}, Probe: probe,
 	})
-	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
-		t.Fatalf("err = %v, want an AttemptActiveError while the owner is active", err)
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal while the owner is active", err, DiscriminatorHelperAbsent)
+	}
+	if !strings.Contains(err.Error(), "lost claim race") {
+		t.Fatalf("err = %v, want the lost-claim detail", err)
 	}
 	if probe.calls != 0 {
 		t.Fatalf("recovery probed %d times while an attempt is active, want 0", probe.calls)
@@ -929,8 +950,8 @@ func TestBootstrapRecoveryRefusesWhileAnAttemptIsActive(t *testing.T) {
 }
 
 // TestBootstrapRecoveryRefusesOnForeignPresence pins the recovery arbiter's
-// non-bare arm: foreign work live on the host means recovery still refuses with
-// the busy class rather than concluding.
+// non-bare arm: foreign work live on the host keeps recovery in the typed absent
+// class rather than concluding.
 func TestBootstrapRecoveryRefusesOnForeignPresence(t *testing.T) {
 	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
 	probe := &scriptedProbe{}
@@ -938,8 +959,9 @@ func TestBootstrapRecoveryRefusesOnForeignPresence(t *testing.T) {
 		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}}, Probe: probe,
 	})
-	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
-		t.Fatalf("err = %v, want an AttemptActiveError for foreign presence during recovery", err)
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal for foreign presence during recovery", err, DiscriminatorHelperAbsent)
 	}
 	if probe.calls != 0 {
 		t.Fatalf("recovery probed %d times with foreign presence, want 0", probe.calls)
@@ -947,9 +969,9 @@ func TestBootstrapRecoveryRefusesOnForeignPresence(t *testing.T) {
 }
 
 // TestBootstrapOwnerLosesTheClaimToARecoverer pins the owner's arm of the
-// fence->claim window: the fence winner whose claim loses to a recoverer must
-// not report the absent class (the helper is not the problem) but the honest
-// transient busy class, and it must never deliver.
+// fence->claim window: the fence winner whose claim loses to a recoverer gets
+// §6:135/:162's typed absent refusal (the class the pinned contract gives a lost
+// claim race), and never delivers.
 func TestBootstrapOwnerLosesTheClaimToARecoverer(t *testing.T) {
 	store := &scriptedStore{}
 	runner := &scriptedRunner{}
@@ -957,8 +979,9 @@ func TestBootstrapOwnerLosesTheClaimToARecoverer(t *testing.T) {
 		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}},
 	})
-	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
-		t.Fatalf("err = %v, want an AttemptActiveError for the owner's lost claim", err)
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal for the owner's lost claim", err, DiscriminatorHelperAbsent)
 	}
 	if len(runner.calls) != 0 {
 		t.Fatalf("remote calls = %v, want none: the owner must not deliver after losing the claim", runner.calls)
@@ -1075,5 +1098,125 @@ func TestBootstrapTypesVerifyFailuresAsAbsent(t *testing.T) {
 	}
 	if gate.ObservedVersion != 99 {
 		t.Fatalf("observed version = %d, want 99", gate.ObservedVersion)
+	}
+}
+
+// retiredTokenStore answers the pre-delivery revalidation with "no": the
+// interleaving where recovery retired this attempt's token while the owner was
+// paused after winning the fence and its claim.
+type retiredTokenStore struct{ *scriptedStore }
+
+func (s *retiredTokenStore) RevalidateAttemptFence(string, Epoch, string) (Provisioning, bool, error) {
+	return s.record, false, nil
+}
+
+// TestBootstrapDeliveryRefusesWhenTheTokenWasRetired pins the delivery gate's
+// ownership revalidation: a token recovery retired means no delivery, and the
+// record stays attempt-fenced.
+func TestBootstrapDeliveryRefusesWhenTheTokenWasRetired(t *testing.T) {
+	store := &retiredTokenStore{scriptedStore: &scriptedStore{}}
+	runner := &scriptedRunner{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: bareQuiesce(),
+	})
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal for the retired token", err, DiscriminatorHelperAbsent)
+	}
+	if !strings.Contains(err.Error(), "no longer names this attempt") {
+		t.Fatalf("err = %v, want the retired-ownership detail", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none after a retired token", runner.calls)
+	}
+	if !store.record.AttemptFenced {
+		t.Fatal("the attempt fence is not durable after the retired-token refusal")
+	}
+}
+
+// parkedOwnerStore lets a test run the recoverer while the owner is paused at
+// its pre-delivery revalidation: the exact interleaving the token closes.
+type parkedOwnerStore struct {
+	*scriptedStore
+	park func()
+}
+
+func (s *parkedOwnerStore) RevalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, bool, error) {
+	if s.park != nil {
+		park := s.park
+		s.park = nil
+		park()
+	}
+	return s.scriptedStore.RevalidateAttemptFence(host, epoch, token)
+}
+
+// TestBootstrapOwnerParkedAcrossRecoveryRefusesToDeliver pins the owner/recovery
+// race end to end: the owner wins the fence and is paused before its claim; a
+// recoverer claims, probes the attempt gone, retires the token, and concludes
+// the fenced path; the owner then resumes, claims, revalidates, and refuses with
+// no delivery — the record still attempt-fenced.
+func TestBootstrapOwnerParkedAcrossRecoveryRefusesToDeliver(t *testing.T) {
+	base := &scriptedStore{}
+	parked := &parkedOwnerStore{scriptedStore: base}
+
+	var recoveryErr error
+	var recoveryOutcome BootstrapOutcome
+	parked.park = func() {
+		recoveryOutcome, recoveryErr = Bootstrap(context.Background(), BootstrapRequest{
+			Host: "h1", Epoch: bootstrapEpoch(), Store: base,
+			Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: &scriptedProbe{},
+		})
+	}
+
+	ownerRunner := versionRunner()
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: parked, Runner: ownerRunner, Quiesce: bareQuiesce(),
+	})
+
+	// The recoverer concluded the fenced path while the owner was paused.
+	if recoveryErr != nil || recoveryOutcome.Kind != BootstrapFenced {
+		t.Fatalf("recovery = (%v, %v), want BootstrapFenced", recoveryOutcome.Kind, recoveryErr)
+	}
+	if base.record.AttemptToken != "" {
+		t.Fatalf("recovery did not retire the token: %+v", base.record)
+	}
+	// The owner resumed, revalidated, and refused without delivering.
+	if outcome.Kind != BootstrapUnset {
+		t.Fatalf("owner outcome = %v, want a refusal", outcome.Kind)
+	}
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("owner err = %v, want a typed %s refusal after the token was retired", err, DiscriminatorHelperAbsent)
+	}
+	if !strings.Contains(err.Error(), "no longer names this attempt") {
+		t.Fatalf("owner err = %v, want the retired-ownership detail", err)
+	}
+	if len(ownerRunner.calls) != 0 {
+		t.Fatalf("owner remote calls = %v, want none: the paused owner must not deliver", ownerRunner.calls)
+	}
+	if !base.record.AttemptFenced || base.record.HelperInstalled {
+		t.Fatalf("record after the interleaving = %+v, want attempt-fenced without helperInstalled", base.record)
+	}
+}
+
+// TestDeliveryCommandUsesAnExclusiveTempFile pins the Low finding's fix: the
+// delivery creates its temporary file with mktemp (exclusive and unpredictable)
+// rather than a predictable name opened with `>`, so a pre-created symlink can
+// never redirect the helper payload.
+func TestDeliveryCommandUsesAnExclusiveTempFile(t *testing.T) {
+	command, err := DeliveryCommand()
+	if err != nil {
+		t.Fatalf("DeliveryCommand = %v", err)
+	}
+	if !strings.Contains(command, "mktemp ") {
+		t.Fatalf("delivery command = %q, want an exclusive mktemp temporary", command)
+	}
+	if strings.Contains(command, ".tmp.$$") {
+		t.Fatalf("delivery command = %q, want no predictable pid-suffixed temp path", command)
+	}
+	if !strings.Contains(command, `> "$t"`) {
+		t.Fatalf("delivery command = %q, want the write addressed at mktemp's returned path", command)
 	}
 }

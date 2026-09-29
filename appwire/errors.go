@@ -143,18 +143,6 @@ const (
 	// an open `orphan-unverified` fence's non-teardown refusals — crash-fencing
 	// spec §8). The UI retries with backoff and shows no open/wait affordance.
 	ErrorHostBusyTransient ErrorInfo = "host-busy-transient"
-	// ErrorFencingHelperAbsent marks crash-fencing §8's helper-gate refusal:
-	// the fencing helper is absent, the remote cannot run it, or the bootstrap
-	// guard's claim was lost or is unverifiable. It shares CodeConflict with the
-	// other refusals, so a client matches this discriminant, never the code —
-	// and it is never `probe-failed`, which names only the deploy-step re-probe
-	// read failure. Its data is FencingHelperGateErrorData.
-	ErrorFencingHelperAbsent ErrorInfo = "fencing-helper-absent"
-	// ErrorFencingHelperUntrusted marks crash-fencing §8's other helper-gate
-	// refusal: an older, incompatible, or explicitly untrusted helper, named in
-	// place of the absent one. Same data shape and conflict class as the absent
-	// arm.
-	ErrorFencingHelperUntrusted ErrorInfo = "fencing-helper-untrusted"
 	// ErrorTokenMissing marks a deploy presenting a token the store holds no
 	// row for: nothing was minted, or the row is gone (consumed, superseded,
 	// revoked, or reaped). A consumed token presented again reads as this — a
@@ -366,54 +354,6 @@ func HostBusyTransient(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorHostBusyTransient},
-	}
-}
-
-// FencingHelperGateErrorData is crash-fencing §8's helper-gate data shape: the
-// host plus the pinned helper version the operator must install out-of-band.
-// The untrusted arm names the distrusted version in ObservedVersion, so a
-// client can render which version was refused without parsing prose.
-type FencingHelperGateErrorData struct {
-	ErrorData
-	Host          string `json:"host"`
-	PinnedVersion int    `json:"pinnedVersion"`
-	// ObservedVersion is the version the remote reported, omitted on the absent
-	// arm (nothing was read) and always present on the untrusted arm — a
-	// pointer so a reported version of 0 (a helper that answered nothing
-	// readable) still serializes instead of being dropped by omitempty.
-	ObservedVersion *int `json:"observedVersion,omitempty"`
-}
-
-// FencingHelperAbsent is §8's `fencing-helper-absent` refusal (conflict class):
-// helper absent, the remote unable to run the helper, or the bootstrap guard's
-// claim lost or unverifiable. It refuses before any remote mutation; the
-// operator installs the pinned helper out-of-band, never through an in-band
-// migration.
-func FencingHelperAbsent(host string, pinnedVersion int, message string) WireError {
-	return WireError{
-		Code:    CodeConflict,
-		Message: message,
-		Data: FencingHelperGateErrorData{
-			ErrorData:     ErrorData{EvenerErrorInfo: ErrorFencingHelperAbsent},
-			Host:          host,
-			PinnedVersion: pinnedVersion,
-		},
-	}
-}
-
-// FencingHelperUntrusted is §8's `fencing-helper-untrusted` refusal (conflict
-// class): an older, incompatible, or explicitly untrusted helper. It carries
-// the absent arm's data shape with the distrusted version named.
-func FencingHelperUntrusted(host string, pinnedVersion, observedVersion int, message string) WireError {
-	return WireError{
-		Code:    CodeConflict,
-		Message: message,
-		Data: FencingHelperGateErrorData{
-			ErrorData:       ErrorData{EvenerErrorInfo: ErrorFencingHelperUntrusted},
-			Host:            host,
-			PinnedVersion:   pinnedVersion,
-			ObservedVersion: &observedVersion,
-		},
 	}
 }
 
