@@ -1258,7 +1258,7 @@ func TestWorktreePrune_Sweep2_CheckedOutBranchSkipped(t *testing.T) {
 	metaDir := r.seedRemovedSidecar(t, "checkedout-lane", laneTip)
 	wtGit(t, r.mainRoot, "merge", "--ff-only", "checkedout-lane")
 
-	otherPath := filepath.Join(t.TempDir(), "other-checkout")
+	otherPath := filepath.Join(resolvedTempDir(t), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "checkedout-lane")
 
 	ageSidecar(t, metaDir, "checkedout-lane", worktree.ReconcileGrace+time.Minute)

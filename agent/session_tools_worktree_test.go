@@ -49,11 +49,11 @@ func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
 
 func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	stateDir := t.TempDir()
+	root := resolvedTempDir(t)
+	stateDir := resolvedTempDir(t)
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	project := identifier.Project{ID: "carried-project", CanonicalPath: root}
-	lanePath := filepath.Join(t.TempDir(), "alternate-project", "delegate")
+	lanePath := filepath.Join(resolvedTempDir(t), "alternate-project", "delegate")
 
 	var gotMetaDir string
 	installWorktreeSeams(t, s, worktreeTestSeams{
