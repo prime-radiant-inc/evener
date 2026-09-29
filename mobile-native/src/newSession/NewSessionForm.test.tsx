@@ -844,3 +844,18 @@ it("raises nothing for a start the connection ended before the hub got it (#3104
 	await settle();
 	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
 });
+
+it("holds Start after a new connection leaves its start unconfirmed, until the draft changes (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	await form.setReady(false);
+	await form.setReady(true);
+	expect(form.header("headerRight").props).toMatchObject({ label: "Start", disabled: true });
+	expect(form.text()).toContain(
+		"This draft's last start may have worked. Check the Board before starting it again, or change the draft.",
+	);
+	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	await act(async () => form.releaseStart());
+	form.dispose();
+});

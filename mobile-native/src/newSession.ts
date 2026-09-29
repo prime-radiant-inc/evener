@@ -67,6 +67,10 @@ interface Form {
 	applySeed(seed: SessionSeed): void;
 	/** Cancel's "Delete draft": the saved draft goes and the form empties. */
 	discard(): void;
+	/** A start of this very draft may already exist (it couldn't be
+	 * confirmed), so starting it again could make a second session. Changing
+	 * the draft makes it a new start. */
+	startMayRepeat(): boolean;
 }
 /** The place a model list answers for. */
 function modelContext(source: string, cwd: string): string {
@@ -132,6 +136,8 @@ export function createNewSessionStore(
 	// model list to find it (applySeed). A move drops it, so it never lands in
 	// another project's or host's list.
 	let pendingModelId: string | null = null;
+	// The draft's content when its start became unconfirmed, for startMayRepeat.
+	let unconfirmedContent: string | null = null;
 	/** The form moves: to another host or project, the latest start, a seed, or an
 	 * empty form after a start. Answers for the old place are dropped, a
 	 * session's model waiting for them goes, and a host change still answering
@@ -394,6 +400,7 @@ export function createNewSessionStore(
 				}
 				// The draft as this start sent it; only that draft is cleared when it lands.
 				const submittedDraft = lastSaved;
+				unconfirmedContent = draftContent();
 				startDispatched = true;
 				creationRequested = true;
 				const result = await current.start({
@@ -419,6 +426,7 @@ export function createNewSessionStore(
 							// The start is known to have worked, so the newer draft no
 							// longer says one may exist; it is otherwise left as it is.
 							storage().write(hubId, { ...stored, unconfirmed: false });
+							unconfirmedContent = null;
 							set({ unconfirmedCreation: false, error: null });
 						}
 						lastSaved = creationDraftMetadata(snapshot());
@@ -516,6 +524,9 @@ export function createNewSessionStore(
 			if (seed.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);
 		},
+		startMayRepeat() {
+			return get().unconfirmedCreation && unconfirmedContent !== null && draftContent() === unconfirmedContent;
+		},
 		discard() {
 			if (get().submitting) return;
 			if (!storage) {
@@ -539,6 +550,7 @@ export function createNewSessionStore(
 	/** A form with nothing in it: after a start, or when its draft is discarded. */
 	function emptyForm(): void {
 		movePlacement();
+		unconfirmedContent = null;
 		store.setState({
 			source: LOCAL_HOST,
 			hostNote: null,
@@ -552,6 +564,10 @@ export function createNewSessionStore(
 			storageError: null,
 			error: null,
 		});
+	}
+	/** The draft as the person made it, whatever its unconfirmed flag says. */
+	function draftContent(): string {
+		return creationDraftMetadata({ ...snapshot(), unconfirmed: false });
 	}
 	function snapshot(): CreationDraft {
 		const state = store.getState();
@@ -618,6 +634,7 @@ export function createNewSessionStore(
 						: null,
 				});
 			}
+			if (draft?.unconfirmed) unconfirmedContent = draftContent();
 			store.setState({ storageLoaded: true, storageError: null });
 			lastSaved = creationDraftMetadata(snapshot());
 		} catch {

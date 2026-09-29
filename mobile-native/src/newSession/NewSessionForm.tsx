@@ -91,6 +91,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		pluginIssues: pluginsChosen.issues,
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
+		startMayRepeat: form.startMayRepeat(),
 	});
 	const offerAlert = useOfferAlert();
 	const startFailureSeen = useStartFailureSeen();

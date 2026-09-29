@@ -1016,3 +1016,44 @@ it("changes nothing in a form whose start is on its way (#3104)", async () => {
 	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
 	await started;
 });
+
+describe("a start that may already exist (#3104)", () => {
+	it("holds the same draft back after a rebind leaves its start uncertain, until the draft changes", async () => {
+		const { store, calls } = setup();
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("go");
+		expect(store.getState().startMayRepeat()).toBe(false);
+		const started = store.getState().submit();
+		await flush();
+		// The connection comes back as a new one while the start is out.
+		store.getState().bind(null);
+		expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
+		expect(store.getState().startMayRepeat()).toBe(true);
+		store.getState().setPrompt("go, and also fix the docs");
+		expect(store.getState().startMayRepeat()).toBe(false);
+		store.getState().setPrompt("go");
+		expect(store.getState().startMayRepeat()).toBe(true);
+		// The old request settles later, on the connection it went out on.
+		answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+		expect(await started).toEqual({ status: "obsolete" });
+	});
+
+	it("holds back a restored draft whose start couldn't be confirmed", () => {
+		const { saved, storage } = memoryDrafts();
+		saved.set("hub-a", {
+			source: "local",
+			cwd: "/project",
+			prompt: "go",
+			harness: "",
+			model: null,
+			reasoning: "",
+			launchOverrides: {},
+			images: [],
+			unconfirmed: true,
+		});
+		const store = createNewSessionStore("hub-a", storage);
+		expect(store.getState().startMayRepeat()).toBe(true);
+		store.getState().discard();
+		expect(store.getState().startMayRepeat()).toBe(false);
+	});
+});
