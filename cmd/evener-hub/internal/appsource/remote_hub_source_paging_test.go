@@ -1902,6 +1902,31 @@ func TestRemoteHubSourceCursorlessBeforeKeepsUnrelatedInvalidParams(t *testing.T
 	}
 }
 
+// The unknown-field matcher is exact: an unrelated field whose name merely ends
+// in "before" (not_before) is the remote's own refusal and passes through.
+func TestRemoteHubSourceCursorlessBeforeKeepsUnrelatedUnknownField(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadTurnsList {
+			return scriptedReply{wireErr: &appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: `json: unknown field "not_before"`,
+			}}
+		}
+		return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+	})
+	before := appwire.ThreadItemPosition{Entry: 7}
+	_, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("unrelated unknown field: error = %T %v, want invalid params", err, err)
+	}
+	if !strings.Contains(wireErr.Message, `unknown field "not_before"`) {
+		t.Fatalf("unrelated unknown field: message = %q, want the remote's own message", wireErr.Message)
+	}
+}
+
 // A page fetched before a boundary must report only items older than it. A
 // remote with inclusive semantics that returns the boundary item is clipped to
 // the boundary rather than having it retained or served as older, and a

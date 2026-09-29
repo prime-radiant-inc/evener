@@ -1162,7 +1162,10 @@ func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
 // remoteCandidatesBefore keeps only the candidates strictly older than before,
 // for clipping a remote before page to the boundary it was fetched with.
 func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
-	older := candidates[:0]
+	// Allocate rather than reuse the backing array: the caller still reads the
+	// original page for the contradiction check, and aliasing the two would let
+	// the clip overwrite it.
+	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		if remotePositionCompare(candidate.Position, before) < 0 {
 			older = append(older, candidate)
@@ -1669,7 +1672,7 @@ func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err err
 		return err
 	}
 	missingCursor := strings.Contains(wireErr.Message, "cursor or before is required")
-	unknownField := strings.Contains(wireErr.Message, "unknown field") && strings.Contains(wireErr.Message, "before")
+	unknownField := strings.Contains(wireErr.Message, `unknown field "before"`)
 	if !missingCursor && !unknownField {
 		return err
 	}
