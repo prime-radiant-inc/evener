@@ -75,6 +75,19 @@ type toolWireCall struct {
 	// inRepo runs the call in a session rooted at a real git repository,
 	// which manage_worktree needs, in place of the temp workspace's.
 	inRepo bool
+	// argsFrom builds the call's arguments from the results of the calls
+	// before it, by call id and as each tool returned them, for an argument
+	// only a run can know (an id a tool minted). Nil uses args.
+	argsFrom func(earlier map[string]tool.ExecResult) map[string]any
+}
+
+// arguments is the call's arguments, given the results of the calls before
+// it.
+func (c toolWireCall) arguments(earlier map[string]tool.ExecResult) map[string]any {
+	if c.argsFrom != nil {
+		return c.argsFrom(earlier)
+	}
+	return c.args
 }
 
 // toolWireWorkspace writes the files the calls read, search and edit, and
@@ -174,7 +187,8 @@ func withoutState(res tool.ExecResult) tool.ExecResult {
 
 // A job's id is random, and a foreground wait's elapsed seconds vary.
 var (
-	toolWireJobID       = regexp.MustCompile(`job_[A-Za-z0-9_]+`)
+	// identifier.NewJobID: job_, the owner session's id, _, a 12-character suffix.
+	toolWireJobID       = regexp.MustCompile(`job_[0-9A-Za-z]{22}_[0-9A-Za-z]{12}`)
 	toolWireWaitElapsed = regexp.MustCompile(`the foreground wait ended after [\d.]+s`)
 )
 
@@ -246,6 +260,31 @@ func withFixedTimes(res tool.ExecResult) tool.ExecResult {
 	}
 	res.ToolState = toolWireTimestamp.ReplaceAll(res.ToolState, fixed)
 	return res
+}
+
+// A job's clock: how long it ran and sat quiet, when it started and last
+// moved, and job_list's local start time.
+var (
+	toolWireJobMs     = regexp.MustCompile(`"(running_for_ms|quiet_for_ms)":\d+`)
+	toolWireJobAt     = regexp.MustCompile(`"(started_at|last_event_at)":"[^"]+"`)
+	toolWireJobListAt = regexp.MustCompile(`started \d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
+)
+
+// withFixedJobClock records a job tool's result with the job fixed as
+// withFixedJob fixes it, and its clock fixed at the fixture's start.
+func withFixedJobClock(res tool.ExecResult) tool.ExecResult {
+	res = withFixedJob(res)
+	out := toolWireJobMs.ReplaceAllString(res.Output, `"$1":2000`)
+	out = toolWireJobAt.ReplaceAllString(out, `"$1":"`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
+	res.Output = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	return res
+}
+
+// jobTarget targets the job an earlier call's result names.
+func jobTarget(callID string) func(map[string]tool.ExecResult) map[string]any {
+	return func(earlier map[string]tool.ExecResult) map[string]any {
+		return map[string]any{"target": toolWireJobID.FindString(earlier[callID].Output)}
+	}
 }
 
 // withFixedJob records a shell result whose command became a job: its job id
@@ -352,6 +391,24 @@ func TestToolCallWireFixtures(t *testing.T) {
 			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
 			args:      map[string]any{"command": "printf 'started\\n'; sleep 10"},
 			normalize: withFixedJob,
+		},
+		{
+			id: "call_job_status", tool: "job_status",
+			note:      "The job the timed-out command left running, checked straight after (it runs 8s more): its id read from that call's result, then fixed.",
+			argsFrom:  jobTarget("call_shell_timeout"),
+			normalize: withFixedJobClock,
+		},
+		{
+			id: "call_job_list", tool: "job_list",
+			note:      "The session's jobs, that one running.",
+			args:      map[string]any{},
+			normalize: withFixedJobClock,
+		},
+		{
+			id: "call_job_stop", tool: "job_stop",
+			note:      "The same job stopped.",
+			argsFrom:  jobTarget("call_shell_timeout"),
+			normalize: withFixedJobClock,
 		},
 		{
 			id: "call_read_transcript", tool: "read_transcript",
@@ -484,8 +541,9 @@ func TestToolCallWireFixtures(t *testing.T) {
 	announce := llm.Message{Role: llm.RoleAssistant}
 	results := llm.Message{Role: llm.RoleTool}
 	notes := make(map[string]string, len(calls))
+	earlier := make(map[string]tool.ExecResult, len(calls))
 	for _, call := range calls {
-		args, err := json.Marshal(call.args)
+		args, err := json.Marshal(call.arguments(earlier))
 		if err != nil {
 			t.Fatalf("%s arguments: %v", call.id, err)
 		}
@@ -499,6 +557,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 				session, env = repo.s, repo.s.currentEnv()
 			}
 			res := session.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: args})
+			earlier[call.id] = res
 			// The result as a session records it, less its duration, which
 			// differs every run.
 			if call.normalize != nil {
@@ -533,7 +592,9 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Cwd:   toolWireCwd,
 		Notes: notes,
 		Items: toolWireRelocated(t, items, func(text string) string {
-			return toolWireRepoRelocated(repo, strings.ReplaceAll(text, dir, toolWireCwd))
+			// A job's id is random, in a call's arguments as in its result.
+			text = toolWireJobID.ReplaceAllString(strings.ReplaceAll(text, dir, toolWireCwd), "job_fixture")
+			return toolWireRepoRelocated(repo, text)
 		}),
 	}, "the AppWire package and mobile-native tests that read it")
 }
@@ -552,4 +613,24 @@ func toolWireRelocated(t *testing.T, items []appwire.ThreadItem, relocate func(s
 		t.Fatalf("decode items: %v", err)
 	}
 	return relocated
+}
+
+// A call's arguments are its own, or built from the results of the calls
+// before it when it has argsFrom.
+func TestToolWireCallArgumentsFromEarlierResults(t *testing.T) {
+	t.Parallel()
+	static := toolWireCall{args: map[string]any{"path": "agent"}}
+	if got := static.arguments(nil); got["path"] != "agent" {
+		t.Fatalf("static arguments = %v, want its own args", got)
+	}
+	built := toolWireCall{
+		args: map[string]any{"ignored": true},
+		argsFrom: func(earlier map[string]tool.ExecResult) map[string]any {
+			return map[string]any{"target": earlier["call_a"].Output}
+		},
+	}
+	got := built.arguments(map[string]tool.ExecResult{"call_a": {Output: "job_123"}})
+	if len(got) != 1 || got["target"] != "job_123" {
+		t.Fatalf("built arguments = %v, want the earlier result's output as target", got)
+	}
 }
