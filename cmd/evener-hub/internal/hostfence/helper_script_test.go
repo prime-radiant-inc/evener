@@ -1907,9 +1907,18 @@ func TestScriptPostSpawnWriteFailureKillsChild(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("touch %s/started; exec sleep 30", work)
+	started := filepath.Join(work, "started")
+	// The command marks itself running only after a startup delay, and the
+	// injected post-spawn failure waits for that marker before killing it. The
+	// test drives that ordering instead of racing the child's startup against the
+	// wrapper's kill, which on a loaded machine can kill the command before it has
+	// run anything and report "the command never started".
+	command := fmt.Sprintf("sleep 1; touch %s; exec sleep 30", started)
 	start := time.Now()
-	_, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1"}, "perform", epoch.BootID, "1", command)
+	_, stderr, code := remote.run([]string{
+		"EVENER_FENCE_FAULT_AFTER_SPAWN=1",
+		"EVENER_FENCE_FAULT_AFTER_SPAWN_WAIT=" + started,
+	}, "perform", epoch.BootID, "1", command)
 	if code != 69 {
 		t.Fatalf("faulted perform exited %d, want 69: %s", code, stderr)
 	}
@@ -1919,7 +1928,7 @@ func TestScriptPostSpawnWriteFailureKillsChild(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("faulted perform took %s, want the child killed rather than awaited", elapsed)
 	}
-	if _, err := os.Stat(filepath.Join(work, "started")); err != nil {
+	if _, err := os.Stat(started); err != nil {
 		t.Fatalf("the command never started: %v", err)
 	}
 }

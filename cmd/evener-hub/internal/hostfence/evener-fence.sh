@@ -90,9 +90,11 @@
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
 # takeover's guard write (before the holder write, the crash window the replay
 # reconciliation repairs), EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the post-spawn
-# entry write so the kill-on-tracking-failure path is exercised, and
-# EVENER_FENCE_FAULT_UNREADABLE_START=1 hides a live process's start token so
-# the fail-closed recheck arm is exercised, and
+# entry write so the kill-on-tracking-failure path is exercised (with
+# EVENER_FENCE_FAULT_AFTER_SPAWN_WAIT naming a marker the injected failure waits
+# to exist first, so a test makes the spawn observable before the kill instead of
+# racing the command's startup), and EVENER_FENCE_FAULT_UNREADABLE_START=1 hides
+# a live process's start token so the fail-closed recheck arm is exercised, and
 # EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE=1 makes a nonce candidate
 # uninspectable so the fail-closed enumeration arm is exercised. None is set in
 # production.
@@ -1173,6 +1175,19 @@ do_perform() { # <bootId> <opSeq> <command>
 		own_nonce=''
 	fi
 	if [ "${EVENER_FENCE_FAULT_AFTER_SPAWN:-0}" = 1 ]; then
+		# Test-only: when the test names a marker the command writes once it is
+		# running, wait for it before failing. The injected failure must land on an
+		# observable spawn, not race the child's startup against the kill below.
+		# The bound is a tripwire; a marker that never appears fails the test's own
+		# assertion.
+		if [ -n "${EVENER_FENCE_FAULT_AFTER_SPAWN_WAIT:-}" ]; then
+			post_spawn_wait=0
+			while [ ! -e "$EVENER_FENCE_FAULT_AFTER_SPAWN_WAIT" ]; do
+				post_spawn_wait=$((post_spawn_wait + 1))
+				[ "$post_spawn_wait" -ge 500 ] && break
+				sleep 0.01
+			done
+		fi
 		post_spawn_failure "cannot record the lease entry (injected fault)"
 	fi
 	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' '' ||
