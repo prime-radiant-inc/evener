@@ -40,10 +40,20 @@ function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);
 }
 
+export interface SessionRowsOptions {
+	/** Older history is still to load above these rows. The first loaded turn
+	 * then gets no time marker: it would sit at index 0, and the page above
+	 * can remove it (its turn ended under ten minutes before), taking the
+	 * list's first key with it, which the list's position keeping needs to
+	 * find again. The marker appears once the history is whole. */
+	olderToLoad?: boolean;
+}
+
 export function sessionRows(
 	rows: readonly TimelineRow[],
 	turns: readonly TurnTimes[],
 	timeZone?: string,
+	{ olderToLoad = false }: SessionRowsOptions = {},
 ): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
@@ -62,7 +72,7 @@ export function sessionRows(
 			// would appear. A turn is marked at most once.
 			if (!marked.has(turnId)) {
 				marked.add(turnId);
-				const marker = timeMarker(byId, turnId, lastTurn, timeZone);
+				const marker = olderToLoad && lastTurn === undefined ? null : timeMarker(byId, turnId, lastTurn, timeZone);
 				if (marker) out.push(marker);
 			}
 			// A run never spans a turn change, marked or not: an idle gap too

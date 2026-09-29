@@ -1154,8 +1154,12 @@ export function ConversationScreen({
 	const timelineRows = useMemo(
 		() =>
 			// Your answers to a question show beneath the question itself.
-			hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [])),
-		[presentation.items, conversation?.turns],
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], undefined, {
+					olderToLoad: !!snapshot.olderCursor,
+				}),
+			),
+		[presentation.items, conversation?.turns, snapshot.olderCursor],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row opens the subagent's own session, under this session as

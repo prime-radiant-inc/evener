@@ -160,6 +160,38 @@ describe("time markers", () => {
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
 	});
 
+	it("leaves the first loaded turn unmarked while older history is still to load", () => {
+		// Its marker would sit at index 0, and loading the page above would
+		// remove it (the older turn ended under ten minutes before), taking the
+		// list's first key with it and defeating its position keeping.
+		const rows = sessionRows([user("u2", "turn_2"), user("u3", "turn_3")], turns, "UTC", { olderToLoad: true });
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"u2",
+			"time:turn_3",
+			"u3",
+		]);
+	});
+
+	it("keeps the first row's key across an older page, with steps and a delegate_send among them", () => {
+		// Before: the latest page, with more above. After: the page above
+		// prepended. The first key before must still be in the list after, so
+		// the list can find where its window moved to.
+		const latest = [
+			user("u2", "turn_2"),
+			step("s2", "delegate_send", { turnId: "turn_2" }),
+			step("s3", "shell", { turnId: "turn_2" }),
+			user("u3", "turn_3"),
+		];
+		const before = sessionRows(latest, turns, "UTC", { olderToLoad: true });
+		const after = sessionRows([user("u1", "turn_1"), ...latest], turns, "UTC", { olderToLoad: true });
+		const first = before[0]?.id;
+		expect(first).toBeDefined();
+		expect(after.map((row) => row.id)).toContain(first);
+		// Once nothing older is left, the first turn gets its marker back.
+		const whole = sessionRows([user("u1", "turn_1"), ...latest], turns, "UTC");
+		expect(whole[0]).toMatchObject({ kind: "time", turnId: "turn_1" });
+	});
+
 	// The reducer can seat a notice in the display turn that holds its recorded
 	// item, and the notice keeps its own turn id, so one turn's rows can have
 	// another turn's row inside them. When the outer turn resumes, its start is
