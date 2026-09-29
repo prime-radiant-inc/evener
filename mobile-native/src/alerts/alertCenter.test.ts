@@ -155,6 +155,21 @@ describe("what alerts at all", () => {
 		expect(haptics).toEqual([]);
 	});
 
+	it("tells you a session you started opened elsewhere, whatever the finished setting, and opens it on a tap", () => {
+		const { alerts, haptics } = center();
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		expect(shown(alerts)).toEqual(["a"]);
+		expect(haptics).toEqual([]);
+		expect(alerts.tap()).toEqual({ kind: "session", ref: "a", title: "Fix the flaky test" });
+	});
+
+	it("never lets a started session join or replace a banner that is up", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer({ kind: "started", ref: "b", title: "Session b", why: null });
+		expect(shown(alerts)).toEqual(["a"]);
+	});
+
 	it("says nothing about the session on screen, or about a notice while the Board lists it", () => {
 		const { alerts } = center();
 		alerts.setScreen({ kind: "session", ref: "a" });

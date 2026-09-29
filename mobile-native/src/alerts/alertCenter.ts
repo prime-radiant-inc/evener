@@ -11,7 +11,10 @@ import type { WhyLine } from "../board/attention";
 export type NeedsYouKind = "failed" | "question" | "approval" | "warning" | "restartNeeded";
 
 export interface SessionAlert {
-	kind: NeedsYouKind | "finished";
+	/** "started": a session you started opened while you were somewhere else
+	 * (New session's start landing after you left the sheet), so it could be
+	 * started twice without it. */
+	kind: NeedsYouKind | "finished" | "started";
 	ref: string;
 	title: string;
 	why: WhyLine | null;
@@ -95,7 +98,13 @@ export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return alert.kind !== "notice" && alert.kind !== "finished";
+	return alert.kind !== "notice" && alert.kind !== "finished" && alert.kind !== "started";
+}
+
+/** An alert that brings news rather than asks for you: no haptic, and it
+ * never joins, replaces or waits behind another banner. */
+function quiet(alert: Alert): boolean {
+	return alert.kind === "finished" || alert.kind === "started";
 }
 
 function subject(alert: Alert): string {
@@ -134,10 +143,11 @@ export class AlertCenter {
 	offer(alert: Alert): void {
 		if (!this.wanted(alert)) return;
 		if (needsYou(alert)) this.remember(alert.ref);
-		// A finished result is the quietest alert: it never joins or replaces a
-		// banner that is up, a notice's included, and never waits (spec 13.3;
-		// the prototype's EV.alert drops it behind any banner).
-		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
+		// A finished result, and a session you started, are the quietest
+		// alerts: they never join or replace a banner that is up, a notice's
+		// included, and never wait (spec 13.3; the prototype's EV.alert drops
+		// a finished result behind any banner). The Board lists them anyway.
+		if (quiet(alert) && (this.banner !== null || this.holding())) return;
 		if (this.holding()) {
 			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(alert)), alert];
 			this.publish();
@@ -284,7 +294,7 @@ export class AlertCenter {
 		} else {
 			this.stopBanner();
 			this.banner = { id: this.nextId++, alerts: [alert] };
-			if (alert.kind !== "finished") this.buzz(alert.kind === "failed" ? "warning" : "light");
+			if (!quiet(alert)) this.buzz(alert.kind === "failed" ? "warning" : "light");
 		}
 		this.shownAt = now;
 		this.armExpiry();
