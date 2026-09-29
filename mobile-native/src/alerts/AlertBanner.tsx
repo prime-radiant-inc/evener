@@ -19,6 +19,9 @@ const COALESCED_LINE = "Tap to see them on the Board.";
  * finished result (until S11 and S1 give them one). */
 function words(banner: Banner): { title: string; why: WhyLine | null; hint: string | null } {
 	const [only] = banner.alerts;
+	// Two or more alerts are always sessions that need you: the center
+	// combines only those (AlertCenter.show's needsYou check, and release()
+	// joins held sessions only), never a notice or a finished result.
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };

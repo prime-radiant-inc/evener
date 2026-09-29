@@ -7,6 +7,8 @@ import type { Alert, Banner } from "./alertCenter";
 
 const native = vi.hoisted(() => ({
 	announced: [] as string[],
+	reduceMotion: false,
+	springs: 0,
 	pan: null as null | {
 		onMoveShouldSetPanResponder: (event: unknown, gesture: { dx: number; dy: number }) => boolean;
 		onPanResponderGrant: () => void;
@@ -26,10 +28,14 @@ vi.mock("react-native", async () => {
 		AccessibilityInfo: {
 			...mock.AccessibilityInfo,
 			announceForAccessibility: (label: string) => native.announced.push(label),
+			isReduceMotionEnabled: () => Promise.resolve(native.reduceMotion),
 		},
 		Animated: {
 			...mock.Animated,
-			spring: settle,
+			spring: (value: { setValue(value: number): void }, config: { toValue: number }) => {
+				native.springs += 1;
+				return settle(value, config);
+			},
 			parallel: (animations: { start(): void }[]) => ({ start: () => animations.forEach((each) => each.start()) }),
 		},
 		PanResponder: {
@@ -83,6 +89,29 @@ const texts = (tree: ReturnType<typeof render>) =>
 
 beforeEach(() => {
 	native.announced.length = 0;
+	native.reduceMotion = false;
+});
+
+/** The card's two animated wrappers: the drop (opacity and translateY),
+ * inside the drag. */
+function drop(tree: ReturnType<typeof render>) {
+	const style = tree.root.findAll((node) => String(node.type) === "Animated.View")[1]?.props.style;
+	return { opacity: style.opacity.value, translateY: style.transform[0].translateY.value };
+}
+
+it("drops in from above with a spring, or only fades in with Reduce Motion (spec 16.6)", async () => {
+	const moving = mount(banner(session("a")));
+	await act(async () => {});
+	expect(drop(moving.tree)).toEqual({ opacity: 1, translateY: 0 });
+	expect(native.springs).toBe(1);
+	native.reduceMotion = true;
+	native.springs = 0;
+	const still = mount(banner(session("b")));
+	// Before the setting is read, the banner waits above, unseen.
+	expect(drop(still.tree)).toEqual({ opacity: 0, translateY: -24 });
+	await act(async () => {});
+	expect(drop(still.tree)).toEqual({ opacity: 1, translateY: 0 });
+	expect(native.springs).toBe(0);
 });
 
 it("shows a question's title, now, and its word in the attention ink with the reason", () => {
