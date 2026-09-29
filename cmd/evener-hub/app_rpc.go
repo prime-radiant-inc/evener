@@ -1326,7 +1326,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
-	readThread := func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if err := appwire.ValidateThreadReadParams(params); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -1433,7 +1433,7 @@ func registerThreadHandlers(
 		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -1481,7 +1481,7 @@ func registerThreadHandlers(
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
@@ -1501,13 +1501,6 @@ func registerThreadHandlers(
 			}
 		}
 		return resp, nil
-	}
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		response, err := readThread(ctx, params)
-		if err == nil {
-			response.Thread.Evener.Capabilities.PageBefore = hubPagesBefore(response.Thread.Evener.Ref)
-		}
-		return response, err
 	})
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away

@@ -25,6 +25,22 @@ export class WireError extends Error {
   }
 }
 
+// Wire values of appwire's CodeInvalidRequest / CodeInvalidParams
+// (appwire/errors.go), the standard JSON-RPC codes.
+const CODE_INVALID_REQUEST = -32600;
+const CODE_INVALID_PARAMS = -32602;
+
+// refusedBeforeRunning says whether the hub refused a request on its shape
+// alone, before running any of it (a validation refusal): nothing the request
+// asked for happened, and resending it unchanged can only get the same answer.
+// Any other failure, a timeout or a lost connection among them, leaves open
+// whether it ran. It holds only for a request the hub validates before running
+// any of it, as the mutation dispatcher's are; thread/start is not one, since
+// it can refuse the initial input after spawning the session (#3184).
+export function refusedBeforeRunning(error: unknown): error is WireError {
+  return error instanceof WireError && (error.code === CODE_INVALID_PARAMS || error.code === CODE_INVALID_REQUEST);
+}
+
 // ErrorInvalidHostField is the hub's discriminator for a host mutation's
 // validation refusal, whose data names the input that failed
 // (appwire.ErrorInvalidHostField, appwire/errors.go). It shares its code with
