@@ -182,6 +182,23 @@ describe("each tool's evidence, drawn", () => {
 		expect(byText(tree.root, "Seen in 3 of 20 runs.")?.props.style).toMatchObject({ color: INK_LOW });
 	});
 
+	it("shows the first 40 tasks of a longer list, and the rest on request", () => {
+		const tasks = Array.from({ length: 41 }, (_, n) => ({
+			id: n + 1,
+			status: "open" as const,
+			description: `task ${n + 1}`,
+		}));
+		const tree = drawn([{ kind: "tasks", tasks }]);
+		const shown = () => texts(tree.root).filter((node) => /^○ task \d+$/.test(textOf(node)));
+		expect(shown().map(textOf)).toEqual(Array.from({ length: 40 }, (_, n) => `○ task ${n + 1}`));
+		const showAll = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Show all 41 tasks",
+		)[0];
+		expect(textOf(showAll)).toBe("Show all 41 tasks");
+		act(() => showAll.props.onPress());
+		expect(shown()).toHaveLength(41);
+	});
+
 	it("labels a tool's arguments and result, each in Menlo", () => {
 		const tree = drawn([
 			{ kind: "json", label: "Arguments", text: '{\n  "a": 1\n}' },

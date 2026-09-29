@@ -49,7 +49,7 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
-	parseTaskState,
+	parseTaskListData,
 	pendingTextJoined,
 	projectThread,
 	steeringLabel,
@@ -565,9 +565,10 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 	return start === null || end === null ? {} : { start, end };
 }
 
-function activityDetail(it: ItemModel): ActivityDetail {
+/** A tool or reasoning item's expandable detail, read once from the item. */
+export function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
-	const tasks = it.toolName === "task_list" ? parseTaskState(it.raw) : null;
+	const tasks = it.toolName === "task_list" ? parseTaskListData(it.raw) : null;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,

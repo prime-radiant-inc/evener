@@ -17,7 +17,7 @@ import {
 	shellOutput,
 	skillContext,
 	str,
-	type TaskStatus,
+	type TaskRow,
 	toolFamily,
 	webFetchResult,
 } from "@evener/appwire-client";
@@ -44,12 +44,8 @@ export type Evidence =
 	| { kind: "json"; label: "Arguments" | "Result"; text: string }
 	| { kind: "error"; text: string; exitCode?: number };
 
-export interface ChecklistTask {
-	id: number;
-	status: TaskStatus;
-	description: string;
-	note?: string;
-}
+/** A task in a task_list step's checklist, with the note the call added. */
+export type ChecklistTask = Pick<TaskRow, "id" | "status" | "description"> & { note?: string };
 
 /** Output lines shown in the transcript before "Show all N lines". */
 export const EVIDENCE_PREVIEW_LINES = 40;
@@ -119,7 +115,9 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 				: rawOutput(text);
 		}
 		case "tasks": {
-			if (!detail.tasks) return rawOutput(text);
+			// No list, or one with no tasks in it: what the tool printed says more
+			// than an empty checklist.
+			if (!detail.tasks?.length) return rawOutput(text);
 			const notes = freshNotes({ argumentsJSON: detail.arguments });
 			const tasks = detail.tasks.map(({ id, status, description }) => {
 				const note = notes.get(id);

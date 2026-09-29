@@ -13,7 +13,7 @@ import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
+import { type ChecklistTask, EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
 import { LogViewer } from "./LogViewer";
 import { stepWords } from "./transcriptRows";
 
@@ -80,6 +80,50 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 			) : null}
 			{viewing ? <LogViewer title={title} text={text} onClose={() => setViewing(false)} /> : null}
 		</>
+	);
+}
+
+// A task_list step's tasks as the Tasks sheet draws them, the note this call
+// added under its task: the first 40, as output shows its first 40 lines, then
+// the rest on request.
+function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const [all, setAll] = useState(false);
+	const shown = all ? tasks : tasks.slice(0, EVIDENCE_PREVIEW_LINES);
+	const showAll = `Show all ${tasks.length} tasks`;
+	return (
+		<View style={{ gap: 6 }}>
+			{shown.map((task) => (
+				<View key={task.id} style={{ gap: 2 }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					>
+						{`${TASK_STATUS_GLYPH[task.status]} ${task.description}`}
+					</Text>
+					{task.note ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+						>
+							{task.note}
+						</Text>
+					) : null}
+				</View>
+			))}
+			{shown.length < tasks.length ? (
+				<Pressable accessibilityRole="button" accessibilityLabel={showAll} onPress={() => setAll(true)}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}
+					>
+						{showAll}
+					</Text>
+				</Pressable>
+			) : null}
+		</View>
 	);
 }
 
@@ -199,31 +243,7 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 				</View>
 			);
 		case "tasks":
-			// Each task as the Tasks sheet draws it, the note this call added
-			// under it.
-			return (
-				<View style={{ gap: 6 }}>
-					{evidence.tasks.map((task) => (
-						<View key={task.id} style={{ gap: 2 }}>
-							<Text
-								allowFontScaling={allowFontScaling}
-								accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
-								style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
-							>
-								{`${TASK_STATUS_GLYPH[task.status]} ${task.description}`}
-							</Text>
-							{task.note ? (
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
-								>
-									{task.note}
-								</Text>
-							) : null}
-						</View>
-					))}
-				</View>
-			);
+			return <Checklist tasks={evidence.tasks} />;
 		case "json":
 			return (
 				<View style={{ gap: 4 }}>
