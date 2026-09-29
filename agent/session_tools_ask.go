@@ -93,11 +93,31 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 // clearAskPending empties the pending set. Callers: durable user-input
 // admission, the interrupt branch (session_lifecycle.go, directly), and
 // clearAskPendingForResolvingSteer below (a drained user-sourced steer,
-// mid-round).
+// mid-round). askPendingCallArgs is cleared in lockstep — the two never
+// disagree about what is still pending.
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.askPending = nil
+	s.askPendingCallArgs = nil
+}
+
+// PendingAskArguments returns each pending ask_user call's own arguments —
+// already normalized, one entry per call, in call order — for an external
+// ask-responder that needs the full question detail (options and their
+// detail text) a live call carried. Session.Events() drops on a full buffer
+// (session_events.go); this reads durable session state instead, so a
+// caller for whom missing a call would leave state permanently wrong (a
+// real pending question it never answers) cannot miss one. Each entry
+// parses with ParseAskUserCallArguments. Empty while nothing is pending.
+func (s *Session) PendingAskArguments() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, len(s.askPendingCallArgs))
+	for i, args := range s.askPendingCallArgs {
+		out[i] = append([]byte(nil), args...)
+	}
+	return out
 }
 
 // clearAskPendingForResolvingSteer clears the pending set the moment a
@@ -416,9 +436,19 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err != nil {
 				return nil, err
 			}
+			// Recorded here, in the tool itself, rather than read back off the
+			// event stream: this is the one place this call's own arguments are
+			// in hand, and it is durable session state an external
+			// ask-responder can poll (PendingAskArguments) with no risk of the
+			// best-effort event channel dropping the call it needs.
+			argsJSON, err := json.Marshal(args)
+			if err != nil {
+				return nil, fmt.Errorf("ask_user: marshal arguments: %w", err)
+			}
 
 			s.mu.Lock()
 			s.askPending = append(s.askPending, parsed...)
+			s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
 			s.mu.Unlock()
 
 			return askUserAckText, nil

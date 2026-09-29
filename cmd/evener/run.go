@@ -428,27 +428,16 @@ func run(ctx context.Context, cfg runConfig) error {
 		fmt.Fprintln(cfg.stderr, line) //nolint:errcheck
 	}
 
-	// --ask-responder needs the raw arguments of each ask_user call the
-	// session posts, which only the event stream carries in full (options
-	// and details included) — PendingQuestion() truncates to one question
-	// and drops detail. Tee it in only when a responder is configured, so
-	// the ordinary path allocates no extra goroutine or channel.
-	eventCh := sess.Events()
-	var askCapture *askCallCapture
-	if cfg.askResponder != "" {
-		askCapture = newAskCallCapture()
-		eventCh = teeAskUserCalls(eventCh, askCapture)
-	}
 	var done <-chan struct{}
 	if cfg.verbose {
-		done = drainEventsVerbose(eventCh, cfg.stderr)
+		done = drainEventsVerbose(sess.Events(), cfg.stderr)
 	} else {
-		done = drainEventsHuman(eventCh, cfg.stderr)
+		done = drainEventsHuman(sess.Events(), cfg.stderr)
 	}
 
 	result, err := runProcessInput(sess, ctx, prompt)
 	if err == nil && cfg.askResponder != "" {
-		result, err = runAskResponderLoop(ctx, sess, cfg, askCapture, result)
+		result, err = runAskResponderLoop(ctx, sess, cfg, result)
 	}
 	if err == nil {
 		// Drain every session-owned managed job before Close() SIGKILLs it: keep

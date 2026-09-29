@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent"
-	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // askResponderMaxRounds bounds how many times one `evener run` invocation
@@ -25,56 +25,13 @@ const askResponderMaxRounds = 3
 // never answers must not wedge the run forever.
 const askResponderTimeout = 2 * time.Minute
 
-// askCallCapture records each ask_user tool call's raw arguments
-// (events.ToolCallStartData.ArgumentsJSON, exactly as the model issued them)
-// off the session's event stream. Session.PendingQuestion() bounds its
-// result to the wire's shape (one question, labels only) and drops each
-// option's detail text, which is not enough for an external responder to
-// answer well — this is "wherever the tool-call arguments are available"
-// instead. The drain goroutine (teeAskUserCalls) records; the responder loop
-// drains between rounds; both only touch it under mu.
-type askCallCapture struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func newAskCallCapture() *askCallCapture { return &askCallCapture{} }
-
-func (c *askCallCapture) record(argsJSON string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.calls = append(c.calls, argsJSON)
-}
-
-// drain returns every ask_user call recorded since the last drain and clears
-// the capture, so the next round starts empty.
-func (c *askCallCapture) drain() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := c.calls
-	c.calls = nil
-	return out
-}
-
-// teeAskUserCalls passes every event from in to the returned channel
-// unchanged, recording each ask_user EventToolCallStart's raw arguments into
-// capture along the way. run() interposes this between sess.Events() and the
-// drain goroutines only when --ask-responder is set.
-func teeAskUserCalls(in <-chan events.SessionEvent, capture *askCallCapture) <-chan events.SessionEvent {
-	out := make(chan events.SessionEvent)
-	go func() {
-		defer close(out)
-		for ev := range in {
-			if ev.Kind == events.EventToolCallStart {
-				if d, ok := ev.Data.(events.ToolCallStartData); ok && d.ToolName == "ask_user" {
-					capture.record(d.ArgumentsJSON)
-				}
-			}
-			out <- ev
-		}
-	}()
-	return out
-}
+// askResponderWaitDelay bounds how long the responder's output pipes may
+// stay open after it exits or its timeout ends, mirroring
+// agent/internal/hooks/command_runtime.go's commandHookWaitDelay: a
+// responder that backgrounds a job hands the job those pipes, and killing
+// the responder on timeout does not by itself kill the job, so without this
+// bound the timeout would not bound the responder (see execsupport/orphanpipe).
+const askResponderWaitDelay = time.Second
 
 // runAskResponderLoop answers a session's pending ask_user questions by
 // shelling out to cfg.askResponder, feeding it the pending questions as JSON
@@ -82,15 +39,17 @@ func teeAskUserCalls(in <-chan events.SessionEvent, capture *askCallCapture) <-c
 // session has no more pending questions or askResponderMaxRounds have run.
 // A responder that fails (non-zero exit, empty output, or unparseable
 // pending questions) stops the loop without failing the run: it ends exactly
-// as it would today, with the question left unanswered.
-func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig, capture *askCallCapture, result string) (string, error) {
-	for round := 0; round < askResponderMaxRounds && sess.HasPendingAsk(); round++ {
-		payload, err := askResponderPayload(capture.drain())
+// as it would today, with the question left unanswered. Reaching the round
+// cap with a question still pending is logged the same way.
+func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig, result string) (string, error) {
+	round := 0
+	for ; round < askResponderMaxRounds && sess.HasPendingAsk(); round++ {
+		payload, err := askResponderPayload(sess.PendingAskArguments())
 		if err != nil {
 			fmt.Fprintf(cfg.stderr, "[ask-responder] %v\n", err) //nolint:errcheck
 			return result, nil
 		}
-		answer, err := runAskResponderCommand(ctx, cfg.askResponder, payload)
+		answer, err := runAskResponderCommand(ctx, cfg.askResponder, payload, askResponderTimeout)
 		if err != nil {
 			fmt.Fprintf(cfg.stderr, "[ask-responder] %v\n", err) //nolint:errcheck
 			return result, nil
@@ -101,16 +60,20 @@ func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig
 		}
 		result = next
 	}
+	if round == askResponderMaxRounds && sess.HasPendingAsk() {
+		fmt.Fprintf(cfg.stderr, "[ask-responder] stopping after %d rounds with a question still pending\n", askResponderMaxRounds) //nolint:errcheck
+	}
 	return result, nil
 }
 
-// askResponderPayload builds the responder's stdin: every ask_user call's
-// arguments captured this round, parsed into their full questions (options
-// and details included).
-func askResponderPayload(argsJSONs []string) ([]byte, error) {
+// askResponderPayload builds the responder's stdin: every pending ask_user
+// call's own arguments (Session.PendingAskArguments — durable session
+// state, not the best-effort event stream), parsed into their full
+// questions (options and details included).
+func askResponderPayload(pendingCallArgs [][]byte) ([]byte, error) {
 	var questions []agent.AskUserQuestion
-	for _, raw := range argsJSONs {
-		parsed, err := agent.ParseAskUserCallArguments([]byte(raw))
+	for _, raw := range pendingCallArgs {
+		parsed, err := agent.ParseAskUserCallArguments(raw)
 		if err != nil {
 			return nil, fmt.Errorf("parsing pending ask_user questions: %w", err)
 		}
@@ -124,21 +87,51 @@ func askResponderPayload(argsJSONs []string) ([]byte, error) {
 	}{Questions: questions})
 }
 
-// runAskResponderCommand runs cfg.askResponder via `sh -c` — the shell form
-// the repo's command hooks fall back to for a bare command string
+// runAskResponderCommand runs command via `sh -c` — the shell form the
+// repo's command hooks fall back to for a bare command string
 // (agent/internal/hooks/command_runtime.go) — with stdin piped in and a
-// bounded timeout, and returns its trimmed stdout. A non-zero exit or empty
-// stdout is an error naming the responder's stderr.
-func runAskResponderCommand(ctx context.Context, command string, stdin []byte) (string, error) {
-	runCtx, cancel := context.WithTimeout(ctx, askResponderTimeout)
+// bounded timeout, and returns its trimmed stdout. It owns the responder's
+// whole process tree, not just the direct `sh`, and bounds how long its
+// output pipes may stay open past the deadline, the same two-part pattern
+// command_runtime.go's own command-hook launch uses for the same reason: a
+// shell command from outside evener may background a job or run a pipeline
+// that would otherwise outlive the timeout and keep this call blocked on
+// its output. A non-zero exit or empty stdout is an error naming the
+// responder's stderr.
+func runAskResponderCommand(ctx context.Context, command string, stdin []byte, timeout time.Duration) (string, error) {
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
 	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("ask-responder command failed: %w\nstderr: %s", err, strings.TrimSpace(stderr.String()))
+	cmd.WaitDelay = askResponderWaitDelay
+
+	// Place the responder in its own process group so cancellation can
+	// signal the whole tree, not just `sh`: a backgrounded job or pipeline
+	// stage CommandContext's default single-process kill would not reach.
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	// os/exec calls Cancel at the context deadline from the goroutine Start
+	// spawns, so Process is set then; the nil check keeps the kill safe
+	// without depending on that stdlib contract.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
+
+	runErr := orphanpipe.ChildErr(cmd, cmd.Run())
+	// Reap the responder's process group after the invocation ends: a
+	// responder that exited 0 while a backgrounded descendant held its
+	// pipes is cleaned up here too, not only on the timeout path.
+	if cmd.Process != nil {
+		procgroup.KillGroupAfterReap(cmd.Process.Pid)
+	}
+	if runErr != nil {
+		return "", fmt.Errorf("ask-responder command failed: %w\nstderr: %s", runErr, strings.TrimSpace(stderr.String()))
 	}
 	answer := strings.TrimSpace(stdout.String())
 	if answer == "" {

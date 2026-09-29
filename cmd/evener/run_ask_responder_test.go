@@ -186,6 +186,9 @@ func TestRunAskResponderStopsAfterRoundCap(t *testing.T) {
 	if reqs := adapter.Requests(); len(reqs) != 4 {
 		t.Fatalf("provider saw %d requests, want 4", len(reqs))
 	}
+	if !strings.Contains(stderr.String(), "[ask-responder]") {
+		t.Fatalf("stderr = %q, want a logged [ask-responder] message when the round cap is reached with a question still pending", stderr.String())
+	}
 }
 
 // TestRunAskResponderStopsOnNonZeroExit: a responder that exits non-zero
