@@ -82,22 +82,28 @@ type delegateTreeController struct {
 	quietClaims           map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs      map[string]map[string]struct{}
 	attentionRestoreHolds map[string]int
-	idleReleaseTimers     map[string]idleReleaseTimerHandle
-	idleReleaseArmSeq     uint64
-	watchEnqueues         map[uint64]*delegateWatchReceipt
-	watchDeliveries       map[uint64]*delegateWatchReceipt
-	reclamations          map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming            map[string]uint64
-	stop                  *delegateStopState
-	stopDriver            *delegateStopDriver
-	evidenceVersion       uint64
-	retirementClaim       *RetirementClaim
-	closing               bool
-	reconcileOrder        []delegateLease
-	runStarts             map[delegateLease]delegatestore.RunTrigger
-	owedAdmission         bool
-	emitUpdate            func(delegateUpdatePlan)
-	attentionOpen         delegateAttentionWriterOpener
+	// attentionRestoreDeferred puts a delegate whose cold restore failed at
+	// the back of the attention drive's line: the value is the failure's
+	// order (attentionRestoreSeq), so the longest-failed delegate is retried
+	// first once every eligible delegate has failed. Process-local.
+	attentionRestoreDeferred map[string]uint64
+	attentionRestoreSeq      uint64
+	idleReleaseTimers        map[string]idleReleaseTimerHandle
+	idleReleaseArmSeq        uint64
+	watchEnqueues            map[uint64]*delegateWatchReceipt
+	watchDeliveries          map[uint64]*delegateWatchReceipt
+	reclamations             map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming               map[string]uint64
+	stop                     *delegateStopState
+	stopDriver               *delegateStopDriver
+	evidenceVersion          uint64
+	retirementClaim          *RetirementClaim
+	closing                  bool
+	reconcileOrder           []delegateLease
+	runStarts                map[delegateLease]delegatestore.RunTrigger
+	owedAdmission            bool
+	emitUpdate               func(delegateUpdatePlan)
+	attentionOpen            delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
