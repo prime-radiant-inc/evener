@@ -52,6 +52,7 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { ApprovalControls } from "./approvalControls";
+import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { useConnection } from "./ConnectionProvider";
@@ -124,7 +125,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou, servedFirst } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -716,6 +717,9 @@ export function ConversationScreen({
 	);
 	const othersWaiting = useMemo(() => othersNeedingYou(fleet.bands, route.params.ref), [fleet.bands, route.params.ref]);
 	const othersWaitingCount = othersWaiting.length;
+	// Next serves whichever session alerted you most recently first (spec 8.3).
+	const alertedRecently = useAlertedRecently();
+	const nextUsed = useNextUsed();
 	useEffect(() => {
 		// iPhone only: Android keeps its own back arrow.
 		if (Platform.OS !== "ios") return;
@@ -734,6 +738,7 @@ export function ConversationScreen({
 	}
 	function openNext(target: NavigationSessionSummary) {
 		leaveFor(target);
+		nextUsed();
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -764,7 +769,7 @@ export function ConversationScreen({
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
 		if (Platform.OS !== "ios") return;
-		const choices = othersWaiting.slice(0, 8);
+		const choices = servedFirst(othersWaiting, alertedRecently).slice(0, 8);
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
 				options: [...choices.map((row) => row.title), "Cancel"],
@@ -2558,7 +2563,9 @@ export function ConversationScreen({
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
 	const nextTarget =
-		approval === null && questionBatch === null && find === null ? nextSession(fleet.bands, route.params.ref) : null;
+		approval === null && questionBatch === null && find === null
+			? nextSession(fleet.bands, route.params.ref, alertedRecently)
+			: null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued

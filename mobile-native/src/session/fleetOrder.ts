@@ -10,16 +10,34 @@ export function othersNeedingYou(bands: LiveBands, currentRef: string): Navigati
 	return bands.needsYou.map((item) => item.row).filter((row) => row.ref !== currentRef);
 }
 
-/** Next's destination, in Needs you order (ruling 11). From a session in
- * Needs you it is the one after it, wrapping around at the end, so Next
- * walks through everyone who needs you instead of bouncing between two.
- * From any other session it is the head of that order. Phase 6's alerts put
- * "whichever session alerted you most recently" at the head. */
-export function nextSession(bands: LiveBands, currentRef: string): NavigationSessionSummary | null {
+/** The order Next serves (spec 8.3): whichever session alerted you most
+ * recently, shown or held, then Needs you order. The prototype's nextQueue.
+ * `recent` is the alert center's, most recent first. */
+export function servedFirst<T extends { ref: string }>(needsYou: readonly T[], recent: readonly string[]): T[] {
+	const rank = (row: T) => {
+		const index = recent.indexOf(row.ref);
+		return index === -1 ? recent.length : index;
+	};
+	return needsYou
+		.map((row, order) => ({ row, order }))
+		.sort((a, b) => rank(a.row) - rank(b.row) || a.order - b.order)
+		.map(({ row }) => row);
+}
+
+/** Next's destination: what alerted you most recently, then Needs you order
+ * (ruling 11). From a session in Needs you, that order starts at the one
+ * after it and wraps around, so Next walks through everyone who needs you
+ * instead of bouncing between two. From any other session it starts at the
+ * head. */
+export function nextSession(
+	bands: LiveBands,
+	currentRef: string,
+	recent: readonly string[],
+): NavigationSessionSummary | null {
 	const order = bands.needsYou.map((item) => item.row);
 	const index = order.findIndex((row) => row.ref === currentRef);
-	if (index === -1) return order[0] ?? null;
-	return order.length > 1 ? order[(index + 1) % order.length] : null;
+	const after = index === -1 ? order : [...order.slice(index + 1), ...order.slice(0, index)];
+	return servedFirst(after, recent)[0] ?? null;
 }
 
 export function liveOrder(bands: LiveBands): NavigationSessionSummary[] {

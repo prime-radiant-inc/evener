@@ -2,7 +2,7 @@
 // provider (AlertsProvider.tsx), which reads the fleet and the connection: a
 // component that only holds banners (HoldingModal, the composer, the Reader)
 // loads none of that.
-import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, AlertSnapshot, HoldKind } from "./alertCenter";
 
@@ -46,6 +46,22 @@ const noSubscription = () => () => {};
 export function useHeldAlertCount(): number {
 	const center = useContext(AlertsContext)?.center;
 	return useSyncExternalStore(center?.subscribe ?? noSubscription, () => center?.getSnapshot().held ?? 0);
+}
+
+const noRecent: readonly string[] = [];
+
+/** The sessions that alerted you, most recent first, the order Next serves
+ * (spec 8.3): none outside an AlertsProvider. */
+export function useAlertedRecently(): readonly string[] {
+	const center = useContext(AlertsContext)?.center;
+	return useSyncExternalStore(center?.subscribe ?? noSubscription, () => center?.getSnapshot().recent ?? noRecent);
+}
+
+/** Tells alerts Next moved you on, so what waits behind a hold is Next's to
+ * serve (AlertCenter.nextUsed): nothing outside an AlertsProvider. */
+export function useNextUsed(): () => void {
+	const center = useContext(AlertsContext)?.center;
+	return useCallback(() => center?.nextUsed(), [center]);
 }
 
 /** Tells alerts the stack's routes up to the focused one. */
