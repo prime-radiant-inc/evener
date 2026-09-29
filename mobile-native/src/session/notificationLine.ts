@@ -4,7 +4,6 @@
 // tapping it does: open the subagent, or show the job's output in place. Pure,
 // so the copy rules live apart from how NotificationCards draws them.
 import {
-	decodeNotificationEntities,
 	type EvenerDelegateInfo,
 	isNotificationRemnant,
 	type NotificationOutcome,
@@ -53,7 +52,7 @@ export function notificationLine(
 				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
 				: // A report whose ending this client doesn't know still reported.
 					{ headline: said(subject, notification.outcome, "reported"), failed };
-			const detail = notification.message ?? (decodeNotificationEntities(notification.excerpt) || undefined);
+			const detail = notification.message ?? (notification.excerpt || undefined);
 			if (detail) line.detail = detail;
 			if (ref) line.subagent = { ref, title: subject };
 			return line;
@@ -70,23 +69,19 @@ export function notificationLine(
 			}
 			// A delegate job's excerpt is its report's envelope; the parser has
 			// already read the report out of it.
-			const output = notification.message ?? decodeNotificationEntities(notification.excerpt);
+			const output = notification.message ?? notification.excerpt;
 			if (output) line.output = output;
 			return line;
 		}
 		case "watch": {
 			// A watch's prose opens with the sentence its title already says
 			// ("Timer fired after 300s."); what follows is the watch's own note.
-			const note = decodeNotificationEntities(notification.prose ?? "")
-				.split("\n")
-				.slice(1)
-				.join("\n")
-				.trim();
+			const note = (notification.prose ?? "").split("\n").slice(1).join("\n").trim();
 			return { headline: notification.title, failed, ...(note ? { detail: note } : {}) };
 		}
 		default: {
 			// A watch delivery's secondary, or a replayed observer callback's body.
-			const detail = notification.secondary || notification.message || decodeNotificationEntities(notification.excerpt);
+			const detail = notification.secondary || notification.message || notification.excerpt;
 			return { headline: notification.title, failed, ...(detail ? { detail } : {}) };
 		}
 	}
