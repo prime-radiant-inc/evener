@@ -66,6 +66,7 @@ type delegateFinish struct {
 	outcome             delegatestore.OutcomeStatus
 	disposition         delegatestore.RunDisposition
 	reason              string
+	errorText           string
 	packet              *delegatestore.TerminalPacket
 	endedAt             time.Time
 	exhaustionBudget    delegatestore.ExhaustionBudget

@@ -70,6 +70,12 @@ type Config struct {
 	PastResultsPerPage int              `toml:"past_results_per_page"`
 	Providers          []ProviderConfig `toml:"providers"`
 	Hosts              []HostConfig     `toml:"hosts"`
+	// Roots are the hub's own machine's project roots (hub.toml's top-level
+	// `roots`), the same shape a [[hosts]] entry's roots take. They describe
+	// the machine the hub itself runs on and are reported in ServerInfo, so a
+	// client can show the hub's own machine's roots beside a host's. Blank
+	// entries are dropped at load; an absent key means the machine has none.
+	Roots []string `toml:"roots,omitempty"`
 	// HostRecords and Generations are hub.toml's machine-managed per-host
 	// records (registry spec 08 §6's reserved-key layout). They live beside
 	// [[hosts]], never inside an entry, because they must survive a host edit:
@@ -500,6 +506,7 @@ func decodeConfig(name, data string) (Config, error) {
 		}
 	}
 	applyConfigDefaults(&cfg)
+	cfg.Roots = normalizeMachineRoots(cfg.Roots)
 	if cfg.DaemonIdleTimeout < 0 {
 		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)
 	}
@@ -600,6 +607,19 @@ var (
 	// and probe.
 	ErrHostAddr = errors.New("host addr unusable")
 )
+
+// normalizeMachineRoots trims the hub's own machine roots and drops blank
+// entries, so "no roots" has one canonical spelling (a nil slice) and a
+// padded or blank line in hub.toml's `roots` never reaches ServerInfo.
+func normalizeMachineRoots(roots []string) []string {
+	var normalized []string
+	for _, root := range roots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+	return normalized
+}
 
 // validateHostConfigs normalizes and validates the [[hosts]] list by building a
 // throwaway registry, so name grammar, duplicate names, reserved "local", the

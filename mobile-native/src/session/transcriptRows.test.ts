@@ -479,8 +479,30 @@ describe("a run's transcript reads and session searches", () => {
 describe("a run's questions", () => {
 	it("says how many questions a run asked", () => {
 		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		const asking = (id: string, headers: string[]) =>
+			step(id, "ask_user", {
+				detail: {
+					arguments: JSON.stringify({
+						questions: headers.map((header) => ({ header, question: "?", options: [{ label: "Yes", detail: "." }] })),
+					}),
+				},
+			});
+		expect(texts([asking("a", ["Deploy"])])).toEqual(["asked a question"]);
+		// Questions, not calls: one call can ask several.
+		expect(texts([asking("a", ["Deploy", "Notify"])])).toEqual(["asked 2 questions"]);
+		expect(texts([asking("a", ["Deploy"]), asking("b", ["Notify", "Tag"])])).toEqual(["asked 3 questions"]);
+		// A call whose questions don't parse, or that lists none, still asked
+		// something: parseAskUserQuestions gives no list rather than an empty one.
 		expect(texts([step("a", "ask_user")])).toEqual(["asked a question"]);
-		expect(texts([step("a", "ask_user"), step("b", "ask_user")])).toEqual(["asked 2 questions"]);
+		expect(texts([asking("a", [])])).toEqual(["asked a question"]);
+	});
+});
+
+describe("a run's job steps", () => {
+	it("says how often a run managed jobs", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "job_status")])).toEqual(["managed jobs once"]);
+		expect(texts([step("a", "job_list"), step("b", "job_stop")])).toEqual(["managed jobs 2 times"]);
 	});
 });
 

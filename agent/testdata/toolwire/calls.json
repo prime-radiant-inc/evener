@@ -9,6 +9,9 @@
     "call_find_sessions_catalog": "The project's recent sessions, with no query: the earlier session and the recording one (its id, update time and project fixed).",
     "call_glob": "A glob match: one path per match (sorted here).",
     "call_grep": "A search in a path, filtered by a glob: one path:line:text line per hit (sorted, in the native fallback's form).",
+    "call_job_list": "The session's jobs, that one running (rows in a stable order).",
+    "call_job_status": "The job the timed-out command left running, checked: its id read from that call's result, then fixed.",
+    "call_job_stop": "The same job stopped.",
     "call_list_dir": "A directory listing: one name and size per entry, then a blank line and the entry count.",
     "call_list_dir_empty": "An empty directory: the count alone.",
     "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
@@ -20,7 +23,7 @@
     "call_read_transcript_outline": "The same transcript read as an outline, whose envelope is flat.",
     "call_shell": "A command run from the session's own directory, prefixed with cd to it: the output ends with its exit code.",
     "call_shell_failed": "A command that exited 1: still a result, not an error, with [exit 1] at its end.",
-    "call_shell_timeout": "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
+    "call_shell_timeout": "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
     "call_shell_windowed": "A long output, windowed: a digest of its head and tail, then [exit 0 · output windowed — read more with read_transcript(...)] (its job id fixed, its state left off).",
     "call_task_list_add": "Three tasks added to an empty list. Its state is the whole list, each task's store-minted times fixed.",
     "call_task_list_done": "The first task done with a note; the daemon starts the next one itself, so the state shows task 2 in progress though the call never named it.",
@@ -178,13 +181,43 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_timeout",
-      "argumentsJson": "{\"command\":\"printf 'started\\\\n'; sleep 10\"}",
+      "argumentsJson": "{\"command\":\"printf 'started\\\\n'; sleep 600\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_1_14",
+      "turnId": "turn_1",
+      "toolName": "job_status",
+      "callId": "call_job_status",
+      "argumentsJson": "{\"target\":\"job_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_15",
+      "turnId": "turn_1",
+      "toolName": "job_list",
+      "callId": "call_job_list",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_16",
+      "turnId": "turn_1",
+      "toolName": "job_stop",
+      "callId": "call_job_stop",
+      "argumentsJson": "{\"target\":\"job_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_17",
       "turnId": "turn_1",
       "toolName": "read_transcript",
       "callId": "call_read_transcript",
@@ -194,7 +227,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_15",
+      "id": "item_tool_1_18",
       "turnId": "turn_1",
       "toolName": "read_transcript",
       "callId": "call_read_transcript_outline",
@@ -204,7 +237,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_16",
+      "id": "item_tool_1_19",
       "turnId": "turn_1",
       "toolName": "find_session_transcripts",
       "callId": "call_find_sessions",
@@ -214,7 +247,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_17",
+      "id": "item_tool_1_20",
       "turnId": "turn_1",
       "toolName": "find_session_transcripts",
       "callId": "call_find_sessions_catalog",
@@ -224,7 +257,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_18",
+      "id": "item_tool_1_21",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_add",
@@ -234,7 +267,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_19",
+      "id": "item_tool_1_22",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_start",
@@ -244,7 +277,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_20",
+      "id": "item_tool_1_23",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_done",
@@ -254,7 +287,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_21",
+      "id": "item_tool_1_24",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_view",
@@ -264,7 +297,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_22",
+      "id": "item_tool_1_25",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_create",
@@ -274,7 +307,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_23",
+      "id": "item_tool_1_26",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_list",
@@ -284,7 +317,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_24",
+      "id": "item_tool_1_27",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit",
@@ -294,7 +327,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_25",
+      "id": "item_tool_1_28",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch",
@@ -304,7 +337,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_26",
+      "id": "item_tool_1_29",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch_again",
@@ -314,7 +347,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_27",
+      "id": "item_tool_1_30",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
@@ -324,7 +357,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_28",
+      "id": "item_tool_1_31",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_remove",
@@ -334,7 +367,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_29",
+      "id": "item_tool_1_32",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
@@ -344,7 +377,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_30",
+      "id": "item_tool_1_33",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_adopt",
@@ -354,7 +387,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_31",
+      "id": "item_tool_1_34",
       "turnId": "turn_1",
       "toolName": "ask_user",
       "callId": "call_ask_user",
@@ -364,7 +397,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_32",
+      "id": "item_tool_1_35",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -374,7 +407,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_33",
+      "id": "item_tool_1_36",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -384,7 +417,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_34",
+      "id": "item_tool_1_37",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -394,7 +427,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_35",
+      "id": "item_tool_1_38",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -404,7 +437,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_36",
+      "id": "item_tool_1_39",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -414,7 +447,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_37",
+      "id": "item_tool_1_40",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -573,7 +606,7 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_windowed",
-      "output": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n151\n152\n153\n154\n155\n…[12.6 KB elided — read more with read_transcript using the returned job transcript_ref]…\n2899\n2900\n2901\n2902\n2903\n2904\n2905\n2906\n2907\n2908\n2909\n2910\n2911\n2912\n2913\n2914\n2915\n2916\n2917\n2918\n2919\n2920\n2921\n2922\n2923\n2924\n2925\n2926\n2927\n2928\n2929\n2930\n2931\n2932\n2933\n2934\n2935\n2936\n2937\n2938\n2939\n2940\n2941\n2942\n2943\n2944\n2945\n2946\n2947\n2948\n2949\n2950\n2951\n2952\n2953\n2954\n2955\n2956\n2957\n2958\n2959\n2960\n2961\n2962\n2963\n2964\n2965\n2966\n2967\n2968\n2969\n2970\n2971\n2972\n2973\n2974\n2975\n2976\n2977\n2978\n2979\n2980\n2981\n2982\n2983\n2984\n2985\n2986\n2987\n2988\n2989\n2990\n2991\n2992\n2993\n2994\n2995\n2996\n2997\n2998\n2999\n3000\n[exit 0 · output windowed — read more with read_transcript(transcript_ref=\"job:job_fixture\")]",
+      "output": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n151\n152\n153\n154\n155\n…[12.6 KB elided — read more with read_transcript using the returned job transcript_ref]…\n2899\n2900\n2901\n2902\n2903\n2904\n2905\n2906\n2907\n2908\n2909\n2910\n2911\n2912\n2913\n2914\n2915\n2916\n2917\n2918\n2919\n2920\n2921\n2922\n2923\n2924\n2925\n2926\n2927\n2928\n2929\n2930\n2931\n2932\n2933\n2934\n2935\n2936\n2937\n2938\n2939\n2940\n2941\n2942\n2943\n2944\n2945\n2946\n2947\n2948\n2949\n2950\n2951\n2952\n2953\n2954\n2955\n2956\n2957\n2958\n2959\n2960\n2961\n2962\n2963\n2964\n2965\n2966\n2967\n2968\n2969\n2970\n2971\n2972\n2973\n2974\n2975\n2976\n2977\n2978\n2979\n2980\n2981\n2982\n2983\n2984\n2985\n2986\n2987\n2988\n2989\n2990\n2991\n2992\n2993\n2994\n2995\n2996\n2997\n2998\n2999\n3000\n[exit 0 · output windowed — read more with read_transcript(transcript_ref=\"job:job_fixture_2\")]",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -583,13 +616,43 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_timeout",
-      "output": "started\n\u003csystem-reminder\u003eThis job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly.\u003c/system-reminder\u003e [the foreground wait ended after 2s, not the command · output accumulates durably; read it with read_transcript(transcript_ref=\"job:job_fixture\") · completion arrives by notification — do not relaunch or poll · still running as job_fixture]",
+      "output": "started\n\u003csystem-reminder\u003eThis job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly.\u003c/system-reminder\u003e [the foreground wait ended after 2s, not the command · output accumulates durably; read it with read_transcript(transcript_ref=\"job:job_fixture_1\") · completion arrives by notification — do not relaunch or poll · still running as job_fixture_1]",
       "status": "completed",
       "completedAt": 1790625602000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_result_2_14",
+      "turnId": "turn_1",
+      "toolName": "job_status",
+      "callId": "call_job_status",
+      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; sleep 600\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_15",
+      "turnId": "turn_1",
+      "toolName": "job_list",
+      "callId": "call_job_list",
+      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_16",
+      "turnId": "turn_1",
+      "toolName": "job_stop",
+      "callId": "call_job_stop",
+      "output": "[shell job_fixture_1 · cancelled · cancelled_by_request · stopped_by_parent]",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_17",
       "turnId": "turn_1",
       "toolName": "read_transcript",
       "callId": "call_read_transcript",
@@ -599,7 +662,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_15",
+      "id": "item_tool_result_2_18",
       "turnId": "turn_1",
       "toolName": "read_transcript",
       "callId": "call_read_transcript_outline",
@@ -609,7 +672,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_16",
+      "id": "item_tool_result_2_19",
       "turnId": "turn_1",
       "toolName": "find_session_transcripts",
       "callId": "call_find_sessions",
@@ -619,7 +682,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_17",
+      "id": "item_tool_result_2_20",
       "turnId": "turn_1",
       "toolName": "find_session_transcripts",
       "callId": "call_find_sessions_catalog",
@@ -629,7 +692,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_18",
+      "id": "item_tool_result_2_21",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_add",
@@ -668,7 +731,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_19",
+      "id": "item_tool_result_2_22",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_start",
@@ -708,7 +771,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_20",
+      "id": "item_tool_result_2_23",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_done",
@@ -753,7 +816,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_21",
+      "id": "item_tool_result_2_24",
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_view",
@@ -796,7 +859,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_22",
+      "id": "item_tool_result_2_25",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_create",
@@ -806,7 +869,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_23",
+      "id": "item_tool_result_2_26",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_list",
@@ -816,7 +879,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_24",
+      "id": "item_tool_result_2_27",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit",
@@ -826,7 +889,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_25",
+      "id": "item_tool_result_2_28",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch",
@@ -836,7 +899,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_26",
+      "id": "item_tool_result_2_29",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch_again",
@@ -846,7 +909,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_27",
+      "id": "item_tool_result_2_30",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
@@ -856,7 +919,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_28",
+      "id": "item_tool_result_2_31",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_remove",
@@ -866,7 +929,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_29",
+      "id": "item_tool_result_2_32",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
@@ -876,7 +939,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_30",
+      "id": "item_tool_result_2_33",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_adopt",
@@ -886,7 +949,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_31",
+      "id": "item_tool_result_2_34",
       "turnId": "turn_1",
       "toolName": "ask_user",
       "callId": "call_ask_user",
@@ -896,7 +959,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_32",
+      "id": "item_tool_result_2_35",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -906,7 +969,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_33",
+      "id": "item_tool_result_2_36",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -916,7 +979,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_34",
+      "id": "item_tool_result_2_37",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -926,7 +989,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_35",
+      "id": "item_tool_result_2_38",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -936,7 +999,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_36",
+      "id": "item_tool_result_2_39",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -946,7 +1009,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_37",
+      "id": "item_tool_result_2_40",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
