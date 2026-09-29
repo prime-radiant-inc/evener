@@ -3080,8 +3080,9 @@ describe("ConversationStore", () => {
 			expect(store.getState().trimmedAbove).toBe(false);
 		});
 
-		// A status frame carries the daemon's capability set, which never names
-		// pageBefore; the hub's answer on the read stands.
+		// A daemon's status frame names no pageBefore (the hub stamps the frames
+		// it relays, and the service keeps that); the store takes the hub's
+		// answer from reads alone, so such a frame leaves trimming on.
 		it("keeps trimming after a status frame that doesn't name pageBefore", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
@@ -3092,9 +3093,36 @@ describe("ConversationStore", () => {
 				method: "thread/status/changed",
 				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" }, capabilities: daemonCaps },
 			} as unknown as AnyNotification);
+			// Read above, page the trimmed rows back, and return: the window
+			// trims again.
 			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			expect(store.getState().conversation?.items).toHaveLength(600);
 			store.getState().setFollowingLiveEnd(true);
 			expect(store.getState().conversation?.items).toHaveLength(500);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-100");
+		});
+
+		// A read of the same instance from a hub that no longer pages from a
+		// before position (a hub downgraded under a running daemon) can't bring
+		// the trimmed rows back, so the store asks it for nothing above them.
+		it("asks for no page above a trim once a read stops saying pageBefore", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			expect(store.getState().trimmedAbove).toBe(true);
+			service.openConv = makeConversation({
+				items: positionedRows(0, 600),
+				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
+			});
+			await store.getState().rehydrate(service, sink);
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
+			expect(service.olderRequests).toEqual([]);
 		});
 
 		// Back at the end while an older page is in flight: the trim drops the

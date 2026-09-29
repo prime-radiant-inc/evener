@@ -1108,6 +1108,72 @@ describe("ConversationService", () => {
 			expect(client.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 		});
 
+		// The hub stamps pageBefore on the status frames it relays as well as on
+		// reads, so a push that races the read keeps the hub's answer.
+		it.each([
+			["a hub that pages before", { pageBefore: true }, true],
+			["a hub that says it doesn't", { pageBefore: false }, false],
+			["a hub that never says", {}, undefined],
+		] as const)("keeps pageBefore from a push during rehydration, from %s", async (_hub, stamp, expected) => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			let resolve!: (response: ThreadReadResponse) => void;
+			client.on(
+				"thread/read",
+				() =>
+					new Promise<ThreadReadResponse>((done) => {
+						resolve = done;
+					}),
+			);
+			const hydration = service.readProjection("ref-1");
+			await Promise.resolve();
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, ...stamp },
+				},
+			});
+			resolve(
+				makeReadResponse(
+					makeThread({
+						evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS, ...stamp }, queue: { revision: 0 } },
+					}),
+				),
+			);
+			const hydrated = await hydration;
+			expect(hydrated.conversation.capabilities.pageBefore).toBe(expected);
+		});
+
+		it("refuses a push whose pageBefore isn't a boolean", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, send: false, pageBefore: "yes" } as unknown as ThreadCapabilities,
+				},
+			});
+			// The malformed push changed nothing: send is still allowed.
+			client.on(
+				"turn/start",
+				() =>
+					({
+						turn: { id: "t1", itemsView: "default", status: "running" },
+						receipt: makeReceipt(),
+					}) as TurnStartResponse,
+			);
+			await service.send(textInput("hello"));
+			expect(client.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
+		});
+
 		it("uses the active capability set for mutations and rejects other thread updates", async () => {
 			const { client, service } = setup({
 				thread: makeThread({

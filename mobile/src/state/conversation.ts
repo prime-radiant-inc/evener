@@ -937,10 +937,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	let followingLiveEnd = true;
 	// Whether the last read said the hub pages this thread from a before
 	// position (ThreadCapabilities.pageBefore). Taken from reads only: a status
-	// frame replaces the capability set with the daemon's, which never names
-	// it. A hub that doesn't say so (an older hub, or a thread on another host
-	// until #3176) keeps every row, since trimmed rows couldn't come back: a
-	// memory trade-off that lasts until it does.
+	// frame straight from a daemon names no pageBefore. A hub that doesn't say
+	// so (an older hub, or a thread on another host until #3176) keeps every
+	// row, since trimmed rows couldn't come back: a memory trade-off that lasts
+	// until it does.
 	let pagesBefore = false;
 	function adoptRead(conversation: MobileConversation): void {
 		pagesBefore = conversation.capabilities?.pageBefore === true;
@@ -2391,8 +2391,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Older history is above: past the cursor, or trimmed from the top by
 				// the cap, when the page names the oldest row kept (thread/turns/list's
 				// before), rebasing the cursor when there is one.
+				// A hub that has stopped paging from a before position since the trim
+				// can't bring those rows back, so nothing above them is asked for.
 				const cursor = state.olderCursor;
 				const before = trimBoundary(state);
+				if (before !== undefined && !pagesBefore) return { status: "ignored" };
 				if (cursor === null && before === undefined) return { status: "ignored" };
 				const gen = state.conversationGeneration;
 				// C1: Capture a service-specific operation binding. If the supplied

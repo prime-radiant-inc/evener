@@ -274,6 +274,15 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 		}
 		caps.sharedNotes = sharedNotes;
 	}
+	// The hub stamps pageBefore on reads and on the status frames it relays; a
+	// hub that predates it omits it, which leaves it absent (no paging before).
+	const pageBefore = obj.pageBefore;
+	if (pageBefore !== undefined) {
+		if (typeof pageBefore !== "boolean") {
+			throw new Error(`ConversationService: capability "pageBefore" is not a boolean`);
+		}
+		caps.pageBefore = pageBefore;
+	}
 	return caps;
 }
 
