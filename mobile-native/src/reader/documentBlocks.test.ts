@@ -143,6 +143,7 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 	expect(paragraph?.text).toBe("Some bold text and a Vec<String> span.");
 	expect(documentBlocks("a<br>b")[0]?.text).toBe("ab");
 	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See <https://x.test> too.");
+	expect(documentBlocks('Tags like <span title="a > b">value</span> go.')[0]?.text).toBe("Tags like value go.");
 });
 
 it("hashes the same text the same way every time, and different text differently", () => {

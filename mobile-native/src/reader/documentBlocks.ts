@@ -31,9 +31,9 @@ const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const SETEXT_UNDERLINE = /\n[ \t]*(?:=+|-+)[ \t]*$/;
 // An inline code span or an inline HTML tag, so stripping a tag can't take the
 // angle brackets a code span holds: `Vec<String>` survives, `<b>` doesn't. The
-// tag needs its name/attribute boundary (`\s`, `/` or `>`) so a bare autolink
-// like `<https://x>` isn't mistaken for one.
-const INLINE_CODE_OR_TAG = /`([^`]+)`|<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?\/?>/gi;
+// tag's name needs a `\s`, `/` or `>` boundary, so a bare autolink like
+// `<https://x>` isn't mistaken for one, and a quoted attribute may hold a `>`.
+const INLINE_CODE_OR_TAG = /`([^`]+)`|<\/?[a-z][a-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\/?>/gi;
 
 /** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
  * document's scale; stability across launches does. */
