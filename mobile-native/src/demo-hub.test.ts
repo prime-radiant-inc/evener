@@ -475,6 +475,46 @@ describe("native demonstration hub's redesign fleet", () => {
 		}
 	});
 
+	it("stays up when a client leaves while its start is held", async () => {
+		const hub = await createDemoHub(0, undefined, {}, { startDelaySeconds: 0.2 });
+		const first = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const second = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await first.connect();
+			void first.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" }).catch(() => {});
+			first.close();
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			// The hub still answers another client after the held reply's moment passed.
+			await second.connect();
+			expect(await second.request("evener/projects/recent", {})).toBeDefined();
+		} finally {
+			second.close();
+			await hub.close();
+		}
+	});
+
+	it("answers thread/start late with startDelaySeconds, so the sheet can be swiped away first", async () => {
+		const hub = await createDemoHub(0, undefined, {}, { startDelaySeconds: 0.3 });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const began = Date.now();
+			const order: string[] = [];
+			const starting = client
+				.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" })
+				.then((started) => (order.push("start"), started));
+			// Every other method answers while the start is still held.
+			await client.request("evener/projects/recent", {}).then(() => order.push("recent"));
+			const started = await starting;
+			expect(order).toEqual(["recent", "start"]);
+			expect(Date.now() - began).toBeGreaterThanOrEqual(300);
+			expect(started.thread.evener.ref).toBe("demo:created-1");
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("marks paradise-park's manifest source offline when the fleet starts with offlineHost", async () => {
 		const hub = await createDemoHub(0, undefined, { offlineHost: true });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);

@@ -33,6 +33,7 @@ import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
 import {
+  createPagedOpenSettleTracker,
   createTranscriptSettleTracker,
   describeTranscriptSettleBlocker,
   SETTLE_OVERFLOW_FACTOR,
@@ -349,30 +350,18 @@ const SETTLE_TRIPWIRE_MS = 15_000;
 // mount's own settle and stranding the reader, so this wait cannot assume
 // "the mount landed, that's the end of it" - it has to let any auto-loaded
 // page land and the virtualizer's reconcile finish before it reads the
-// result.
-const PAGED_QUIESCENT_FRAMES = 20;
+// result. Notably ABSENT is the paging row: the regression this pass guards
+// against clears olderCursor and unmounts the row, so waiting on it would spin
+// to the tripwire and report a settle timeout instead of the runner's own
+// "auto-loaded N older page(s)" failure (see createPagedOpenSettleTracker).
 async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
-  let lastHeight = Number.NaN;
-  let lastTop = Number.NaN;
-  let lastTurns = Number.NaN;
-  let quiet = 0;
+  const tracker = createPagedOpenSettleTracker(INITIAL_TURN_COUNT);
   const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
     const m = metrics();
-    // Not ready until the fixture's page has hydrated AND its paging row is
-    // mounted: before that every geometry value is 0 and holds still, so a
-    // quiescence run would "settle" on an empty page and the runner would read
-    // the open as correct without the shape this pass exists for ever
-    // rendering.
-    const ready = m.turns >= INITIAL_TURN_COUNT && m.pagingRow;
-    const standing = ready && m.scrollHeight === lastHeight && m.scrollTop === lastTop && m.turns === lastTurns;
-    lastHeight = m.scrollHeight;
-    lastTop = m.scrollTop;
-    lastTurns = m.turns;
-    quiet = standing ? quiet + 1 : 0;
-    if (quiet >= PAGED_QUIESCENT_FRAMES) return m;
+    if (tracker.observe({ turns: m.turns, geometry: m })) return m;
     if (performance.now() > deadline) {
       throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(m)}`);
     }
