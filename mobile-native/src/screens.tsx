@@ -868,9 +868,14 @@ export function ConversationScreen({
 	}, [focused]);
 	const conversation = snapshot.conversation;
 	// A subagent's screen times its run as its Subagents row does, from the
-	// row its panel reads (one number per subagent everywhere).
+	// row its panel reads (one number per subagent everywhere). An ended row
+	// times how long ago it ended, which is no Working time, so a session still
+	// winding down times its turn instead.
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
-	const runMs = useCallback((now: number) => (subagentRow ? timeInState(subagentRow, now) : null), [subagentRow]);
+	const runMs = useCallback(
+		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
+		[subagentRow],
+	);
 	// How tall the toast, Next and "↓ new" stand over the transcript's end.
 	const [floatingHeight, setFloatingHeight] = useState(0);
 	const now = Date.now();

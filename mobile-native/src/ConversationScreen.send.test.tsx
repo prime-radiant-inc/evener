@@ -2524,6 +2524,22 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
 	});
 
+	it("times a still-working subagent by its turn once its row has ended", async () => {
+		// The row reads done a moment before the session itself stops: the row's
+		// time since it ended is no Working time.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served, {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 2m");
+	});
+
 	it("takes back the row it reported when its panel goes away", async () => {
 		// A screen that stops showing the panel shows no subagent's time.
 		await mountSubagent(subagent(true));
