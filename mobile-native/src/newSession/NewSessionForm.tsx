@@ -23,6 +23,7 @@ import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../../../mobile/src/services/newSession";
+import { creationForgotten } from "./creations";
 import { effortLabel, knownAccess, projectName } from "./launchSetup";
 import { type NewSessionRoutes, type NewSessionStore, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
@@ -110,6 +111,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		const submittedClient = latest.current.client;
 		const setup = startedSetup(store.getState());
 		const outcome = await store.getState().submit();
+		// A removed hub's start has no one left to tell.
+		if (creationForgotten(store)) return;
 		// The form in front now: this one, or a sheet reopened while the start was on its way.
 		const front = fronts.get(store);
 		const inFront =

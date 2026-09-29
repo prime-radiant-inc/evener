@@ -13,11 +13,16 @@ import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
+import { creationStore, forgetCreationForHub } from "./creations";
 import { NewSessionForm } from "./NewSessionForm";
 import type { NewSessionRoutes } from "./newSessionContext";
 import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
+// The hub's creation store reads its draft through nativeDrafts; a test that
+// takes the hub's own store (creations.ts) points it at the test's drafts.
+const hubDrafts = vi.hoisted(() => ({ creation: null as unknown }));
+vi.mock("../nativeDrafts", () => ({ nativeDrafts: () => ({ creation: hubDrafts.creation }) }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
@@ -65,6 +70,9 @@ interface Options {
 	refuseModels?: boolean;
 	/** thread/start waits for the test's releaseStart. */
 	holdStart?: boolean;
+	/** The form shows the hub's own creation store (creations.ts), as the
+	 * sheet gives it, rather than one made for the test. */
+	hubStore?: boolean;
 	/** How often the form's hosts controller reads the hub's hosts. */
 	hostPollMs?: number;
 	/** How evener/plugin/preview answers; no plugins when absent, a refusal
@@ -128,11 +136,14 @@ async function mount(options: Options = {}) {
 			unconfirmed: false,
 			...options.draft,
 		});
-	const store = createNewSessionStore("hub-1", () => ({
+	const repository = {
 		read: (hubId: string) => drafts.get(hubId) ?? null,
 		write: (hubId: string, draft: CreationDraft) => void drafts.set(hubId, structuredClone(draft)),
 		clear: (hubId: string) => void drafts.delete(hubId),
-	}));
+	};
+	hubDrafts.creation = repository;
+	if (options.hubStore) forgetCreationForHub("hub-1");
+	const store = options.hubStore ? creationStore("hub-1") : createNewSessionStore("hub-1", () => repository);
 	store.getState().bind(createNewSessionService(client as never));
 	void store.getState().loadMetadata();
 	void store.getState().loadModels(true);
@@ -780,4 +791,16 @@ it("says a start the connection lost after its sheet closed may exist (#3104)", 
 		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true },
 	]);
 	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
+});
+
+it("raises nothing for a start whose hub was removed while it was on its way (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true, hubStore: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// The hub is removed: its store goes, unbound, so the start comes back obsolete.
+	await act(async () => forgetCreationForHub("hub-1"));
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
 });
