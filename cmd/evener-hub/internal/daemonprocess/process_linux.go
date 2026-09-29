@@ -83,15 +83,7 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, p.inspectionError(err)
 	}
-	end := bytes.LastIndexByte(raw, ')')
-	if end < 0 {
-		return identity{}, errors.New("malformed process stat")
-	}
-	fields := strings.Fields(string(raw[end+1:]))
-	if len(fields) < 20 {
-		return identity{}, errors.New("incomplete process stat")
-	}
-	ticks, err := strconv.ParseUint(fields[19], 10, 64)
+	ticks, exiting, err := linuxStatFacts(raw)
 	if err != nil {
 		return identity{}, err
 	}
@@ -118,9 +110,14 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, p.inspectionError(err)
 	}
-	owns, err := linuxOwnsLog(root, t)
-	if err != nil {
-		return identity{}, p.inspectionError(err)
+	// A retiring daemon mid-exit is closing its files, so its descriptors
+	// are no evidence, and a retiring target doesn't need log ownership.
+	owns := false
+	if !exiting || !t.Retiring {
+		owns, err = linuxOwnsLog(root, t)
+		if err != nil {
+			return identity{}, p.inspectionError(err)
+		}
 	}
 	gone, err = p.exited()
 	if err != nil {
@@ -129,7 +126,35 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if gone {
 		return identity{}, ErrExited
 	}
-	return identity{generation: fields[19], uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns}, nil
+	return identity{generation: strconv.FormatUint(ticks, 10), uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns, exiting: exiting}, nil
+}
+
+// linuxPFExiting is the kernel's PF_EXITING task flag: set when a process
+// begins exiting, before its pidfd polls readable.
+const linuxPFExiting = 0x4
+
+// linuxStatFacts reads a process's start time in clock ticks (field 22) and
+// whether it has begun exiting (PF_EXITING in field 9) from one
+// /proc/<pid>/stat read. Fields count from the last ')', since the command
+// field may hold spaces and parentheses.
+func linuxStatFacts(raw []byte) (ticks uint64, exiting bool, err error) {
+	end := bytes.LastIndexByte(raw, ')')
+	if end < 0 {
+		return 0, false, errors.New("malformed process stat")
+	}
+	fields := strings.Fields(string(raw[end+1:]))
+	if len(fields) < 20 {
+		return 0, false, errors.New("incomplete process stat")
+	}
+	flags, err := strconv.ParseUint(fields[6], 10, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	ticks, err = strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	return ticks, flags&linuxPFExiting != 0, nil
 }
 func (p *linuxProcess) inspectionError(err error) error {
 	if gone, e := p.exited(); e == nil && gone {
@@ -164,6 +189,11 @@ func linuxOwnsLog(root string, t Target) (bool, error) {
 		}
 		evidence, err := os.ReadFile(filepath.Join(root, "fdinfo", entry.Name()))
 		if err != nil {
+			// The descriptor closed after the directory was read, as the
+			// Stat above allows.
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
 			return false, err
 		}
 		if linuxOwnsLock(evidence, t.PID, expected.Dev, expected.Ino) {
