@@ -1,5 +1,5 @@
 {
-  "note": "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate receipt comes from the tool's own marshaller; the other outputs are hand-written text.",
+  "note": "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real, the delegate still running when the send steered it (its id, its child session's id and the state directory fixed); the shell and task_list outputs are hand-written text.",
   "items": [
     {
       "type": "commandExecution",
@@ -7,7 +7,7 @@
       "turnId": "turn_1",
       "toolName": "delegate",
       "callId": "call_delegate_1",
-      "argumentsJson": "{\"intent\":\"Fix race in tree settle\",\"name\":\"Fix race in tree settle\",\"task\":\"Find and fix the race between tree settle and the drain.\"}",
+      "argumentsJson": "{\"intent\":\"Fix race in tree settle\",\"name\":\"settle-race\",\"prompt\":\"Find and fix the race between tree settle and the drain.\"}",
       "description": "Fix race in tree settle",
       "status": "inProgress",
       "startedAt": 1790625600000
@@ -18,7 +18,7 @@
       "turnId": "turn_1",
       "toolName": "delegate_send",
       "callId": "call_send_1",
-      "argumentsJson": "{\"delegate_id\":\"dlg_1\",\"intent\":\"Tell it to check drain ordering\",\"message\":\"Also check drain ordering.\"}",
+      "argumentsJson": "{\"intent\":\"Tell it to check drain ordering\",\"message\":\"Also check drain ordering.\",\"to\":\"dlg_02wMz5TxvSettleRace001\"}",
       "description": "Tell it to check drain ordering",
       "status": "inProgress",
       "startedAt": 1790625600000
@@ -50,7 +50,7 @@
       "turnId": "turn_1",
       "toolName": "delegate",
       "callId": "call_delegate_1",
-      "output": "{\"delegate_id\":\"dlg_1\",\"child_session_id\":\"child1\",\"type\":\"delegate\",\"status\":\"running\",\"name\":\"Fix race in tree settle\",\"agent_type\":\"general-purpose\",\"transcript_ref\":\"local:child1\"}",
+      "output": "{\"delegate_id\":\"dlg_02wMz5TxvSettleRace001\",\"child_session_id\":\"02wMz5TxvChildSession1\",\"type\":\"delegate\",\"status\":\"running\",\"name\":\"settle-race\",\"agent_type\":\"default\",\"tools\":[\"apply_patch\",\"communicate\",\"compact_context\",\"delegate\",\"delegate_send\",\"doctor_evener\",\"edit_file\",\"find_session_transcripts\",\"glob\",\"grep\",\"job_list\",\"job_status\",\"job_stop\",\"job_watch\",\"list_dir\",\"manage_worktree\",\"model_list\",\"notes_agent_set\",\"notes_read\",\"read_file\",\"read_transcript\",\"shell\",\"task_list\",\"update_goal\",\"urls_add\",\"urls_remove\",\"use_skill\",\"web_fetch\",\"write_file\"],\"resumable\":true,\"transcript_ref\":\"local:02wMz5TxvChildSession1\",\"model\":\"openai/gpt-5.2\",\"artifacts_dir\":\"/home/jesse/.local/state/evener/sessions/02wMz5TxvChildSession1/artifacts\"}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -60,9 +60,17 @@
       "turnId": "turn_1",
       "toolName": "delegate_send",
       "callId": "call_send_1",
-      "output": "{\"delegate_id\":\"dlg_1\",\"type\":\"delegate\",\"status\":\"running\"}",
+      "output": "[delegate_id dlg_02wMz5TxvSettleRace001 · steered · running · running in background]",
       "status": "completed",
-      "completedAt": 1790625602000
+      "completedAt": 1790625602000,
+      "raw": {
+        "delegate_id": "dlg_02wMz5TxvSettleRace001",
+        "type": "delegate",
+        "status": "running",
+        "running_in_background": true,
+        "action": "steered",
+        "name": "settle-race"
+      }
     },
     {
       "type": "commandExecution",
