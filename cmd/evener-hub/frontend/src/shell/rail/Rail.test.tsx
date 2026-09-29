@@ -23,7 +23,12 @@ import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } 
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
+import {
+  archivedListKey,
+  archivedListStore,
+  refreshLoadedArchivedLists,
+  resetArchivedListStoreForTests,
+} from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -3103,6 +3108,27 @@ describe("archived rows come from evener/archived/list", () => {
     installList([archivedRow(0), archivedRow(1)], 2);
     render(<Rail />, client);
     await waitFor(() => expect(seen).toHaveLength(1));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list an action already refreshed is not refetched when the navigation count catches up", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await act(async () => {
+      await refreshLoadedArchivedLists();
+    });
+    expect(seen).toHaveLength(1);
+    act(() => installState([archivedCatalog(3), project]));
     for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
     expect(seen).toHaveLength(1);
   });

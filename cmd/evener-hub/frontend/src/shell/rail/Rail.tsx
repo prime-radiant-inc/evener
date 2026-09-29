@@ -1263,25 +1263,26 @@ function NavigationRail({
       loadProjectRoot(project.key);
     }
   }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
-  // A hydrated project with archived sessions loads its archived list, and a
-  // loaded list refetches when the navigation count moves from the count it
-  // was fetched against: rows were archived or unarchived elsewhere (another
-  // client, the CLI, age). Comparing with the list's own total instead would
-  // refetch without end while the two counts disagree.
-  const archivedFetchCounts = useRef(new Map<string, number>());
+  // A hydrated project with archived sessions loads its archived list. A
+  // loaded list refetches when the navigation count moves to a total the list
+  // does not hold: rows were archived or unarchived elsewhere (another client,
+  // the CLI, age). Reacting only to a move keeps two counts that disagree from
+  // refetching without end, and a list an action already refreshed holds the
+  // new total, so it is not fetched twice.
+  const archivedCountsSeen = useRef(new Map<string, number>());
   useEffect(() => {
     for (const project of allRailProjects(resources)) {
       if (!project.loaded || !project.catalog) continue;
       const total = project.archived_total ?? 0;
       const key = archivedListKey(project.catalog, project.key);
+      const countMoved = archivedCountsSeen.current.get(key) !== total;
+      archivedCountsSeen.current.set(key, total);
       const list = archivedLists[key];
-      // A list this rail did not fetch (another rail, a test) was fetched
-      // against its own first total.
-      if (list && !archivedFetchCounts.current.has(key)) archivedFetchCounts.current.set(key, list.total);
-      const fetchedAt = archivedFetchCounts.current.get(key);
-      if (fetchedAt === undefined ? total === 0 : fetchedAt === total) continue;
-      archivedFetchCounts.current.set(key, total);
-      void refreshArchivedList(project.catalog, project.key);
+      if (!list) {
+        if (total > 0) void refreshArchivedList(project.catalog, project.key);
+      } else if (countMoved && !list.loading && list.total !== total) {
+        void refreshArchivedList(project.catalog, project.key);
+      }
     }
   }, [resources, archivedLists]);
   useEffect(() => {
