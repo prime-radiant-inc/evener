@@ -18,7 +18,7 @@ export function detectSessionAlerts(
 	previous: SessionStates | null,
 	bands: LiveBands,
 	offlineRefs: ReadonlySet<string>,
-): { alerts: SessionAlert[]; states: Map<string, BoardState> } {
+): { alerts: SessionAlert[]; resolved: string[]; states: Map<string, BoardState> } {
 	const states = new Map<string, BoardState>();
 	// A row on an unreachable host keeps what it last said, so the host coming
 	// back is not news about the session (ruling 3).
@@ -45,7 +45,17 @@ export function detectSessionAlerts(
 		else if (item.state === "finished" && before === "working")
 			alerts.push({ kind: "finished", ref, title, why: null });
 	}
-	return { alerts, states };
+	// A session that needed you and no longer does, answered here or
+	// elsewhere, has nothing left to alert about. The Needs you section is
+	// complete, so one missing from every band stopped needing you too; an
+	// offline row kept its state above.
+	const resolved =
+		previous === null
+			? []
+			: [...previous]
+					.filter(([ref, before]) => NEEDS_YOU.has(before) && !NEEDS_YOU.has(states.get(ref) ?? "idle"))
+					.map(([ref]) => ref);
+	return { alerts, resolved, states };
 }
 
 // A broken plugin never alerts: the Board checks plugins only while it is on
@@ -64,13 +74,14 @@ export function detectNoticeAlerts(
 	return { alerts, keys };
 }
 
-/** Feeds the alert center from successive reads. Sessions and notices keep
- * separate baselines because they load separately. */
+/** Feeds the alert center from successive reads, and retracts a session's
+ * alert once it stops needing you. Sessions and notices keep separate
+ * baselines because they load separately. */
 export class AlertFeed {
 	private sessions: SessionStates | null = null;
 	private notices: ReadonlySet<string> | null = null;
 
-	constructor(private readonly center: Pick<AlertCenter, "offer">) {}
+	constructor(private readonly center: Pick<AlertCenter, "offer" | "retract">) {}
 
 	/** A new client (ruling 2): its first reads are baselines again. */
 	rebaseline(): void {
@@ -81,6 +92,7 @@ export class AlertFeed {
 	observeSessions(bands: LiveBands, offlineRefs: ReadonlySet<string>): void {
 		const detected = detectSessionAlerts(this.sessions, bands, offlineRefs);
 		this.sessions = detected.states;
+		for (const ref of detected.resolved) this.center.retract(ref);
 		for (const alert of detected.alerts) this.center.offer(alert);
 	}
 

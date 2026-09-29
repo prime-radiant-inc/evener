@@ -151,9 +151,25 @@ describe("notice alerts (ruling 5)", () => {
 });
 
 describe("the feed", () => {
+	it("retracts a session's alert once it stops needing you", () => {
+		const offered: Alert[] = [];
+		const retracted: string[] = [];
+		const feed = new AlertFeed({ offer: (alert) => offered.push(alert), retract: (ref) => retracted.push(ref) });
+		feed.observeSessions(bands([row("a", { state: "active" })]), none);
+		feed.observeSessions(bands([row("a", { state: "awaiting", ask_pending: true })]), none);
+		expect(retracted).toEqual([]);
+		// Answered elsewhere: it goes back to work.
+		feed.observeSessions(bands([row("a", { state: "active" })]), none);
+		expect(retracted).toEqual(["a"]);
+		// A host going away keeps its last state, so it retracts nothing.
+		feed.observeSessions(bands([row("a", { state: "awaiting", ask_pending: true })]), none);
+		feed.observeSessions(bands([row("a", { state: "awaiting", ask_pending: true, offline: true })]), new Set(["a"]));
+		expect(retracted).toEqual(["a"]);
+	});
+
 	it("keeps separate baselines for sessions and notices, and starts over for a new client", () => {
 		const offered: Alert[] = [];
-		const feed = new AlertFeed({ offer: (alert) => offered.push(alert) });
+		const feed = new AlertFeed({ offer: (alert) => offered.push(alert), retract: () => {} });
 		feed.observeSessions(bands([row("a", { state: "active" })]), none);
 		feed.observeNotices([hostDown]);
 		feed.observeSessions(bands([row("a", { state: "errored" })]), none);

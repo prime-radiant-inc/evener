@@ -155,18 +155,17 @@ export class AlertCenter {
 		const about = (alert: Alert) =>
 			screen.kind === "board" ? alert.kind === "notice" : alert.kind !== "notice" && alert.ref === screen.ref;
 		const recent = screen.kind === "session" ? this.recent.filter((ref) => ref !== screen.ref) : this.recent;
-		const held = this.held.filter((alert) => !about(alert));
-		const shown = this.banner?.alerts ?? [];
-		const kept = shown.filter((alert) => !about(alert));
-		if (recent.length === this.recent.length && held.length === this.held.length && kept.length === shown.length)
-			return;
+		const dropped = this.dropAlerts(about);
+		if (!dropped && recent.length === this.recent.length) return;
 		this.recent = recent;
-		this.held = held;
-		if (this.banner !== null) {
-			if (kept.length === 0) this.stopBanner();
-			else this.banner = { id: this.banner.id, alerts: kept };
-		}
 		this.publish();
+	}
+
+	/** A session stopped needing you (the feed saw it leave Needs you): an
+	 * alert about it that waits or still shows would be stale news, so it
+	 * goes. The recent order stays; Next reads who needs you now. */
+	retract(ref: string): void {
+		if (this.dropAlerts((alert) => alert.kind !== "notice" && alert.ref === ref)) this.publish();
 	}
 
 	setPreferences(preferences: AlertPreferences): void {
@@ -231,6 +230,22 @@ export class AlertCenter {
 		this.recent = [];
 		this.screen = { kind: "other" };
 		this.publish();
+	}
+
+	/** Takes the alerts `about` matches out of the held ones and the banner,
+	 * keeping the banner's id while anything is left on it; says whether
+	 * anything went. */
+	private dropAlerts(about: (alert: Alert) => boolean): boolean {
+		const held = this.held.filter((alert) => !about(alert));
+		const shown = this.banner?.alerts ?? [];
+		const kept = shown.filter((alert) => !about(alert));
+		if (held.length === this.held.length && kept.length === shown.length) return false;
+		this.held = held;
+		if (this.banner !== null) {
+			if (kept.length === 0) this.stopBanner();
+			else this.banner = { id: this.banner.id, alerts: kept };
+		}
+		return true;
 	}
 
 	private wanted(alert: Alert): boolean {

@@ -324,6 +324,40 @@ describe("held while you read or type (spec 13.3)", () => {
 	});
 });
 
+describe("a session that stops needing you", () => {
+	it("drops its held alert, so nothing stale drops in when you leave", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer(session("a"));
+		alerts.offer(session("b"));
+		alerts.retract("a");
+		expect(alerts.getSnapshot().held).toBe(1);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["b"]);
+	});
+
+	it("leaves a banner still up, or takes it down when it was the only one", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(session("b"));
+		const id = alerts.getSnapshot().banner?.id;
+		alerts.retract("a");
+		expect(shown(alerts)).toEqual(["b"]);
+		expect(alerts.getSnapshot().banner?.id).toBe(id);
+		alerts.retract("b");
+		expect(alerts.getSnapshot().banner).toBeNull();
+	});
+
+	it("says nothing when it had nothing about the session", () => {
+		const { alerts } = center();
+		let calls = 0;
+		alerts.subscribe(() => calls++);
+		alerts.retract("a");
+		expect(calls).toBe(0);
+	});
+});
+
 describe("what holds, and what the Hold switch governs (ruling 7)", () => {
 	it("keeps holding when the Hold switch goes off and back on within the release delay", () => {
 		const { alerts } = center();
