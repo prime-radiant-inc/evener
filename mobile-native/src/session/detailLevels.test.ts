@@ -50,6 +50,11 @@ describe("the config a session projects at", () => {
 		expect(configForLevel(null, null)).toBeNull();
 	});
 
+	it("shows the hub's Chat default as just the conversation too (ruling 8)", () => {
+		const chatHub = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, hub.advanced);
+		expect(configForLevel(null, chatHub)).toEqual(configForLevel("chat", hub));
+	});
+
 	it("puts a chosen preset over the hub's advanced settings", () => {
 		const config = configForLevel("tools", hub);
 		expect(config?.content).toEqual({ kind: "preset", level: "tools" });
