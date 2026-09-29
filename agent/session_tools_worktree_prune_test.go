@@ -1141,6 +1141,43 @@ func TestWorktreePrune_Sweep2_StaleSidecarDeletedPostGrace(t *testing.T) {
 	}
 }
 
+// TestWorktreePrune_Sweep2_CorruptReservationSurfaced: a reserved name whose
+// bytes do not decode (a crash-torn create no error path could clean up) is
+// invisible to ListSidecars, so reconciliation must name it — the name stays
+// uncreatable until a human removes the file, and the prune report is how that
+// repair is discoverable. Prune reports it and leaves it alone: malformed
+// metadata never authorizes a destructive cleanup.
+func TestWorktreePrune_Sweep2_CorruptReservationSurfaced(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	corruptPath := filepath.Join(metaDir, worktree.EncodeSidecarName("torn-lane")+".json")
+	if err := os.WriteFile(corruptPath, []byte("{torn"), 0o644); err != nil {
+		t.Fatalf("write corrupt sidecar: %v", err)
+	}
+	ageSidecar(t, metaDir, "torn-lane", worktree.ReconcileGrace+time.Minute)
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "torn-lane")
+	if e == nil {
+		t.Fatal("corrupt reservation not reported skipped")
+	}
+	reason, _ := e["reason"].(string)
+	if !strings.Contains(reason, "corrupt sidecar") {
+		t.Errorf("reason = %q, want it to mention corrupt sidecar", reason)
+	}
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Errorf("corrupt sidecar was removed: %v", statErr)
+	}
+}
+
 func TestWorktreePrune_Sweep2_FreshSidecarSurvivesGrace(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
