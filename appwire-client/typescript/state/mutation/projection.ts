@@ -63,6 +63,16 @@ export interface MutationProjectionRefresh<A extends MutationAttachmentRef = Mut
   // refresh landing after `refresh` resolved must still out-rank a target
   // this refresh only looked like it had won when its read came back.
   apply(): ReadonlySet<string>;
+  // Whether this refresh's read is still the current word for `target`,
+  // answered at call time: has anything newer - a later refresh naming the
+  // target, a later all-targets refresh, or a live `advance` - landed for it
+  // since this read? Live and non-consuming, unlike a cached `apply()`
+  // result, so a caller deciding a per-target fact (which refs a resolved
+  // durable read may mark loaded, say) can ask the fence itself at the
+  // moment it decides rather than re-derive the ordering rule. False once
+  // this fence has been `reset` since the refresh started, even if
+  // generation numbers repeat afterward.
+  stillOwns(target: string): boolean;
 }
 
 export interface MutationProjectionFence<A extends MutationAttachmentRef = MutationAttachmentRef> {
@@ -154,6 +164,12 @@ export function createMutationProjectionFence<
             }
             return accepted;
           },
+          // The same live, at-call-time re-check apply() runs per target,
+          // named for one target and non-consuming: the epoch guard covers a
+          // `reset` that reuses generation numbers, and targetIsCurrent
+          // covers a later refresh or advance landing after the read
+          // resolved.
+          stillOwns: (target) => refreshEpoch === epoch && targetIsCurrent(generation, target),
         };
       } catch {
         // A read failure cannot discard the last durable projection.

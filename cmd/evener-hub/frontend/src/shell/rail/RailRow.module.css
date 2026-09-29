@@ -363,6 +363,19 @@
   font-size: var(--font-size-caption);
 }
 
+/* A live root's subagent tally, beside the watch count: the same neutral,
+ * non-shrinking caption, with the failed part alone in the danger hue. */
+.subagentTally {
+  flex: none;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.subagentFailed {
+  color: var(--danger);
+}
+
 /* The drawn clock a watch row leads with (RailRow's WatchGlyph): a fixed-size
  * inline mark, neutral by design. 13px keeps it inside the title line's
  * leading box without shifting the note off the title x of its sibling rows. */
