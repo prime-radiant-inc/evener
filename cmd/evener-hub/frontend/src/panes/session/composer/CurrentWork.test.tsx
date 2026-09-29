@@ -119,6 +119,23 @@ test("renders an unknown status as written", () => {
   expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (in review)");
 });
 
+test("renders prototype-named statuses as written, not inherited Object.prototype values", () => {
+  for (const goalStatus of ["__proto__", "constructor"] as const) {
+    const { unmount } = render(
+      <CurrentWork
+        goal="Keep the session focused"
+        goalStatus={goalStatus}
+        onOpenTasks={vi.fn()}
+        onEditGoal={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("current-work-goal-status").textContent).toBe(goalStatus);
+    expect(screen.getByRole("status").textContent).toBe(`Goal: Keep the session focused (${goalStatus})`);
+    unmount();
+  }
+});
+
 test.each([
   { name: "none", goalStatus: undefined },
   { name: "whitespace only", goalStatus: "  " },

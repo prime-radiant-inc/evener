@@ -28,6 +28,9 @@ const CLASS = {
 // The wire status is a free string (agent/internal/goal's enum does not
 // survive the wire), so the display vocabulary lives at this seam: known
 // statuses map to their display word, anything else renders as written.
+// Own-property lookups only, so a prototype-named string ("constructor",
+// "__proto__") falls through like any other unknown instead of resolving
+// an inherited Object.prototype value.
 const GOAL_STATUS_DISPLAY: Record<string, string> = {
   active: "Active",
   complete: "Complete",
@@ -39,7 +42,9 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
   const currentGoal = goal?.trim() ?? "";
   const currentGoalStatus = goalStatus?.trim() ?? "";
   const statusKey = currentGoalStatus.toLowerCase();
-  const statusDisplay = GOAL_STATUS_DISPLAY[statusKey] ?? currentGoalStatus;
+  const statusDisplay = Object.hasOwn(GOAL_STATUS_DISPLAY, statusKey)
+    ? GOAL_STATUS_DISPLAY[statusKey]
+    : currentGoalStatus;
   const statusSuffix = statusDisplay ? ` (${statusDisplay})` : "";
 
   const announcement = [
