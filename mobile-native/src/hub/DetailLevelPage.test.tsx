@@ -118,8 +118,12 @@ function mount(state: NativePreferencesSnapshot["transcriptMobile"] | null, conn
 			button(label)?.props.onPress();
 		});
 	};
-	const update = (next: NativePreferencesSnapshot["transcriptMobile"], nextConnected = connected) => {
-		preferences.value = { model: fake, snapshot: { transcriptMobile: next }, connected: nextConnected };
+	const update = (
+		next: NativePreferencesSnapshot["transcriptMobile"],
+		nextConnected = connected,
+		nextModel: ReturnType<typeof model> = fake,
+	) => {
+		preferences.value = { model: nextModel, snapshot: { transcriptMobile: next }, connected: nextConnected };
 		act(() => tree.update(page()));
 	};
 	return { tree, fake, button, press, update };
@@ -225,6 +229,14 @@ it("checks the hub's setting on its own each time the hub is back while a write 
 	expect(fake.refresh).toHaveBeenCalledTimes(3);
 });
 
+it("checks again through a new preferences model while the write is still uncertain", () => {
+	const { fake, update } = mount(transcript({ writeUncertain: true }));
+	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	const replacement = model();
+	update(transcript({ writeUncertain: true }), true, replacement);
+	expect(replacement.refresh).toHaveBeenCalledTimes(1);
+});
+
 it("offers to discard a saved change the phone can't read, even with no draft to show", async () => {
 	const { tree, fake, press, button } = mount(
 		transcript({
@@ -294,6 +306,32 @@ it.each([
 	const { button } = mount(transcript({ conflict: true, draft: { revision: 2, config: CUSTOM }, ...over }));
 	expect(button("Keep mine")?.props.accessibilityState.disabled).toBe(true);
 	expect(button("Use the hub's")?.props.accessibilityState.disabled).toBe(true);
+});
+
+it("says a choice hasn't reached the hub while the phone holds it unsaved, and saves it again", async () => {
+	// The store keeps the draft after a failed save, or after an uncertain
+	// write settles without the hub taking it.
+	const { tree, fake, press, button } = mount(transcript({ draft: { revision: 3, config: CUSTOM } }));
+	expect(renderedText(tree)).toContain("This change hasn't reached the hub yet.");
+	expect(renderedText(tree)).not.toContain("Choose it again");
+	await press("Save it");
+	expect(fake.saveTranscript).toHaveBeenCalledTimes(1);
+	expect(button("Save it")).not.toBeNull();
+});
+
+it.each([
+	["the phone is away from the hub", {}, false],
+	["the hub's setting is loading", { loading: true }, true],
+	["the phone can't keep a change", { storageUnavailable: true }, true],
+])("holds Save it while %s", (_name, over, connected) => {
+	const { button } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, ...over }), connected);
+	expect(button("Save it")?.props.accessibilityState.disabled).toBe(true);
+});
+
+it("offers no Save it while the hub's setting is being checked or a conflict needs resolving", () => {
+	const draft = { revision: 2, config: CUSTOM };
+	expect(mount(transcript({ draft, writeUncertain: true })).button("Save it")).toBeNull();
+	expect(mount(transcript({ draft, conflict: true })).button("Save it")).toBeNull();
 });
 
 it("saves nothing when the hook events already chosen are chosen again", async () => {

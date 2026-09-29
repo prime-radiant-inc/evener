@@ -55,16 +55,17 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const [failed, setFailed] = useState(false);
 	const state = snapshot?.transcriptMobile;
 	const writeUncertain = state?.writeUncertain ?? false;
-	// While a write is uncertain, one check each time the hub is back, so a
-	// check that failed gets another; refresh settles its own errors.
-	const checkedUncertainty = useRef(false);
+	// While a write is uncertain, one check through each model each time the
+	// hub is back, so a check that failed gets another; refresh settles its
+	// own errors.
+	const checkedThrough = useRef<unknown>(null);
 	useEffect(() => {
 		if (!writeUncertain || !connected) {
-			checkedUncertainty.current = false;
+			checkedThrough.current = null;
 			return;
 		}
-		if (checkedUncertainty.current || !model) return;
-		checkedUncertainty.current = true;
+		if (!model || checkedThrough.current === model) return;
+		checkedThrough.current = model;
 		void model.refresh();
 	}, [writeUncertain, connected, model]);
 	// A save whose reply was lost may have landed: once the check settles
@@ -100,6 +101,10 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	// Resolving a conflict writes, so it holds for everything a write does.
 	const resolveHeld = !connected || state.loading || state.saving || writeUncertain || state.storageUnavailable;
 	const busy = resolveHeld || state.conflict;
+	// A choice the phone still holds after its save failed, or after an
+	// uncertain write settled without the hub taking it: the rows show it, so
+	// the page says it hasn't landed and offers to send it again.
+	const unsaved = !!state.draft && !state.saving && !writeUncertain && !state.conflict;
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -152,8 +157,21 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				<GroupFooter tone="danger">{state.error === HUB_UNCONFIRMED_MESSAGE ? NOT_LOADED : NOT_UPDATED}</GroupFooter>
 			) : null}
 			{/* The phone that can't keep a change holds every row, so there is nothing to choose again. */}
-			{failed && !writeUncertain && !conflict && !state.storageUnavailable ? (
+			{failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable ? (
 				<GroupFooter tone="danger">{NOT_SAVED}</GroupFooter>
+			) : null}
+			{unsaved ? (
+				<>
+					<GroupFooter tone="attention">This change hasn't reached the hub yet.</GroupFooter>
+					<Group>
+						<Row
+							label="Save it"
+							tone="accent"
+							disabled={resolveHeld}
+							onPress={() => run(() => model.saveTranscript())}
+						/>
+					</Group>
+				</>
 			) : null}
 			{config && state.support === "supported" ? (
 				<>
