@@ -600,7 +600,7 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 	// git's normal one-checkout-per-branch rule) — lane is unchanged, so
 	// evener's merge gate passes trivially, and the only refusal is git's own
 	// "branch checked out elsewhere" rule at the `branch -D` step.
-	otherPath := filepath.Join(t.TempDir(), "other-checkout")
+	otherPath := filepath.Join(realTempDirForTest(t), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "lane")
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
