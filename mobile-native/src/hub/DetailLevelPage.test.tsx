@@ -342,6 +342,18 @@ it.each([
 		},
 		/This phone couldn't update its copy of this setting/,
 	],
+	// A conflict whose cleanup the phone couldn't record: the rows hold, so
+	// the page says why.
+	[
+		"a conflict the phone couldn't record",
+		{
+			error: "Could not save the transcript draft locally.",
+			storageUnavailable: true,
+			conflict: true,
+			draft: { revision: 2, config: CUSTOM },
+		},
+		/This phone couldn't update its copy of this setting/,
+	],
 ])("says %s in its own words", (_name, over, expected) => {
 	const { tree } = mount(transcript(over));
 	expect(renderedText(tree)).not.toMatch(CALM);

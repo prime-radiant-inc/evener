@@ -144,7 +144,8 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 					</Group>
 				</>
 			) : null}
-			{state.error && !state.draftUnreadable && !writeUncertain && !conflict ? (
+			{/* During a conflict the storage failure still shows: it is why the rows hold. */}
+			{state.error && !state.draftUnreadable && !writeUncertain && (!conflict || state.storageUnavailable) ? (
 				// The store's own messages name its plumbing ("transcript display",
 				// a Check current settings button this page doesn't have), so the
 				// page says what happened in its own words.
