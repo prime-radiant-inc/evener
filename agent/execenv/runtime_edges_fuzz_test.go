@@ -257,7 +257,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal(err)
 		}
 		entryInfoOrig := secureEntryInfo
-		secureEntryInfo = func(os.DirEntry) (os.FileInfo, error) { return nil, fs.ErrPermission }
+		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0, fs.ErrPermission }
 		if _, err := rootFS.listDir("list_directory", root, 1); err != nil {
 			t.Fatal(err)
 		}
@@ -265,10 +265,13 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		fakeEntry := fs.FileInfoToDirEntry(runtimeEdgeFileInfo{name: "exec", mode: 0o755})
 		readDirForInfo := secureReadDirEntries
 		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, nil }
+		entryInfoForSynth := secureEntryInfo
+		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0o755, nil }
 		var synthetic []DirEntry
 		if err := rootFS.walkDirFd(-1, "", root, 1, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
 		}
+		secureEntryInfo = entryInfoForSynth
 		secureReadDirEntries = readDirForInfo
 		missingRootPolicy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{WriteRoots: []string{filepath.Join(root, "missing-root")}}}
 		if _, _, err := newSandboxFS(&missingRootPolicy, "").openWriteParent("write_file", filepath.Join(root, "missing-root", "file"), true); err == nil {
