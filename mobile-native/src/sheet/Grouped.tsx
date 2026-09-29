@@ -380,21 +380,30 @@ export function SwitchRow({
 	);
 }
 
-/** A row that edits a machine value (an address, a path, a list of paths) in
- * Menlo, as typed: no capitals or corrections. The label is VoiceOver's name
- * for it; the page's section label shows it. */
+/** A row that edits a value in place. By default it's a machine value (an
+ * address, a path, a list of paths) in Menlo, as typed: no capitals or
+ * corrections. `machine={false}` is for words someone chose, such as a hub's
+ * name, in SF Pro at the row size. The label is VoiceOver's name for it; the
+ * group's label shows it. */
 export function TextFieldRow({
 	label,
 	value,
 	onChangeText,
 	multiline = false,
 	disabled = false,
+	machine = true,
+	placeholder,
+	secure = false,
 }: {
 	label: string;
 	value: string;
 	onChangeText(text: string): void;
 	multiline?: boolean;
 	disabled?: boolean;
+	machine?: boolean;
+	placeholder?: string;
+	/** A token or key: the field hides what's typed. */
+	secure?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -405,14 +414,18 @@ export function TextFieldRow({
 			onChangeText={onChangeText}
 			multiline={multiline}
 			editable={!disabled}
+			placeholder={placeholder}
+			placeholderTextColor={palette.inkLow}
+			secureTextEntry={secure}
 			autoCapitalize="none"
 			autoCorrect={false}
 			spellCheck={false}
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkHi,
-				fontFamily: fonts.mono,
-				fontSize: uiType.subheadline.fontSize * scale,
+				...(machine
+					? { fontFamily: fonts.mono, fontSize: uiType.subheadline.fontSize * scale }
+					: { fontSize: uiType.listRow.fontSize * scale }),
 				minHeight: multiline ? 88 : 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,

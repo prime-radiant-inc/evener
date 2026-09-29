@@ -375,6 +375,20 @@ describe("a text field row", () => {
 		expect(changes).toEqual(["attic.local"]);
 	});
 
+	it("edits words someone typed, such as a hub's name, in SF Pro at the row size, and can hide a secret", () => {
+		const name = render(<TextFieldRow label="Hub name" value="attic" onChangeText={() => {}} machine={false} />);
+		const nameInput = name.root.findByType("TextInput" as never);
+		expect(merged(nameInput.props.style).fontFamily).toBeUndefined();
+		expect(merged(nameInput.props.style).fontSize).toBe(17);
+		expect(nameInput.props.secureTextEntry).toBe(false);
+		const token = render(
+			<TextFieldRow label="New token" value="" onChangeText={() => {}} placeholder="New token" secure />,
+		).root.findByType("TextInput" as never);
+		expect(token.props.secureTextEntry).toBe(true);
+		expect(token.props.placeholder).toBe("New token");
+		expect(token.props.placeholderTextColor).toBe(light.inkLow);
+	});
+
 	it("takes several lines when asked, and holds while disabled", () => {
 		const input = render(
 			<TextFieldRow label="Roots" value="" onChangeText={() => {}} multiline disabled />,
