@@ -1034,6 +1034,38 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 	}
 }
 
+// TestStreamResult_TextStream_ClosePriority pins the fail-fast shutdown check: a
+// stream closed while the TextStream buffer still has room must forward nothing.
+// The full-buffer test above only reaches the send select's close arm; this one
+// covers the check that runs before the send, so deleting that check fails here.
+func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
+	// The send/close select picks randomly among ready cases, so a single
+	// instance cannot tell the fail-fast check apart from the select arm. Run
+	// many independent instances: with the check every one forwards nothing,
+	// without it at least one reliably forwards a delta.
+	for i := range 200 {
+		stream := NewChanStream(nil)
+		res := &StreamResult{stream: stream, done: make(chan struct{})}
+
+		// Queue text deltas with the stream open, then close its shutdown
+		// signal directly: Events() stays open (the forwarder has work) while
+		// the TextStream buffer is empty (a plain send would succeed).
+		stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
+		stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "y"})
+		close(stream.closing)
+
+		ch := res.TextStream()
+		select {
+		case delta, ok := <-ch:
+			if ok {
+				t.Fatalf("iteration %d: forwarded %q after the stream was closed, want none", i, delta)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: TextStream did not close after the stream was closed", i)
+		}
+	}
+}
+
 func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 	c := NewClient()
 	a := &scriptedStreamAdapter{
