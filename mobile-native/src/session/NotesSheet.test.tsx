@@ -419,6 +419,27 @@ describe("links", () => {
 		expect(symbols(tree)).toEqual([]);
 	});
 
+	it("stops hiding an id the session no longer lists, so a re-added link shows (RoboRev #2769)", async () => {
+		provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await flush();
+		expect(symbols(tree)).toEqual([]);
+		const removedOwner = owner;
+		// The hub re-reads with the row gone, then lists it again.
+		act(() => {
+			provide(session({ sessionUrls: [] }));
+		});
+		const emptyOwner = owner;
+		act(() => {
+			provide(session({ sessionUrls: [web] }));
+		});
+		expect(symbols(tree)).toEqual(["globe"]);
+		notesHosts.release(sheetKey(HUB, REF), removedOwner);
+		notesHosts.release(sheetKey(HUB, REF), emptyOwner);
+	});
+
 	it("removes a link on a full swipe left, with the same toast as its menu (spec 8.8)", async () => {
 		const { requests } = provide(session({ sessionUrls: [web, file] }));
 		const tree = sheet();

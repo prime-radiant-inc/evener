@@ -57,15 +57,23 @@ describe("the editor's status line", () => {
 });
 
 function harness(
-	over: { fail?: Error; projectionState?: "pending" | "removed"; working?: boolean; instanceId?: string } = {},
+	over: {
+		fail?: Error;
+		projectionState?: "pending" | "removed";
+		working?: boolean;
+		instanceId?: string;
+		beforeRequest?: (call: number) => void;
+	} = {},
 ) {
 	let writable = true;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	let saved = "";
 	let failure = over.fail ?? null;
+	let call = 0;
 	const client = {
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
+			over.beforeRequest?.(++call);
 			if (failure) throw failure;
 			if (method === "urls/remove") return {};
 			return {
@@ -219,6 +227,19 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		// Showing "mine" as Saved would hide "third" and let the next edit
 		// overwrite it; the hub's newer note wins and reads clean.
 		expect(notes.getSnapshot()).toEqual({ text: "third", phase: "clean" });
+	});
+
+	it("does not mistake its own earlier save's echo for a third writer during a chained save (RoboRev #2769)", async () => {
+		const hub = harness({ beforeRequest: (call) => (call === 2 ? hub.setSaved("First") : undefined) });
+		const notes = hub.make();
+		notes.edit("First");
+		const saving = notes.flush();
+		notes.edit("First and more");
+		// "First" is this controller's own earlier save; its echo arriving while
+		// the second save is in flight must not be adopted over "First and more".
+		expect(await saving).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "First and more", phase: "saved" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
 	it("saves at once on flush and says whether it woke the agent", async () => {
@@ -403,6 +424,14 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		// pre-save draft write can keep the text on this phone.
 		hub.setWritable(false);
 		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
+	});
+
+	it("keeps a draft still inside the debounce window when the controller is torn down (RoboRev #2769)", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		notes.dispose();
 		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
 	});
 });

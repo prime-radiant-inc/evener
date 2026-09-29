@@ -137,6 +137,9 @@ export class NotesController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private draftTimer: ReturnType<typeof setTimeout> | null = null;
 	private draftValue: string | undefined;
+	/** The note this controller last sent successfully: the hub's echo of it is
+	 * our own write, not a third writer, when it lands during a later save. */
+	private lastSaved: string | undefined;
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
 
@@ -265,7 +268,9 @@ export class NotesController {
 
 	dispose(): void {
 		this.cancelTimer();
-		this.cancelDraftTimer();
+		// A draft still inside its debounce window would otherwise be lost on
+		// teardown; edit() used to write it synchronously, so keep that promise.
+		this.writeDraft();
 		this.listeners.clear();
 	}
 
@@ -296,6 +301,9 @@ export class NotesController {
 		// The hub's note as this save begins. A different value at settle time,
 		// that is neither this nor what we sent, is a third writer's newer note.
 		const startedHubNote = this.options.savedNote();
+		// Our own previous save's note: its echo arriving mid-flight is not a
+		// third writer, so it must not be adopted over this newer text.
+		const previouslySaved = this.lastSaved;
 		this.publish({ ...this.state, phase: "saving" });
 		try {
 			const response: NotesHumanSetResponse = await this.options.client.request("notes/human/set", {
@@ -304,6 +312,7 @@ export class NotesController {
 				expectedInstanceId: instanceId,
 				note: text,
 			});
+			this.lastSaved = response.note;
 			if (this.state.text === text) {
 				this.clearDraft();
 				const hub = this.options.savedNote();
@@ -311,7 +320,8 @@ export class NotesController {
 				// in flight: showing our text as Saved would hide their newer note
 				// and our next edit would overwrite it, so adopt theirs as clean
 				// (RoboRev #2769).
-				if (hub !== startedHubNote && hub !== response.note) this.publish({ text: hub, phase: "clean" });
+				if (hub !== startedHubNote && hub !== response.note && hub !== previouslySaved)
+					this.publish({ text: hub, phase: "clean" });
 				else this.publish({ text: response.note, phase: "saved" });
 			} else {
 				// Typed on during the save: the newer text stays kept and unsaved,

@@ -117,8 +117,17 @@ function NotesBody({
 	// (RoboRev #2769).
 	const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
 	const links = session.sessionUrls.filter((link) => !removed.has(link.id));
-	if (!writable && !human && !session.agentNote.trim() && session.sessionUrls.length === 0)
-		return <Copy muted>No shared notes</Copy>;
+	// A re-read that drops the row, or re-adds one under an id we hid, must not
+	// be masked by a stale id: keep only ids the session still lists.
+	useEffect(() => {
+		setRemoved((previous) => {
+			if (previous.size === 0) return previous;
+			const listed = new Set(session.sessionUrls.map((link) => link.id));
+			const next = new Set([...previous].filter((id) => listed.has(id)));
+			return next.size === previous.size ? previous : next;
+		});
+	}, [session.sessionUrls]);
+	if (!writable && !human && !session.agentNote.trim() && links.length === 0) return <Copy muted>No shared notes</Copy>;
 	return (
 		<>
 			{writable ? (
