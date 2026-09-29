@@ -1833,7 +1833,7 @@ func TestRemoteHubSourceCursorlessBeforeContradictionRotates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
-	before := appwire.ThreadItemPosition{Entry: 11}
+	before := appwire.ThreadItemPosition{Entry: 12}
 	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
 		Ref: "host:t1", ItemsView: "fragment", Before: &before,
 	})
@@ -1899,6 +1899,81 @@ func TestRemoteHubSourceCursorlessBeforeKeepsUnrelatedInvalidParams(t *testing.T
 	}
 	if !strings.Contains(wireErr.Message, "invalid ref: host:missing") {
 		t.Fatalf("unrelated invalid params: message = %q, want the remote's own message", wireErr.Message)
+	}
+}
+
+// A page fetched before a boundary must report only items older than it. A
+// remote with inclusive semantics that returns the boundary item is clipped to
+// the boundary rather than having it retained or served as older, and a
+// non-empty page with nothing older than the boundary is stale, exactly as the
+// cursor path answers.
+func TestRemoteHubSourceCursorlessBeforeClipsToTheBoundary(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	cursorAtEleven := remoteItemCursor(t, 11)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor == "" && remote.Before != nil {
+			// An inclusive page names the boundary item (12) it must not serve.
+			return scriptedReply{result: itemPageWithKeyedEntries(cursorAtEleven, 11, 12)}
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	boundary := appwire.ThreadItemPosition{Entry: 12}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &boundary,
+	})
+	if err != nil {
+		t.Fatalf("inclusive before page: %v", err)
+	}
+	if !sameItemEntries(page.Candidates.Candidates, 11) {
+		t.Fatalf("clipped before page = %v, want [11] (the boundary item 12 dropped)", itemEntryPositions(page.Candidates.Candidates))
+	}
+	if page.Identity != first.Identity {
+		t.Fatalf("clipped before page identity = %+v, want the retained %+v", page.Identity, first.Identity)
+	}
+
+	// Nothing older than the boundary: a non-empty page at or above it is stale.
+	beforeFirst := appwire.ThreadItemPosition{Entry: 9}
+	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &beforeFirst,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || !strings.Contains(wireErr.Message, "stale") {
+		t.Fatalf("before page with nothing older: error = %T %v, want a stale cursor", err, err)
+	}
+}
+
+// An older hub under strict decoding rejects the unknown before field with
+// `json: unknown field "before"`; that shape is rewritten to the same refusal
+// as the missing-cursor shape.
+func TestRemoteHubSourceCursorlessBeforeStrictDecodeRefusal(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadTurnsList {
+			return scriptedReply{wireErr: &appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: `json: unknown field "before"`,
+			}}
+		}
+		return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+	})
+	before := appwire.ThreadItemPosition{Entry: 7}
+	_, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("strict-decode older remote: error = %T %v, want invalid params", err, err)
+	}
+	if !strings.Contains(wireErr.Message, "before without a cursor is not supported for a thread on another host") {
+		t.Fatalf("strict-decode older remote: message = %q, want the cursorless-before refusal", wireErr.Message)
 	}
 }
 

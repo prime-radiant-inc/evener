@@ -810,6 +810,19 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		if err != nil {
 			return ItemCandidateResult{}, remoteCursorlessBeforeRefusal(params, err)
 		}
+		if params.Before != nil && len(candidates) > 0 {
+			// A page fetched before a boundary must report only items older than
+			// it: clip any the remote reports at or above the boundary, exactly as
+			// the cursor path (validateRemoteContinuationPage) and
+			// LocalDaemonSource's before window do, so an inclusive remote cannot
+			// have them retained or served as older. A non-empty page with nothing
+			// older is stale; an empty page is the honest page before the first
+			// item and is left for the recording below to answer as exhausted.
+			candidates = remoteCandidatesBefore(candidates, *params.Before)
+			if len(candidates) == 0 {
+				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+			}
+		}
 		if err := validateRemotePageCursor(native, candidates); err != nil {
 			return ItemCandidateResult{}, err
 		}
@@ -1157,6 +1170,18 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 // negative when a is older, zero when equal, positive when newer.
 func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
+}
+
+// remoteCandidatesBefore keeps only the candidates strictly older than before,
+// for clipping a remote before page to the boundary it was fetched with.
+func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
+	older := candidates[:0]
+	for _, candidate := range candidates {
+		if remotePositionCompare(candidate.Position, before) < 0 {
+			older = append(older, candidate)
+		}
+	}
+	return older
 }
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
