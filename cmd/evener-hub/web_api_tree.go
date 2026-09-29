@@ -325,8 +325,10 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	var live []hubcore.LiveEntry
 	var unconfirmedOwnership bool
 	var ownershipErr error
+	var daemons *daemonIndex
 	if s.cfg.Roster != nil {
 		roster := s.cfg.Roster.Snapshot()
+		daemons = newDaemonIndex(s.cfg.Roster, roster)
 		ownershipErr = roster.OwnershipError
 		live = roster.Live
 		unconfirmedOwnership = len(roster.Unconfirmed) > 0
@@ -347,7 +349,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		// Persisted delegates have no rendezvous of their own. Preserve the
 		// authenticated owner's restart restriction in every navigation projection.
 		for _, past := range pastEntries {
-			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
+			owner, incompatible, err := walkDaemonOwner(ctx, s.cfg, daemons, past.Meta.ID, false)
 			if err != nil {
 				if ownershipErr == nil {
 					ownershipErr = err
@@ -1272,12 +1274,16 @@ func uniqueStrings(values []string) []string {
 func favoriteLineageQualities(metas []schema.SessionMeta) map[string]hubcore.FavoriteAuthorityQuality {
 	qualities := make(map[string]hubcore.FavoriteAuthorityQuality, len(metas))
 	byID := make(map[string]int, len(metas))
+	firstByID := make(map[string]int, len(metas))
 	children := make(map[string][]string)
-	for _, meta := range metas {
+	for i, meta := range metas {
 		if meta.ID == "" {
 			continue
 		}
 		byID[meta.ID]++
+		if _, ok := firstByID[meta.ID]; !ok {
+			firstByID[meta.ID] = i
+		}
 		qualities[meta.ID] = hubcore.FavoriteAuthorityComplete
 		if meta.ParentSessionID != "" && !meta.IsSubagent {
 			children[meta.ParentSessionID] = append(children[meta.ParentSessionID], meta.ID)
@@ -1324,23 +1330,14 @@ func favoriteLineageQualities(metas []schema.SessionMeta) map[string]hubcore.Fav
 				break
 			}
 			seen[current] = struct{}{}
-			parent, ok := findMetaByID(metas, current)
+			index, ok := firstByID[current]
 			if !ok {
 				break
 			}
-			current = parent.ParentSessionID
+			current = metas[index].ParentSessionID
 		}
 	}
 	return qualities
-}
-
-func findMetaByID(metas []schema.SessionMeta, id string) (schema.SessionMeta, bool) {
-	for _, meta := range metas {
-		if meta.ID == id {
-			return meta, true
-		}
-	}
-	return schema.SessionMeta{}, false
 }
 
 func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteProjectAuthority {
@@ -1352,17 +1349,20 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 			projectIdentities[path] = []identifier.Project{project}
 		}
 	}
+	// Group session IDs by working directory once; each project then reads
+	// its own group instead of rescanning every session.
+	idsByDir := make(map[string][]string)
+	for _, meta := range snapshot.metas {
+		dir := hubcore.EffectiveWorkingDir(meta)
+		idsByDir[dir] = append(idsByDir[dir], meta.ID)
+	}
+	for _, entry := range snapshot.live {
+		idsByDir[entry.WorkingDir] = append(idsByDir[entry.WorkingDir], entry.SessionID)
+	}
 	for path, projects := range projectIdentities {
 		owners := make(map[string]favoriteProjectOwnerEvidence)
-		for _, meta := range snapshot.metas {
-			if hubcore.EffectiveWorkingDir(meta) == path {
-				favoriteProjectOwnerEvidenceAdd(owners, meta.ID, snapshot)
-			}
-		}
-		for _, entry := range snapshot.live {
-			if entry.WorkingDir == path {
-				favoriteProjectOwnerEvidenceAdd(owners, entry.SessionID, snapshot)
-			}
+		for _, id := range idsByDir[path] {
+			favoriteProjectOwnerEvidenceAdd(owners, id, snapshot)
 		}
 		if len(owners) == 0 {
 			owners["local"] = favoriteProjectOwnerEvidence{quality: hubcore.FavoriteAuthorityIncomplete}
