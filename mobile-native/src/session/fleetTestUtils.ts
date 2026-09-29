@@ -28,8 +28,8 @@ export const fleetSession = (ref: string, over: Partial<NavigationSessionSummary
 /** The hub's answer to one of the Board controller's reads of `fleet`, or
  * undefined for a method it doesn't make. */
 export function answerFleetRead(fleet: FleetShape, method: string, params: unknown): unknown {
-	if (method === "evener/auth/list") return { providers: [] };
-	if (method === "evener/plugin/list") return { plugins: [] };
+	// The Board's notices (S11): a fleet with none.
+	if (method === "evener/notices/list") return { notices: [] };
 	if (method !== "evener/navigation/read") return undefined;
 	const read = params as NavigationReadParams;
 	const body = (() => {

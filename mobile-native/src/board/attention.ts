@@ -232,7 +232,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
 
-export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** "1 session", "3 sessions": `separator` joins the count to its noun, a
+ * no-break space where the two must stay on one line. */
+export const plural = (count: number, noun: string, separator = " ") =>
+	`${count}${separator}${noun}${count === 1 ? "" : "s"}`;
 /** A section's VoiceOver label, shared by its chip and its header. */
 export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
