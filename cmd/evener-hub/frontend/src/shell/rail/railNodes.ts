@@ -415,7 +415,7 @@ function watchOverflowId(parentRowID: string): string {
  * so summing descendants here would print a subagent's watch on every ancestor
  * row as well as on the subagent's own - one watch, several counts. A receiver
  * watch belongs to the session whose summary carries it. */
-export function activeWatchCount(node: RailSession): number {
+export function activeWatchCount(node: NavigationSessionSummary): number {
   // Include the armed rows the hub omitted: past the per-session cap they are
   // not on `node.watches`, but they are still this session's armed watches, and
   // counting only the retained rows understates the total.
@@ -461,7 +461,7 @@ export function watchCountLabel(armed: number, retained: number, omitted: number
   return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
 }
 
-function subagentIsCurrent(child: RailSession): boolean {
+export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
   const activity = activeWorkSummary(child);
   return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
 }
@@ -638,7 +638,7 @@ export interface ActiveWorkSummary {
   runningJobs: number;
 }
 
-export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
+export function activeWorkSummary(node: NavigationSessionSummary): ActiveWorkSummary {
   let workingSubagents = 0;
   let runningJobs = (node.running_jobs ?? []).length;
   for (const child of node.children) {
