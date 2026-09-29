@@ -223,6 +223,16 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	it("carries a task_list call's returned task list on its detail, and only a task_list call's", () => {
+		const raw = [{ id: 1, type: "fix", description: "Fix the drain", prompt: "", status: "in_progress" }];
+		const tasks = (toolName: string) =>
+			projectedRow(itemEntry(item({ type: "commandExecution", toolName, argumentsJSON: "{}", raw })));
+		expect(tasks("task_list")).toMatchObject({
+			detail: { tasks: [{ id: 1, type: "fix", description: "Fix the drain", prompt: "", status: "in_progress" }] },
+		});
+		expect(tasks("shell")).not.toHaveProperty("detail.tasks");
+	});
+
 	it("falls back to the description, then Tool, for a tool's label", () => {
 		expect(projectedRow(itemEntry(item({ type: "commandExecution", description: " List " })))).toMatchObject({
 			label: "List",

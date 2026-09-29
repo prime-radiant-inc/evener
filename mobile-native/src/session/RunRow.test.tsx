@@ -257,6 +257,38 @@ describe("a step's evidence", () => {
 		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
 	});
 
+	const tasks = () => [
+		{ id: 1, type: "fix", description: "Fix the drain", prompt: "", status: "in_progress" as const },
+	];
+	const withTasks = (): Run => ({
+		kind: "run",
+		id: "run:t",
+		turnId: "t1",
+		steps: [
+			step("t", "task_list", {}, { detail: { arguments: "{}", output: "1. [in_progress] fix", tasks: tasks() } }),
+		],
+	});
+
+	it("opens a task_list step to the task list it returned", () => {
+		const run = withTasks();
+		const tree = render(
+			<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-t" />,
+		);
+		act(() => line(tree.root, "Checked the task list, done").props.onPress());
+		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
+			[{ kind: "tasks", tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }] }],
+		]);
+	});
+
+	// Each projection parses the task list again: a new array, the same tasks.
+	it("works out a task_list step's evidence once while its tasks stay the same", () => {
+		const props = { live: false, expanded: true, onToggle: () => {}, hubId: "hub-1", sessionRef: "ref-t-memo" };
+		const tree = render(<RunRow run={withTasks()} {...props} />);
+		const calls = vi.mocked(stepEvidence).mock.calls.length;
+		for (let frame = 0; frame < 3; frame += 1) act(() => tree.update(<RunRow run={withTasks()} {...props} />));
+		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
+	});
+
 	it("opens every step's evidence by default at the levels that open output as it arrives", () => {
 		const tree = render(
 			<RunRow

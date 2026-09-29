@@ -163,6 +163,42 @@ describe("each tool's evidence, drawn", () => {
 		expect(tree.root.findAll((node) => node.props.markdown === "# Debugging").length).toBeGreaterThan(0);
 	});
 
+	it("draws a task list as the Tasks sheet does, with the note the call added under its task", () => {
+		const tree = drawn([
+			{
+				kind: "tasks",
+				tasks: [
+					{ id: 1, status: "done", description: "Reproduce the race", note: "Seen in 3 of 20 runs." },
+					{ id: 2, status: "in_progress", description: "Fix the drain" },
+					{ id: 3, status: "open", description: "Run it again" },
+					{ id: 4, status: "cancelled", description: "Bisect" },
+				],
+			},
+		]);
+		expect(byText(tree.root, "✓ Reproduce the race")?.props.accessibilityLabel).toBe("Done: Reproduce the race");
+		expect(byText(tree.root, "● Fix the drain")?.props.accessibilityLabel).toBe("In progress: Fix the drain");
+		expect(byText(tree.root, "○ Run it again")?.props.accessibilityLabel).toBe("Open: Run it again");
+		expect(byText(tree.root, "× Bisect")?.props.accessibilityLabel).toBe("Cancelled: Bisect");
+		expect(byText(tree.root, "Seen in 3 of 20 runs.")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+
+	it("shows the first 40 tasks of a longer list, and the rest on request", () => {
+		const tasks = Array.from({ length: 41 }, (_, n) => ({
+			id: n + 1,
+			status: "open" as const,
+			description: `task ${n + 1}`,
+		}));
+		const tree = drawn([{ kind: "tasks", tasks }]);
+		const shown = () => texts(tree.root).filter((node) => /^○ task \d+$/.test(textOf(node)));
+		expect(shown().map(textOf)).toEqual(Array.from({ length: 40 }, (_, n) => `○ task ${n + 1}`));
+		const showAll = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Show all 41 tasks",
+		)[0];
+		expect(textOf(showAll)).toBe("Show all 41 tasks");
+		act(() => showAll.props.onPress());
+		expect(shown()).toHaveLength(41);
+	});
+
 	it("labels a tool's arguments and result, each in Menlo", () => {
 		const tree = drawn([
 			{ kind: "json", label: "Arguments", text: '{\n  "a": 1\n}' },
