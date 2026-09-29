@@ -84,7 +84,7 @@ func formatDirListing(r listDirResult) string {
 		if r.Returned > 0 {
 			fmt.Fprintf(&b, "%d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Offset, r.Offset+r.Returned)
 		} else {
-			fmt.Fprintf(&b, "no entries at offset %d — the listing budget was reached before it; narrow the path or reduce depth", r.Offset)
+			fmt.Fprintf(&b, "no entries at offset %d — the traversal budget reached only %d entries, so this offset is beyond it; use an offset below %d or narrow the path", r.Offset, r.Total, r.Total)
 		}
 	case r.Truncated:
 		fmt.Fprintf(&b, "%d of %d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Total, r.Offset, r.Offset+r.Returned)

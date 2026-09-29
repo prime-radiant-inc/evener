@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -1931,45 +1932,85 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // chunk loop's bounds without building a directory large enough to matter.
 var listDirChunk = 512
 
-// listDirReadBounded reads a directory's entries in chunks, stopping once it
-// holds limit entries (limit < 0 means unbounded) and reporting whether the
-// directory had more beyond what it read. It observes ctx between chunks, so a
-// huge directory can be cancelled mid-listing rather than read to EOF, and it
-// bounds materialized memory the way boundedDirFS does for a glob.
-func listDirReadBounded(ctx context.Context, dir string, limit int) ([]os.DirEntry, bool, error) {
+// listDirReadPrefix opens dir and returns the lexically smallest limit of its
+// entries (limit < 0 returns them all), reporting whether the directory held
+// more than the returned prefix. It reads through the listReadDirChunk seam so
+// tests can drive the chunk loop.
+func listDirReadPrefix(ctx context.Context, dir string, limit int) ([]os.DirEntry, bool, error) {
 	f, err := listOpenDir(dir)
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
-	var ents []os.DirEntry
+	return readDirPrefix(ctx, f, listReadDirChunk, limit)
+}
+
+// readDirPrefix streams a directory's entries in chunks and returns the
+// lexically smallest limit of them, reporting whether the directory held more
+// than the returned prefix (a negative limit returns every entry and reports
+// false). Keeping only the smallest limit while streaming is what lets a tiny
+// page avoid materializing a whole huge directory yet still return the true
+// sorted prefix the tool promises; observing ctx between chunks lets a
+// cancelled walk stop mid-listing. It is shared by the path-based and fd-based
+// walks so they cannot drift apart.
+func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]os.DirEntry, error), limit int) ([]os.DirEntry, bool, error) {
+	var kept dirNameHeap
+	dropped := false
+	if limit >= 0 {
+		heap.Init(&kept)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
-		want := listDirChunk
-		if limit >= 0 {
-			remaining := limit - len(ents)
-			if remaining <= 0 {
-				batch, rerr := listReadDirChunk(f, 1)
-				if rerr != nil && !errors.Is(rerr, io.EOF) {
-					return nil, false, rerr
+		batch, rerr := read(f, listDirChunk)
+		for _, ent := range batch {
+			switch {
+			case limit < 0:
+				kept = append(kept, ent)
+			case len(kept) < limit:
+				heap.Push(&kept, ent)
+			default:
+				// The buffer holds limit entries already; keep ent only if it
+				// sorts before the largest currently held.
+				dropped = true
+				if limit > 0 && ent.Name() < kept[0].Name() {
+					heap.Pop(&kept)
+					heap.Push(&kept, ent)
 				}
-				return ents, len(batch) > 0, nil
-			}
-			if want > remaining {
-				want = remaining
 			}
 		}
-		batch, rerr := listReadDirChunk(f, want)
-		ents = append(ents, batch...)
 		if errors.Is(rerr, io.EOF) {
-			return ents, false, nil
+			break
 		}
 		if rerr != nil {
 			return nil, false, rerr
 		}
 	}
+	if limit < 0 {
+		return kept, false, nil
+	}
+	out := make([]os.DirEntry, len(kept))
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = heap.Pop(&kept).(os.DirEntry)
+	}
+	return out, dropped, nil
+}
+
+// dirNameHeap is a max-heap of directory entries ordered by name, used to keep
+// the lexically smallest limit entries of a directory while streaming it.
+type dirNameHeap []os.DirEntry
+
+func (h dirNameHeap) Len() int           { return len(h) }
+func (h dirNameHeap) Less(i, j int) bool { return h[i].Name() > h[j].Name() }
+func (h dirNameHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *dirNameHeap) Push(x any)        { *h = append(*h, x.(os.DirEntry)) }
+func (h *dirNameHeap) Pop() any {
+	old := *h
+	n := len(old)
+	ent := old[n-1]
+	*h = old[:n-1]
+	return ent
 }
 
 // ListDirectoryBudget is the DirBudgeter capability: ListDirectory bounded by
@@ -2005,12 +2046,10 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 		if !budget.chargeListing() {
 			return nil
 		}
-		// Read the directory in chunks, capped by the per-listing bound, so a
-		// single huge directory cannot materialize without bound — the same hole
-		// GlobBudget closes with its per-listing cap. The listing is sorted whole
-		// when it fits the cap, so paging keeps the name order the tool promises;
-		// only a directory past the cap comes back as a truncated listing.
-		ents, more, err := listDirReadBounded(ctx, absDir, budget.dirReadCap())
+		// Stream the directory in chunks, keeping only the smallest entries the
+		// page can still use, so a one-entry page never materializes a whole huge
+		// directory yet still returns the true sorted prefix.
+		ents, more, err := listDirReadPrefix(ctx, absDir, budget.remainingEntries())
 		if err != nil {
 			return err
 		}

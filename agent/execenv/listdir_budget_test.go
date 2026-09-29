@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -142,28 +144,46 @@ func TestListDirectoryBudget_ListingBudgetBoundsWalk(t *testing.T) {
 	}
 }
 
-// The per-listing bound must cap a single oversized directory: shrinking it
-// below a fixture's size makes the walk stop reading the directory and report a
-// truncated listing rather than materializing it whole.
-func TestListDirectoryBudget_SingleDirectoryCapBoundsRead(t *testing.T) {
+// A chunked listing must return the true lexically smallest prefix even when
+// the underlying read hands entries back in a different order — a reader that
+// merely kept the first entries it saw would return the wrong page.
+func TestListDirectoryBudget_SelectsSortedPrefix(t *testing.T) {
 	dir := t.TempDir()
-	seedListDirTree(t, dir, 10)
+	for _, name := range []string{"alpha", "bravo", "mike", "zeta"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	env := NewLocalExecutionEnvironment(dir)
 	t.Cleanup(env.Cleanup)
 
-	restore := maxListDirDirEntries
-	maxListDirDirEntries = 3
-	defer func() { maxListDirDirEntries = restore }()
+	read, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversed := slices.Clone(read)
+	slices.Reverse(reversed)
+	orig := listReadDirChunk
+	served := false
+	listReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) {
+		if served {
+			return nil, io.EOF
+		}
+		served = true
+		return reversed, nil
+	}
+	defer func() { listReadDirChunk = orig }()
 
-	budget := NewListDirBudget(100) // page budget far above the per-listing cap
+	budget := NewListDirBudget(10)
 	got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
 	if err != nil {
 		t.Fatalf("ListDirectoryBudget: %v", err)
 	}
-	if !budget.Truncated() {
-		t.Fatal("walk with a 3-entry per-listing cap over a 10-entry directory did not report truncation")
+	names := make([]string, len(got))
+	for i, e := range got {
+		names[i] = e.Name
 	}
-	if len(got) != 3 {
-		t.Fatalf("per-listing cap returned %d entries, want the 3-entry cap", len(got))
+	if want := []string{"alpha", "bravo", "mike", "zeta"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("listing = %v, want the sorted prefix %v regardless of read order", names, want)
 	}
 }

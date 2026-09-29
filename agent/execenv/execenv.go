@@ -211,15 +211,6 @@ const (
 	maxListDirWalkEntries  = 200_000
 )
 
-// maxListDirDirEntries caps how many entries a SINGLE directory may materialize
-// before the walk stops reading it and reports a truncated listing. It bounds
-// peak memory the way GlobBudget's per-listing cap does, but is set far above
-// any real directory so a listing can still be sorted whole and paged in the
-// order the tool promises; only a pathological directory exceeds it. A var, not
-// a const, so a test can shrink it below a fixture's size instead of building a
-// directory large enough to matter.
-var maxListDirDirEntries = 200_000
-
 // ListDirBudget bounds one ListDirectoryBudget walk's work. Callers supply it
 // and read afterwards whether the walk had to stop early; its fields stay
 // unexported for the same reason GlobBudget's do. A budget belongs to one call
@@ -275,14 +266,18 @@ func (b *ListDirBudget) chargeEntry() bool {
 	return true
 }
 
-// dirReadCap reports how many entries one directory may materialize before the
-// walk truncates it: the hard per-listing cap for a budgeted call, or unbounded
-// for the zero budget an internal caller uses to get the whole listing.
-func (b *ListDirBudget) dirReadCap() int {
+// remainingEntries reports how many more entries the walk may still retain
+// before the entry budget is spent, or -1 when the budget is unbounded. A
+// chunked listing uses it to keep only the smallest entries the page can still
+// use, so a one-entry page never materializes a whole huge directory.
+func (b *ListDirBudget) remainingEntries() int {
 	if b.maxEntries <= 0 {
 		return -1
 	}
-	return maxListDirDirEntries
+	if rem := b.maxEntries - b.entries; rem > 0 {
+		return rem
+	}
+	return 0
 }
 
 // DirBudgeter is an optional capability an ExecutionEnvironment may implement,

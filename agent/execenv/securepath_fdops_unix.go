@@ -511,12 +511,10 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 	if !budget.chargeListing() {
 		return nil
 	}
-	// Read the directory in chunks, capped by the per-listing bound, so a single
-	// huge directory cannot materialize without bound — the same hole GlobBudget
-	// closes with its per-listing cap. The listing is sorted whole when it fits
-	// the cap, so paging keeps the name order the tool promises; only a directory
-	// past the cap comes back as a truncated listing.
-	ents, more, err := readDirEntriesBounded(ctx, dirFd, budget.dirReadCap())
+	// Stream the directory in chunks, keeping only the smallest entries the page
+	// can still use, so a one-entry page never materializes a whole huge
+	// directory yet still returns the true sorted prefix.
+	ents, more, err := readDirEntriesPrefix(ctx, dirFd, budget.remainingEntries())
 	if err != nil {
 		return err
 	}
@@ -631,47 +629,20 @@ func writeAllFd(fd int, data []byte) error {
 	return nil
 }
 
-// readDirEntriesBounded reads directory entries from dirFd without consuming
-// it: it dups the fd (F_DUPFD_CLOEXEC), reads through the dup in chunks, and
-// closes only the dup, leaving dirFd valid for subsequent openat recursion. It
-// stops once it holds limit entries (limit < 0 means unbounded) and reports
-// whether the directory had more beyond what it read, observing ctx between chunks so a
-// huge directory can be cancelled mid-listing rather than read to EOF.
-func readDirEntriesBounded(ctx context.Context, dirFd, limit int) ([]os.DirEntry, bool, error) {
+// readDirEntriesPrefix reads directory entries from dirFd without consuming it:
+// it dups the fd (F_DUPFD_CLOEXEC), streams through the dup, and closes only the
+// dup, leaving dirFd valid for subsequent openat recursion. It returns the
+// lexically smallest limit entries (limit < 0 returns them all) and whether the
+// directory held more, delegating to readDirPrefix so the fd path and the
+// path-based walk share one chunked-selection loop.
+func readDirEntriesPrefix(ctx context.Context, dirFd, limit int) ([]os.DirEntry, bool, error) {
 	dup, err := secureDupDirFd(dirFd)
 	if err != nil {
 		return nil, false, err
 	}
 	f := os.NewFile(uintptr(dup), "")
 	defer func() { _ = f.Close() }()
-	var ents []os.DirEntry
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
-		}
-		want := listDirChunk
-		if limit >= 0 {
-			remaining := limit - len(ents)
-			if remaining <= 0 {
-				batch, rerr := secureReadDirChunk(f, 1)
-				if rerr != nil && !errors.Is(rerr, io.EOF) {
-					return nil, false, rerr
-				}
-				return ents, len(batch) > 0, nil
-			}
-			if want > remaining {
-				want = remaining
-			}
-		}
-		batch, rerr := secureReadDirChunk(f, want)
-		ents = append(ents, batch...)
-		if errors.Is(rerr, io.EOF) {
-			return ents, false, nil
-		}
-		if rerr != nil {
-			return nil, false, rerr
-		}
-	}
+	return readDirPrefix(ctx, f, secureReadDirChunk, limit)
 }
 
 // ensureDirsBeneath creates each component of relDir beneath rootFd if missing,
