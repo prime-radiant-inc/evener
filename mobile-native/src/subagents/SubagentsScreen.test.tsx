@@ -186,7 +186,7 @@ const text = (tree: ReactTestRenderer) => renderedText(tree);
 
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
-	expect(headerTitle()).toBe("Subagents · 55 Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Activity · 55 Get PR 2138 Test Clean");
 });
 
 it("lists failed, then running, then a folded done, with chips that count the same", async () => {
@@ -239,6 +239,65 @@ it("filters to a chip's state, and offers no chip for a state with no subagents"
 	expect(pressable(other, "Running, 1")).toBeDefined();
 });
 
+// Shell jobs sit among the subagents (Jesse's ruling on shell jobs): each
+// in its state's section, counted by the title and the filter chips, while
+// the strip stays the subagents' own.
+const shellJob = (id: string, description: string, over: Record<string, unknown> = {}) => ({
+	kind: "shell",
+	job: {
+		jobId: id,
+		ownerSessionId: "coord",
+		ownerRef: "local:coord",
+		type: "shell",
+		status: "running",
+		terminal: false,
+		background: true,
+		hasOutput: true,
+		description,
+		command: description,
+		startedAt: ago(3 * MIN),
+		outputBytes: 0,
+		...over,
+	},
+});
+function treeWithJobs() {
+	return {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			shellJob("j-lint", "npm run lint", {
+				status: "command_exited_nonzero",
+				outcome: "failure",
+				terminal: true,
+				exitCode: 1,
+				endedAt: ago(MIN),
+			}),
+			runningOne("solo", "Only one", {
+				child: session("local:solo", "Only one", [shellJob("j-docs", "Serving the docs")]),
+			}),
+		]),
+	};
+}
+
+it("lists shell jobs in their states' sections, counting them in the title and chips but not the strip", async () => {
+	client = hub(() => treeWithJobs());
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(headerTitle()).toBe("Activity · 3 Get PR 2138 Test Clean");
+	for (const label of ["All, 3", "Failed, 1", "Running, 2"]) expect(pressable(tree, label)).toBeDefined();
+	expect(tree.root.find((node) => node.props.accessibilityLabel === "0 failed, 1 running, 0 done")).toBeDefined();
+	const shown = text(tree);
+	expect(shown.indexOf("FAILED · 1")).toBeLessThan(shown.indexOf("npm run lint"));
+	expect(shown.indexOf("RUNNING · 2")).toBeLessThan(shown.indexOf("Serving the docs"));
+	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
+	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
+		new Set([`Shell job, npm run lint, 2m, under ${COORDINATOR.title}`, "Shell job, Serving the docs, running · 3m, under Only one"]),
+	);
+
+	act(() => pressable(tree, "Failed, 1")?.props.onPress());
+	expect(text(tree)).toContain("npm run lint");
+	expect(text(tree)).not.toContain("Serving the docs");
+});
+
 it("opens the done fold in place", async () => {
 	const tree = await mount();
 	act(() => pressable(tree, "Done · 21")?.props.onPress());
@@ -248,7 +307,7 @@ it("opens the done fold in place", async () => {
 it("searches past eight subagents, filtering rows and section counts while the chips keep the whole", async () => {
 	const tree = await mount();
 	const field = tree.root.find((node) => String(node.type) === "TextInput");
-	expect(field.props.placeholder).toBe("Filter subagents");
+	expect(field.props.placeholder).toBe("Filter activity");
 	act(() => field.props.onChangeText("race"));
 	const shown = text(tree);
 	expect(shown).toContain("FAILED · 1");
@@ -366,7 +425,7 @@ it("says the count is partial and whose subagents are missing when a later page 
 	});
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(headerTitle()).toBe("Subagents · 2+ Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Activity · 2+ Get PR 2138 Test Clean");
 	expect(text(tree)).toContain("Some subagents under “Get PR 2138 Test Clean” aren't listed.");
 });
 
@@ -374,12 +433,12 @@ it.each([
 	[
 		"can't list its activity",
 		new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }),
-		"This session can't list its subagents.",
+		"This session can't list its activity.",
 	],
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
-		"This session is shut down, so its subagents can't be listed.",
+		"This session is shut down, so its activity can't be listed.",
 	],
 ])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
 	client = new FakeClient("ready");
@@ -416,7 +475,7 @@ it("says why it can't list them when the read fails", async () => {
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain("The subagents couldn't be listed right now.");
+	expect(text(tree)).toContain("The activity couldn't be listed right now.");
 });
 
 it("says a stop you asked for is pending, then that it stopped, with the toast once", async () => {

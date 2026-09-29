@@ -1,19 +1,25 @@
-import { matchesSearch, STATE_ORDER, type SubagentRow, type SubagentState, subagentSections } from "./subagentModel";
+import {
+	type ActivityListRow,
+	matchesSearch,
+	STATE_ORDER,
+	type SubagentState,
+	subagentSections,
+} from "./subagentModel";
 
 export type SubagentFilter = "all" | SubagentState;
 
 export type SubagentListItem =
 	| { kind: "section"; state: SubagentState; count: number }
-	| { kind: "row"; row: SubagentRow }
+	| { kind: "row"; row: ActivityListRow }
 	| { kind: "doneFold"; count: number; open: boolean }
 	| { kind: "missing"; title: string };
 
-/** The list's items for a filter and a search (spec 9): failed, then
- * running, then done, where done is one folded row under All until you open
+/** The list's items for a filter and a search (spec 9): subagents and shell
+ * jobs together, failed, then running, then done, where done is one folded row under All until you open
  * it. Section counts follow the search; the chips and the strip don't (ruling
  * 8). What couldn't be listed comes last. */
 export function subagentListItems(
-	rows: readonly SubagentRow[],
+	rows: readonly ActivityListRow[],
 	view: { filter: SubagentFilter; query: string; doneOpen: boolean; missing: readonly string[] },
 ): SubagentListItem[] {
 	const sections = subagentSections(rows.filter((row) => matchesSearch(row, view.query)));
@@ -40,7 +46,8 @@ export function subagentListKey(item: SubagentListItem): string {
 		case "section":
 			return `section:${item.state}`;
 		case "row":
-			return item.row.id;
+			// A job's id is a job id; a subagent's is its delegate id.
+			return item.row.kind === "job" ? `job:${item.row.id}` : item.row.id;
 		case "doneFold":
 			return "done-fold";
 		case "missing":

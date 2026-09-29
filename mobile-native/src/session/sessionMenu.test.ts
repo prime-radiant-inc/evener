@@ -61,7 +61,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Detail level · Intent",
 			"Find in session",
 			"Files & artifacts",
-			"Subagents",
+			"Activity",
 			"Tasks",
 			"Notes & links",
 			"Session info",
@@ -126,7 +126,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it.each([
 		["hasDocuments", "Files & artifacts"],
-		["hasSubagents", "Subagents"],
+		["hasSubagents", "Activity"],
 		["connected", "Tasks"],
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
@@ -155,7 +155,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it.each([
 		["Find in session", { kind: "find" }],
-		["Subagents", { kind: "subagents" }],
+		["Activity", { kind: "subagents" }],
 		["Tasks", { kind: "tasks" }],
 		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],

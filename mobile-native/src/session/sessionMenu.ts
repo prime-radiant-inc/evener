@@ -1,6 +1,6 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside and Shut down
+// Files & artifacts, Activity, Tasks, Notes & links, Ask aside and Shut down
 // appear only when they can act. Delete lives in the Session sheet.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
@@ -72,7 +72,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		levels,
 		item("Find in session", "find"),
 		...(input.hasDocuments ? [item("Files & artifacts", "files")] : []),
-		...(input.hasSubagents ? [item("Subagents", "subagents")] : []),
+		...(input.hasSubagents ? [item("Activity", "subagents")] : []),
 		...(input.connected ? [item("Tasks", "tasks")] : []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),

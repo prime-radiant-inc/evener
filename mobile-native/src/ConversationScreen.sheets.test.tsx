@@ -928,7 +928,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Subagents").onPress());
+	act(() => menuAction("Activity").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
 		hubId: "hub-1",
 		ref,
