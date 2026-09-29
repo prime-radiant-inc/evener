@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,6 +71,27 @@ type systemCommandRuntime struct {
 	outputDone       chan error
 	terminationGrace time.Duration
 	signalName       string
+
+	// Buffered mode owns its stdout/stderr pipes the same way streaming owns
+	// the combined pipe, so a copier left holding a pipe open by a writer
+	// outside the process group can be force-closed and joined before the
+	// captured buffers are read.
+	bufferedStdout   io.Writer
+	bufferedStderr   io.Writer
+	bufferedOutputs  []*bufferedOutputPipe
+	bufferedDrain    sync.Once
+	bufferedDrainErr error
+}
+
+// bufferedOutputPipe is one owned stdout/stderr capture: the child writes to
+// writer (an *os.File it inherits directly, so os/exec installs no copier of
+// its own), a goroutine copies reader into destination, and done reports that
+// copier's completion.
+type bufferedOutputPipe struct {
+	destination io.Writer
+	reader      *os.File
+	writer      *os.File
+	done        chan error
 }
 
 type commandOutputWriteError struct {
@@ -110,20 +132,40 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 		c.cmd.Err = nil
 	}
 	wrapCommandForSandbox(c.cmd, config.Wrapper, config.Dir)
+	c.terminationGrace = config.TerminationGrace
 	if config.CombinedOutput == nil {
 		c.cmd.Stdout = config.Stdout
 		c.cmd.Stderr = config.Stderr
+		c.bufferedStdout = config.Stdout
+		c.bufferedStderr = config.Stderr
 	} else {
 		c.combinedOutput = config.CombinedOutput
-		c.terminationGrace = config.TerminationGrace
 	}
 }
 
 func (c *systemCommandRuntime) Start() error {
-	if c.combinedOutput == nil {
+	if c.combinedOutput != nil {
+		return c.startCombined()
+	}
+	if !bufferedCaptureNeedsPipe(c.bufferedStdout) && !bufferedCaptureNeedsPipe(c.bufferedStderr) {
 		return c.cmd.Start()
 	}
+	return c.startBuffered()
+}
 
+// bufferedCaptureNeedsPipe reports whether a buffered destination requires an
+// owned pipe. An *os.File (the detached-command /dev/null stdio) is passed
+// straight to the child by os/exec with no copier, so it stays untouched; any
+// other writer (the bytes.Buffer capture) needs a copier we can close and join.
+func bufferedCaptureNeedsPipe(destination io.Writer) bool {
+	if destination == nil {
+		return false
+	}
+	_, isFile := destination.(*os.File)
+	return !isFile
+}
+
+func (c *systemCommandRuntime) startCombined() error {
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return err
@@ -147,13 +189,101 @@ func (c *systemCommandRuntime) Start() error {
 	return nil
 }
 
+// startBuffered installs owned stdout/stderr pipes before Start and starts one
+// copier per non-nil destination once the child holds the only write end. An
+// inherited *os.File makes os/exec pass the fd straight through, so Wait
+// returns on process exit instead of blocking on a copier, and the copier is
+// ours to close and join.
+func (c *systemCommandRuntime) startBuffered() error {
+	for _, target := range []struct {
+		destination io.Writer
+		fd          *io.Writer
+	}{
+		{c.bufferedStdout, &c.cmd.Stdout},
+		{c.bufferedStderr, &c.cmd.Stderr},
+	} {
+		if !bufferedCaptureNeedsPipe(target.destination) {
+			continue
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			c.closeUnstartedBufferedPipes()
+			return err
+		}
+		*target.fd = writer
+		c.bufferedOutputs = append(c.bufferedOutputs, &bufferedOutputPipe{
+			destination: target.destination,
+			reader:      reader,
+			writer:      writer,
+			done:        make(chan error, 1),
+		})
+	}
+	if err := c.cmd.Start(); err != nil {
+		c.closeUnstartedBufferedPipes()
+		c.bufferedOutputs = nil
+		return err
+	}
+	for _, pipe := range c.bufferedOutputs {
+		_ = pipe.writer.Close()
+		pipe.writer = nil
+		go func(p *bufferedOutputPipe) {
+			_, copyErr := io.Copy(commandOutputWriter{destination: p.destination}, p.reader)
+			p.done <- copyErr
+		}(pipe)
+	}
+	return nil
+}
+
+func (c *systemCommandRuntime) closeUnstartedBufferedPipes() {
+	for _, pipe := range c.bufferedOutputs {
+		_ = pipe.reader.Close()
+		if pipe.writer != nil {
+			_ = pipe.writer.Close()
+		}
+	}
+}
+
+// drainBufferedOutput joins the owned buffered copiers so the captured buffers
+// are stable. It waits terminationGrace for a copier to reach EOF, then closes
+// the reader to end one whose pipe a writer outside the command's process group
+// still holds open. The first genuine copy error wins; forcedCloseOutputError
+// suppresses the close-induced read error. Wait calls it once the process is
+// reaped, and execPreparedCommand calls it as a completion barrier when Wait is
+// still outstanding. Safe to call repeatedly and concurrently.
+func (c *systemCommandRuntime) drainBufferedOutput() error {
+	c.bufferedDrain.Do(func() {
+		var copyErr error
+		for _, pipe := range c.bufferedOutputs {
+			var err error
+			select {
+			case err = <-pipe.done:
+			case <-time.After(c.terminationGrace):
+				_ = pipe.reader.Close()
+				err = <-pipe.done
+			}
+			_ = pipe.reader.Close()
+			if copyErr == nil {
+				copyErr = c.forcedCloseOutputError(err)
+			}
+		}
+		c.bufferedDrainErr = copyErr
+	})
+	return c.bufferedDrainErr
+}
+
 func (c *systemCommandRuntime) Wait() error {
 	processErr := c.cmd.Wait()
 	c.signalName = processSignalName(c.cmd.ProcessState)
-	if c.outputDone == nil {
-		return processErr
+	if c.outputDone != nil {
+		return c.waitCombined(processErr)
 	}
+	if len(c.bufferedOutputs) > 0 {
+		return commandWaitError(processErr, c.drainBufferedOutput(), nil)
+	}
+	return processErr
+}
 
+func (c *systemCommandRuntime) waitCombined(processErr error) error {
 	outputDone, outputErr := c.outputResult()
 	if outputDone && outputErr == nil {
 		_ = c.outputReader.Close()
