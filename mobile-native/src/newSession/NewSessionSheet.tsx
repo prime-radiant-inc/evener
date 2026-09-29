@@ -19,11 +19,14 @@ import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
 import { useColors } from "../ui";
+import { BrowseFolders } from "./BrowseFolders";
 import { HostPicker } from "./HostPicker";
+import { ModelPicker } from "./ModelPicker";
 import { launchMemory } from "./nativeLaunchMemory";
 import { NewSessionForm } from "./NewSessionForm";
 import { type NewSessionContextValue, NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { openForm } from "./openForm";
+import { ProjectPicker } from "./ProjectPicker";
 import { SessionOptionsPage } from "./SessionOptionsPage";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
@@ -69,6 +72,9 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 				{/* The form sets its own title and its Cancel and Start. */}
 				<NewSessionStack.Screen name="Form" component={NewSessionForm} />
 				<NewSessionStack.Screen name="Host" component={HostPicker} options={{ title: "Host" }} />
+				<NewSessionStack.Screen name="Project" component={ProjectPicker} options={{ title: "Project" }} />
+				<NewSessionStack.Screen name="Browse" component={BrowseFolders} options={{ title: "Browse folders" }} />
+				<NewSessionStack.Screen name="Model" component={ModelPicker} options={{ title: "Model" }} />
 				<NewSessionStack.Screen
 					name="SessionOptions"
 					component={SessionOptionsPage}
