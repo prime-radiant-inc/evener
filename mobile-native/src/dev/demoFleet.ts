@@ -754,6 +754,22 @@ function rawChildren(raw: RawSession): RawSubagent[] {
 	return [];
 }
 
+// A live root's whole-tree subagent tally (S3), as its daemon counts it: every
+// depth, not just the capped rows its children keep. The demo still nests its
+// subagent rows under children for the tree views, but the Board's chip and
+// working why line read this tally, not those rows.
+function subagentTally(subs: readonly RawSubagent[]): { running: number; failed: number; done: number } {
+	const tally = { running: 0, failed: 0, done: 0 };
+	for (const sub of subs) {
+		tally[sub.state] += 1;
+		const nested = subagentTally(sub.children ?? []);
+		tally.running += nested.running;
+		tally.failed += nested.failed;
+		tally.done += nested.done;
+	}
+	return tally;
+}
+
 // "Running <command>" activity lines become a running job; anything else
 // ("Thinking", "Editing ...", "Waiting on N subagents") is not a command.
 function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
@@ -842,7 +858,8 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
-	const { capped, omitted } = capChildren(rawChildren(raw));
+	const subs = rawChildren(raw);
+	const { capped, omitted } = capChildren(subs);
 	const jobs = runningJobs(raw);
 	return {
 		ref: sessionRef(raw),
@@ -858,6 +875,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
+		...(live && subs.length > 0 ? { subagents: subagentTally(subs) } : {}),
 		...(jobs ? { running_jobs: jobs } : {}),
 		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
 	};

@@ -8,6 +8,7 @@ import { PinCatalogList } from "./PinCatalogList";
 import { PageList } from "./ProjectsScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 import { usePinNavigation } from "./usePinNavigation";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
@@ -112,7 +113,9 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 					ready={ready}
 					rowKey={sessionKey}
 					childRows={(row) => row.children ?? []}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					omitted={(row) => row.omitted_descendants ?? 0}
+					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					organization={() => null}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
