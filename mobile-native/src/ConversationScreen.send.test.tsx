@@ -32,6 +32,7 @@ import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKe
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { FindBar } from "./session/FindBar";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -1550,15 +1551,16 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
 	};
 	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
 	const layout = (tree: ReactTestRenderer) => ({
-		headerTop: Object.assign({}, ...[header(tree).parent?.props.style].flat(Number.POSITIVE_INFINITY)).top,
+		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
 		glassTop: header(tree).props.glassTop,
 		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
 		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
 			.keyboardVerticalOffset,
 	});
 	const measureHeader = (tree: ReactTestRenderer, height: number) =>
-		act(() => header(tree).parent?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
 
 	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
 		systemGlass.available = true;

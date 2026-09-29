@@ -4,16 +4,16 @@
 // behind the bar with a transform, so the list's layout, and the reader's
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { GlassView } from "expo-glass-effect";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
 import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
-import { headerRowFill } from "./headerGlass";
+import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { headerRowFill } from "../design/systemGlass";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
@@ -29,6 +29,11 @@ const SYMBOLS: Record<ChipKind, SFSymbol> = {
 const HIDE_AFTER_PT = 8;
 const HIDE_DURATION_MS = 200;
 
+/** The header floats over the list's top edge; the list reserves its room.
+ * It stays mounted, empty, when it has nothing to show, so the screen's last
+ * measure of it goes to nothing too. */
+const FLOATING = { position: "absolute", top: 0, left: 0, right: 0 } as const;
+
 export function SessionHeader({
 	status,
 	chips,
@@ -38,6 +43,7 @@ export function SessionHeader({
 	notes,
 	find,
 	glassTop,
+	onLayout,
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
@@ -56,6 +62,8 @@ export function SessionHeader({
 	 * glass under the bar and its rows, the iOS pattern for a bar with a
 	 * search field or segmented control (spec 16.3). */
 	glassTop?: number;
+	/** The header's layout, for the screen to keep the list clear of it. */
+	onLayout?: (event: LayoutChangeEvent) => void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -69,28 +77,15 @@ export function SessionHeader({
 	// had, so the glass comes back down to the bar.
 	const offset = useSlide(slidAway && hasRow ? -rowHeight : 0);
 	const onGlass = glassTop !== undefined;
-	if (!onGlass && status === null && !hasRow) return null;
 	return (
-		// box-none lets touches on the list's uncovered top reach the list.
-		<View pointerEvents="box-none">
-			{onGlass ? (
-				// The glass moves with the rows, so as they slide away its lower
-				// edge rises with them to the bar's.
-				<Animated.View
-					pointerEvents="none"
-					style={{
-						position: "absolute",
-						top: 0,
-						left: 0,
-						right: 0,
-						bottom: 0,
-						transform: [{ translateY: offset }],
-					}}
-				>
-					<GlassView glassEffectStyle="regular" colorScheme="auto" style={{ flex: 1 }} />
-				</Animated.View>
-			) : null}
-			{onGlass ? <View testID="nav-bar-room" pointerEvents="none" style={{ height: glassTop }} /> : null}
+		<GlassHeaderPanel
+			style={FLOATING}
+			glassTop={glassTop}
+			// The glass moves with the rows, so as they slide away its lower
+			// edge rises with them to the bar's.
+			slideOffset={offset}
+			onLayout={onLayout}
+		>
 			{status !== null ? (
 				<View
 					style={{
@@ -136,7 +131,7 @@ export function SessionHeader({
 					</Animated.View>
 				</View>
 			) : null}
-		</View>
+		</GlassHeaderPanel>
 	);
 }
 

@@ -1,7 +1,7 @@
 // Whether the system's Liquid Glass draws the bars, and a stack screen's nav
 // bar options for it.
 import { describe, expect, it, vi } from "vitest";
-import { navBarGlassOptions } from "./systemGlass";
+import { navBarGlassOptions, reservedUnderGlass } from "./systemGlass";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
@@ -24,5 +24,21 @@ describe("navBarGlassOptions", () => {
 			headerStyle: { backgroundColor: "#FAF9F6" },
 			scrollEdgeEffects: { top: "automatic" },
 		});
+	});
+});
+
+describe("reservedUnderGlass", () => {
+	it("keeps the bar's room and the rows on the glass, the rows alone off it", () => {
+		expect(reservedUnderGlass(64, { height: 64 + 48, onGlass: true }, true)).toBe(112);
+		expect(reservedUnderGlass(64, { height: 48, onGlass: false }, false)).toBe(48);
+	});
+
+	it("knows the rows across a switch, before the panel measures again", () => {
+		expect(reservedUnderGlass(64, { height: 48, onGlass: false }, true)).toBe(112);
+		expect(reservedUnderGlass(64, { height: 112, onGlass: true }, false)).toBe(48);
+	});
+
+	it("keeps the bar's room alone before the panel has measured", () => {
+		expect(reservedUnderGlass(64, { height: 0, onGlass: false }, true)).toBe(64);
 	});
 });
