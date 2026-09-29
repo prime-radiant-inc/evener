@@ -1983,8 +1983,5 @@ func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap 
 			return liveEntryLess(la, lb)
 		}
 	}
-	return sessionOrderLess(
-		sessionOrderKey{updated: a.UpdatedAt, created: a.CreatedAt, title: a.Title, id: a.ID},
-		sessionOrderKey{updated: b.UpdatedAt, created: b.CreatedAt, title: b.Title, id: b.ID},
-	)
+	return TreeNodeLess(a, b)
 }

@@ -1656,7 +1656,7 @@ func navigationMergeProjectTierPairwiseReference(first, next hubcore.TreeProject
 	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
 	rows = append(rows, firstRows...)
 	rows = append(rows, nextRows...)
-	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
 	return rows
 }
 
@@ -1714,7 +1714,7 @@ func navigationMergeClusterRowsReference(tiers ...[]hubcore.TreeNode) [][]hubcor
 func navigationMergeClusterRowPairwiseReference(previous, next hubcore.TreeNode) hubcore.TreeNode {
 	union := previous
 	union.Children = append(append(make([]hubcore.TreeNode, 0, len(previous.Children)+len(next.Children)), previous.Children...), next.Children...)
-	sort.SliceStable(union.Children, func(i, j int) bool { return navigationTreeNodeLess(union.Children[i], union.Children[j]) })
+	sort.SliceStable(union.Children, func(i, j int) bool { return hubcore.TreeNodeLess(union.Children[i], union.Children[j]) })
 	union.ClusterCount = previous.ClusterCount + next.ClusterCount
 	if next.UpdatedAt.After(previous.UpdatedAt) {
 		union.UpdatedAt, union.Age = next.UpdatedAt, next.Age
@@ -1878,5 +1878,29 @@ func TestNavigationMergeProjectGroupsSinglePassMatchesPairwiseFold(t *testing.T)
 				t.Fatalf("%s bucket project %d (%q) diverged from the pairwise fold:\nmerged:    %#v\nreference: %#v", bucket.name, index, bucket.want[index].Key, bucket.merged[index], bucket.want[index])
 			}
 		}
+	}
+}
+
+func TestTreeNodeOrderBreaksTiesByCreatedThenRawTitleThenID(t *testing.T) {
+	at := func(s int64) time.Time { return time.Unix(s, 0).UTC() }
+	rows := []hubcore.TreeNode{
+		{ID: "b", Title: "alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "a", Title: "Alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "c", Title: "alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "z", Title: "zero"},
+		{ID: "d", Title: "beta", CreatedAt: at(10)},
+		{ID: "e", Title: "gamma", UpdatedAt: at(11), CreatedAt: at(1)},
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.ID)
+	}
+	// e is newest. d has no update time, so its creation time (10) stands in
+	// and ties a, b and c, then wins on creation time. "Alpha" sorts before
+	// "alpha" on the raw text, then the IDs break the remaining tie. z has no
+	// times at all and sorts last.
+	if want := []string{"e", "d", "a", "b", "c", "z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
