@@ -820,8 +820,8 @@ func hostPipelineParseBindFreeAddr(out []byte) (addr string, ok bool, err error)
 		if !strings.HasPrefix(addr, "127.0.0.1:") {
 			return "", false, fmt.Errorf("the allocation answered %q, want a 127.0.0.1 address", line)
 		}
-		if _, perr := strconv.Atoi(strings.TrimPrefix(addr, "127.0.0.1:")); perr != nil {
-			return "", false, fmt.Errorf("the allocation answered %q, which carries no numeric port", line)
+		if port, perr := strconv.Atoi(strings.TrimPrefix(addr, "127.0.0.1:")); perr != nil || port < 1 || port > 65535 {
+			return "", false, fmt.Errorf("the allocation answered %q, which is not a usable TCP port (1-65535)", line)
 		}
 		return addr, true, nil
 	default:
@@ -923,10 +923,20 @@ func startHostPipelineContainer(t *testing.T) *hostPipelineContainer {
 	name := "evener-pipeline-" + runID
 	alias := "evener-e2e-" + runID
 
+	// The container's removal is registered before the first attempt: a failed
+	// `docker run` can leave a created-but-not-started container under this name,
+	// and every exit path from here — including the t.Fatalfs below — must not
+	// orphan one. A name no attempt ever created is not an error to report.
+	t.Cleanup(func() {
+		if out, err := hostPipelineDockerRun(docker, time.Minute, "rm", "-f", name); err != nil && !strings.Contains(string(out), "No such container") {
+			t.Errorf("remove the disposable container %s: %v: %s", name, err, out)
+		}
+	})
+
 	// The kernel picks the loopback port the container's sshd is published on,
 	// and `docker run` is retried with a fresh port if that one was taken in the
-	// window between the probe and the publish. A failed attempt can leave a
-	// created-but-not-started container under the name, so it is removed first.
+	// window between the probe and the publish. Each failed attempt's leftovers
+	// are removed before the next one reuses the name.
 	port := 0
 	var runOut []byte
 	var runErr error
@@ -949,11 +959,6 @@ func startHostPipelineContainer(t *testing.T) *hostPipelineContainer {
 		dir:           dir,
 		sshConfigPath: configPath,
 	}
-	t.Cleanup(func() {
-		if out, err := hostPipelineDockerRun(docker, time.Minute, "rm", "-f", name); err != nil {
-			t.Errorf("remove the disposable container %s: %v: %s", name, err, out)
-		}
-	})
 
 	if err := os.WriteFile(configPath, []byte(hostPipelineSSHConfig(alias, port, keyPath)), 0o600); err != nil {
 		t.Fatalf("write the per-run ssh_config %s: %v", configPath, err)
@@ -1072,16 +1077,16 @@ CMD ["/usr/sbin/sshd", "-D", "-e"]
 `
 
 // ensureHostPipelineImage returns the cached disposable-host image, building it
-// once when it is absent.
+// once when it is absent. The build context lives in this test's own t.TempDir()
+// and is removed with it: the image cache is the tag, so nothing is gained by
+// keeping the context around, and a fixed shared path would race (or linger)
+// across runs.
 func ensureHostPipelineImage(t *testing.T, docker string) string {
 	t.Helper()
 	if _, err := hostPipelineDockerRun(docker, time.Minute, "image", "inspect", hostPipelineImage); err == nil {
 		return hostPipelineImage
 	}
-	contextDir := filepath.Join(testEnv.Root, "e2e-ssh-image")
-	if err := os.MkdirAll(contextDir, 0o700); err != nil {
-		t.Fatalf("create the image build context %s: %v", contextDir, err)
-	}
+	contextDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte(hostPipelineDockerfile), 0o600); err != nil {
 		t.Fatalf("write the image Dockerfile: %v", err)
 	}
@@ -1113,7 +1118,12 @@ func hostPipelineFreePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("reserve a loopback port for the container's sshd: %v", err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = listener.Close()
+		t.Fatalf("the reserved loopback listener reports a %T address, want *net.TCPAddr", listener.Addr())
+	}
+	port := tcpAddr.Port
 	if err := listener.Close(); err != nil {
 		t.Fatalf("release the reserved loopback port %d: %v", port, err)
 	}
@@ -1250,6 +1260,8 @@ func TestHostPipelineParseBindFreeAddr(t *testing.T) {
 		{name: "unavailable", out: hostPipelinePortAllocUnavailable + "\n"},
 		{name: "failed bind falls back", out: hostPipelinePortAllocFailed + "\n"},
 		{name: "portless", out: hostPipelinePortAllocPrefix + "127.0.0.1:\n", wantErr: true},
+		{name: "port zero", out: hostPipelinePortAllocPrefix + "127.0.0.1:0\n", wantErr: true},
+		{name: "port out of range", out: hostPipelinePortAllocPrefix + "127.0.0.1:65536\n", wantErr: true},
 		{name: "non-loopback", out: hostPipelinePortAllocPrefix + "10.0.0.1:39381\n", wantErr: true},
 		{name: "unrecognized output", out: "hello\n", wantErr: true},
 	} {
