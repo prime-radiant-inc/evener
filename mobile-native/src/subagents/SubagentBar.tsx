@@ -1,6 +1,9 @@
 // Where a running subagent's composer would be (spec 9, ruling 30): the hub
 // takes no message for a running subagent, so its screen offers the one
 // thing you can do about it, stop it, and a way back to its coordinator.
+// The two stack, each the bar's full width: side by side, "Ask coordinator
+// to stop it" needs about 180pt of the 143pt half the bar leaves it even at
+// the default text size (device audit N9), and every label keeps to one line.
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -20,7 +23,7 @@ export function SubagentBar({
 	const scale = useTextScale();
 	const label = { fontSize: 15 * scale, lineHeight: 20 * scale };
 	return (
-		<View style={{ flexDirection: "row", gap: 8, padding: 12 }}>
+		<View testID="subagent-bar" style={{ flexDirection: "column", gap: 8, padding: 12 }}>
 			{offer === "stop" || offer === "ask" ? (
 				<Pressable
 					accessibilityRole="button"
@@ -28,7 +31,6 @@ export function SubagentBar({
 					accessibilityState={{ disabled: false }}
 					onPress={onStop}
 					style={({ pressed }) => ({
-						flex: 1,
 						minHeight: 44,
 						flexDirection: "row",
 						alignItems: "center",
@@ -42,18 +44,16 @@ export function SubagentBar({
 					})}
 				>
 					<SymbolView name="stop.fill" size={12} tintColor={palette.inkHi} />
-					{/* Half the bar is too narrow for "Ask coordinator to stop it" on
-					    one line, so it wraps rather than lose its last words. */}
 					<Text
 						allowFontScaling={allowFontScaling}
-						numberOfLines={2}
+						numberOfLines={1}
 						style={{ ...label, flexShrink: 1, textAlign: "center", color: palette.inkHi }}
 					>
 						{offer === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
 					</Text>
 				</Pressable>
 			) : offer === "requested" ? (
-				<View style={{ flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+				<View style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}>
 					<Text allowFontScaling={allowFontScaling} style={{ ...label, color: palette.inkMid }}>
 						Stop requested
 					</Text>
@@ -65,7 +65,6 @@ export function SubagentBar({
 				accessibilityState={{ disabled: false }}
 				onPress={onOpenCoordinator}
 				style={({ pressed }) => ({
-					flex: 1,
 					minHeight: 44,
 					alignItems: "center",
 					justifyContent: "center",

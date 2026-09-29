@@ -156,6 +156,27 @@ describe("LiveStatusTray", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
+	it("advances a thought's clock while it shows", () => {
+		const startedAt = new Date(Date.now() - 12_000).toISOString();
+		const thinking = {
+			...session(true, Date.now()),
+			activeTurnId: "t1",
+			turns: [
+				{
+					id: "t1",
+					status: "inProgress",
+					items: [{ id: "r1", type: "reasoning", text: "", status: "inProgress", startedAt }],
+				},
+			],
+		} as unknown as TraySource;
+		const tree = render(live(thinking));
+		expect(renderedText(tree)).toContain("Thinking… · 12s");
+		act(() => {
+			vi.advanceTimersByTime(3000);
+		});
+		expect(renderedText(tree)).toContain("Thinking… · 15s");
+	});
+
 	it("shows the one-bar fallback until a frame arrives, then this phone's counts", () => {
 		const frames = new FrameCounter();
 		const tree = render(live(session(true, Date.now()), frames));
