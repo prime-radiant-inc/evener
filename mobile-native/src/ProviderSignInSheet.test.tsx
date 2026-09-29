@@ -310,7 +310,9 @@ it("shows a failed start's message and starts again from Start again", async () 
 	const text = renderedText(tree);
 	// What happened, and the one thing to do, never a guess at the connection
 	// (spec 5): the status line speaks for the connection.
-	expect(text).toContain(`The hub couldn't start signing in to ${PROVIDER}. Start again.`);
+	// The sheet's title already names the provider; the message never
+	// repeats the instance's id.
+	expect(text).toContain("The hub couldn't start signing in. Start again.");
 	expect(text).not.toContain("connection");
 	expect(text).not.toMatch(NO_OLD_CONTROLS);
 	await press(tree, "Start again");

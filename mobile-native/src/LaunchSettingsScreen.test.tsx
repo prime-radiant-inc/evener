@@ -48,6 +48,7 @@ function launchHub() {
 	const hub = new FakeClient("ready");
 	let layerReads = 0;
 	let failReads = 0;
+	let failResolves = 0;
 	let model = "gpt-5.6";
 	hub.on("evener/launch/schema", () => ({ options: [option] }));
 	hub.on("evener/launch/getLayer", () => {
@@ -58,12 +59,21 @@ function launchHub() {
 		}
 		return { model };
 	});
-	hub.on("evener/launch/resolve", () => ({ effective: { model }, layers: {}, provenance: {} }));
+	hub.on("evener/launch/resolve", () => {
+		if (failResolves > 0) {
+			failResolves -= 1;
+			throw new Error("down");
+		}
+		return { effective: { model }, layers: {}, provenance: {} };
+	});
 	return {
 		hub,
 		reads: () => layerReads,
 		failNext: () => {
 			failReads = 1;
+		},
+		failNextResolve: () => {
+			failResolves = 1;
 		},
 		changeElsewhere: (next: string) => {
 			model = next;
@@ -81,6 +91,20 @@ async function mount(hub: FakeClient) {
 	const tree = render(<LaunchSettingsScreen {...props} />);
 	await act(async () => {});
 	return tree;
+}
+
+async function editModel(tree: ReturnType<typeof render>, value: string) {
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Edit Model" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Model")
+			.props.onChangeText(value);
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
+	});
 }
 
 beforeEach(() => {
@@ -136,4 +160,50 @@ it("says a change made elsewhere while editing, and lets you discard your edit t
 	await act(async () => discard?.onPress?.());
 	expect(renderedText(tree)).not.toContain("changed elsewhere");
 	expect(renderedText(tree)).toContain("gpt-5.7");
+});
+
+it("re-reads effective values that failed to load when the page comes back into view", async () => {
+	const launch = launchHub();
+	launch.failNextResolve();
+	const tree = await mount(launch.hub);
+	expect(renderedText(tree)).toContain("Effective launch values could not be loaded.");
+	await act(async () => {
+		harness.focus?.();
+	});
+	expect(renderedText(tree)).not.toContain("Effective launch values could not be loaded.");
+});
+
+it("keeps an unsaved edit when the page comes back into view after a failed read", async () => {
+	const launch = launchHub();
+	const tree = await mount(launch.hub);
+	await editModel(tree, "claude-5");
+	launch.failNext();
+	await act(async () => launch.changeElsewhere("gpt-5.7"));
+	const reads = launch.reads();
+	await act(async () => {
+		harness.focus?.();
+	});
+	expect(launch.reads()).toBe(reads);
+	expect(tree.root.findByProps({ accessibilityLabel: "Edit Model" }).props.accessibilityValue).toEqual({
+		text: "claude-5",
+	});
+});
+
+it("offers Discard changes only while an edit sits over a change made elsewhere, and shows an error beside it", async () => {
+	const launch = launchHub();
+	const tree = await mount(launch.hub);
+	const discard = () => tree.root.findAll((node) => node.props.accessibilityLabel === "Discard changes");
+	await editModel(tree, "claude-5");
+	expect(discard()).toHaveLength(0);
+	await act(async () => launch.changeElsewhere("gpt-5.7"));
+	expect(discard()).not.toHaveLength(0);
+	// A read that fails meanwhile says so too, never hidden behind the change.
+	launch.failNext();
+	await act(async () => launch.changeElsewhere("gpt-5.7"));
+	expect(renderedText(tree)).toContain("Could not load launch settings.");
+	expect(renderedText(tree)).toContain("Launch settings changed elsewhere. Discard your changes to see them.");
+	// Editing back to what the hub has leaves nothing to discard.
+	await editModel(tree, "gpt-5.7");
+	expect(discard()).toHaveLength(0);
+	expect(renderedText(tree)).not.toContain("changed elsewhere");
 });
