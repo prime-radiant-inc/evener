@@ -473,12 +473,12 @@ async function navigateToOnce({ ws, send }, url, onNavigated) {
  * at its Page.frameNavigated commit, every request is tagged with the loaderId
  * it reported (Network.requestWillBeSent, first writer wins - redirects
  * re-emit under the same pair), and each loadingFailed resolves through its
- * request's loaderId to the attempt that committed that frame. A seen request
- * that reported NO loaderId is anchored at SEND time to the attempt that owned
- * the live document then; a loaderId whose frame never committed falls back to
- * the attempt in flight when the failure arrived; and an UNSEEN send alone
- * anchors to the document live when the failure arrives, still the previous one
- * in the gap before a new navigation commits. Ownership is resolved when the
+ * request's loaderId to the attempt that committed that frame. A SEEN request
+ * is anchored at SEND time to the attempt that owned the live document then -
+ * both for a request that reported NO loaderId and for a loaderId whose frame
+ * never committed; an UNSEEN send alone anchors to the document live when the
+ * failure arrives, still the previous one in the gap before a new navigation
+ * commits. Ownership is resolved when the
  * verdict is read, so a failure that arrives before its frame commits still
  * resolves through the commit that later names it. The terminal attribution
  * reads only the final attempt's failures, so a flap that killed an earlier
@@ -521,6 +521,7 @@ export async function navigateTo(
   const requestOwners = new Map();
   const navigationAttempts = new Map();
   const loaderAttempts = new Map();
+  const frameAttempts = new Map();
   const failures = [];
   // The last navigation whose main frame has COMMITTED (Page.frameNavigated).
   // It advances only at that commit - never at the counter increment - so in
@@ -573,25 +574,33 @@ export async function navigateTo(
       // of the arrival counter. The TOP frame's commit is bound to the
       // navigation that named its loaderId (navigationAttempts), so a commit
       // delivered after the next retry began still names its own attempt; a
-      // subframe takes the attempt of the top document it belongs to
-      // (currentAttempt). Only the TOP frame defines the live-document identity
-      // (currentLoaderId/currentAttempt) that loaderless requests and unseen
-      // failures anchor to.
-      const { loaderId, parentId } = message.params.frame;
+      // subframe takes the attempt of its OWN parent frame (frameAttempts), so
+      // a delayed iframe commit from an earlier document still names that
+      // document rather than whatever retry is current. Only the TOP frame
+      // defines the live-document identity (currentLoaderId/currentAttempt)
+      // that loaderless requests and unseen failures anchor to.
+      const { id: frameId, loaderId, parentId } = message.params.frame;
       if (loaderId) {
         // Bound to its own navigation when the response named the loaderId;
         // otherwise (a response that reported none) the in-flight attempt for a
-        // top frame, and the top document's attempt for a subframe.
+        // top frame, and the parent frame's attempt for a subframe.
         const bound = navigationAttempts.get(loaderId);
-        const attempt = parentId ? (bound ?? currentAttempt ?? attempts) : (bound ?? attempts);
+        const attempt = parentId
+          ? (frameAttempts.get(parentId) ?? bound ?? currentAttempt ?? attempts)
+          : (bound ?? attempts);
         loaderAttempts.set(loaderId, attempt);
+        if (frameId) frameAttempts.set(frameId, attempt);
         if (!parentId) {
           currentLoaderId = loaderId;
           currentAttempt = attempt;
         }
       } else if (!parentId) {
+        // A top document that reported no loaderId has no identity to bind; the
+        // navigation in flight is the only owner it can have (the shared null
+        // key would hold a PREVIOUS attempt and misattribute the commit).
         currentLoaderId = null;
-        currentAttempt = navigationAttempts.get(null) ?? attempts;
+        currentAttempt = attempts;
+        if (frameId) frameAttempts.set(frameId, attempts);
       }
       return;
     }
@@ -650,7 +659,7 @@ export async function navigateTo(
       // attempt owns this navigation's loaderId, so the commit binds to THIS
       // attempt even if the load event resolved early off stale input.
       await navigateToOnce(page, url, (navigatedLoaderId) => {
-        navigationAttempts.set(navigatedLoaderId, attempts);
+        if (navigatedLoaderId) navigationAttempts.set(navigatedLoaderId, attempts);
       });
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
