@@ -428,9 +428,7 @@ describe("a run's one line", () => {
 			["skill", "used 2 skills"],
 		]);
 		expect(
-			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map(
-				(part) => part.text,
-			),
+			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
 		).toEqual(["used github 2 times"]);
 	});
 });

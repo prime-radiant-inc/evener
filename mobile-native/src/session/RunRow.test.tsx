@@ -35,7 +35,10 @@ function step(id: string, label: string, args: Record<string, unknown>, over: Pa
 		...over,
 	};
 	const { arguments: argumentsJSON, output } = built.detail;
-	return { ...built, detail: { ...built.detail, summary: toolStepSummary({ toolName: label, argumentsJSON, output }) } };
+	return {
+		...built,
+		detail: { ...built.detail, summary: toolStepSummary({ toolName: label, argumentsJSON, output }) },
+	};
 }
 
 const run: Run = {
@@ -235,7 +238,7 @@ describe("a step's evidence", () => {
 		const tree = render(
 			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-none" />,
 		);
-		const grep = line(tree.root, 'Searched files, done');
+		const grep = line(tree.root, "Searched files, done");
 		expect(grep.props.onPress).toBeUndefined();
 		expect(grep.props.accessibilityRole).toBeUndefined();
 		expect(chevrons(tree.root)).toHaveLength(1);

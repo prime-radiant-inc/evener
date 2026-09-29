@@ -527,39 +527,36 @@ it.each([
 	["completed", "wrote 26 bytes to /tmp/request-16.txt"],
 	["failed", "permission denied"],
 	["running", undefined],
-] as const)(
-	"says a write_file step with no description in its own words (%s)",
-	(state, output) => {
-		const result = projectNativeTranscript(
-			conversation([
-				{
-					kind: "activity",
-					id: "write",
-					label: "write_file",
-					family: "tool",
-					state,
-					// A completed write_file at a compact level reaches the
-					// renderer as the projector's summarized row; a failed or
-					// running one is critical and keeps its full detail.
-					...(state === "completed" ? { summaryOnly: true } : {}),
-					detail: {
-						arguments: JSON.stringify({
-							file_path: "/tmp/request-16.txt",
-							content: "private file contents",
-						}),
-						summary: "Wrote /tmp/request-16.txt",
-						...(output ? { output } : {}),
-						error: state === "failed" ? output : undefined,
-					},
+] as const)("says a write_file step with no description in its own words (%s)", (state, output) => {
+	const result = projectNativeTranscript(
+		conversation([
+			{
+				kind: "activity",
+				id: "write",
+				label: "write_file",
+				family: "tool",
+				state,
+				// A completed write_file at a compact level reaches the
+				// renderer as the projector's summarized row; a failed or
+				// running one is critical and keeps its full detail.
+				...(state === "completed" ? { summaryOnly: true } : {}),
+				detail: {
+					arguments: JSON.stringify({
+						file_path: "/tmp/request-16.txt",
+						content: "private file contents",
+					}),
+					summary: "Wrote /tmp/request-16.txt",
+					...(output ? { output } : {}),
+					error: state === "failed" ? output : undefined,
 				},
-			]),
-			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
-		);
-		const presentation = result.activityPresentation.get("write");
-		expect(presentation?.summary).toBe("Wrote /tmp/request-16.txt");
-		expect(presentation?.summary).not.toContain("private file contents");
-	},
-);
+			},
+		]),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
+	);
+	const presentation = result.activityPresentation.get("write");
+	expect(presentation?.summary).toBe("Wrote /tmp/request-16.txt");
+	expect(presentation?.summary).not.toContain("private file contents");
+});
 
 it("keeps each member attachment adjacent while messages and unkeyed warnings retain order", () => {
 	const items: MobileTimelineItem[] = [
