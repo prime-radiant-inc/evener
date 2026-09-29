@@ -18,7 +18,7 @@ import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
 import { useColors } from "../ui";
 import { BrowseFolders } from "./BrowseFolders";
-import { creationService, creationStore } from "./creations";
+import { bindCreation, creationStore } from "./creations";
 import { AccessPicker } from "./AccessPicker";
 import { HostPicker } from "./HostPicker";
 import { ModelPicker } from "./ModelPicker";
@@ -53,18 +53,18 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	}, [store, memory, like, storageLoaded]);
 	useEffect(() => () => stopOpening.current(), []);
 
-	const service = ready && client ? creationService(client) : null;
+	const bindTo = ready && client ? client : null;
 	// A new or lost connection rebinds the store, which makes anything in
 	// flight on the old one obsolete. Closing the sheet doesn't: a start the
 	// sheet was swiped away from still lands, so the form can say the session
 	// started and clear its draft rather than leave it to be started twice.
 	useEffect(() => {
-		store.getState().bind(service);
-		if (service) {
+		bindCreation(store, bindTo);
+		if (bindTo) {
 			void store.getState().loadMetadata();
 			void store.getState().loadModels(true);
 		}
-	}, [store, service]);
+	}, [store, bindTo]);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);

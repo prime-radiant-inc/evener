@@ -8,10 +8,11 @@
 // reopened sheet shows the same form, still starting, and can't start it again.
 //
 // Each client gets one service, so a sheet reopened on the same connection
-// rebinds nothing and the start in flight survives. A store left bound to a
-// client that has since gone is harmless: the request already sent settles or
-// fails on that client, and the next sheet to open binds the current one,
-// which leaves a start still out uncertain, as any new connection does.
+// rebinds nothing and the start in flight survives. When the connection moves
+// on (another hub, a new connection, or none), ConnectionProvider releases
+// every store still bound to the old client (releaseCreations): a start sent
+// there reads as uncertain at once rather than starting forever, and Start
+// holds that draft until it changes (startMayRepeat).
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { createNewSessionService, type NewSessionService } from "../../../mobile/src/services/newSession";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
@@ -28,6 +29,8 @@ export type DraftStorage = () => Pick<CreationDraftRepository, "read" | "write" 
 let draftStorage: DraftStorage | undefined;
 const stores = perHub((hubId) => createNewSessionStore(hubId, draftStorage));
 const services = new WeakMap<ConversationClientLike, NewSessionService>();
+/** Each store bound to a client, and which. */
+const bound = new Map<NewSessionStore, ConversationClientLike>();
 
 /** The hub's creation store, made on first use with `storage` and kept until
  * the hub is removed. */
@@ -46,10 +49,28 @@ export function creationService(client: ConversationClientLike): NewSessionServi
 	return service;
 }
 
+/** Binds the store to this client's service, or to none. */
+export function bindCreation(store: NewSessionStore, client: ConversationClientLike | null): void {
+	store.getState().bind(client ? creationService(client) : null);
+	if (client) bound.set(store, client);
+	else bound.delete(store);
+}
+
+/** The connection now runs on `client`, or on none (disconnected, another
+ * hub, a new connection): every store still bound to another client lets go
+ * of it, so a start sent there is known to be uncertain now, rather than
+ * waiting on a client that may never answer. */
+export function releaseCreations(client: ConversationClientLike | null): void {
+	for (const [store, boundTo] of [...bound]) if (boundTo !== client) bindCreation(store, null);
+}
+
 /** A removed hub's store goes, retired, so nothing it was doing lands or
  * says anything. */
 export function forgetCreationForHub(hubId: string): void {
-	stores.forget(hubId)?.getState().retire();
+	const store = stores.forget(hubId);
+	if (!store) return;
+	bound.delete(store);
+	store.getState().retire();
 }
 
 /** The form showing a store: when a start lands, the form in front then

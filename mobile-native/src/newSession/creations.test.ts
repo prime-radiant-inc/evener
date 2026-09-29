@@ -1,6 +1,13 @@
 import { expect, it } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { type DraftStorage, creationService, creationStore as hubStore, forgetCreationForHub } from "./creations";
+import {
+	bindCreation,
+	creationService,
+	creationStore as hubStore,
+	type DraftStorage,
+	forgetCreationForHub,
+	releaseCreations,
+} from "./creations";
 
 const noDrafts: DraftStorage = () => ({ read: () => null, write: () => {}, clear: () => {} });
 const creationStore = (hubId: string) => hubStore(hubId, noDrafts);
@@ -35,4 +42,22 @@ it("forgets a removed hub's store, unbound, and leaves the others", async () => 
 	expect(creationStore("hub-b")).toBe(kept);
 	forgetCreationForHub("hub-a");
 	forgetCreationForHub("hub-b");
+});
+
+it("lets go of a client the connection has left, so a start on it doesn't wait forever (#3104)", async () => {
+	const held = { request: () => new Promise(() => {}) } as unknown as ConversationClientLike;
+	const store = creationStore("hub-a");
+	bindCreation(store, held);
+	await store.getState().setCwd("/project", false);
+	store.getState().setPrompt("go");
+	void store.getState().submit();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(store.getState().submitting).toBe(true);
+	// Still the live client: nothing changes.
+	releaseCreations(held);
+	expect(store.getState().submitting).toBe(true);
+	// Disconnected (or another hub, or a new connection): the start is let go, uncertain.
+	releaseCreations(null);
+	expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
+	forgetCreationForHub("hub-a");
 });
