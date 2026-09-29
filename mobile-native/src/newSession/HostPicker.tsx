@@ -1,8 +1,9 @@
 // New session's host picker (spec 11; rulings 3 and 4): the hub's own machine,
 // named after the hub, then each of the hub's hosts. A connected host shows its
 // system and live sessions; an offline one shows its state, can't be chosen,
-// and offers Connect when the hub isn't already reaching for it. Choosing a
-// host moves the form there (ruling 17) and goes back to it.
+// and offers Connect when the hub isn't already reaching for it, saying why
+// when the hub refused. Choosing a host moves the form there (ruling 17) and
+// goes back to it.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, Text, View } from "react-native";
 import { useStore } from "zustand";
@@ -11,7 +12,7 @@ import { HostsNotListed } from "../hosts/HostsNotListed";
 import { hostStatus, systemLabel } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";
 import { useFleetOnScreen } from "../hosts/useFleetOnScreen";
-import { Group, GroupedPage, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
@@ -66,6 +67,10 @@ export function HostPicker({ navigation }: NativeStackScreenProps<NewSessionRout
 					);
 				})}
 			</Group>
+			{rows.map((row) => {
+				const refusal = state.connectErrors.get(row.name);
+				return refusal ? <GroupFooter key={row.name} tone="danger">{`${row.name}: ${refusal}`}</GroupFooter> : null;
+			})}
 		</GroupedPage>
 	);
 }

@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
-import { pressable, render, textOf } from "../renderNative.testkit";
+import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import { HostPicker } from "./HostPicker";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -136,5 +136,15 @@ it("changes the host and goes back to the form when one is chosen", async () => 
 	await settle();
 	expect(picker.store.getState().source).toBe("local");
 	expect(picker.navigation.goBack).toHaveBeenCalledTimes(2);
+	picker.dispose();
+});
+
+it("says why the hub refused to connect a host", async () => {
+	const picker = await mount([hostRow("attic", { attached: false })]);
+	picker.fleet.attach.refuse = "ssh: connect to host attic port 22: Connection refused";
+	await act(async () => pressable(picker.tree, "Connect attic")?.props.onPress());
+	await settle();
+	expect(renderedText(picker.tree)).toContain("attic: ssh: connect to host attic port 22: Connection refused");
+	expect(textOf(pressable(picker.tree, "Connect attic") as never)).toBe("Connect");
 	picker.dispose();
 });
