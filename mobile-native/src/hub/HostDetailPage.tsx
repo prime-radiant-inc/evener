@@ -12,7 +12,7 @@ import { whenReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { hostStatus, systemLabel, VERSION_DRIFT_FOOTER, versionDriftTag } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -78,12 +78,9 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				<Row label="Defined in" value={row.origin === "sidecar" ? "the app or web" : "hub.toml"} />
 			</Group>
 			{!row.attached && row.lastAttachError ? (
-				<>
-					<GroupLabel>Last error</GroupLabel>
-					<GroupFooter tone="danger" machine>
-						{row.lastAttachError}
-					</GroupFooter>
-				</>
+				<Group label="Last error">
+					<Row label={row.lastAttachError} machineLabel tone="danger" />
+				</Group>
 			) : null}
 			<Group>
 				{!row.attached && (status.canConnect || connecting) ? (
