@@ -23,7 +23,7 @@
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
-import type { SteeringKind } from "@evener/appwire-client";
+import { parseSteeringNotifications, type SteeringKind } from "@evener/appwire-client";
 import { memo } from "react";
 import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -31,7 +31,6 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { NotificationCard } from "./NotificationCard";
-import { parseSteeringNotifications } from "./steeringClassify";
 import styles from "./steeringitem.module.css";
 import { UserMessageView } from "./UserMessageItem";
 

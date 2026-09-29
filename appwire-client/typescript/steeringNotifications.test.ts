@@ -6,7 +6,12 @@ import {
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
-} from "./steeringClassify";
+} from "./steeringNotifications";
+import {
+  type NotificationWireCase,
+  notificationWireItem,
+  notificationWireItems,
+} from "./testing/notificationWireFixtures";
 
 // notificationsOf flattens the ordered fragment list down to just its parsed
 // notifications, in order - most existing tests here only care about the
@@ -26,15 +31,15 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
   return n;
 }
 
-// steeringClassify.ts now parses only STRUCTURED notification payloads -
+// steeringNotifications.ts now parses only STRUCTURED notification payloads -
 // <job-notification> markup and the historic "Observer callback:\n" header
-// (no longer emitted -- see the steeringClassify.ts header; these cases pin
+// (no longer emitted -- see the steeringNotifications.ts header; these cases pin
 // how a transcript recorded while it WAS emitted must still replay). The prose classifier that used to
 // guess a steering "kind" from wording is gone (SteeringItem.tsx routes on
 // ItemModel.steeringKind instead); this pins that its exports stay gone.
 
 test("no longer exports a prose classifier", async () => {
-  const mod = await import("./steeringClassify");
+  const mod = await import("./steeringNotifications");
   expect("classifySteering" in mod).toBe(false);
   expect("steeringTreatment" in mod).toBe(false);
 });
@@ -1178,4 +1183,88 @@ Job self completed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch fired on this session");
+});
+
+// --- the daemon's own frames (agent/testdata/notificationwire) -------------
+//
+// Every case below parses a steering item the real producers wrote, so these
+// pin the shapes a session actually receives rather than markup a test made up.
+
+function wireNotifications(name: NotificationWireCase): ParsedNotification[] {
+  return notificationsOf(parseSteeringNotifications(notificationWireItem(name).text ?? ""));
+}
+
+test("a subagent's report parses its name, outcome and message from the packet body", () => {
+  const [n, ...rest] = wireNotifications("delegate-reported");
+  expect(rest).toHaveLength(0);
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate completed",
+    tone: "success",
+    outcome: "completed",
+    delegateId: "dlg_1",
+    name: "Fix race in tree settle",
+    secondary: "Fix race in tree settle",
+    message: "Done: the settle pass now waits for the drain.\n\nTests: go test ./agent/... passes.",
+  });
+  expect(n?.rawText).toBe(notificationWireItem("delegate-reported").text);
+});
+
+test("an unnamed subagent's failure parses as a failure carrying its message", () => {
+  const [n] = wireNotifications("delegate-failed-unnamed");
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate failed",
+    tone: "error",
+    outcome: "failed",
+    delegateId: "dlg_2",
+    message: "go test exited 1 three times",
+    secondary: "dlg_2 · failed",
+  });
+  expect(n?.name).toBeUndefined();
+});
+
+test("a subagent the user stopped parses as stopped", () => {
+  const [n] = wireNotifications("delegate-stopped");
+  expect(n).toMatchObject({
+    type: "delegate",
+    tone: "warning",
+    outcome: "stopped",
+    name: "Check drain ordering",
+    message: "Stopped by the user.",
+  });
+});
+
+test("the quiet watchdog parses how long the subagent has been quiet", () => {
+  const [n] = wireNotifications("delegate-quiet");
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate quiet",
+    tone: "neutral",
+    delegateId: "dlg_1",
+    quiet: { window: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
+  });
+  expect(n?.outcome).toBeUndefined();
+  expect(n?.message).toBeUndefined();
+});
+
+test("a background job's frames parse their outcome", () => {
+  expect(wireNotifications("job-shell-completed")).toMatchObject([
+    { type: "job", outcome: "completed", intent: "Run the agent tests", excerpt: expect.stringContaining("ok  ") },
+  ]);
+  expect(wireNotifications("job-shell-failed")).toMatchObject([
+    { type: "job", title: "Command failed", tone: "error", outcome: "failed", exitCode: 1 },
+  ]);
+  const [stopped, timer] = wireNotifications("job-pair");
+  expect(stopped).toMatchObject({ type: "job", outcome: "stopped", intent: "Tail the hub log" });
+  expect(timer).toMatchObject({ type: "watch", title: "Timer fired" });
+  expect(timer?.outcome).toBeUndefined();
+});
+
+test("no recorded frame leaves markup in any fragment", () => {
+  for (const item of notificationWireItems()) {
+    for (const fragment of parseSteeringNotifications(item.text ?? "")) {
+      expect(fragment.kind).toBe("notification");
+    }
+  }
 });
