@@ -95,8 +95,9 @@ func decodeTaskStrict(t *testing.T, path string) probeFile {
 
 // unformattedFixtureFiles names the fixture's Go files that do not parse or
 // that gofmt would change. An agent that formats the tree must leave the
-// fixture as it was, or a check such as "original tests pass" fails for a reason
-// that has nothing to do with the prompt.
+// fixture as it was, or a check that diffs against the fixture's first commit,
+// such as "export changed", passes or fails for a reason that has nothing to
+// do with the prompt.
 func unformattedFixtureFiles(fixture fixtureSpec) []string {
 	var bad []string
 	for _, files := range []map[string]string{fixture.Files, fixture.Untracked} {
@@ -210,15 +211,16 @@ func TestFirstCommitCheckJudgesACommittedChangeCorrectly(t *testing.T) {
 
 // TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes: the tasks
 // guard against an agent weakening the tests it was given, not against an
-// agent adding coverage. The check runs the fixture's original test file
-// against the agent's code, so a correct fix with an added test passes, and
-// skipping or deleting the original tests gains nothing.
+// agent adding coverage. The check runs the fixture's original test files
+// against the agent's code, with none of the agent's own test files, so a
+// correct fix with added tests passes, and replacing the original tests or
+// adding a TestMain that exits early gains nothing.
 func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		task, testFile string
 		// untouchedFails: the fixture's own code fails its original tests,
-		// so a weakened test file with no fix must fail the check.
+		// so weakened tests with no fix must fail the check.
 		untouchedFails bool
 	}{
 		{"ambiguous-export.yaml", "export/export_test.go", false},
@@ -238,33 +240,39 @@ func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 				t.Fatalf("%s has no %q check", tc.task, "original tests pass")
 			}
 			original := probe.Fixture.Files[tc.testFile]
-
-			added := filepath.Join(t.TempDir(), "work")
-			if err := materializeFixture(added, probe.Fixture); err != nil {
-				t.Fatal(err)
+			pkgLine, _, _ := strings.Cut(original, "\n")
+			dir := filepath.Dir(tc.testFile)
+			fresh := func() string {
+				work := filepath.Join(t.TempDir(), "work")
+				if err := materializeFixture(work, probe.Fixture); err != nil {
+					t.Fatal(err)
+				}
+				return work
 			}
+
+			added := fresh()
 			if ok, detail := runCheck(added, checkSpec{Name: "reference", Run: probe.Reference}, 3*time.Minute); !ok {
 				t.Fatalf("reference solution failed: %s", detail)
 			}
 			mustWrite(t, filepath.Join(added, tc.testFile), original+"\nfunc TestAddedByTheAgent(t *testing.T) {}\n")
+			mustWrite(t, filepath.Join(added, dir, "extra_test.go"), pkgLine+"\n\nimport \"testing\"\n\nfunc TestInANewFile(t *testing.T) {}\n")
 			if ok, detail := runCheck(added, check, checkTimeout); !ok {
-				t.Errorf("a correct fix plus an added test failed %q: %s", check.Name, detail)
+				t.Errorf("a correct fix plus added tests failed %q: %s", check.Name, detail)
 			}
 
 			if !tc.untouchedFails {
 				return
 			}
-			skipped := filepath.Join(t.TempDir(), "work")
-			if err := materializeFixture(skipped, probe.Fixture); err != nil {
-				t.Fatal(err)
+			replaced := fresh()
+			mustWrite(t, filepath.Join(replaced, tc.testFile), pkgLine+"\n\nimport \"testing\"\n\nfunc TestNothing(t *testing.T) {}\n")
+			if ok, _ := runCheck(replaced, check, checkTimeout); ok {
+				t.Errorf("replacing the original tests with no fix passed %q", check.Name)
 			}
-			weakened := strings.ReplaceAll(original, "(t *testing.T) {", "(t *testing.T) {\n\tt.Skip()")
-			if weakened == original {
-				t.Fatalf("%s has no test function to skip", tc.testFile)
-			}
-			mustWrite(t, filepath.Join(skipped, tc.testFile), weakened)
-			if ok, _ := runCheck(skipped, check, checkTimeout); ok {
-				t.Errorf("skipping the original tests with no fix passed %q", check.Name)
+
+			exited := fresh()
+			mustWrite(t, filepath.Join(exited, dir, "main_test.go"), pkgLine+"\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(0) }\n")
+			if ok, _ := runCheck(exited, check, checkTimeout); ok {
+				t.Errorf("a new TestMain that exits early passed %q with no fix", check.Name)
 			}
 		})
 	}

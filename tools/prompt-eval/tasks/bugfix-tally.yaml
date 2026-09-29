@@ -48,7 +48,19 @@ expect:
       run: go test ./...
     - name: original tests pass
       run: |
-        set -e; first=$(git rev-list --max-parents=0 HEAD); tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT; cp -R . "$tmp"; git show "$first:tally/sum_test.go" > "$tmp/tally/sum_test.go"; cd "$tmp"; go test ./...
+        first=$(git rev-list --max-parents=0 HEAD) || exit 1
+        tests=$(git ls-tree -r --name-only "$first" | grep '_test\.go$') || exit 1
+        tmp=$(mktemp -d /tmp/prompt-eval-original-tests.XXXXXX) || exit 1
+        (
+          set -e
+          tar -cf - --exclude=.git --exclude='*_test.go' . | tar -xf - -C "$tmp"
+          git archive "$first" $tests | tar -xf - -C "$tmp"
+          cd "$tmp"
+          go test ./...
+        )
+        status=$?
+        rm -rf "$tmp"
+        exit $status
 reference: |
   cat > tally/sum.go <<'EOF'
   package tally
