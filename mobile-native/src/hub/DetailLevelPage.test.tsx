@@ -461,3 +461,15 @@ it("saves nothing when the level already chosen is chosen again", async () => {
 	await press("Intent, Plus one folded line for each run of steps");
 	expect(fake.calls).toEqual([]);
 });
+
+it.each([
+	["a conflict", { conflict: true }, "The hub's setting changed while you were choosing."],
+	["an unsaved choice", {}, "This change hasn't reached the hub yet."],
+])("leads with the levels and says %s beneath them (audit M12)", (_name, over, line) => {
+	const hubs = { revision: 4, config: PRESET };
+	const { tree } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, confirmed: hubs, ...over }));
+	const text = renderedText(tree);
+	// The levels' own group, then the line about the choice made in it.
+	expect(text.indexOf("Custom")).toBeGreaterThan(-1);
+	expect(text.indexOf("Custom")).toBeLessThan(text.indexOf(line));
+});
