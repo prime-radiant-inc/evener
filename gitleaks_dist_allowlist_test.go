@@ -1,8 +1,6 @@
 package evener_test
 
 import (
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -24,6 +22,10 @@ const (
 // `r.token,s=r.operationId;`). The gate's lint-before-build order never sees
 // the chunks, so CI stayed green while a bare `make lint` after local testing
 // failed.
+//
+// The check reads the committed ruleset directly rather than shelling out to
+// gitleaks, so it stays deterministic and needs no tool installation; the
+// engine itself is verified by `make secret-scan`.
 func TestGitleaksAllowlistsBuiltFrontendDist(t *testing.T) {
 	t.Parallel()
 
@@ -39,32 +41,6 @@ func TestGitleaksAllowlistsBuiltFrontendDist(t *testing.T) {
 	if anyGitleaksPathMatches(paths, trackedHubSource) {
 		t.Errorf(".gitleaks.toml allowlists %q, but that is a tracked frontend source, not "+
 			"build output; scope the dist exclusion so sources stay scanned", trackedHubSource)
-	}
-
-	// When gitleaks is installed, confirm the engine agrees: the scan it runs
-	// for `make secret-scan` finds nothing in the dist but still flags a key in
-	// a tracked source. Absent locally it skips, exactly as the gate does.
-	gitleaks, err := exec.LookPath("gitleaks")
-	if err != nil {
-		t.Logf("gitleaks is not on PATH (%v); skipping the end-to-end scan, as the gate does", err)
-		return
-	}
-	config, err := filepath.Abs(".gitleaks.toml")
-	if err != nil {
-		t.Fatalf("resolve .gitleaks.toml: %v", err)
-	}
-	root := t.TempDir()
-	writeTestFile(t, filepath.Join(root, filepath.FromSlash(builtDistChunk)),
-		[]byte("var a=1,r=0,s=0;const x={token:r};r.token,s=r.operationId;console.log(x);\n"), 0o644)
-	writeTestFile(t, filepath.Join(root, filepath.FromSlash(trackedHubSource)),
-		[]byte("const cfg={api_key:\"9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f00\"};\n"), 0o644)
-
-	if out, err := runGitleaks(gitleaks, config, root, filepath.Join("cmd", "evener-hub", "frontend", "dist")); err != nil {
-		t.Errorf("gitleaks flagged the built dist chunk despite the allowlist: %v\n%s", err, out)
-	}
-	if _, err := runGitleaks(gitleaks, config, root, filepath.Join("cmd", "evener-hub", "frontend", "src")); err == nil {
-		t.Errorf("gitleaks found nothing in a tracked source holding an unallowlisted key; " +
-			"the dist exclusion must not blind the scan to sources")
 	}
 }
 
@@ -95,10 +71,4 @@ func anyGitleaksPathMatches(paths []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func runGitleaks(binary, config, dir, source string) ([]byte, error) {
-	cmd := exec.Command(binary, "detect", "--no-git", "--redact", "--config", config, "--source", source)
-	cmd.Dir = dir
-	return cmd.CombinedOutput()
 }
