@@ -181,6 +181,20 @@ export function readerAnchorAt(
 	};
 }
 
+/** The row a scroll to `y` anchors on: the first one reaching past `y`. A
+ * time marker is passed over, since loading an older page can remove it. */
+export function readerAnchorRow(
+	rows: readonly TimelineRow[],
+	measurements: ReadonlyMap<string, ReaderMeasurement>,
+	y: number,
+): TimelineRow | undefined {
+	return rows.find((row) => {
+		if (row.kind === "time") return false;
+		const measurement = measurements.get(readerKey(row));
+		return measurement && measurement.y + measurement.height > y;
+	});
+}
+
 export function captureReaderAnchor(
 	hubId: string,
 	sessionRef: string,

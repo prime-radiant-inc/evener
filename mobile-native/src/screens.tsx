@@ -105,6 +105,7 @@ import {
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
 	readerAnchorAt,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -1156,7 +1157,7 @@ export function ConversationScreen({
 		() =>
 			// Your answers to a question show beneath the question itself.
 			hideAnswerMessages(
-				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], undefined, {
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: !!snapshot.olderCursor,
 				}),
 			),
@@ -2606,10 +2607,7 @@ export function ConversationScreen({
 								if (follow.state.current.touch === "none" && !follow.state.current.following)
 									follow.dispatch({ type: "assistiveScroll" });
 								if (!follow.state.current.following) pageOlderNear(y);
-								const visible = timelineRows.find((item) => {
-									const measurement = readerMeasurements.current.get(readerKey(item));
-									return measurement && measurement.y + measurement.height > y;
-								});
+								const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
 								if (visible) {
 									readerAnchor.current = captureReaderAnchor(
 										route.params.hubId,
