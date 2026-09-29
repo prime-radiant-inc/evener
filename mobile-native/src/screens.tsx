@@ -886,8 +886,6 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
-	// While you type, Next steps aside and the queue folds to one line, so the
-	// transcript keeps its room; both return when the keyboard lowers.
 	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
@@ -2423,12 +2421,16 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
+	// Typing in the composer: Next steps aside and the queue folds to one line,
+	// so the transcript keeps its room; both return when the keyboard lowers.
+	// A keyboard up for a dock's own field is not this.
+	const typing = keyboardShown && composerShown;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something, you are finding in it (spec 8.3), or you are typing.
 	const nextTarget =
-		approval === null && questionBatch === null && find === null && !keyboardShown ? (queue[0] ?? null) : null;
+		approval === null && questionBatch === null && find === null && !typing ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2453,7 +2455,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				typing={keyboardShown}
+				typing={typing}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);

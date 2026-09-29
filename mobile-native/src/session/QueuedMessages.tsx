@@ -3,11 +3,11 @@
 // the queue is one quiet row that opens the Queue sheet (ruling 18). While
 // you type, the queue folds to one line so the transcript keeps its room.
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type GhostBackdrop, GhostBubble, GhostButton } from "./GhostBubble";
-import { type Ghost, type GhostAction, shownGhosts } from "./ghosts";
+import { foldQueue, type Ghost, type GhostAction, type QueueFold, shownGhosts } from "./ghosts";
 
 export interface QueuedMessagesProps {
 	ghosts: readonly Ghost[];
@@ -41,21 +41,14 @@ export function QueuedMessages({
 	const scale = useTextScale();
 	// Opened while typing; the next time you type, the queue folds again.
 	const [opened, setOpened] = useState(false);
-	useEffect(() => {
-		if (!typing) setOpened(false);
-	}, [typing]);
+	if (!typing && opened) setOpened(false);
 	if (ghosts.length === 0) return null;
-	const queue = ghosts.filter((ghost) => ghost.origin.kind === "queue");
-	const folded = typing && !opened && queue.length > 0;
-	const { shown, moreQueued } = folded
-		? { shown: ghosts.filter((ghost) => ghost.origin.kind !== "queue"), moreQueued: 0 }
-		: shownGhosts(ghosts);
+	const { fold, rest } = typing && !opened ? foldQueue(ghosts) : { fold: null, rest: ghosts };
+	const { shown, moreQueued } = fold ? { shown: rest, moreQueued: 0 } : shownGhosts(ghosts);
 	const more = `${moreQueued} more queued`;
 	return (
 		<View style={{ gap: 8 }}>
-			{folded ? (
-				<FoldedQueue queue={queue} disabled={disabled} onAction={onAction} onOpen={() => setOpened(true)} />
-			) : null}
+			{fold ? <FoldedQueue fold={fold} disabled={disabled} onAction={onAction} onOpen={() => setOpened(true)} /> : null}
 			{shown.map((ghost) => (
 				<GhostBubble
 					key={ghost.key}
@@ -93,32 +86,28 @@ export function QueuedMessages({
 	);
 }
 
-/** The queue as one line while you type: how many are waiting (a tap shows
- * them) and what you can do to the first now, as "1 queued · Steer now". */
+/** The queue as one line while you type: its count, which shows the
+ * messages, and with one, its action, as "1 queued · Steer now". */
 function FoldedQueue({
-	queue,
+	fold,
 	disabled,
 	onAction,
 	onOpen,
 }: {
-	queue: readonly Ghost[];
+	fold: QueueFold;
 	disabled: boolean;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onOpen(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const [first] = queue;
-	if (first === undefined) return null;
-	// The queue is held or queued as a whole (ghosts' queueGhosts).
-	const count = `${queue.length} ${first.state === "held" ? "held" : "queued"}`;
-	const action = first.buttons.find((button) => button === "steerNow" || button === "sendNow");
+	const { label, act } = fold;
 	const text = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkLow } as const;
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }}>
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel={count}
+				accessibilityLabel={label}
 				accessibilityHint="Shows the queued messages"
 				onPress={onOpen}
 				style={({ pressed }) => ({
@@ -129,15 +118,25 @@ function FoldedQueue({
 				})}
 			>
 				<Text allowFontScaling={allowFontScaling} style={[text, { fontVariant: ["tabular-nums"] }]}>
-					{count}
+					{label}
 				</Text>
 			</Pressable>
-			{action ? (
+			{act ? (
 				<>
-					<Text allowFontScaling={allowFontScaling} style={text}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={text}
+						accessibilityElementsHidden
+						importantForAccessibility="no"
+					>
 						·
 					</Text>
-					<GhostButton action={action} disabled={disabled} onPress={() => onAction(first, action)} />
+					<GhostButton
+						action={act.action}
+						subject={act.ghost.text}
+						disabled={disabled}
+						onPress={() => onAction(act.ghost, act.action)}
+					/>
 				</>
 			) : null}
 		</View>

@@ -163,13 +163,16 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 }
 
 /** One of a ghost's text buttons: accent, or quiet when it takes the message
- * away. Disabled, it dims and does nothing. */
+ * away. Disabled, it dims and does nothing. Away from its bubble, it names
+ * the message it acts on (`subject`) to VoiceOver. */
 export function GhostButton({
 	action,
+	subject,
 	disabled,
 	onPress,
 }: {
 	action: GhostAction;
+	subject?: string;
 	disabled: boolean;
 	onPress(): void;
 }) {
@@ -179,7 +182,7 @@ export function GhostButton({
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={BUTTON_LABELS[action]}
+			accessibilityLabel={subject === undefined ? BUTTON_LABELS[action] : `${BUTTON_LABELS[action]}, ${subject}`}
 			accessibilityState={{ disabled }}
 			disabled={disabled}
 			onPress={() => {

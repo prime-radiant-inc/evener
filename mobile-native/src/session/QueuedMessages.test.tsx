@@ -398,46 +398,48 @@ describe("swiping a ghost left (spec 8.5)", () => {
 });
 
 // While you type, the queue folds to one line so the transcript keeps its
-// room: how many are waiting and what you can do to the first (spec 8.5).
+// room: how many are waiting, and with one, what you can do to it (spec 8.5).
 // Everything returns when the keyboard lowers.
 describe("while you type", () => {
 	const second: Ghost = { ...queued, key: "queue:queue_3", text: "then deploy" };
 
-	it("folds the queue to its count and the first message's action", () => {
-		const { tree, onAction } = mount([queued, second], { typing: true });
+	it("folds one queued message to its count and its action", () => {
+		const { tree, onAction } = mount([queued], { typing: true });
 		expect(renderedText(tree)).not.toContain(queued.text);
-		expect(renderedText(tree)).not.toContain(second.text);
-		expect(pressable(tree, "2 queued")).toBeDefined();
-		press(tree, "Steer now");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		press(tree, `Steer now, ${queued.text}`);
 		expect(onAction).toHaveBeenCalledWith(queued, "steerNow");
 	});
 
-	it("says a held queue is held, and offers sending it", () => {
+	it("folds several to their count, which opens them", () => {
+		const { tree } = mount([queued, second], { typing: true });
+		expect(renderedText(tree)).not.toContain(queued.text);
+		expect(pressable(tree, `Steer now, ${queued.text}`)).toBeUndefined();
+		press(tree, "2 queued");
+		expect(renderedText(tree)).toContain(queued.text);
+		expect(renderedText(tree)).toContain(second.text);
+	});
+
+	it("says a held message is held, and offers sending it", () => {
 		const { tree, onAction } = mount([held], { typing: true });
 		expect(pressable(tree, "1 held")).toBeDefined();
 		expect(pressable(tree, "Cancel")).toBeUndefined();
-		press(tree, "Send now");
+		press(tree, `Send now, ${held.text}`);
 		expect(onAction).toHaveBeenCalledWith(held, "sendNow");
 	});
 
-	it("counts the whole queue, past the three that show", () => {
-		const five = [1, 2, 3, 4, 5].map((n): Ghost => ({ ...queued, key: `queue:q${n}`, text: `message ${n}` }));
-		const { tree } = mount(five, { typing: true });
-		expect(pressable(tree, "5 queued")).toBeDefined();
-		expect(pressable(tree, "2 more queued")).toBeUndefined();
+	it("keeps the separator out of VoiceOver", () => {
+		const { tree } = mount([queued], { typing: true });
+		const dot = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "·")[0];
+		expect(dot?.props).toMatchObject({ accessibilityElementsHidden: true, importantForAccessibility: "no" });
 	});
 
 	it("holds the action while another ghost action runs", () => {
 		const { tree, onAction } = mount([queued], { typing: true, disabled: true });
-		expect(pressable(tree, "Steer now")?.props.accessibilityState).toEqual({ disabled: true });
-		press(tree, "Steer now");
+		const action = pressable(tree, `Steer now, ${queued.text}`);
+		expect(action?.props.accessibilityState).toEqual({ disabled: true });
+		act(() => action?.props.onPress());
 		expect(onAction).not.toHaveBeenCalled();
-	});
-
-	it("offers no action when the first message has none to take now", () => {
-		const { tree } = mount([{ ...queued, buttons: [] }], { typing: true });
-		expect(pressable(tree, "1 queued")).toBeDefined();
-		expect(pressable(tree, "Steer now")).toBeUndefined();
 	});
 
 	it("keeps showing what isn't in the queue", () => {
