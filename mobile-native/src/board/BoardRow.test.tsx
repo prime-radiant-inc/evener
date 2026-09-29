@@ -229,16 +229,17 @@ describe("a Board row (spec 7.2)", () => {
 		expect(textWith(running, "2 running")).toHaveLength(1);
 		const chip = running.root.findAll((node) => node.props.testID === "subagent-chip");
 		expect(chip).toHaveLength(1);
-		// The chip's own label mirrors its text; the row keeps the why line's
-		// single source so VoiceOver never hears two subagent counts.
-		expect(chip[0]?.props.accessibilityLabel).toBe("2 running");
-		// A plain View's label is silent to VoiceOver; it has to be accessible.
-		expect(chip[0]?.props.accessible).toBe(true);
+		// The row is one accessibility element; it speaks the tally once. The why
+		// line already names the running count, so the chip adds nothing here.
+		expect(pressable(running).props.accessibilityLabel).toContain("Waiting on 2 subagents");
 		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
 
 		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
 		const chipText = textWith(failed, "3 failed")[0];
 		expect(styleOf(chipText)).toMatchObject({ color: palette.dangerInk });
+		// No why line names subagents on a failed row, so the row label carries
+		// the chip's count itself.
+		expect(pressable(failed).props.accessibilityLabel).toContain("3 failed");
 
 		// A mixed tally keeps the running run neutral and colors only the failure.
 		const mixed = mount({

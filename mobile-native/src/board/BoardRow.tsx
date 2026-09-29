@@ -25,6 +25,7 @@ import {
 } from "./attention";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
+import { isTopLevel } from "./rowActions";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
@@ -165,9 +166,17 @@ export function BoardRow({
 	const tally = chipTally(row);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	// The chip's own accessibilityLabel mirrors its text; the row speaks the
-	// why line's single source so VoiceOver never hears two subagent counts.
-	const label = [row.title, word, waiting ?? reason, age && spokenAge(age)].filter(Boolean).join(", ");
+	// The row is one accessibility element, so the chip's text reaches
+	// VoiceOver through this label, not a nested one. Speak the tally once: the
+	// why line already states the running count ("Waiting on N subagents"), so
+	// the chip adds only the failure count then (ruling 24 never speaks one).
+	const spoken = waiting ?? reason;
+	const whyNamesRunning =
+		!waiting && item.state === "working" && (activity ? activity.runningSubagents : (tally?.running ?? 0)) > 0;
+	const chipLabel = tally
+		? subagentChipText({ running: whyNamesRunning ? 0 : tally.running, failed: tally.failed })
+		: "";
+	const label = [row.title, word, spoken, chipLabel || undefined, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -286,8 +295,6 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 	return (
 		<View
 			testID="subagent-chip"
-			accessible
-			accessibilityLabel={subagentChipText(tally)}
 			style={{
 				backgroundColor: palette.inset,
 				borderRadius: 4,
@@ -311,15 +318,12 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 	);
 }
 
-// A row kind that is not a top-level session: a subagent, a fork original or a
-// cluster member (board/rowActions.ts NESTED). Only a live root carries a
-// subagent tally (S3, D1), and the hub may set one on a nested fork row, so the
-// chip gates on the kind the way the web rail's isTopLevelSession does.
-const NESTED_KINDS = new Set(["subagent", "fork", "cluster"]);
 /** The tally a row's chip shows, or null for a nested row or one with nothing
- * to show (subagentTallyToShow gates on live and non-empty). */
-const chipTally = (session: NavigationSessionSummary) =>
-	NESTED_KINDS.has(session.kind) ? null : subagentTallyToShow(session);
+ * to show (subagentTallyToShow gates on live and non-empty). Only a live root
+ * carries a subagent tally (S3, D1), and the hub may set one on a nested fork
+ * row, so the chip gates on the kind the way the web rail's isTopLevelSession
+ * does. */
+const chipTally = (session: NavigationSessionSummary) => (isTopLevel(session) ? subagentTallyToShow(session) : null);
 
 /** A session row's subagent chip, for the lists that render their own rows
  * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
