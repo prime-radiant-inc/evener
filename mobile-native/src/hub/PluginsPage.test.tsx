@@ -31,7 +31,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
-import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { Button, Group, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 
@@ -3494,7 +3494,25 @@ it("offers Install and Open as a catalog row's own mini button, as the prototype
 		["Open", "Open tool from acme"],
 		["Install", "Install gadget from acme"],
 	]);
-	// The row itself is plain text beside its button.
+	// The row itself is one plain reading beside its button: the button is the
+	// row's only target.
 	const row = tree.root.find((node) => node.type === Row && node.props.label === "gadget");
-	expect(row.props.onPress).toBeUndefined();
+	const elements = row.findAll(
+		(node) => typeof node.type === "string" && (node.props.accessible === true || String(node.type) === "Pressable"),
+	);
+	expect(elements.map((node) => [String(node.type), node.props.accessibilityLabel])).toEqual([
+		["View", "gadget, A gadget"],
+		["Pressable", "Install gadget from acme"],
+	]);
+	hub.on("evener/plugin/install", () => ({
+		plugins: [entry("tool", { marketplace: "acme" }), entry("gadget", { marketplace: "acme" })],
+	}));
+	await act(async () => {
+		pressable(tree, "Install gadget from acme")?.props.onPress();
+	});
+	await act(async () => {});
+	expect(hub.calls.at(-1)).toMatchObject({
+		method: "evener/plugin/install",
+		params: { plugin: "gadget", marketplace: "acme" },
+	});
 });

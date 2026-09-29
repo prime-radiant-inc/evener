@@ -574,10 +574,28 @@ describe("a row's trailing control (audit M13)", () => {
 				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={() => {}} />}
 			/>,
 		);
-		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "pdf")).not.toHaveLength(0);
-		expect(
-			tree.root.findAll((node) => node.type === Pressable && node.props.accessibilityLabel === "Install"),
-		).toHaveLength(1);
+		const elements = tree.root.findAll(
+			(node) => typeof node.type === "string" && (node.props.accessible === true || String(node.type) === "Pressable"),
+		);
+		expect(elements.map((node) => [String(node.type), node.props.accessibilityLabel])).toEqual([
+			["View", "pdf"],
+			["Pressable", "Install"],
+		]);
+	});
+});
+
+describe("a mini button as a row's trailing control (audit M13)", () => {
+	it("has the row's whole height to reach into, since React Native clips a touch at its parent's bounds", () => {
+		const tree = render(<Row label="pdf" accessory={<Button label="Install" mini onPress={() => {}} />} />);
+		const holder = tree.root.findByProps({ testID: "row-accessory" });
+		// Stretched to the row, which is at least 44pt, the holder spans the
+		// mini button's 30pt plus its reach above and below.
+		expect(holder.props.style).toMatchObject({ alignSelf: "stretch", justifyContent: "center" });
+		const row = tree.root.find((node) => String(node.type) === "View" && node.props.accessibilityLabel === "pdf");
+		const button = holder.find((node) => String(node.type) === "Pressable");
+		expect(Object.assign({}, ...[row.props.style].flat()).minHeight).toBe(
+			30 + button.props.hitSlop.top + button.props.hitSlop.bottom,
+		);
 	});
 });
 
@@ -621,8 +639,6 @@ describe("Button", () => {
 		const tree = render(<Button label="Copy code" onPress={() => {}} />);
 		const button = pressable(tree);
 		expect(styleOf(button)).toMatchObject({ backgroundColor: light.surface, minHeight: 36 });
-		// The capsule is drawn at 36; its touch reaches the 44pt minimum.
-		expect(36 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBeGreaterThanOrEqual(44);
 		const label = tree.root.find((node) => String(node.type) === "Text");
 		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
 	});
@@ -633,12 +649,59 @@ describe("Button", () => {
 		expect(styleOf(button)).toMatchObject({ paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, minHeight: 30 });
 		expect(styleOf(button).backgroundColor).toBeUndefined();
 		expect(styleOf(button, true).backgroundColor).toBe(light.pressed);
-		expect(30 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBeGreaterThanOrEqual(44);
 		const label = tree.root.find((node) => String(node.type) === "Text");
 		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
 			color: light.accentInk,
 			fontSize: 13,
 			fontWeight: "600",
 		});
+	});
+	const onOS = (os: string, check: () => void) => {
+		const saved = Platform.OS;
+		Object.assign(Platform, { OS: os });
+		try {
+			check();
+		} finally {
+			Object.assign(Platform, { OS: saved });
+		}
+	};
+
+	it.each([
+		["ios", 44],
+		["android", 48],
+	])("reaches a plain button's touch to the %s minimum of %ipt", (os, minimum) => {
+		onOS(os, () => {
+			const button = pressable(render(<Button label="Copy code" onPress={() => {}} />));
+			// The capsule is drawn at 36; its touch reaches the platform minimum.
+			expect(36 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBe(minimum);
+		});
+	});
+
+	it.each(["ios", "android"])(
+		"reaches a mini button's touch to its 44pt row's edges on %s, never into the row above or below",
+		(os) => {
+			onOS(os, () => {
+				const button = pressable(render(<Button label="Install" mini onPress={() => {}} />));
+				expect(30 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBe(44);
+			});
+		},
+	);
+
+	it("names a button for VoiceOver by its accessibilityLabel when given one, else by its label", () => {
+		const named = pressable(
+			render(<Button label="Install" mini accessibilityLabel="Install gadget from acme" onPress={() => {}} />),
+		);
+		expect(named.props.accessibilityLabel).toBe("Install gadget from acme");
+		expect(pressable(render(<Button label="Copy code" onPress={() => {}} />)).props.accessibilityLabel).toBeUndefined();
+	});
+
+	it("leaves a disabled mini button inert: Pressable's disabled holds its press, VoiceOver hears it dimmed", () => {
+		const onPress = vi.fn();
+		const button = pressable(render(<Button label="Install" mini disabled onPress={onPress} />));
+		// React Native's Pressable drops presses while disabled; the test
+		// renderer's stand-in doesn't, so the prop is the contract checked here.
+		expect(button.props.disabled).toBe(true);
+		expect(button.props.accessibilityState).toEqual({ disabled: true });
+		expect(styleOf(button).opacity).toBe(0.4);
 	});
 });

@@ -17,7 +17,7 @@ import {
 	useState,
 } from "react";
 import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { fonts, scaledType, space, uiType } from "../design/tokens";
+import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 /** Above a section label. */
@@ -342,7 +342,14 @@ export function Row({
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center" }}>
 			{row}
-			<View style={{ paddingHorizontal: space.rowInset }}>{accessory}</View>
+			{/* Stretched to the row's height: React Native clips a touch at its
+			    parent's bounds, so a control's reach needs the row's room. */}
+			<View
+				testID="row-accessory"
+				style={{ alignSelf: "stretch", justifyContent: "center", paddingHorizontal: space.rowInset }}
+			>
+				{accessory}
+			</View>
 		</View>
 	);
 }
@@ -500,6 +507,51 @@ export function TextFieldRow({
 	);
 }
 
+/** Each Button kind, from the prototype's .btn.primary.big, .btn and
+ * .mini-btn. `reach` is how far the touch extends: a primary or plain button
+ * reaches the platform's minimum target, and a mini button, which sits inside
+ * a 44pt row, reaches the row's edges and no further. */
+const BUTTON_KINDS = {
+	primary: {
+		drawn: 50,
+		reach: "platform",
+		shape: { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" },
+		fill: "accentFill",
+		ink: "onFill",
+		type: uiType.listRow,
+		pressed: "dim",
+	},
+	plain: {
+		drawn: 36,
+		reach: "platform",
+		shape: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5 },
+		fill: "surface",
+		ink: "inkHi",
+		type: uiType.subheadline,
+		pressed: "dim",
+	},
+	mini: {
+		drawn: 30,
+		reach: "row",
+		shape: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
+		fill: undefined,
+		ink: "accentInk",
+		type: uiType.footnote,
+		pressed: "shade",
+	},
+} as const satisfies Record<
+	string,
+	{
+		drawn: number;
+		reach: "platform" | "row";
+		shape: object;
+		fill: keyof Palette | undefined;
+		ink: keyof Palette;
+		type: { fontSize: number; lineHeight: number };
+		pressed: "dim" | "shade";
+	}
+>;
+
 /** A button, as the prototype draws one (styles.css):
  * - `primary`, the page's call to action: filled in the accent and full width
  *   at 50pt (.btn.primary.big). It dims when pressed, as the app's other
@@ -508,8 +560,9 @@ export function TextFieldRow({
  *   dimming when pressed.
  * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
  *   with no fill, shaded when pressed.
- * A plain or mini button's touch reaches the 44pt minimum (48 on Android, as
- * Action's does). Its label follows Dynamic Type, so the height is a minimum.
+ * A plain button's touch reaches the 44pt minimum (48 on Android, as Action's
+ * does); a mini button's reaches its 44pt row's edges. Its label follows
+ * Dynamic Type, so the height is a minimum.
  * Most actions are rows; a page's one call to action is `primary`. */
 export function Button({
 	label,
@@ -530,20 +583,11 @@ export function Button({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const drawn = primary ? 50 : mini ? 30 : 36;
-	const reach = ((Platform.OS === "android" ? 48 : 44) - drawn) / 2;
-	const shape = primary
-		? { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" as const }
-		: mini
-			? { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 }
-			: {
-					borderRadius: 18,
-					paddingHorizontal: 14,
-					paddingVertical: 6,
-					borderWidth: 0.5,
-					borderColor: palette.edgeStrong,
-				};
-	const fill = primary ? palette.accentFill : mini ? undefined : palette.surface;
+	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
+	const target = kind.reach === "row" ? 44 : Platform.OS === "android" ? 48 : 44;
+	const reach = (target - kind.drawn) / 2;
+	const fill = kind.fill && palette[kind.fill];
+	const outline = "borderWidth" in kind.shape ? { borderColor: palette.edgeStrong } : null;
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -553,21 +597,18 @@ export function Button({
 			onPress={onPress}
 			hitSlop={reach > 0 ? { top: reach, bottom: reach } : undefined}
 			style={({ pressed }) => ({
-				minHeight: drawn,
+				minHeight: kind.drawn,
 				alignItems: "center",
 				justifyContent: "center",
-				...shape,
-				backgroundColor: mini && pressed ? palette.pressed : fill,
-				opacity: disabled ? 0.4 : pressed && !mini ? 0.65 : 1,
+				...kind.shape,
+				...outline,
+				backgroundColor: pressed && kind.pressed === "shade" ? palette.pressed : fill,
+				opacity: disabled ? 0.4 : pressed && kind.pressed === "dim" ? 0.65 : 1,
 			})}
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
-				style={{
-					color: primary ? palette.onFill : mini ? palette.accentInk : palette.inkHi,
-					fontWeight: "600",
-					...scaledType(primary ? uiType.listRow : mini ? uiType.footnote : uiType.subheadline, scale),
-				}}
+				style={{ color: palette[kind.ink], fontWeight: "600", ...scaledType(kind.type, scale) }}
 			>
 				{label}
 			</Text>

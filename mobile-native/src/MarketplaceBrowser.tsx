@@ -548,7 +548,7 @@ export function MarketplaceDetail({
 										key={item.name}
 										label={item.name}
 										sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
-										// The prototype's mini button (hub.js:162): the row's own control.
+										// The prototype's mini button: the row's own control.
 										accessory={
 											<Button
 												mini
