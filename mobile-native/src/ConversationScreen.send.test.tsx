@@ -1063,6 +1063,18 @@ describe("following the live end (spec 8.2)", () => {
 		expect(contentGrows(tree, 4_200)).toBe(true);
 	});
 
+	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
+		const served = working("ref-follow-coast");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100, END);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, 2_000);
+		stream(hub, served, "m1");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onMomentumScrollEnd(at(2_000)));
+		expect(contentGrows(tree, 4_400)).toBe(false);
+	});
+
 	it("follows a transcript shorter than the screen once you let go", async () => {
 		const served = working("ref-follow-short");
 		const { tree } = await mount(served);

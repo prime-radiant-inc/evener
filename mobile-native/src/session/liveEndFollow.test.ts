@@ -58,6 +58,15 @@ describe("nextFollow", () => {
 		expect(state).toEqual({ following: true, touch: "none", away: null });
 	});
 
+	it("holds off following while momentum moves the list, even from a release at the end", () => {
+		// Let go inside the end band with an upward flick: a row landing while
+		// the list coasts must not yank it back down.
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "dragEnd", atEnd: true });
+		state = nextFollow(state, { type: "momentumBegin" });
+		expect(state).toEqual({ following: false, touch: "momentum", away: null });
+	});
+
 	it("stops following when momentum carries you off the end", () => {
 		let state = nextFollow(following, { type: "dragBegin" });
 		state = nextFollow(state, { type: "dragEnd", atEnd: true });

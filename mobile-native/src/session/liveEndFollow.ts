@@ -1,8 +1,8 @@
 // Following the transcript's live end (spec 8.2). While following, new rows
 // scroll into view as they land. A drag stops it; ending a drag, or its
-// momentum, at the end starts it again, so a row that lands mid-drag never
-// pulls the list from under the finger. Away from the end, the rows that were
-// there when you left are what "↓ N new" counts against.
+// momentum, at the end starts it again, so a row that lands mid-drag or
+// mid-coast never pulls the list from under the finger. Away from the end,
+// the rows that were there when you left are what "↓ N new" counts against.
 import { useCallback, useRef, useState } from "react";
 
 /** How close to the end still counts as at the end, in points. */
@@ -48,7 +48,9 @@ export function nextFollow(state: LiveEndFollow, event: FollowEvent): LiveEndFol
 		case "dragBegin":
 			return { ...state, following: false, touch: "dragging" };
 		case "momentumBegin":
-			return { ...state, touch: "momentum" };
+			// A release inside the end band may still coast away from it: follow
+			// only once the momentum settles there.
+			return { ...state, following: false, touch: "momentum" };
 		case "dragEnd":
 		case "momentumEnd":
 			return event.atEnd
