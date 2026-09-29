@@ -504,8 +504,9 @@ test("settleReceipt reports false for a record that is in none of the three tabl
 // failed settlement. Faulting the sweep instead would prove nothing about the
 // shared transaction, since SQLite already aborts that one statement's delete
 // on its own. The trigger is dropped in the finally so no schema state leaks
-// past the contract. The web adapter proves the same atomicity through its
-// beforeCommit seam (mutationOutbox.test.ts).
+// past the contract. The web adapter's beforeCommit seam proves general
+// settlement atomicity (mutationOutbox.test.ts), but it seeds no note recovery
+// row, so this sweep-within-settlement rollback is verified here only.
 async function expectFailedSettlementRollsBackSweep(settle: (clientMutationId: string) => Promise<boolean>) {
 	const older = await storage.enqueueIntent(noteIntent("refused older"));
 	await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
