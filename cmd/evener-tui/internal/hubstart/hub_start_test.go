@@ -215,6 +215,37 @@ func TestStartHubClientDoesNotAutoStartWhenContextCanceled(t *testing.T) {
 	}
 }
 
+// The autostart guard runs before the binary is resolved, but resolving walks
+// the filesystem. A quit that lands during the resolve must still stop the
+// handoff to the detached launcher, not just the earlier check.
+func TestStartHubClientDoesNotAutoStartWhenCanceledDuringResolve(t *testing.T) {
+	started := false
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := StartHubClient(ctx, HubStartConfig{
+		RawAddr:       "127.0.0.1:9180",
+		AutoStart:     true,
+		HealthTimeout: time.Millisecond,
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
+			return nil, errors.New("connection refused")
+		},
+		LookPath: func(string) (string, error) {
+			// The TUI quits while the binary is being resolved.
+			cancel()
+			return "/some/evener", nil
+		},
+		StartLocalHub: func(HubStartRequest) error {
+			started = true
+			return nil
+		},
+	})
+	if started {
+		t.Fatal("a cancel during resolve still handed off to the detached launcher")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
 func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -350,6 +350,12 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if err != nil {
 		return fail(StartupError{Kind: StartupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
 	}
+	// Resolving walks the filesystem; the caller may have quit while it ran.
+	// Re-check before handing off to the detached launcher so a cancel during
+	// the resolve does not still spawn a hub nobody will use.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(ctxErr)
+	}
 	startLocalHubFn := cfg.StartLocalHub
 	if startLocalHubFn == nil {
 		startLocalHubFn = StartLocalHub
