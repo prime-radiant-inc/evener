@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/rendezvous"
@@ -56,9 +57,26 @@ var (
 	}
 )
 
+// startRefused is a thread/start refusal that came before the hub spawned
+// anything: no session exists, so it says the start was not accepted and a
+// client may start that draft again (#3184). The code, message and
+// evenerErrorInfo stay as they were. A refusal whose data isn't the standard
+// ErrorData goes out unchanged, its outcome left open, which a client reads as
+// a start that may have happened.
+func startRefused(err error) (appwire.ThreadStartResponse, error) {
+	wire := appserver.WireError(err)
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		return appwire.ThreadStartResponse{}, err
+	}
+	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
+	wire.Data = data
+	return appwire.ThreadStartResponse{}, wire
+}
+
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	if err := validateAppWireInputItems(params.Input); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		return startRefused(appwire.InvalidParams(err.Error()))
 	}
 	sourceID := strings.TrimSpace(params.Source)
 	// Forward the normalized routing value, not the verbatim field the lookup
@@ -76,7 +94,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// registry). The launchSourceID fallback above is retained for every other
 	// harness value (component 06, §"Write contract (session targeting)").
 	if err := refuseHarnessNamingHost(sources, params.Harness); err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return startRefused(err)
 	}
 	// A request that arrived over a peer hub's attach bridge resolves only to
 	// this hub's local state (design §2 "Topology"; component 05, §"The
@@ -84,23 +102,23 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// thread/start"), so a preserved harness naming one of this hub's own
 	// configured hosts cannot fan the spawn out to that host.
 	if err := guardRemoteSpawnSource(ctx, sourceID); err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return startRefused(err)
 	}
 	if sourceID != "" && sourceID != "local" {
 		source, ok := sources.Source(sourceID)
 		if !ok || source == nil {
-			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
+			return startRefused(appwire.Unavailable("spawn source is not available: " + sourceID))
 		}
 		return source.StartThread(ctx, forward)
 	}
 	if cfg.Spawner == nil {
-		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
+		return startRefused(appwire.Unavailable("spawner not configured"))
 	}
 	workingDir := params.CWD
 	if workingDir != "" {
 		resolved, err := hubCanonicalizeDir(workingDir)
 		if err != nil {
-			return appwire.ThreadStartResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+			return startRefused(appwire.InvalidParams("cwd: " + err.Error()))
 		}
 		workingDir = resolved
 	}
@@ -116,7 +134,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 		modelRef, err := hubParseModelRef(model)
 		if err != nil {
-			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+			return startRefused(appwire.InvalidParams(err.Error()))
 		}
 		overrides.Model = modelRef.Qualified()
 	}
@@ -136,7 +154,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// deletions/).
 	spawnResolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), workingDir, overrides)
 	if resolveErr != nil {
-		return appwire.ThreadStartResponse{}, resolveErr
+		return startRefused(resolveErr)
 	}
 	// The env floor (EVENER_MODEL etc.) applies to the spawn decision too,
 	// matching the agent's own flag > env fallback: a session started now
@@ -149,14 +167,14 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	spawnResolved = launchconfig.ApplyEnvDefaults(spawnResolved, os.Getenv, launchconfig.LaunchOptionSchema())
 	resolvedModel := strings.TrimSpace(spawnResolved.Effective.Model)
 	if resolvedModel == "" {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
+		return startRefused(appwire.InvalidParams("model is required"))
 	}
 	modelRef, err := hubParseModelRef(resolvedModel)
 	if err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		return startRefused(appwire.InvalidParams(err.Error()))
 	}
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return startRefused(err)
 	}
 	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginManager)
 	if pluginErr != nil {
@@ -168,17 +186,17 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		// whatever the resolver could list.
 		if spawnResolved.Effective.EnabledPlugins != nil ||
 			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
-			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
+			return startRefused(appwire.HubLaunchError(pluginErr.Error()))
 		}
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		return startRefused(appwire.InvalidParams(err.Error()))
 	}
 	// One last look at the connection before the handler stops listening to
 	// it. Everything above is validation, and a request the caller abandoned
 	// while it ran must not become a session: past the detach below, nothing
 	// asks about the caller again.
 	if err := ctx.Err(); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
+		return startRefused(appwire.HubLaunchError(err.Error()))
 	}
 	// The mutation is admitted here: every validation has passed and the spawn
 	// is about to happen. From this point the outcome must not depend on the
