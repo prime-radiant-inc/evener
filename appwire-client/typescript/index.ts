@@ -498,6 +498,16 @@ export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
+export {
+  freshNotes,
+  type MutationTouch,
+  mutationRows,
+  SUMMARY_MARK,
+  type TaskListStep,
+  type TouchedRow,
+  taskMutationRecap,
+  taskMutationSummary,
+} from "./taskListStep";
 export { absoluteTime, relativeTime } from "./taskListTime";
 export type {
   PanelLoadFailure,
@@ -554,6 +564,7 @@ export {
   type ToolFamily,
   type ToolStep,
   type ToolSummaryContext,
+  taskListChanges,
   toolFamily,
   toolStepProgress,
   toolStepSummary,

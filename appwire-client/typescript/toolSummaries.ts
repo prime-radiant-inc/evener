@@ -9,6 +9,7 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
+import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 import {
@@ -25,7 +26,7 @@ export interface ToolSummaryContext {
 }
 
 /** The parts of a step its summary reads. */
-export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output">;
+export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw">;
 
 /** The family a run's summary counts a step under. */
 export type ToolFamily =
@@ -36,6 +37,7 @@ export type ToolFamily =
   | "webSearch"
   | "shell"
   | "skill"
+  | "tasks"
   | "transcript"
   | "sessions"
   | "mcp"
@@ -279,6 +281,36 @@ export function useSkillSummary(step: ToolStep): string {
   return name ? `Activated skill: ${name}` : "Activated a skill";
 }
 
+// --- tasks ----------------------------------------------------------------------
+
+/** Whether a task_list call asked for a change: a bare call, an empty add and
+ * update, or a historical action with nothing in it ("view", an empty
+ * "append" or "update", an action this build doesn't know) only reads the
+ * list. */
+export function taskListChanges(step: Pick<ToolStep, "argumentsJSON">): boolean {
+  const args = parseArgs(step.argumentsJSON);
+  const nonEmpty = (list: unknown) => Array.isArray(list) && list.length > 0;
+  switch (str(args, "action") ?? "") {
+    case "":
+      return nonEmpty(args.add) || nonEmpty(args.update);
+    case "append":
+      return nonEmpty(args.tasks);
+    case "update":
+      return nonEmpty(args.updates);
+    default:
+      return false;
+  }
+}
+
+// The latest task the call touched ("☑ Reproduce the race", "→ Fix the
+// drain"), as the web's task card folds it; a call that touched no task's
+// status says whether it changed the list or only read it.
+function taskListSummary(step: ToolStep): string {
+  const touched = taskMutationSummary(step);
+  if (touched) return touched;
+  return taskListChanges(step) ? "Updated the task list" : "Checked the task list";
+}
+
 // --- every other tool ---------------------------------------------------------
 
 /** A tool name's words: its underscores and hyphens are spaces
@@ -364,6 +396,8 @@ function progressFor(
       const skill = skillName(step);
       return skill ? `Activating skill: ${skill}` : "Activating a skill";
     }
+    case "tasks":
+      return taskListChanges(step) ? "Updating the task list" : "Checking the task list";
     case "transcript":
       return readTranscriptProgress(step);
     case "sessions":
@@ -398,6 +432,7 @@ const TOOLS: Record<string, ToolEntry> = {
   exec_command: { family: "shell", summary: shellSummary },
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
+  task_list: { family: "tasks", summary: taskListSummary },
   read_transcript: { family: "transcript", summary: readTranscriptSummary },
   read_session_transcript: { family: "transcript", summary: readTranscriptSummary },
   find_session_transcripts: { family: "sessions", summary: findSessionsSummary },

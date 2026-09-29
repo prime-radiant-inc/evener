@@ -1,6 +1,7 @@
 // What a step in a run has to show when you tap it (spec 8.2): an edit's
 // diff, the file a write wrote, a command's output, a fetched page, the skill
-// an activation loaded, a tool's arguments and result, and an error. Each
+// an activation loaded, a task list, a tool's arguments and result, and an
+// error. Each
 // reads the words the tool printed, not the envelope around them (the
 // package's toolEvidence readers, which the web's bodies read too). Pure, so
 // the rules live apart from how StepEvidence draws them.
@@ -8,6 +9,7 @@ import {
 	diffStats,
 	editDiffText,
 	filePathOf,
+	freshNotes,
 	lineCount,
 	parseArgs,
 	prettyJSON,
@@ -16,6 +18,7 @@ import {
 	shellOutput,
 	skillContext,
 	str,
+	type TaskRow,
 	toolFamily,
 	webFetchResult,
 } from "@evener/appwire-client";
@@ -35,9 +38,15 @@ export type Evidence =
 	| { kind: "page"; text: string; url?: string; bytes?: number }
 	// Markdown with a heading: the instructions a skill loaded.
 	| { kind: "markdown"; title: string; markdown: string }
+	// The task list a task_list call returned, each task with the note this
+	// call added to it.
+	| { kind: "tasks"; tasks: ChecklistTask[] }
 	// A tool's arguments or result, pretty-printed.
 	| { kind: "json"; label: "Arguments" | "Result"; text: string }
 	| { kind: "error"; text: string; exitCode?: number };
+
+/** A task in a task_list step's checklist, with the note the call added. */
+export type ChecklistTask = Pick<TaskRow, "id" | "status" | "description"> & { note?: string };
 
 /** Output lines shown in the transcript before "Show all N lines". */
 export const EVIDENCE_PREVIEW_LINES = 40;
@@ -79,9 +88,9 @@ function shellNotes(run: ShellOutput): Evidence[] {
 }
 
 // What a tool's output shows, by its family: a command without its exit
-// footer, a fetched page's answer, a skill's instructions, a transcript a read
-// returned, an MCP or other tool's JSON pretty-printed; anything else as the
-// tool printed it.
+// footer, a fetched page's answer, a skill's instructions, a task list as a
+// checklist, a transcript a read returned, an MCP or other tool's JSON
+// pretty-printed; anything else as the tool printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -105,6 +114,17 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			return loaded
 				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
 				: rawOutput(text);
+		}
+		case "tasks": {
+			// No list, or one with no tasks in it: what the tool printed says more
+			// than an empty checklist.
+			if (!detail.tasks?.length) return rawOutput(text);
+			const notes = freshNotes({ argumentsJSON: detail.arguments });
+			const tasks = detail.tasks.map(({ id, status, description }) => {
+				const note = notes.get(id);
+				return { id, status, description, ...(note === undefined ? {} : { note }) };
+			});
+			return [{ kind: "tasks", tasks }];
 		}
 		case "transcript": {
 			// The transcript itself, as the web's body shows it, and how many
@@ -140,7 +160,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
-	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode">;
+	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode" | "tasks">;
 };
 
 export function stepEvidence(step: EvidenceSource): Evidence[] {

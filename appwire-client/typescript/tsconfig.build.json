@@ -78,6 +78,7 @@
     "modelCatalogPickerRows.ts",
     "taskListData.ts",
     "taskListGroups.ts",
+    "taskListStep.ts",
     "taskListTime.ts",
     "taskPanelState.ts",
     "launchSchema.ts",

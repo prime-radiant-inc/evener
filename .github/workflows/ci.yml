@@ -116,6 +116,9 @@ jobs:
       - name: Install native dependencies
         run: npm ci --prefix mobile-native
 
+      - name: Podfile.lock locks every autolinked iOS module
+        run: make check-podfile-lock
+
       - name: Bundle, test native app and shared session core
         timeout-minutes: 30
         run: make test-native
