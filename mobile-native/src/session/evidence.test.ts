@@ -253,7 +253,11 @@ describe("each tool's evidence, as the tools print it", () => {
 			replaced_existing: false,
 			fired: false,
 		};
-		const item = { ...toolWireStep("call_watch_timer"), raw: noteless, output: "[watching self · watch_id watch_x · after 300s]" };
+		const item = {
+			...toolWireStep("call_watch_timer"),
+			raw: noteless,
+			output: "[watching self · watch_id watch_x · after 300s]",
+		};
 		expect(stepEvidence({ label: "job_watch", detail: activityDetail(item) })).toEqual([]);
 	});
 
