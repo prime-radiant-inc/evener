@@ -10,6 +10,7 @@ import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import { HeaderButton } from "../sheet/HeaderButton";
+import { sheetStackOptions } from "../sheet/sheetStack";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { AddHubPage } from "./AddHubPage";
@@ -63,16 +64,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	if (!activeProfile) return null;
 	return (
 		<HubSheetProvider value={value}>
-			<HubStack.Navigator
-				screenOptions={{
-					headerStyle: { backgroundColor: palette.canvas },
-					headerTintColor: palette.accentInk,
-					headerTitleStyle: { color: palette.inkHi },
-					headerShadowVisible: false,
-					headerBackButtonDisplayMode: "minimal",
-					contentStyle: { backgroundColor: palette.canvas },
-				}}
-			>
+			<HubStack.Navigator screenOptions={sheetStackOptions(palette)}>
 				<HubStack.Screen
 					name="HubHome"
 					component={HubHome}
