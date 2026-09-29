@@ -98,13 +98,15 @@ it("opens an empty form on the newest remembered start", () => {
 });
 
 it("takes the hub's most recent project when nothing was ever started here", async () => {
-	const { store, service } = setup(null, ["/home/jesse/git/evener", "/home/jesse/git/docs"]);
+	const { store, service, requests } = setup(null, ["/home/jesse/git/evener", "/home/jesse/git/docs"]);
 	const stop = openForm(store, [], undefined);
 	expect(store.getState().cwd).toBe("");
 	store.getState().bind(service);
 	await store.getState().loadMetadata();
 	await flush();
 	expect(store.getState().cwd).toBe("/home/jesse/git/evener");
+	// The project's own models are read, not the ones for no project.
+	expect(requests).toContainEqual({ method: "model/list", params: { cwd: "/home/jesse/git/evener" } });
 	stop();
 });
 
