@@ -2,11 +2,16 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, Text, TextInput, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
-import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	HUB_WRITE_BUSY,
+	type HubWriteGate,
+	type MarketplacesStore,
+	type PluginsStore,
+	runGatedMutation,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import { scaledType, space, uiType } from "./design/tokens";
-import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
 	appliedRemovalNotice,
@@ -83,7 +88,7 @@ export function MarketplaceBrowser({
 	// write started here keeps running after this view is gone, so the lock
 	// it takes has to outlive the view - and living at the screen means the
 	// installed list sees a marketplace write as busy too, and vice versa.
-	gate: PluginMutationGate;
+	gate: HubWriteGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
 	onOpenPlugin(target: PluginRefParams): void;
@@ -150,7 +155,7 @@ export function MarketplaceBrowser({
 	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
 	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
 	// Marketplace writes take the same gate an install does; see
-	// pluginMutationGate.ts for why the gate exists.
+	// createHubWriteGate (the package's hubWriteGate.ts) for why the gate exists.
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [adding, setAdding] = useState(false);
@@ -208,11 +213,11 @@ export function MarketplaceBrowser({
 	// guard and warning rather than this view's error slot.
 	async function act(action: () => Promise<void>) {
 		const version = revision.current;
-		const outcome = await runGatedMutation(gate, canUseConnection, action);
+		const outcome = await runGatedMutation(canUseConnection, action);
 		if (revision.current !== version) return;
 		if (outcome === "not-ready") return;
 		setError(null);
-		if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
+		if (outcome === "refused") setError(HUB_WRITE_BUSY);
 		else if (outcome === "failed") setError(WRITE_FAILED);
 	}
 	function install(target: PluginRefParams) {
@@ -253,7 +258,7 @@ export function MarketplaceBrowser({
 				// busy and write-failed displays stay behind the fence.
 				void (async () => {
 					let caught: unknown;
-					const outcome = await runGatedMutation(gate, canUseConnection, () =>
+					const outcome = await runGatedMutation(canUseConnection, () =>
 						state.removeMarketplace(name).catch((error: unknown) => {
 							caught = error;
 							throw error;
@@ -271,7 +276,7 @@ export function MarketplaceBrowser({
 					setError(null);
 					if (outcome === "refused") {
 						if (revision.current !== version) return;
-						setError(PLUGIN_MUTATION_BUSY);
+						setError(HUB_WRITE_BUSY);
 						return;
 					}
 					if (outcome === "ran") {
@@ -501,7 +506,6 @@ export function MarketplaceBrowser({
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
-					gate={gate}
 					ready={ready}
 					canUseConnection={canUseConnection}
 					onClose={() => setAdding(false)}
@@ -563,7 +567,6 @@ export function AddMarketplace({
 	connectionState,
 	client,
 	hubName,
-	gate,
 	ready,
 	canUseConnection,
 	onClose,
@@ -571,12 +574,12 @@ export function AddMarketplace({
 }: {
 	connectionState: ConnectionState;
 	hubName: string;
-	gate: PluginMutationGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
 	onClose(): void;
-	/** The write itself; the gate around it lives here, so a refusal keeps the
-	 * modal open on the busy copy just as it does everywhere else. */
+	/** The write itself; the store's shared gate refuses it if another write
+	 * holds it, so a refusal keeps the modal open on the busy copy just as it
+	 * does everywhere else. */
 	onAdd(params: MarketplaceAddParams): Promise<void>;
 	client: ConversationClientLike;
 }) {
@@ -605,7 +608,7 @@ export function AddMarketplace({
 		setBusy(true);
 		setError(null);
 		const value = source.trim();
-		const outcome = await runGatedMutation(gate, canUseConnection, () =>
+		const outcome = await runGatedMutation(canUseConnection, () =>
 			onAdd({
 				name: name.trim(),
 				source:
@@ -626,7 +629,7 @@ export function AddMarketplace({
 			return;
 		}
 		if (outcome === "refused") {
-			setError(PLUGIN_MUTATION_BUSY);
+			setError(HUB_WRITE_BUSY);
 			return;
 		}
 		if (outcome === "failed")

@@ -101,6 +101,7 @@
     "state/credentials/index.ts",
     "state/credentials/instances.ts",
     "state/extensions/index.ts",
+    "state/extensions/hubWriteGate.ts",
     "state/extensions/keyedRevision.ts",
     "state/extensions/launchLayer.ts",
     "state/extensions/listRevision.ts",

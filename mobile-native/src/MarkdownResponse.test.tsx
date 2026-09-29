@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import * as Clipboard from "expo-clipboard";
 import { DisplayProvider } from "./display/displayContext";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { MarkdownResponse } from "./MarkdownResponse";
@@ -11,12 +12,21 @@ vi.mock("react-native", async () => ({
 	Linking: { openURL: async () => {} },
 	useColorScheme: () => mode.scheme,
 }));
-vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => {}) }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
+vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
 function markdownStyle(markdown: string) {
 	const tree = render(<MarkdownResponse markdown={markdown} />);
 	return tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle;
+}
+
+// MermaidDiagram is a React.memo component, so the test renderer reports its
+// inner render function as the node type - a string lookup cannot find it.
+// Match the function's own name, the same way the renderer names it.
+function diagrams(tree: ReturnType<typeof render>) {
+	return tree.root.findAll((node) => (node.type as { name?: string })?.name === "MermaidDiagram");
 }
 
 it("picks light code colors in light mode", () => {
@@ -101,4 +111,52 @@ it("drops the serif for agent prose when the phone reads in Sans (spec 12)", () 
 	expect(style.paragraph.fontFamily).toBeUndefined();
 	expect(style.paragraph).toMatchObject({ fontSize: 17, lineHeight: 26 });
 	expect(style.codeBlock).toMatchObject({ fontFamily: "Menlo" });
+});
+
+it("renders a mermaid fence as a diagram between prose segments", () => {
+	const tree = render(<MarkdownResponse markdown={"before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter"} />);
+	const prose = tree.root.findAllByType("EnrichedMarkdownText" as never);
+	expect(prose.map((node) => node.props.markdown)).toEqual(["before\n\n", "\n\nafter"]);
+	expect(diagrams(tree)).toHaveLength(1);
+});
+
+it("keeps the whole message in every segment's Copy response item", () => {
+	const markdown = "before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter";
+	const tree = render(<MarkdownResponse markdown={markdown} />);
+	for (const prose of tree.root.findAllByType("EnrichedMarkdownText" as never)) {
+		const copy = prose.props.contextMenuItems.find((item: { text: string }) => item.text === "Copy response");
+		copy.onPress();
+	}
+	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(markdown);
+});
+
+it("hands the caller's accessibility actions to every prose segment and the diagram", () => {
+	const actions = [{ name: "select", label: "Select text" }];
+	const onAccessibilityAction = () => {};
+	const tree = render(
+		<MarkdownResponse
+			markdown={"before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter"}
+			accessibilityActions={actions}
+			onAccessibilityAction={onAccessibilityAction}
+		/>,
+	);
+	for (const prose of tree.root.findAllByType("EnrichedMarkdownText" as never)) {
+		expect(prose.props.accessibilityActions).toBe(actions);
+		expect(prose.props.onAccessibilityAction).toBe(onAccessibilityAction);
+	}
+	const diagram = diagrams(tree)[0];
+	expect(diagram.props.accessibilityActions).toBe(actions);
+	expect(diagram.props.onAccessibilityAction).toBe(onAccessibilityAction);
+});
+
+it("hands the caller's accessibility actions to the diagram for a diagram-only message", () => {
+	const actions = [{ name: "select", label: "Select text" }];
+	const tree = render(
+		<MarkdownResponse
+			markdown={"```mermaid\ngraph TD; A-->B\n```"}
+			accessibilityActions={actions}
+			onAccessibilityAction={() => {}}
+		/>,
+	);
+	expect(diagrams(tree)[0]?.props.accessibilityActions).toBe(actions);
 });
