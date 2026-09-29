@@ -70,7 +70,8 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	};
 	if (options.check) await updates.controller.runCheck();
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const navigation = { getParent: () => root } as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
+	const inSheet = { getParent: () => root, navigate: vi.fn() };
+	const navigation = inSheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -83,10 +84,19 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		act(() => {
 			find(label)?.props.onPress();
 		});
-	return { tree, root, find, press, calls: fake.calls, script: fake.script, readiness, live };
+	return { tree, root, inSheet, find, press, calls: fake.calls, script: fake.script, readiness, live };
 }
 
-const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Keyboard shortcuts", "Launch defaults", "Hub settings"];
+const ROWS = [
+	"Providers",
+	"Plugins",
+	"Display",
+	"In-app alerts",
+	"Hubs",
+	"Keyboard shortcuts",
+	"Launch defaults",
+	"Hub settings",
+];
 
 beforeEach(() => {
 	status.line = null;
@@ -119,6 +129,17 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	}
 	press("Hubs");
 	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
+});
+
+it("opens In-app alerts inside the sheet, between Display and Hubs", async () => {
+	const { tree, inSheet, press } = await mount();
+	const labels = tree.root
+		.findAllByProps({ accessibilityRole: "button" })
+		.map((node) => node.props.accessibilityLabel)
+		.filter((label): label is string => ROWS.includes(label));
+	expect(labels.slice(2, 5)).toEqual(["Display", "In-app alerts", "Hubs"]);
+	press("In-app alerts");
+	expect(inSheet.navigate).toHaveBeenLastCalledWith("Alerts");
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {

@@ -8,6 +8,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 /** The Hub's pages. Every page names the hub it was opened for. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
+	Alerts: undefined;
 };
 
 export interface HubSheetContextValue {

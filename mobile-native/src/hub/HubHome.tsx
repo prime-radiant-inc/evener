@@ -68,6 +68,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			<GroupLabel>This phone</GroupLabel>
 			<Group>
 				<Row icon="textformat.size" label="Display" chevron onPress={() => leaveFor("TranscriptPreferences")} />
+				<Row icon="bubble.left" label="In-app alerts" chevron onPress={() => navigation.navigate("Alerts")} />
 				<Row icon="point.3.connected.trianglepath.dotted" label="Hubs" chevron onPress={() => root?.navigate("Hubs")} />
 			</Group>
 			<GroupLabel>More</GroupLabel>
