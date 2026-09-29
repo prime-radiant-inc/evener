@@ -90,7 +90,7 @@ type Entry =
 	// notification as the daemon delivers it.
 	| { notice: string }
 	// An item recorded from a real run (demoToolFamilies.ts), served as it
-	// was, on the demo turn's ids and clock.
+	// was, with its own id, on the demo turn and clock.
 	| { recorded: ThreadItem };
 
 // What a frame's session carries beyond its fleet row.
@@ -779,7 +779,7 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("notice" in entry)
 			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
 		if ("recorded" in entry) {
-			const recorded: ThreadItem = { ...entry.recorded, ...item, turnId: id };
+			const recorded: ThreadItem = { ...entry.recorded, startedAt: item.startedAt, turnId: id };
 			return recorded.status === "inProgress" || !("completedAt" in recorded)
 				? recorded
 				: { ...recorded, completedAt: at };

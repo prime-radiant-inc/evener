@@ -498,4 +498,15 @@ describe("the demo session with every tool family", () => {
 		expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
 		expect(runsOf(rows)).not.toEqual([]);
 	});
+
+	// The package folds a call and its result into one step by callId, as a
+	// reload serves them, so an edit keeps both its arguments and its output.
+	it("folds each recorded call with its result, as the phone reads a reloaded transcript", () => {
+		const { model } = open("s-tools", "tools", withTools);
+		const steps = model.turns.flatMap((turn) => turn.items).filter((item) => item.type === "commandExecution");
+		expect(new Set(steps.map((step) => step.callId)).size).toBe(steps.length);
+		const edit = steps.find((step) => step.toolName === "edit_file");
+		expect(edit?.argumentsJSON).toContain("old_string");
+		expect(edit?.output).toBe("edited agent/tree.go: 1 replacement");
+	});
 });

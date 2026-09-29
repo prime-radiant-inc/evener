@@ -4,7 +4,9 @@
 // hand-written ones. Each corpus is what apptranscript projects for a
 // recorded run, served as it is: a tool call's announcement (in progress)
 // and its result are two items sharing a callId, as a transcript read serves
-// them, and the phone pairs them.
+// them. The package folds the two into one step by their ids' shape
+// (item_tool_* and item_tool_result_*, reducer.ts), so each item keeps its
+// recorded id, tagged so ids reused across and within corpora stay apart.
 import { readFileSync } from "node:fs";
 import type { ThreadItem } from "@evener/appwire-client";
 
@@ -15,6 +17,12 @@ function corpus(file: string): unknown {
 
 type Cases = { item: ThreadItem }[];
 
+/** A corpus's items, each id tagged with the corpus and its place there,
+ * so none collides: the corpora, and the cases within one, reuse ids. */
+function tagged(items: ThreadItem[], name: string): ThreadItem[] {
+	return items.map((item, index) => ({ ...item, id: `${item.id}_${name}_${index}` }));
+}
+
 /** Every recorded item: the core tools, then subagents and the task list,
  * then subagent and job notifications, then system events and steers. */
 export function recordedToolFamilies(): ThreadItem[] {
@@ -23,9 +31,15 @@ export function recordedToolFamilies(): ThreadItem[] {
 	const notifications = corpus("notificationwire/steering.json") as Cases;
 	const events = corpus("systemeventwire/events.json") as { items: Cases };
 	return [
-		...tools.items,
-		...subagents.items,
-		...notifications.map((recorded) => recorded.item),
-		...events.items.map((recorded) => recorded.item),
+		...tagged(tools.items, "toolwire"),
+		...tagged(subagents.items, "subagentwire"),
+		...tagged(
+			notifications.map((recorded) => recorded.item),
+			"notificationwire",
+		),
+		...tagged(
+			events.items.map((recorded) => recorded.item),
+			"systemeventwire",
+		),
 	];
 }
