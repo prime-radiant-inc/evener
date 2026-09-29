@@ -1071,3 +1071,41 @@ it("retires for a removed hub: unbound, marked retired, and starts nothing more 
 	expect(await started).toEqual({ status: "obsolete" });
 	expect(await store.getState().submit()).toEqual({ status: "blocked" });
 });
+
+describe("an uncertain start across a reopen (#3104)", () => {
+	/** A draft whose start went out, then lost its connection: uncertain. */
+	async function uncertain() {
+		const { saved, storage } = memoryDrafts();
+		const own = createNewSessionStore("hub-a", storage);
+		own.getState().bind(
+			createNewSessionService({
+				// The start never answers; nothing else is asked.
+				request: () => new Promise(() => {}),
+			} as unknown as ConversationClientLike),
+		);
+		await own.getState().setCwd("/project", false);
+		own.getState().setPrompt("go");
+		void own.getState().submit();
+		await flush();
+		own.getState().bind(null);
+		return { own, saved, storage };
+	}
+
+	it("still holds the unchanged draft after the app reopens", async () => {
+		const { storage } = await uncertain();
+		const reopened = createNewSessionStore("hub-a", storage);
+		expect(reopened.getState()).toMatchObject({ unconfirmedCreation: true, prompt: "go" });
+		expect(reopened.getState().startMayRepeat()).toBe(true);
+	});
+
+	it("doesn't hold a draft edited since, after the app reopens", async () => {
+		const { own, saved, storage } = await uncertain();
+		own.getState().setPrompt("go, and fix the docs");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go, and fix the docs", unconfirmed: false });
+		const reopened = createNewSessionStore("hub-a", storage);
+		expect(reopened.getState().startMayRepeat()).toBe(false);
+		// Put back as sent, it says a start may exist again.
+		own.getState().setPrompt("go");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
+	});
+});

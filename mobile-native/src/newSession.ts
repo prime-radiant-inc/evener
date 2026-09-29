@@ -393,18 +393,22 @@ export function createNewSessionStore(
 					}
 				}
 				const previouslyUnconfirmed = get().unconfirmedCreation;
+				const previousContent = unconfirmedContent;
+				// Recorded before the save, which marks the saved draft unconfirmed
+				// only while its content is what this start sends.
+				unconfirmedContent = draftContent();
 				saving = true;
 				set({ unconfirmedCreation: true });
 				saving = false;
 				if (!saveDraft()) {
 					saving = true;
+					unconfirmedContent = previousContent;
 					set({ unconfirmedCreation: previouslyUnconfirmed });
 					saving = false;
 					return { status: "blocked" };
 				}
 				// The draft as this start sent it; only that draft is cleared when it lands.
 				const submittedDraft = lastSaved;
-				unconfirmedContent = draftContent();
 				startDispatched = true;
 				creationRequested = true;
 				const result = await current.start({
@@ -576,9 +580,17 @@ export function createNewSessionStore(
 	}
 	/** The draft as the person made it, whatever its unconfirmed flag says. */
 	function draftContent(): string {
-		return creationDraftMetadata({ ...snapshot(), unconfirmed: false });
+		return creationDraftMetadata(draftFields());
 	}
+	/** The draft as saved. It says a start may exist only while its content is
+	 * still what that start sent: once edited, it is a new draft, and a reopened
+	 * app mustn't hold it as the one that may have started. */
 	function snapshot(): CreationDraft {
+		const draft = draftFields();
+		const sent = unconfirmedContent === null || creationDraftMetadata(draft) === unconfirmedContent;
+		return { ...draft, unconfirmed: store.getState().unconfirmedCreation && sent };
+	}
+	function draftFields(): CreationDraft {
 		const state = store.getState();
 		return {
 			source: state.source,
@@ -590,7 +602,7 @@ export function createNewSessionStore(
 			reasoning: state.reasoning,
 			launchOverrides: state.launchOverrides,
 			images: state.images,
-			unconfirmed: state.unconfirmedCreation,
+			unconfirmed: false,
 		};
 	}
 	function saveDraft(): boolean {
