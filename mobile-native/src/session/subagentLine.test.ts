@@ -112,7 +112,8 @@ describe("a subagent's row (spec 8.2)", () => {
 		const failed = (over: Partial<EvenerDelegateInfo>) =>
 			delegate({ status: "failed", outcome: "failed", terminal: true, runEndedAt: ago(60_000), ...over });
 		expect(
-			subagentLine(row({ state: "failed" }), [failed({ reason: "failed", error: "provider returned 500" })], NOW).activity,
+			subagentLine(row({ state: "failed" }), [failed({ reason: "failed", error: "provider returned 500" })], NOW)
+				.activity,
 		).toBe("provider returned 500");
 		expect(subagentLine(row({ state: "failed" }), [failed({ reason: "runtime_lost" })], NOW).activity).toBe(
 			"runtime lost",
