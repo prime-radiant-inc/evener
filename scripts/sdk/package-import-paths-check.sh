@@ -67,21 +67,22 @@ exempt_configs=(
 	mobile-native/src/metroResolver.test.ts
 )
 
-# `/protocol/` rather than `protocol`: the seam is only ever reached through a
-# relative path, and a bare `protocol` substring matches @modelcontextprotocol
-# and the "protocol" terminal-reason literal the app really does use. The
-# closing quote is an alternative to the slash so that a specifier naming the
-# directory itself -- `"../../protocol"` -- is caught too, and for the same
-# reason the package directory needs no trailing slash.
-seam='/protocol(/|["'"'"'`])'
+# `protocol` without a leading slash: the literal-shape anchor already requires
+# a `./`/`../` relative path, which is what excludes @modelcontextprotocol and
+# the "protocol" terminal-reason literal the app really does use. The closing
+# quote is an alternative to the slash so that a specifier naming the directory
+# itself -- `"../../protocol"` -- is caught too, and for the same reason the
+# package directory needs no trailing slash.
+seam='protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
 
 # A quoted literal naming the package by path is a relative path: the package is
 # never a bare specifier, so every offending import begins with `./` or `../`.
-# Keying on the literal's own shape rather than the keyword that precedes it
-# reaches a specifier the formatter wrapped onto its own line, and needs no list
-# of the module-loading forms.
-relative='["'"'"'`]\.'
+# Requiring the slash, not just a leading dot, keeps dot-prefixed string data
+# (`.config/...`) out. Keying on the literal's own shape rather than the keyword
+# that precedes it reaches a specifier the formatter wrapped onto its own line,
+# and needs no list of the module-loading forms.
+relative='["'"'"'`]\.\.?/'
 
 status=0
 

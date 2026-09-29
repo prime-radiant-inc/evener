@@ -168,8 +168,8 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 // The gate reads import specifiers, not every quoted string that happens to
 // name the seam. A demo URL or a fixture label that quotes the path is data,
 // not an import, and #3107's false positive renamed working demo paths to
-// appease it. Only a module-loading keyword before the literal makes it an
-// import, so ordinary string data passes.
+// appease it. Only a literal shaped like a relative specifier (`./` or `../`)
+// is treated as an import, so absolute paths and prose labels pass.
 func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
 	files := cleanPackageImportTree()
 	files["mobile-native/src/dev/demoDoc.ts"] = strings.Join([]string{
@@ -177,6 +177,8 @@ func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
 		"export const demoDoc = \"/home/jesse/sites/docs/reference/appwire/protocol/v6/index.html\";",
 		"export const label = \"appwire-client/typescript state/navigation\";",
 		"export const hint = \"loaded from 'appwire-client/typescript/errors'\";",
+		"export const dotdir = \".config/appwire-client/typescript state\";",
+		"export const abs = \"/workspace/appwire-client/typescript/errors\";",
 		"",
 	}, "\n")
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
