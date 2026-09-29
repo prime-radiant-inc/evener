@@ -467,6 +467,39 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   expect(window.location.pathname).toBe("/");
 });
 
+// UI-01's cached-model half at the surface: a deletion fence that lands after
+// the pane already hydrated must replace the stale transcript with the deleted
+// state instead of leaving it on screen. The store keeps the cached model, so
+// the surface has to key off the deletion flag, not "no model".
+test("a deletion fence after hydration replaces a cached transcript with the deleted surface", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_gone" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText("Soon gone")).toBeTruthy());
+
+  fake.on("thread/read", () => {
+    throw new WireError("target has been deleted: local:ref_gone", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  await act(async () => {
+    await threadsStore
+      .getState()
+      .refreshThread("ref_gone")
+      .catch(() => undefined);
+  });
+
+  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  expect(screen.queryByText("Soon gone")).toBeNull();
+  expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+});
+
 test("shows the thread's live name once hydrated, not the raw ref", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { name: "My session" }));

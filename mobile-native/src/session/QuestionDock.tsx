@@ -10,7 +10,6 @@
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
 import { boundQuestion } from "../projectedRows";
 import {
 	boundQuestionText,
@@ -20,6 +19,7 @@ import {
 	questionAdvanceTarget,
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
 import { dockCard } from "./dockCard";
 import { SymbolButton } from "./SymbolButton";
@@ -32,6 +32,9 @@ export interface QuestionDockProps {
 	ready: boolean;
 	/** The answers are on their way. */
 	sending: boolean;
+	/** Offline: sending keeps the answers on the phone until the connection
+	 * returns, and the send button says so. */
+	waitsForConnection?: boolean;
 	folded: boolean;
 	onFold(folded: boolean): void;
 	/** Bring the composer back, focused, to answer in your own words. */
@@ -46,6 +49,7 @@ export function QuestionDock({
 	draft,
 	ready,
 	sending,
+	waitsForConnection = false,
 	folded,
 	onFold,
 	onOtherAnswer,
@@ -54,6 +58,7 @@ export function QuestionDock({
 }: QuestionDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { selections, activeIndex } = draft;
 	const card = dockCard(palette);
 	const caption = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid };
@@ -114,6 +119,8 @@ export function QuestionDock({
 	const composes = composeQuestionAnswers(questions, selections) !== null;
 	const primaryOff = !editable || (advanceTarget === undefined && !composes);
 	const primary = primaryLabel(advanceTarget, questions.length);
+	const primaryAccessibility =
+		waitsForConnection && advanceTarget === undefined ? `${primary} when you're back online` : primary;
 	const filled = advanceTarget === undefined;
 	function select(resolution: AskResolution | null) {
 		const next = { ...selections, [question.key]: { note: answer?.note ?? "", resolution } };
@@ -154,7 +161,7 @@ export function QuestionDock({
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						fontFamily: fonts.serifSemibold,
+						...face.semibold,
 						fontSize: 17 * scale,
 						lineHeight: 24 * scale,
 						color: palette.prose,
@@ -165,7 +172,7 @@ export function QuestionDock({
 				{display.why ? (
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ fontFamily: fonts.serif, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+						style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 					>
 						{display.why}
 					</Text>
@@ -292,7 +299,7 @@ export function QuestionDock({
 				</Pressable>
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={primary}
+					accessibilityLabel={primaryAccessibility}
 					accessibilityState={{ disabled: primaryOff }}
 					disabled={primaryOff}
 					onPress={() => {

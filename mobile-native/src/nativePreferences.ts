@@ -60,7 +60,7 @@ export interface NativePreferencesSnapshot {
 const KEYBINDINGS_LOAD_ERROR_MESSAGE =
 	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
 
-const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
+export const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
 
 export function keybindingsErrorMessage(
 	draftError: string | null,

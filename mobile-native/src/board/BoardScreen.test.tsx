@@ -38,6 +38,7 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
@@ -665,6 +666,35 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 52, animated: true });
 	pressChip(tree, "Projects, 4 projects");
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 752, animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls to Needs you when a coalesced banner asks, once the Board has laid out", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	// Asked before this Board existed: the banner popped to it.
+	requestBoardJump("needsYou");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
+	const band = tree.root
+		.findAll(
+			(node) =>
+				typeof node.props.onLayout === "function" &&
+				node.findAll((child) => child.props.children === "NEEDS YOU · 2").length > 0,
+		)
+		.at(-1);
+	act(() => {
+		tree.root
+			.find((node) => node.props.testID === "live-block" && node.props.onLayout)
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 400 } } });
+		band?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 30, width: 390, height: 28 } } });
+	});
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
+	// A Board already laid out scrolls at once.
+	scrollTo.mockClear();
+	act(() => requestBoardJump("needsYou"));
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
 	act(() => tree.unmount());
 });
 
@@ -2383,7 +2413,11 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	pressLabel(tree, "Sign in, openai sign-in expired");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
 	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Hosts",
+		params: { hubId: id, focus: "studio" },
+		initial: false,
+	});
 	pressLabel(tree, "Plugins, superpowers is broken");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
 	// Update needed comes first.
