@@ -222,10 +222,12 @@ function lockedPods(lock) {
 		if (line === "") continue;
 		const match = /^ {2}- "?([^ "]+) \(from `([^`]+)`\)"?$/.exec(line);
 		if (!match) {
+			// This check compares only local-path entries (`../node_modules/...`).
 			// A spec-repo dependency (`  - Firebase/Core`, `  - SomePod (~> 1.0)`)
-			// has no local path and is out of scope; a local-path line this cannot
-			// read may be a pod the check would otherwise call missing, so fail it.
-			if (line.includes("(from ")) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
+			// and a remote Git or HTTP one (`  - Foo (from \`https://...git\`, branch
+			// \`main\`)`) are out of scope and skipped; a local-path line that still
+			// does not parse fails, since it may be a pod called missing.
+			if (/\(from `(?:\.{0,2}\/|\/)/.test(line)) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
 			continue;
 		}
 		const dir = path.posix.normalize(match[2]).replace(/\/$/, "");

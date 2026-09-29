@@ -21,20 +21,25 @@ const run = (scriptPath, args = [], env = {}) =>
 	spawnSync(process.execPath, [scriptPath, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
 const check = (...args) => run(script, args);
 
-/** A throwaway mobile-native whose expo stub prints FAKE_SHAPE as autolinking's output. */
+/** A throwaway mobile-native whose expo stub prints FAKE_RESOLVE or FAKE_CONFIG
+ * as autolinking's output, chosen by the subcommand it runs. */
 function fakeScript() {
 	const fake = mkdtempSync(path.join(scratch, "fake-"));
 	const expoBin = path.join(fake, "mobile-native/node_modules/expo/bin");
 	mkdirSync(expoBin, { recursive: true });
 	writeFileSync(path.join(fake, "mobile-native/node_modules/expo/package.json"), '{"name":"expo","version":"0.0.0"}');
-	writeFileSync(path.join(expoBin, "autolinking.js"), "process.stdout.write(process.env.FAKE_SHAPE);");
+	writeFileSync(
+		path.join(expoBin, "autolinking.js"),
+		'process.stdout.write(process.argv.includes("react-native-config") ? process.env.FAKE_CONFIG : process.env.FAKE_RESOLVE);',
+	);
 	const scriptDir = path.join(fake, "scripts/native");
 	mkdirSync(scriptDir, { recursive: true });
 	copyFileSync(script, path.join(scriptDir, "check-podfile-lock.mjs"));
 	return path.join(scriptDir, "check-podfile-lock.mjs");
 }
 
-const fakeRun = (shape) => run(fakeScript(), ["--lock", realLockPath], { FAKE_SHAPE: JSON.stringify(shape) });
+const fakeRun = (resolve, config = { reactNativePath: "/x", dependencies: {} }) =>
+	run(fakeScript(), ["--lock", realLockPath], { FAKE_RESOLVE: JSON.stringify(resolve), FAKE_CONFIG: JSON.stringify(config) });
 
 /** A copy of the real lock without the DEPENDENCIES line for `pod`. */
 function lockWithout(pod) {
@@ -113,7 +118,7 @@ test("a DEPENDENCIES section at end of file with no trailing blank line is read"
 
 test("a DEPENDENCIES line that does not parse exits 2 naming it", () => {
 	const file = path.join(scratch, "garbage.lock");
-	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - BrokenPod (from /no/backticks)\n"));
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - BrokenPod (from `../node_modules/broken)\n"));
 	const run = check("--lock", file);
 	assert.equal(run.status, 2, run.stderr);
 	assert.match(run.stderr, /cannot parse/);
@@ -122,6 +127,16 @@ test("a DEPENDENCIES line that does not parse exits 2 naming it", () => {
 test("a spec-repo dependency line with no local path is skipped", () => {
 	const file = path.join(scratch, "spec-repo.lock");
 	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - Firebase/Core\n  - SomePod (~> 1.0)\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 0, run.stderr);
+});
+
+test("a remote Git dependency line with options is skipped", () => {
+	const file = path.join(scratch, "git-dep.lock");
+	writeFileSync(
+		file,
+		realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - SomePod (from `https://github.com/foo/bar.git`, branch `main`)\n"),
+	);
 	const run = check("--lock", file);
 	assert.equal(run.status, 0, run.stderr);
 });
@@ -135,9 +150,30 @@ test("an unexpected autolinking shape exits 2 with one line, not a stack trace",
 	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });
 
+test("an autolinking module without pods exits 2 with one line", () => {
+	const result = fakeRun({ modules: [{ packageName: "expo-camera" }] });
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*module without pods/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
 test("an autolinking pod without a name and directory exits 2 with one line", () => {
 	const result = fakeRun({ modules: [{ packageName: "expo-camera", pods: [{ podName: "ExpoCamera" }] }] });
 	assert.equal(result.status, 2, result.stderr);
 	assert.match(result.stderr, /^check-podfile-lock: .*pod/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("a react-native-config that is not an object exits 2 with one line", () => {
+	const result = fakeRun({ modules: [] }, "not-an-object");
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*react-native-config/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("a react-native-config without reactNativePath exits 2 with one line", () => {
+	const result = fakeRun({ modules: [] }, {});
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*reactNativePath/);
 	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });
