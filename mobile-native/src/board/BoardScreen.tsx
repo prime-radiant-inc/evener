@@ -359,7 +359,10 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
-	const search = useSearch(connected ? client : null);
+	// Search is bound only while the Board is in view (the plugin poll's rule):
+	// a reconnect while another screen is on top must not send one
+	// `evener/search` for the query the field still holds.
+	const search = useSearch(connected && focused ? client : null);
 	const searchInput = useRef<TextInput>(null);
 	const [searchText, setSearchText] = useState("");
 	// Searching from the moment the field takes focus until Cancel.
@@ -466,6 +469,18 @@ function Board({
 		readMoreLiveIfNear();
 		readVisibleMore();
 	};
+	// iOS applies the scroller's initial content offset once, so a Dynamic
+	// Type change leaves the field tucked at the old height. While the field
+	// is still tucked - not revealed for search, and the Board not scrolled
+	// past it - re-apply the offset for the new height.
+	const tuckedHeight = useRef(searchFieldHeight);
+	useEffect(() => {
+		const was = tuckedHeight.current;
+		if (was === searchFieldHeight) return;
+		tuckedHeight.current = searchFieldHeight;
+		if (searching || viewport.current.offset > was) return;
+		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: false });
+	}, [searchFieldHeight, searching]);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -1155,7 +1170,7 @@ function Board({
 					) : (
 						<>
 							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
-							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} connected={connected} />
 							{continueReading ? (
 								<ContinueReadingRow
 									trail={continueReading}
@@ -1505,6 +1520,9 @@ function SearchField({
 					autoCorrect={false}
 					clearButtonMode="while-editing"
 					allowFontScaling={allowFontScaling}
+					// The field draws 36pt; the slop reaches into the row's
+					// padding for the 44pt minimum touch target.
+					hitSlop={{ top: 4, bottom: 4 }}
 					style={{ flex: 1, alignSelf: "stretch", fontSize: 17 * scale, color: palette.inkHi }}
 				/>
 			</View>
