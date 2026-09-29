@@ -2,7 +2,7 @@ import type { EvenerThread, Thread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it, vi } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { BoardHold, type HeldAction } from "./boardHold";
+import { BoardHold, type HeldAction, turnSeen } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
 import type { StopOutcome } from "./boardStops";
 
@@ -97,6 +97,16 @@ it("shuts down only when no newer turn runs than the one seen", async () => {
 	await began.replay.sendImmediate(began.client, began.isLive);
 	expect(methods(began.client)).toEqual([]);
 	expect(began.toasts).toEqual(["A newer turn started, so the session wasn't shut down"]);
+
+	// Pressed on a session awaiting you at rest, and a turn began since.
+	const rested = setup({ activeTurnId: "turn-3", lastTurnEndedAt: stamp });
+	rested.client.on("thread/shutdown", () => ({}) as never);
+	rested.hold.hold(
+		{ kind: "shutDown", ref: "c", title: "C", seen: turnSeen({ state: "awaiting", turn_ended_at: ended }) },
+		1,
+	);
+	await rested.replay.sendImmediate(rested.client, rested.isLive);
+	expect(methods(rested.client)).toEqual([]);
 
 	// Nothing running: shutting down stops nothing the person didn't see.
 	const resting = setup({ lastTurnEndedAt: stamp + 60_000 });

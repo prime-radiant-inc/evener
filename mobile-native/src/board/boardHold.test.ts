@@ -123,14 +123,20 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 });
 
 describe("the turn a press saw", () => {
-	it("names the row's stamp, and counts a session asking for you as running a turn", () => {
-		const row = (state: string, turn_ended_at?: string) => ({ state, turn_ended_at });
+	it("names the row's stamp, and counts a session asking a question as running a turn", () => {
+		const row = (state: string, turn_ended_at?: string, ask_pending?: boolean) => ({
+			state,
+			turn_ended_at,
+			ask_pending,
+		});
 		expect(turnSeen(row("active", "2026-09-28T10:00:00.000Z"))).toEqual({
 			turnEndedAt: "2026-09-28T10:00:00.000Z",
 			running: true,
 		});
-		// A question or approval waits inside a live turn.
-		expect(turnSeen(row("awaiting"))).toEqual({ turnEndedAt: null, running: true });
+		// A question waits inside a live turn (an approval keeps the row "active").
+		expect(turnSeen(row("awaiting", undefined, true))).toEqual({ turnEndedAt: null, running: true });
+		// Otherwise awaiting is at rest: the turn ended with the ball in your court.
+		expect(turnSeen(row("awaiting"))).toEqual({ turnEndedAt: null, running: false });
 		expect(turnSeen(row("idle"))).toEqual({ turnEndedAt: null, running: false });
 	});
 });

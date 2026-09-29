@@ -114,10 +114,13 @@ export function heldFor(records: readonly HeldRecord[], ref: string): HeldRecord
 }
 
 /** The turn a Stop or Shut down pressed on this row saw: its stamp, and
- * whether a turn was running. A session asking a question or waiting on an
- * approval counts as running one: the ask sits inside a live turn. */
-export function turnSeen(row: { state: string; turn_ended_at?: string }): TurnSeen {
-	return { turnEndedAt: row.turn_ended_at ?? null, running: row.state === "active" || row.state === "awaiting" };
+ * whether a turn was running. A session asking a question counts as running
+ * one, since the ask sits inside a live turn; an approval keeps the row
+ * "active". Otherwise "awaiting" is at rest: the turn ended with the ball in
+ * your court (agent/session_state.go). */
+export function turnSeen(row: { state: string; turn_ended_at?: string; ask_pending?: boolean }): TurnSeen {
+	const asking = row.state === "awaiting" && row.ask_pending === true;
+	return { turnEndedAt: row.turn_ended_at ?? null, running: row.state === "active" || asking };
 }
 
 /** Whether a held Stop or Shut down still names the turn that runs now
