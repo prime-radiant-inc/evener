@@ -1,7 +1,7 @@
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { NOTE_LIMIT, NotesController, notesBarPreview, noteStatusLine, SAVE_AFTER_BLUR_MS } from "./sessionNotes";
 
 const sharedNotes = { sharedNotes: true } as ThreadCapabilities;
@@ -48,15 +48,6 @@ describe("the editor's status line", () => {
 		expect(noteStatusLine(phase, working)).toBe(text);
 	});
 });
-
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 
 function harness(
 	over: { fail?: Error; projectionState?: "pending" | "removed"; working?: boolean; instanceId?: string } = {},
