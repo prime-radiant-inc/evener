@@ -1219,6 +1219,52 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("keeps a message queued after Stop held, as the daemon parks the queue", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
+		try {
+			await client.connect();
+			await client.request("turn/start", {
+				...identity,
+				clientMutationId: "start-1",
+				input: [{ type: "text", text: "Go" }],
+			});
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-1" });
+			const queued = (await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-1",
+				input: [{ type: "text", text: "Held one" }],
+			})) as { receipt: { turnId?: string } };
+			expect(queued.receipt.turnId).toBeUndefined();
+			const thread = (await client.request("thread/read", { ref: identity.ref, includeTurns: false })).thread;
+			expect(thread.status.type).toBe("idle");
+			expect(thread.evener.queue.depth).toBe(1);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("answers a queued send with an unknown outcome too, when told its outcomes can't be recorded", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { unconfirmed: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await expect(
+				client.request("turn/queue", {
+					ref: "demo:playground",
+					expectedInstanceId: "demo-instance",
+					clientMutationId: "queue-1",
+					input: [{ type: "text", text: "Go" }],
+				}),
+			).rejects.toMatchObject({ code: -32603, data: { clientMutationId: "queue-1", mutationOutcome: "unknown" } });
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});

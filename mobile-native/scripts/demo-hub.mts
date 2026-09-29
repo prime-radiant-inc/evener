@@ -68,7 +68,8 @@ type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
 // The phase 6 screenshots' staging (see the startup block below for the
 // environment variables that set these).
 export interface DemoHubModes {
-	// With the fleet on, one command per line: a DemoStep's name, or "burst".
+	// With the fleet on, one command per line: a DemoStep's name, or "burst"
+	// (EVENER_DEMO_COMMANDS=1 wires this to stdin).
 	commands?: NodeJS.ReadableStream;
 	// turn/start and turn/queue answer as a daemon that can't record a
 	// mutation's outcome does, so a send shows "Couldn't confirm this was
@@ -255,11 +256,16 @@ export async function createDemoHub(
 			: undefined;
 	commandLines?.on("line", (line) => {
 		const command = line.trim();
-		if (command === "burst") for (const step of BURST) play(step);
-		else if ((DEMO_STEPS as readonly string[]).includes(command))
-			play(command as DemoStep);
-		else if (command !== "")
-			console.info(`Unknown command ${command}. Commands: ${COMMANDS}`);
+		// A step that fails says so and leaves the hub running.
+		try {
+			if (command === "burst") for (const step of BURST) play(step);
+			else if ((DEMO_STEPS as readonly string[]).includes(command))
+				play(command as DemoStep);
+			else if (command !== "")
+				console.info(`Unknown command ${command}. Commands: ${COMMANDS}`);
+		} catch (error) {
+			console.error(`Command ${command} failed:`, error);
+		}
 	});
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
@@ -497,13 +503,16 @@ export async function createDemoHub(
 							throw new WireError("Session identity changed", -32013, {
 								evenerErrorInfo: "conflict",
 							});
-						// A message queued for a resting session runs as its own
-						// turn, as the daemon's ProcessPendingUserInput runs it; only
-						// a Stop parks the queue (the last turn "interrupted").
+						// A message queued for a session at rest (idle, or waiting
+						// on you) with nothing queued before it runs as its own turn,
+						// as the daemon's ProcessPendingUserInput runs it; a Stop
+						// parks the queue (the last turn "interrupted").
 						const lastTurn = selected.turns?.at(-1);
 						if (
 							request.method === "turn/queue" &&
-							selected.status.type !== "active" &&
+							(selected.status.type === "idle" ||
+								selected.status.type === "awaiting") &&
+							(selected.evener.queue.depth ?? 0) === 0 &&
 							lastTurn?.status !== "interrupted"
 						) {
 							const turn = startScriptedTurn(
@@ -774,8 +783,10 @@ if (
 				}
 			: undefined,
 		{
+			// Opt-in: a hub started in the background from a shell would
+			// stop (SIGTTIN) the moment it read the terminal.
 			commands:
-				process.env.EVENER_DEMO_FLEET === "1" ? process.stdin : undefined,
+				process.env.EVENER_DEMO_COMMANDS === "1" ? process.stdin : undefined,
 			unconfirmed: process.env.EVENER_DEMO_UNCONFIRMED === "1",
 			protocolVersion: process.env.EVENER_DEMO_PROTOCOL || undefined,
 		},
@@ -783,7 +794,10 @@ if (
 	console.info(
 		`Scripted native UI demonstration: ${hub.origin} (no token, no LLM).`,
 	);
-	if (process.env.EVENER_DEMO_FLEET === "1")
+	if (
+		process.env.EVENER_DEMO_FLEET === "1" &&
+		process.env.EVENER_DEMO_COMMANDS === "1"
+	)
 		console.info(`Type a command to stage an alert: ${COMMANDS}.`);
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		process.once(signal, () => {
