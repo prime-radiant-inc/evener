@@ -1063,6 +1063,37 @@ const WORKING_SESSION_QUESTION: Question[] = [
 	},
 ];
 
+// A staged event (demoFleet.ts's steps) as the session's thread shows it, so
+// a banner opens a session that agrees with its Board row: a failure ends the
+// running turn in an error, an approval waits on a sandbox escalation inside
+// it, and a finish ends it with the ball in your court (a session that
+// finished without asking rests idle, as THREAD_STATUS says).
+export function stageFleetState(thread: Thread, state: "failed" | "approval" | "yourmove", now: number): void {
+	if (state === "approval") {
+		thread.evener.pendingEscalations = [
+			{
+				threadId: thread.id,
+				ref: thread.evener.ref,
+				escalationId: `${thread.evener.ref}-staged-escalation`,
+				tool: "write_file",
+				kind: "file_tool",
+				mode: "workspace-write",
+				deniedPath: "/home/jesse/sites/index.html",
+			},
+		];
+		refreshCapabilities(thread);
+		return;
+	}
+	const turn = thread.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+	if (turn) endTurn(thread, turn, "completed", now);
+	restFleetSession(thread, "idle", now);
+	if (state === "failed") {
+		thread.status = { type: "systemError" };
+		thread.evener.failure = { title: "The turn stopped on an error" };
+		refreshCapabilities(thread);
+	}
+}
+
 // The working session asks its question: its turn ends on the ask, as a
 // daemon's does, and the session waits on you, matching its Board row.
 export function askWorkingSessionQuestion(thread: Thread, now: number): void {

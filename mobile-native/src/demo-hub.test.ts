@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
@@ -1161,6 +1162,225 @@ describe("native demonstration hub's fleet sessions", () => {
 				}),
 			).rejects.toThrow("Unknown demonstration session");
 		});
+	});
+});
+
+describe("the demo hub's staged events for the phase 6 screenshots", () => {
+	it("plays a step typed on its command input for every connected client, and three for burst", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const sequences: number[] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				sequences.push((notification.params as { sequence: number }).sequence);
+		});
+		try {
+			await client.connect();
+			commands.write("question\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1]));
+			commands.write("burst\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1, 2, 3, 4]));
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("runs a message queued for a resting fleet session as its own turn, as the daemon does", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-flakes");
+		try {
+			await client.connect();
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			expect(thread.status.type).not.toBe("active");
+			const queued = (await client.request("turn/queue", {
+				ref,
+				expectedInstanceId: thread.evener.instanceId ?? "",
+				clientMutationId: "queued-1",
+				input: [{ type: "text", text: "Check the nightly runs too." }],
+			})) as { receipt: { turnId?: string; queueEntryIds?: string[] } };
+			expect(queued.receipt.turnId).toBeDefined();
+			expect(queued.receipt.queueEntryIds).toBeUndefined();
+			const after = (await client.request("thread/read", { ref, includeTurns: true })).thread;
+			expect(after.status.type).toBe("active");
+			expect(after.evener.queue.depth ?? 0).toBe(0);
+			expect(after.turns?.at(-1)?.items?.find((item) => item.type === "userMessage")?.text).toBe(
+				"Check the nightly runs too.",
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("runs a message queued after Stop, since queueing again releases the Stop's hold", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
+		try {
+			await client.connect();
+			await client.request("turn/start", {
+				...identity,
+				clientMutationId: "start-1",
+				input: [{ type: "text", text: "Go" }],
+			});
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-1" });
+			const queued = (await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-1",
+				input: [{ type: "text", text: "One more" }],
+			})) as { receipt: { turnId?: string } };
+			expect(queued.receipt.turnId).toBeDefined();
+			const thread = (await client.request("thread/read", { ref: identity.ref, includeTurns: false })).thread;
+			expect(thread.status.type).toBe("active");
+			expect(thread.evener.queue.depth ?? 0).toBe(0);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("runs the message a Stop parked first when another is queued, keeping the new one behind it", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
+		const read = async () => (await client.request("thread/read", { ref: identity.ref, includeTurns: true })).thread;
+		try {
+			await client.connect();
+			await client.request("turn/start", {
+				...identity,
+				clientMutationId: "start-1",
+				input: [{ type: "text", text: "Go" }],
+			});
+			await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-1",
+				input: [{ type: "text", text: "Parked one" }],
+			});
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-1" });
+			expect((await read()).evener.queue.depth).toBe(1);
+			await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-2",
+				input: [{ type: "text", text: "New one" }],
+			});
+			const thread = await read();
+			expect(thread.status.type).toBe("active");
+			expect(thread.turns?.at(-1)?.items?.find((item) => item.type === "userMessage")?.text).toBe("Parked one");
+			expect(thread.evener.queue.texts).toEqual(["New one"]);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("answers a queued send with an unknown outcome too, when told its outcomes can't be recorded", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { unconfirmed: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await expect(
+				client.request("turn/queue", {
+					ref: "demo:playground",
+					expectedInstanceId: "demo-instance",
+					clientMutationId: "queue-1",
+					input: [{ type: "text", text: "Go" }],
+				}),
+			).rejects.toMatchObject({ code: -32603, data: { clientMutationId: "queue-1", mutationOutcome: "unknown" } });
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("stages each step on the session's own thread too, so a banner opens a session that agrees with its row", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const read = async (slug: string) =>
+			(await client.request("thread/read", { ref: fleetSessionRef(slug), includeTurns: false })).thread;
+		const sequences: number[] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				sequences.push((notification.params as { sequence: number }).sequence);
+		});
+		try {
+			await client.connect();
+			commands.write("failure\napproval\nfinish\n");
+			await vi.waitFor(() => expect(sequences).toEqual([1, 2, 3]));
+			expect((await read("s-readintent")).status.type).toBe("systemError");
+			const landing = await read("s-landing");
+			expect(landing.status.type).toBe("active");
+			expect(landing.evener.pendingEscalations).toHaveLength(1);
+			const resume = await read("s-resume");
+			expect(resume.status.type).toBe("idle");
+			expect(resume.evener.activeTurnId).toBeUndefined();
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("lists the commands when it doesn't know the one typed", async () => {
+		const commands = new PassThrough();
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		try {
+			commands.write("dance\n");
+			await vi.waitFor(() =>
+				expect(info).toHaveBeenCalledWith(
+					"Unknown command dance. Commands: question, failure, approval, finish, host-offline, host-online, burst",
+				),
+			);
+		} finally {
+			info.mockRestore();
+			await hub.close();
+		}
+	});
+
+	it("answers a send with an unknown outcome when told its outcomes can't be recorded", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { unconfirmed: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await expect(
+				client.request("turn/start", {
+					ref: "demo:playground",
+					expectedInstanceId: "demo-instance",
+					clientMutationId: "start-1",
+					input: [{ type: "text", text: "Go" }],
+				}),
+			).rejects.toMatchObject({
+				code: -32603,
+				data: {
+					clientMutationId: "start-1",
+					mutationOutcome: "unknown",
+					retryDisposition: "blocked",
+					cause: "persistenceUnavailable",
+				},
+			});
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("advertises the protocol version it is told to, so the phone sees a mismatch", async () => {
+		const hub = await createDemoHub(0, undefined, undefined, { protocolVersion: "evener-appwire-v0" });
+		const socket = new WebSocket(`${hub.origin.replace("http", "ws")}/rpc`);
+		try {
+			await new Promise((resolve) => socket.once("open", resolve));
+			const answer = new Promise<{ result?: { protocolVersion?: string } }>((resolve) =>
+				socket.once("message", (data) => resolve(JSON.parse(String(data)))),
+			);
+			socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
+			expect((await answer).result?.protocolVersion).toBe("evener-appwire-v0");
+		} finally {
+			socket.close();
+			await hub.close();
+		}
 	});
 });
 
