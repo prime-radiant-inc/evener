@@ -9,7 +9,7 @@
 // to a session itself, from the diagnostics the threads store already holds.
 import { type CommandCatalogClient, type CommandCatalogState, createCommandCatalog } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
+import { connectionStore, readyConnectionTransition } from "./connection";
 
 const connectionClient: CommandCatalogClient = {
   request: (method, params, opts) => {
@@ -45,9 +45,7 @@ store.watch();
 // it deliberately skips the first connect ("nothing was missed"), and the
 // first connect is exactly the case this load exists for.
 connectionStore.subscribe((state, previous) => {
-  if (state.client === null || state.state !== "ready") return;
-  if (state.client === previous.client && previous.state === "ready") return;
-  void store.getState().refresh();
+  if (readyConnectionTransition(state, previous)) void store.getState().refresh();
 });
 
 function useCommandCatalogState<T>(selector: (state: CommandCatalogState) => T): T {
