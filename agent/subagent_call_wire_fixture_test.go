@@ -13,7 +13,8 @@ package agent
 // TOOL_RESULTS entry) and projects both turns through apptranscript the way
 // history reaches the wire. The delegate and delegate_send calls run for real,
 // on a session whose child blocks in its first model call until the test
-// ends, so the send always steers a running delegate. The shell and task_list
+// ends; the send waits for the child to reach that call, so it always steers
+// a running delegate. The shell and task_list
 // outputs are hand-written text, since those rows read only their calls'
 // intents and states. The phone's transcript row tests read the file this
 // test pins.
@@ -25,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,13 +59,17 @@ const (
 
 // subagentWireSession is a session that can delegate, whose children block
 // in their first model call until the test ends: a delegate it starts stays
-// running for as long as the recording takes.
-func subagentWireSession(t *testing.T) (*Session, string) {
+// running for as long as the recording takes. The channel it returns closes
+// when a child reaches that call.
+func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}) {
 	t.Helper()
 	stateDir := realTempDirForTest(t)
+	reached := make(chan struct{})
+	var reachedOnce sync.Once
 	release := make(chan struct{})
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		reachedOnce.Do(func() { close(reached) })
 		<-release
 		return llm.Response{Message: llm.Assistant("done")}
 	}})
@@ -84,7 +90,7 @@ func subagentWireSession(t *testing.T) (*Session, string) {
 	// before the session closes.
 	t.Cleanup(s.Close)
 	t.Cleanup(func() { close(release) })
-	return s, stateDir
+	return s, stateDir, reached
 }
 
 // run executes one call on the session, failing the test on an error result.
@@ -104,7 +110,7 @@ func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 
 func TestSubagentCallWireFixtures(t *testing.T) {
 	t.Parallel()
-	s, stateDir := subagentWireSession(t)
+	s, stateDir, childRunning := subagentWireSession(t)
 	delegate := subagentWireCall{
 		id:   "call_delegate_1",
 		tool: "delegate",
@@ -117,6 +123,13 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	var receipt stableDelegateCreateResult
 	if err := json.Unmarshal([]byte(delegate.output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", delegate.output, err)
+	}
+	// The send steers the delegate only once its child is in its model call,
+	// so it always finds the delegate running.
+	select {
+	case <-childRunning:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the delegate's child never reached its first model call")
 	}
 	calls := []subagentWireCall{
 		delegate,
