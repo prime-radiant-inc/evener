@@ -1,10 +1,11 @@
 import { Platform, Text, useColorScheme } from "react-native";
 import type { AnsiLine } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
-import { ansiRunTextStyle, expandLineTabs } from "./ansiOutputStyles";
+import { ansiRunTextStyle } from "./ansiOutputStyles";
 import { useColors } from "./ui";
 
-export function AnsiOutputLine({ line: source }: { line: AnsiLine }) {
-	const line = expandLineTabs(source);
+/** One output line, drawn as parsed: its tabs already expanded where it was
+ * parsed (expandLineTabs), since a native Text draws a tab with no width. */
+export function AnsiOutputLine({ line }: { line: AnsiLine }) {
 	const colors = useColors();
 	const dark = useColorScheme() === "dark";
 	let offset = 0;
