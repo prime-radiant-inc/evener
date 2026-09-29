@@ -2574,10 +2574,16 @@ const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 // dedups a replay; a rejection maps a conflict the same way they do.
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
-  const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
   let target = client;
   for (let attempt = 1; ; attempt += 1) {
     try {
+      // Resolve the transport from the CURRENT target: a retry may run against
+      // a rewired or waited-ready client, so the first client's request must
+      // not be reused.
+      const request = target.request as unknown as (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
       return;
     } catch (err) {

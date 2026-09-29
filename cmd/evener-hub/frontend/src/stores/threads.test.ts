@@ -12706,6 +12706,79 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // The guard is `err instanceof WireError`, i.e. EVERY settled WireError -
+  // not only a conflict. A non-conflict refusal is surfaced unchanged, not
+  // mapped to ConflictError and not retried.
+  test("a fallback send does not retry a non-conflict WireError", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-invalid-params";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("bad params", -32602);
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(WireError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The ready wait is bounded: a client stuck "reconnecting" past the bound
+  // surfaces the original transport error after the single attempt, never
+  // hanging the send.
+  test("a fallback send surfaces when the ready wait times out", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-ready-timeout";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      fake.emitStateChange("reconnecting");
+      throw new Error("AppwireClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "stuck reconnecting while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("AppwireClient: socket closed");
+      // Reach the fallback; its first RPC fails with the client reconnecting.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The ready wait elapses with no reconnect: the original error surfaces.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The retry is bounded: a transport failure on both attempts is surfaced
   // after exactly two, with nothing else left to try.
   test("a fallback send surfaces a transport failure after both attempts", async () => {
