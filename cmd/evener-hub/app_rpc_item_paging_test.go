@@ -1344,9 +1344,6 @@ func TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity(t *testing.T) {
 	}
 }
 
-// A client that dropped rows from the top of its window pages them back by
-// naming the oldest row it kept: before rebases the cursor it holds onto that
-// boundary, keeping the cursor's identity fence.
 // beforePagingHub serves a session of n items (item-00, item-01, ...) from a
 // real daemon behind a hub, and returns a client initialized against the hub.
 func beforePagingHub(t *testing.T, sessionID string, n int) (*appwire.Client, string) {
@@ -1428,6 +1425,9 @@ func TestHubRPCTurnsListBeforeWithinAWholeSessionSnapshot(t *testing.T) {
 	}
 }
 
+// A client that dropped rows from the top of its window pages them back by
+// naming the oldest row it kept: before rebases the cursor it holds onto that
+// boundary, keeping the cursor's identity fence.
 func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
 	client, ref := beforePagingHub(t, "turns-list-before", 45)
 
