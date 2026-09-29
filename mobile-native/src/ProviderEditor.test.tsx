@@ -50,7 +50,7 @@ it("stays open and does not report success when the save is unconfirmed", async 
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onSaved).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("The hub didn't confirm the save.");
+	expect(renderedText(tree)).toContain("The hub didn't confirm the change.");
 });
 
 it("reports success when the save is confirmed", async () => {
@@ -109,7 +109,7 @@ it("keeps the draft when readiness is lost before the save runs", async () => {
 	expect(onSaved).not.toHaveBeenCalled();
 	// Nothing ran, so nothing reports: no failure copy claims a save was
 	// tried, and the draft keeps what was typed for the connection's return.
-	expect(renderedText(tree)).not.toContain("The hub didn't confirm the save.");
+	expect(renderedText(tree)).not.toContain("The hub didn't confirm the change.");
 	expect(tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.value).toBe("https://changed.example");
 });
 

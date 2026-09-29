@@ -416,7 +416,7 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("The provider was removed.");
+	expect(text).toContain("The provider was removed, but a later step failed. Check the list.");
 	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's own text can echo submitted credentials, so the
 	// warning above must never carry it.
@@ -632,7 +632,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 	expect(create).toHaveBeenCalledTimes(1);
 	expect(onEndpointConflict).not.toHaveBeenCalled();
 	const text = renderedText(tree);
-	expect(text).toContain("The hub didn't confirm the save.");
+	expect(text).toContain("The hub didn't confirm the change.");
 	expect(text).not.toContain("now points somewhere else");
 	// The form survives for the correction.
 	expect(text).toContain("Base URL");
@@ -1101,14 +1101,14 @@ it("reads the listing again on coming back to the page after a read failed, with
 	const { tree } = mountPage();
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Could not load providers");
+	expect(renderedText(tree)).toContain("Couldn't load the providers");
 	expect(renderedText(tree)).not.toMatch(/\bRetry\b|\bReconnect\b/);
 	await act(async () => {
 		refocus();
 	});
 	await act(async () => {});
 	expect(reads).toBe(2);
-	expect(renderedText(tree)).not.toContain("Could not load providers");
+	expect(renderedText(tree)).not.toContain("Couldn't load the providers");
 });
 
 it('calls no account sign-in "Signed in" before the hub\'s statuses are read', async () => {
@@ -1459,10 +1459,13 @@ it("names each confirmation's action on its button, and the provider in its mess
 		const request = alertRequests.at(-1);
 		return [request?.title, request?.message, request?.buttons?.map((button) => button.text)];
 	};
+	const styles = () => alertRequests.at(-1)?.buttons?.map((button) => button.style);
 	press(tree, (label) => label === "Remove");
 	expect(asked()).toEqual(["Remove provider?", "work on Work hub", ["Cancel", "Remove"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
 	press(tree, (label) => label === "Clear credentials");
-	expect(asked()).toEqual(["Clear credentials?", "work on Work hub", ["Cancel", "Clear"]]);
+	expect(asked()).toEqual(["Clear credentials?", "work on Work hub", ["Cancel", "Clear credentials"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
 });
 
 it("names the key it clears on the button", async () => {
@@ -1473,6 +1476,35 @@ it("names the key it clears on the button", async () => {
 	await openDetail(tree, "work");
 	press(tree, (label) => label === "Clear stored key");
 	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Cancel", "Clear key"]);
+	expect(alertRequests.at(-1)?.buttons?.at(-1)?.style).toBe("destructive");
+});
+
+it("names a Google provider's stored credential JSON, not a key, when it clears it", async () => {
+	alertRequests.length = 0;
+	providersHub([
+		instance({ auth: "gcp-adc", authModes: ["credentialJson"], activeSource: "adc", hasStoredFile: true }),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored credential JSON");
+	const request = alertRequests.at(-1);
+	expect(request?.title).toBe("Clear stored credential JSON?");
+	expect(request?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Clear JSON", "destructive"],
+	]);
+});
+
+it("leaves the Type row untagged for a provider that isn't the default, and keeps warnings under the group", async () => {
+	providersHub([instance({ isDefault: false, warnings: ["The key expires soon."] })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(hasControl(tree, "Type, anthropic")).toBe(true);
+	const modal = tree.root.findByType("Modal" as never);
+	expect(modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
+	expect(subtreeText(modal)).toContain("The key expires soon.");
 });
 
 it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {

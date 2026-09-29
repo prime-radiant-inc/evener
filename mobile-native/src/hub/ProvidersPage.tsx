@@ -43,33 +43,15 @@ import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
-
-// The warnings shown for the two refusals the generic "could not be confirmed"
-// line would misreport: a provider-instance write the hub APPLIED before a
-// later step failed, and the hub's refusal of an asserted destination. They are
-// this client's own wording: the rejection's text came from the hub and can
-// echo submitted credentials, so it must never reach the screen (the same rule
-// the catch's generic error keeps).
-const APPLIED_REMOVAL_WARNING = "The provider was removed.";
-const APPLIED_RENAME_WARNING = "The provider was renamed.";
-const ENDPOINT_CHANGED_WARNING =
-	"This provider now points somewhere else, so nothing was changed. Review where it points and try again.";
-
-// What a write the hub didn't answer for says (spec 5: what happened and
-// the one thing to do, never the plumbing between).
-const UNCONFIRMED_CHANGE = "The hub didn't confirm the change. Check the provider and try again.";
-const UNCONFIRMED_KEY = "The hub didn't confirm the key was saved. Check the provider's status and try again.";
-
-// What clearing a credential or removing a provider says when the hub cannot
-// fingerprint the destination: no key is being sent, so it does not reuse the
-// save-specific wording.
-const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
-	"The hub can't check where this provider points right now, so nothing was changed. Try again in a moment.";
-
-// What a credential save (a key or a JSON blob) says for the same condition;
-// neutral about which credential kind, unlike the key-specific package copy.
-const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
-	"The hub can't check where this provider points right now, so nothing was saved. Try again in a moment.";
+import {
+	appliedButFailed,
+	ENDPOINT_CHANGED_WARNING,
+	FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+	PROVIDERS_NOT_LOADED,
+	UNCONFIRMED_CHANGE,
+	UNCONFIRMED_CREDENTIAL,
+} from "../providers/providerCopy";
 
 // A mounted page re-keyed to another hub is a fresh page: the
 // reconnect-retention state below - the status line's everReady, the sign-in
@@ -244,7 +226,9 @@ function Providers({
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [actionWarning, setActionWarning] = useState<string | null>(null);
 	const instance = core.instances.find((item) => item.name === selected);
-	const loadError = core.error === null ? null : sessionActionError("Could not load providers", core.error);
+	// A Google provider's stored credential is a JSON file, not a key.
+	const json = instance?.auth === "gcp-adc";
+	const loadError = core.error === null ? null : sessionActionError(PROVIDERS_NOT_LOADED, core.error);
 	// A failed listing reads again when the page comes back to the front, as
 	// the store's notifications and a reconnect already do; nothing asks you
 	// to (no pull-to-refresh, ruling 21).
@@ -356,7 +340,7 @@ function Providers({
 				// for the passive evener/auth/updated notification, and warn with our
 				// own sentence rather than the rejection's text.
 				close();
-				setActionWarning(applied === "remove" ? APPLIED_REMOVAL_WARNING : APPLIED_RENAME_WARNING);
+				setActionWarning(appliedButFailed(applied === "remove" ? "removed" : "renamed"));
 				surface.refresh();
 				return;
 			}
@@ -377,7 +361,7 @@ function Providers({
 			}
 			// Provider/transport errors may echo submitted credentials. Keep the
 			// editor's error independent of upstream response text.
-			setActionError(secret ? UNCONFIRMED_KEY : UNCONFIRMED_CHANGE);
+			setActionError(secret ? UNCONFIRMED_CREDENTIAL : UNCONFIRMED_CHANGE);
 		}
 	}
 	/** Asks before a destructive action, naming the provider and the hub, with
@@ -689,7 +673,7 @@ function Providers({
 												)}
 												{instance.hasStoredFile && instance.activeSource !== "store" && (
 													<Row
-														label={instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
+														label={json ? "Clear stored credential JSON" : "Clear stored key"}
 														tone="danger"
 														disabled={surface.busy || stale || !ready}
 														onPress={() => {
@@ -701,8 +685,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?",
-																instance.auth === "gcp-adc" ? "Clear JSON" : "Clear key",
+																json ? "Clear stored credential JSON?" : "Clear stored key?",
+																json ? "Clear JSON" : "Clear key",
 																() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -721,7 +705,7 @@ function Providers({
 															}
 															confirm(
 																"Clear credentials?",
-																"Clear",
+																"Clear credentials",
 																() => surface.logout(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -771,6 +755,7 @@ function ProviderFacts({
 	auth: ReadonlyMap<string, AuthStatusResponse> | null;
 }) {
 	const status = statusOf(instance, auth);
+	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
 	const models = (instance.models ?? []).filter((model) => !model.disabled);
 	return (
 		<>
@@ -784,12 +769,8 @@ function ProviderFacts({
 				) : null}
 				<Row
 					label="Type"
-					value={
-						<RowValue text={instance.providerId} tag={instance.isDefault ? { text: "Default", tone: "gray" } : null} />
-					}
-					accessibilityLabel={["Type", instance.providerId, instance.isDefault ? "Default" : null]
-						.filter(Boolean)
-						.join(", ")}
+					value={<RowValue text={instance.providerId} tag={defaultTag} />}
+					accessibilityLabel={defaultTag ? `Type, ${instance.providerId}, Default` : `Type, ${instance.providerId}`}
 				/>
 				<Row label="Sign-in" value={signInKind(instance)} />
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
