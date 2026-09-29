@@ -1551,23 +1551,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || root.ID != entry.ThreadID || statusThreadID(root) == "" || (entry.SessionID != "" && statusThreadID(root) != entry.SessionID) {
 		return response, errors.New("spawned daemon read did not confirm its identity")
 	}
-	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
-	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
-		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		PendingEscalations: root.Evener.PendingEscalations,
-		PendingQuestion:    root.Evener.PendingQuestion,
-		Failure:            root.Evener.Failure,
-		LastMessage:        root.Evener.LastMessage,
-		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
-		Watches: diagnosticsWatches(root.Evener.Diagnostics),
-		Tasks:   root.Evener.Tasks,
-		// The identity checks above already require a current-protocol daemon,
-		// and every current daemon stamps its capability set on the thread
-		// projection this read answered from, so the caps beside the status
-		// are the daemon's own answer — not an approximation.
-		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
-		Profile: root.Evener.Profile, CurrentModel: root.ModelProvider}
+	result := probeResultFromThread(root)
+	result.OK = true
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {
