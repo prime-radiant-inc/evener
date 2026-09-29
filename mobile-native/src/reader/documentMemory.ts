@@ -138,6 +138,10 @@ function parseDocuments(value: unknown): Record<string, DocumentRecord> {
 
 function parseTrail(value: unknown): ContinueReading | null {
 	if (!isPlainObject(value)) return null;
+	// A trail written before #2871 named its session twice (reviewRef and
+	// reviewTitle); it is dropped rather than migrated. The row is a two-hour
+	// convenience, and this store drops any shape it doesn't recognize rather
+	// than carrying a migration for it.
 	const { sessionRef, path, title, sessionTitle, progress, leftAt, updatedAt } = value;
 	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(sessionTitle)) return null;
 	if (!isTime(progress) || !isTime(leftAt)) return null;
