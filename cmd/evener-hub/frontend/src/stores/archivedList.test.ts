@@ -61,7 +61,6 @@ describe("refreshArchivedList", () => {
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a", "local:b"]);
     expect(list.nextCursor).toBe("cursor-1");
     expect(list.total).toBe(3);
-    expect(list.loaded).toBe(true);
     expect(list.loading).toBe(false);
     expect(list.error).toBeNull();
   });

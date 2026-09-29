@@ -456,7 +456,7 @@ const failureValue = (value: unknown): boolean =>
 
 // sessionFieldsValue checks every field of a session summary except its
 // children, whose rule depends on where the summary travels.
-function sessionFieldsValue(value: unknown): value is Record<string, unknown> {
+function sessionFieldsValue(value: unknown): value is Record<string, unknown> & { children: unknown[] } {
   return (
     knownKeys(value, SESSION_KEYS) &&
     identity(value.ref) &&
@@ -499,19 +499,16 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> {
 
 // A graph entity's children are edges, so its own children array is empty.
 function sessionValue(value: unknown): value is Record<string, unknown> {
-  return sessionFieldsValue(value) && (value.children as unknown[]).length === 0;
+  return sessionFieldsValue(value) && value.children.length === 0;
 }
-
-// The hub's maxNavigationDepth: no summary tree it serves nests deeper.
-const MAX_SESSION_DEPTH = 32;
 
 // An evener/archived/list row is a plain summary with its children (fork
 // originals) nested inline, as the hub projects them.
 function sessionTreeValue(value: unknown, depth: number): boolean {
   return (
-    depth <= MAX_SESSION_DEPTH &&
+    depth <= MAX_NAVIGATION_DEPTH &&
     sessionFieldsValue(value) &&
-    (value.children as unknown[]).every((child) => sessionTreeValue(child, depth + 1))
+    value.children.every((child) => sessionTreeValue(child, depth + 1))
   );
 }
 

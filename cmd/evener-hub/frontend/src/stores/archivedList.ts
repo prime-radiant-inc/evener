@@ -4,8 +4,8 @@
 // opens, on an explicit refresh, and after an action that can change the
 // project's archived rows (archive, unarchive, pin, delete).
 //
-// Lists are keyed by catalog and project key: one project key can exist in
-// two catalogs, and each catalog's row shows its own archived count.
+// Lists are keyed by catalog and project key, because one project key can
+// exist in two catalogs.
 
 import type { ArchivedListParams, NavigationSessionSummary } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
@@ -14,11 +14,10 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectedClientPort } from "./connection";
 
-export type ArchivedListCatalog = "projects" | "archived_projects" | "test_runs";
+export const ARCHIVED_LIST_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
+export type ArchivedListCatalog = (typeof ARCHIVED_LIST_CATALOGS)[number];
 
 export interface ArchivedList {
-  catalog: ArchivedListCatalog;
-  projectKey: string;
   rows: NavigationSessionSummary[];
   /** The cursor for the next page; absent on the last page. */
   nextCursor?: string;
@@ -27,8 +26,6 @@ export interface ArchivedList {
   loading: boolean;
   /** Non-null when the most recent request failed. Loaded rows are kept. */
   error: string | null;
-  /** True once any page has loaded. */
-  loaded: boolean;
 }
 
 export interface ArchivedListState {
@@ -47,39 +44,34 @@ const { requireClient } = connectedClientPort("archivedList");
 // newer one has overtaken (a load-more answered after a refresh) is dropped.
 const generations = new Map<string, number>();
 
-function update(key: string, change: Partial<ArchivedList>, base: ArchivedList): void {
-  archivedListStore.setState((state) => ({
-    lists: { ...state.lists, [key]: { ...(state.lists[key] ?? base), ...change } },
-  }));
+const emptyList: ArchivedList = { rows: [], total: 0, loading: false, error: null };
+
+function patch(key: string, change: (list: ArchivedList) => Partial<ArchivedList>): void {
+  archivedListStore.setState((state) => {
+    const list = state.lists[key] ?? emptyList;
+    return { lists: { ...state.lists, [key]: { ...list, ...change(list) } } };
+  });
 }
 
 async function fetchPage(catalog: ArchivedListCatalog, projectKey: string, cursor: string | undefined): Promise<void> {
   const key = archivedListKey(catalog, projectKey);
   const generation = (generations.get(key) ?? 0) + 1;
   generations.set(key, generation);
-  const base: ArchivedList = { catalog, projectKey, rows: [], total: 0, loading: false, error: null, loaded: false };
-  update(key, { loading: true, error: null }, base);
+  patch(key, () => ({ loading: true, error: null }));
   const params: ArchivedListParams = { catalog, projectKey, ...(cursor ? { cursor } : {}) };
   try {
     const response = await requireClient().request("evener/archived/list", params);
-    const rows = decodeArchivedListSessions(response.sessions);
     if (generations.get(key) !== generation) return;
-    const previous = archivedListStore.getState().lists[key]?.rows ?? [];
-    update(
-      key,
-      {
-        rows: cursor ? [...previous, ...rows] : rows,
-        nextCursor: response.nextCursor,
-        total: response.total,
-        loading: false,
-        error: null,
-        loaded: true,
-      },
-      base,
-    );
+    const rows = decodeArchivedListSessions(response.sessions);
+    patch(key, (list) => ({
+      rows: cursor ? [...list.rows, ...rows] : rows,
+      nextCursor: response.nextCursor,
+      total: response.total,
+      loading: false,
+    }));
   } catch (err) {
     if (generations.get(key) !== generation) return;
-    update(key, { loading: false, error: errorText(err) }, base);
+    patch(key, () => ({ loading: false, error: errorText(err) }));
   }
 }
 
@@ -99,16 +91,16 @@ export function loadMoreArchivedList(catalog: ArchivedListCatalog, projectKey: s
 /** Refreshes every loaded list of the project, in any catalog: an action on
  * one of its sessions can move rows in or out of its archived tier. */
 export async function refreshArchivedListsForProject(projectKey: string): Promise<void> {
-  const lists = Object.values(archivedListStore.getState().lists).filter((list) => list.projectKey === projectKey);
-  await Promise.all(lists.map((list) => refreshArchivedList(list.catalog, list.projectKey)));
+  const { lists } = archivedListStore.getState();
+  const loaded = ARCHIVED_LIST_CATALOGS.filter((catalog) => lists[archivedListKey(catalog, projectKey)]);
+  await Promise.all(loaded.map((catalog) => refreshArchivedList(catalog, projectKey)));
 }
 
 export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string): ArchivedList | undefined {
   return useStore(archivedListStore, (state) => state.lists[archivedListKey(catalog, projectKey)]);
 }
 
-// resetArchivedListStoreForTests clears every list and request generation
-// between tests. Production code must never call this.
+// Test-only.
 export function resetArchivedListStoreForTests(): void {
   generations.clear();
   archivedListStore.setState({ lists: {} });
