@@ -210,7 +210,6 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	Providers: { hubId: string };
 	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
 	KeybindingPreferences: {
@@ -2128,7 +2127,9 @@ export function ConversationScreen({
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn") navigation.navigate("Providers", { hubId: route.params.hubId });
+			else if (errorAction === "signIn")
+				// The error doesn't name the provider, so the Hub opens at Providers.
+				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],

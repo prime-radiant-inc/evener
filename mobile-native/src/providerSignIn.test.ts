@@ -161,6 +161,17 @@ it("stops polling on expiry and never automatically restarts", async () => {
 	expect(calls).toHaveLength(2);
 	flow.dispose();
 });
+it("says to look at Providers when a poll answers with a state it doesn't know", async () => {
+	vi.useFakeTimers();
+	const { flow, io } = boundary();
+	await flow.start();
+	io.request = async () => ({ state: "surprising" });
+	await vi.advanceTimersByTimeAsync(20000);
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
+	);
+	flow.dispose();
+});
 it("retains the flow after a poll transport failure and retries only on request", async () => {
 	vi.useFakeTimers();
 	const { flow, io, calls } = boundary();
@@ -292,7 +303,9 @@ it("keeps browser continuation across reconnect without replaying completion", a
 	connect(signInClient({ request }, []));
 	expect(request).not.toHaveBeenCalled();
 	expect(flow.getSnapshot().phase).toBe("browser");
-	expect(flow.getSnapshot().error).toContain("confirmed");
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
+	);
 	expect(flow.getSnapshot().browser?.flowId).toBe("browser-flow");
 	flow.dispose();
 });
@@ -544,12 +557,14 @@ it("keeps the re-check prompt after a failed completion", async () => {
 	expect(flow.getSnapshot().phase).toBe("browser");
 
 	await flow.complete("https://example.test/callback?code=fixture");
-	expect(flow.getSnapshot().error).toContain("confirmed");
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
+	);
 
 	// A completion that could not be confirmed leaves the flow uncertain, so a
 	// later status check must keep saying so rather than reading clean.
 	await flow.checkStatus();
 	expect(flow.getSnapshot().error).toBe(
-		"Sign-in status could not be confirmed. Check credential status before trying again.",
+		"Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
 	);
 });
