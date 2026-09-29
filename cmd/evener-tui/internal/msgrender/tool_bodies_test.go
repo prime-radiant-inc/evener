@@ -220,6 +220,20 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	}
 }
 
+// A failed run's reason is a code (run_error, #3327); its cause rides beside
+// it as error. The rail leads with the cause and never shows the bare code
+// when there is one.
+func TestRenderSubagentRailShowsAFailedRunsCause(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "update lockfile", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: "provider returned 500"},
+	}
+	out := RenderSubagentRail(runs, 80)
+	if !strings.Contains(out, "provider returned 500") || strings.Contains(out, "run_error") {
+		t.Fatalf("failed row should show its cause, not its code: %q", out)
+	}
+}
+
 func TestSubagentRailClass_CommandOutcomes(t *testing.T) {
 	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
 		if got := subagentRailClass(status); got != "failed" {

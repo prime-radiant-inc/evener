@@ -435,7 +435,12 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 			row += "  " + lipgloss.NewStyle().Foreground(color).Render(hl)
 		}
 	case "failed":
-		if reason := strings.TrimSpace(r.Reason); reason != "" {
+		// The cause (error) leads; the reason is a code (#3327).
+		reason := strings.TrimSpace(r.Error)
+		if reason == "" {
+			reason = strings.TrimSpace(r.Reason)
+		}
+		if reason != "" {
 			if len(reason) > 40 {
 				reason = reason[:39] + "…"
 			}
