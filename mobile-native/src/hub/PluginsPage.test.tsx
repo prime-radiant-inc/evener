@@ -2679,8 +2679,11 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Marketplace source",
 	);
 	expect(source.props.placeholder).toBe("owner/repo");
-	expect(source.props.style.fontFamily).toBe("Menlo");
+	// An empty machine field shows its placeholder in the UI font; once it holds
+	// the machine's value the field is Menlo (spec 16.2).
+	expect(source.props.style.fontFamily).toBeUndefined();
 	act(() => source.props.onChangeText("acme/plugins"));
+	expect(source.props.style.fontFamily).toBe("Menlo");
 	// The source's section label names what the kind asks for.
 	expect(renderedText(tree)).toContain("Repository");
 	expect(source.props.returnKeyType).toBe("next");

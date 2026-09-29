@@ -497,6 +497,20 @@ describe("a text field row", () => {
 		expect(token.props.placeholderTextColor).toBe(light.inkLow);
 	});
 
+	it("draws a machine field's placeholder in the UI font, and switches to Menlo once it holds a value (spec 16.2)", () => {
+		// React Native draws a TextInput's placeholder in the input's own
+		// font, so an empty machine field must not be Menlo or the hint
+		// reads as machine text.
+		const empty = render(
+			<TextFieldRow label="From the address" value="" onChangeText={() => {}} placeholder="From the address" />,
+		).root.findByType("TextInput" as never);
+		expect(merged(empty.props.style).fontFamily).toBeUndefined();
+		const filled = render(
+			<TextFieldRow label="From the address" value="ws://attic.lan" onChangeText={() => {}} />,
+		).root.findByType("TextInput" as never);
+		expect(merged(filled.props.style).fontFamily).toBe(fonts.mono);
+	});
+
 	it("lets words someone chose be capitalized and corrected, and keeps a machine value as typed", () => {
 		const name = render(<TextFieldRow label="Hub name" value="" onChangeText={() => {}} machine={false} />);
 		const nameInput = name.root.findByType("TextInput" as never);

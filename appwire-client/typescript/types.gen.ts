@@ -3081,6 +3081,9 @@ export interface SearchSnippetPart {
 export interface ServerInfo {
   name: string;
   version: string;
+  os?: string;
+  arch?: string;
+  roots?: string[];
 }
 
 export interface SessionActivity {

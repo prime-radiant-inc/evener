@@ -1834,7 +1834,7 @@ it("snaps a switch back and says so when the hub doesn't take the flip", async (
 	expect(text).not.toContain("providers.toml");
 });
 
-it("forgets a check for new models when the detail closes, and never reports it elsewhere", async () => {
+it("keeps a check's Checking state across a detail close, and never reports it elsewhere", async () => {
 	const fake = providersHub([withModels()]);
 	let fail: (reason: Error) => void = () => {};
 	fake.on(
@@ -1852,8 +1852,12 @@ it("forgets a check for new models when the detail closes, and never reports it 
 	press(tree, (label) => label === "Done");
 	await act(async () => {});
 	await openDetail(tree, "work");
-	expect(hasControl(tree, "Check for new models")).toBe(true);
-	// The check left behind fails while the detail is open again.
+	// The store owns which instance has a check out, so reopening the detail
+	// while the call is still in flight reads the same Checking state: the
+	// screen no longer forgets the check when the detail closes.
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
+	// The check left behind fails while the detail is open again; its failure
+	// still belongs to the visit that started it, so it is not reported here.
 	await act(async () => fail(new Error("upstream 502")));
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);

@@ -44,6 +44,7 @@ type WebConfig struct {
 	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
 	LaunchConfigRoot          string                   // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
+	MachineRoots              []string                 // the hub's own machine's project roots (hub.toml's top-level roots), reported in ServerInfo so a client can show them beside a host's; nil means none
 	TranscriptDisplayStore    *TranscriptDisplayStore  // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
 	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
