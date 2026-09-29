@@ -3027,3 +3027,32 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		expect(pressable(tree, "Discard")).toBeDefined();
 	});
 });
+
+it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
+	const ref = "ref-draft-lost";
+	const key = nativeMutationTargetKey("hub-1", ref);
+	const runtime = getNativeMutationRuntime();
+	// The draft kept a send the outbox also holds, and the outbox couldn't
+	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
+	// the blockedUnknown row. Seed that exact pair before mounting.
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { clientMutationId } = await runtime.storage.enqueueIntent({
+		targetRef: key,
+		method: "turn/start",
+		payload: { ref, input: [{ type: "text", text: "lost send" }] },
+		attachments: [],
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
+	});
+	await runtime.storage.markAttempted(clientMutationId);
+	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
+
+	const { tree } = await mount(thread(ref, "idle"));
+	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await press(tree, "Discard");
+
+	// One Discard clears both: the draft's uncertainty and the row it stood in
+	// for, which otherwise returns as its own ghost.
+	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
+	await settle();
+	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
+});
