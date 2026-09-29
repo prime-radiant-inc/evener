@@ -58,8 +58,10 @@ ios/Podfile.lock back, and commit only Podfile.lock.`;
 // holds. `expo-modules-autolinking resolve` never lists them (the Podfile's
 // Ruby side adds them), so they are named here with the package they ship in
 // and the condition they wait on. ExpoCameraBarcodeScanning waits on the
-// expo.camera.barcode-scanner-enabled Podfile property, which this app never
-// sets to "false"; ExpoModulesWorkletsAdapter waits on the RNWorklets pod,
+// expo.camera.barcode-scanner-enabled Podfile property, which mobile-native's
+// app.json never sets to "false" — set it there through the expo-camera
+// plugin's barcodeScannerEnabled option, and update this condition (`when`)
+// if anyone ever does; ExpoModulesWorkletsAdapter waits on the RNWorklets pod,
 // which react-native-worklets provides. A linked package that declares a
 // companion not named here fails the check (declaredCompanions), so a new
 // one is added to this list, with its condition, rather than slipping past.
@@ -121,16 +123,32 @@ const podKey = (pod, dir) => `${pod} (${dir})`;
 function resolvedPods() {
 	const linked = new Map();
 	const packageDirs = new Map();
-	const expoModules = autolinking("resolve", "--platform", "apple").modules;
+	const resolved = autolinking("resolve", "--platform", "apple");
+	if (!Array.isArray(resolved?.modules)) {
+		fail(`expo-modules-autolinking resolve did not return a modules list: ${JSON.stringify(resolved)}`);
+	}
+	const expoModules = resolved.modules;
 	for (const module of expoModules) {
+		if (!Array.isArray(module?.pods)) {
+			fail(`expo-modules-autolinking resolve returned a module without pods: ${JSON.stringify(module)}`);
+		}
 		for (const pod of module.pods) {
+			if (typeof pod?.podName !== "string" || typeof pod?.podspecDir !== "string") {
+				fail(`expo-modules-autolinking resolve returned a pod without a name and directory: ${JSON.stringify(pod)}`);
+			}
 			linked.set(podKey(pod.podName, lockPath(pod.podspecDir)), module.packageName);
 			if (!packageDirs.has(module.packageName)) packageDirs.set(module.packageName, lockPath(pod.podspecDir));
 		}
 	}
 	const config = autolinking("react-native-config", "--platform", "ios");
+	if (config === null || typeof config !== "object") {
+		fail(`expo-modules-autolinking react-native-config did not return an object: ${JSON.stringify(config)}`);
+	}
+	if (typeof config.reactNativePath !== "string") {
+		fail(`expo-modules-autolinking react-native-config returned no reactNativePath: ${JSON.stringify(config.reactNativePath)}`);
+	}
 	for (const [name, dependency] of Object.entries(config.dependencies ?? {})) {
-		const podspec = dependency.platforms?.ios?.podspecPath;
+		const podspec = dependency?.platforms?.ios?.podspecPath;
 		// A community module's pod is named for its podspec file, which is how
 		// CocoaPods finds it in the directory the Podfile points at.
 		if (podspec) linked.set(podKey(path.basename(podspec, ".podspec"), lockPath(path.dirname(podspec))), name);
@@ -149,6 +167,16 @@ function resolvedPods() {
  * with autolinkWhen, found where Expo's Ruby side looks for them (beside an
  * Expo module's first podspec directory or one above it, and in
  * expo-modules-autolinking's external-configs for community packages). */
+function autolinkingPackageDir() {
+	try {
+		return path.dirname(
+			createRequire(path.join(nativeDir, "node_modules/expo/package.json")).resolve("expo-modules-autolinking/package.json"),
+		);
+	} catch (error) {
+		fail(`cannot resolve expo-modules-autolinking from mobile-native/node_modules: ${error.message}`);
+	}
+}
+
 function declaredCompanions(expoModules, communityNames) {
 	const configs = [];
 	for (const module of expoModules) {
@@ -156,18 +184,27 @@ function declaredCompanions(expoModules, communityNames) {
 		const found = dir && [dir, path.dirname(dir)].map((d) => path.join(d, "spm.config.json")).find(existsSync);
 		if (found) configs.push([module.packageName, found]);
 	}
-	const autolinkingDir = path.dirname(
-		createRequire(path.join(nativeDir, "node_modules/expo/package.json")).resolve("expo-modules-autolinking/package.json"),
-	);
+	const autolinkingDir = autolinkingPackageDir();
 	for (const name of communityNames) {
 		const file = path.join(autolinkingDir, "external-configs/ios", name, "spm.config.json");
 		if (existsSync(file)) configs.push([name, file]);
 	}
-	return configs.flatMap(([packageName, file]) =>
-		(JSON.parse(readFileSync(file, "utf8")).products ?? [])
-			.filter((product) => product.autolinkWhen)
-			.map((product) => ({ pod: product.podName ?? product.name, packageName })),
-	);
+	return configs.flatMap(([packageName, file]) => {
+		let parsed;
+		try {
+			parsed = JSON.parse(readFileSync(file, "utf8"));
+		} catch (error) {
+			fail(`cannot parse ${file}: ${error.message}`);
+		}
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			fail(`${file} is not a JSON object: ${JSON.stringify(parsed)}`);
+		}
+		const products = parsed.products ?? [];
+		if (!Array.isArray(products)) fail(`${file}'s products is not a list: ${JSON.stringify(products)}`);
+		return products
+			.filter((product) => product?.autolinkWhen)
+			.map((product) => ({ pod: product.podName ?? product.name, packageName }));
+	});
 }
 
 /** The lock's DEPENDENCIES that name a local path, as "Pod (dir)". */
@@ -178,16 +215,30 @@ function lockedPods(lock) {
 	} catch (error) {
 		fail(`cannot read ${lock}: ${error.message}`);
 	}
-	const start = text.indexOf("\nDEPENDENCIES:\n");
-	const end = text.indexOf("\n\n", start + 1);
-	if (start < 0 || end < 0) fail(`${lock} has no DEPENDENCIES section; is it a Podfile.lock?`);
+	// A lock written on Windows or by a tool that emits CRLF still parses.
+	const lines = text.split(/\r?\n/);
+	const start = lines.indexOf("DEPENDENCIES:");
+	if (start < 0) fail(`${lock} has no DEPENDENCIES section; is it a Podfile.lock?`);
+	// The section ends at the next top-level header or at end of file; a lock
+	// whose DEPENDENCIES is last has no trailing blank line to stop at.
+	const end = lines.findIndex((line, i) => i > start && line !== "" && !line.startsWith(" "));
 	const locked = new Map();
-	for (const line of text.slice(start, end).split("\n")) {
+	for (const line of lines.slice(start + 1, end < 0 ? undefined : end)) {
+		if (line === "") continue;
 		const match = /^ {2}- "?([^ "]+) \(from `([^`]+)`\)"?$/.exec(line);
-		if (match) {
+		// This check compares only local-path entries (`../node_modules/...`). A
+		// bare remote source (`  - Foo (from \`https://...git\`)`) has the same
+		// shape but its `from` is a URL, so it is out of scope too.
+		if (match && /^\.\.?\//.test(match[2])) {
 			const dir = path.posix.normalize(match[2]).replace(/\/$/, "");
 			locked.set(podKey(match[1], dir), dir);
+			continue;
 		}
+		// A spec-repo dependency (`  - Firebase/Core`) has no `from` clause at all,
+		// and a remote one's `from` is a URL; neither names a local path. A
+		// local-path line that still does not parse fails, since it may be a pod
+		// the check would otherwise call missing.
+		if (/\(from `\.\.?\//.test(line)) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
 	}
 	return locked;
 }
