@@ -17,6 +17,8 @@ import (
 //   - "-g" appears iff the glob filter is non-blank, followed immediately by it;
 //   - "-C" appears iff contextLines>0 AND outputMode is content/"", followed by
 //     the count;
+//   - "--sort path" always appears in the option region, pinning rg's
+//     deterministic cross-file order;
 //   - a literal "--" always immediately precedes the pattern, so a pattern that
 //     itself looks like a flag is never parsed as one;
 //   - the pattern and directory are always the final two args, in that order.
@@ -78,12 +80,12 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 		}
 
 		// The option region between the mode flag and the trailing "--"+pattern+dir
-		// holds only the optional -i, -g<glob>, and -C<n>.
+		// holds "--sort path" plus the optional -i, -g<glob>, and -C<n>.
 		mid := args[4 : len(args)-3]
 		wantI := caseInsensitive
 		wantG := strings.TrimSpace(globFilter) != ""
 		wantC := contextLines > 0 && (outputMode == "" || outputMode == "content")
-		iCount, gCount, cCount := 0, 0, 0
+		iCount, gCount, cCount, sortCount := 0, 0, 0, 0
 		for j := 0; j < len(mid); j++ {
 			switch mid[j] {
 			case "-i":
@@ -106,7 +108,16 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 					t.Fatalf("-C value=%q, want %q", mid[j+1], strconv.Itoa(contextLines))
 				}
 				j++ // skip the count value
+			case "--sort":
+				sortCount++
+				if j+1 >= len(mid) || mid[j+1] != "path" {
+					t.Fatalf("--sort without a following \"path\": %v", mid)
+				}
+				j++ // skip the sort key
 			}
+		}
+		if sortCount != 1 {
+			t.Fatalf("--sort path count=%d, want exactly 1: %v", sortCount, mid)
 		}
 		if wantI && iCount != 1 {
 			t.Fatalf("caseInsensitive but -i count=%d: %v", iCount, mid)

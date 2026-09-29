@@ -96,6 +96,12 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	singleFile := relPath == "."
 	lines := strings.Split(string(data), "\n")
+	// Context only shapes content output; files-with-matches and count report
+	// per-file. This path needs every match in the file at once so overlapping
+	// windows can merge (ripgrep's -C shape), so it takes the whole file.
+	if a.contextLines > 0 && (a.outputMode == "" || a.outputMode == "content") {
+		return a.feedContextWindows(relPath, lines, singleFile)
+	}
 	for i, line := range lines {
 		if !a.re.MatchString(line) {
 			continue
@@ -121,38 +127,76 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 			}
 			a.fileCounts[relPath]++
 		default: // "content" or ""
-			if a.contextLines > 0 {
-				// Mirror rg's -C style: a "--" separator between match groups, the
-				// match line itself using ":", and surrounding context lines using
-				// "-" (both as the file/line separator), matched immediately below.
-				if len(a.results) > 0 {
-					a.results = append(a.results, "--")
-				}
-				lo, hi := i-a.contextLines, i+a.contextLines
-				if lo < 0 {
-					lo = 0
-				}
-				if hi >= len(lines) {
-					hi = len(lines) - 1
-				}
-				for j := lo; j <= hi; j++ {
-					sep := "-"
-					if j == i {
-						sep = ":"
-					}
-					if singleFile {
-						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
-					} else {
-						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
-					}
-				}
-			} else if singleFile {
+			if singleFile {
 				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
 			} else {
 				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
 			}
 			a.total++
 			if a.total >= a.maxResults {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// feedContextWindows emits one file's context output in ripgrep's -C shape
+// (#3284): match windows that overlap or touch collapse into a single group, so
+// a match line never reappears as another window's context line; every match
+// line uses ":", surrounding lines use "-", and a "--" row appears only between
+// groups with at least one unprinted line between them (crossing files too, via
+// the shared results slice). The result cap counts emitted output lines —
+// matches, context rows, and separators alike — matching the ripgrep arm's
+// first-N-lines truncation.
+func (a *grepAccum) feedContextWindows(relPath string, lines []string, singleFile bool) (stop bool) {
+	next := 0
+	for next < len(lines) {
+		if !a.re.MatchString(lines[next]) {
+			next++
+			continue
+		}
+		lo := max(next-a.contextLines, 0)
+		hi := next + a.contextLines
+		if hi >= len(lines) {
+			hi = len(lines) - 1
+		}
+		// Absorb every following match whose window starts at or before the
+		// line right after this group (no skipped line), extending the group.
+		j := next + 1
+		for j < len(lines) {
+			if !a.re.MatchString(lines[j]) {
+				j++
+				continue
+			}
+			if j-a.contextLines > hi+1 {
+				break
+			}
+			if jhi := j + a.contextLines; jhi >= len(lines) {
+				hi = len(lines) - 1
+			} else if jhi > hi {
+				hi = jhi
+			}
+			j++
+		}
+		next = j
+		if len(a.results) > 0 {
+			a.results = append(a.results, "--")
+			if len(a.results) >= a.maxResults {
+				return true
+			}
+		}
+		for k := lo; k <= hi; k++ {
+			sep := "-"
+			if a.re.MatchString(lines[k]) {
+				sep = ":"
+			}
+			if singleFile {
+				a.results = append(a.results, fmt.Sprintf("%d%s%s", k+1, sep, lines[k]))
+			} else {
+				a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, k+1, sep, lines[k]))
+			}
+			if len(a.results) >= a.maxResults {
 				return true
 			}
 		}

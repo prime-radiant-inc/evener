@@ -2145,6 +2145,10 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	default:
 		args = append(args, "--line-number")
 	}
+	// rg searches files in parallel, so its cross-file order varies from run to
+	// run. --sort path makes it deterministic (lexical by path), matching the
+	// native fallback's walk order (#3284).
+	args = append(args, "--sort", "path")
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
