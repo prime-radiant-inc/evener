@@ -9,6 +9,7 @@ import {
 	archiveSession,
 	archiveTarget,
 	archivingSessionId,
+	journalOutcome,
 	pinSession,
 	type RowActionContext,
 	renameSession,
@@ -208,6 +209,18 @@ describe("archiving (rulings 16 and 20)", () => {
 		const covered = organization({ current: false });
 		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
 		expect([...busy.hub.writes, ...covered.hub.writes]).toEqual([]);
+	});
+
+	it("tells a change the journal took from one it never took (a held change replays only the latter)", async () => {
+		const archive = (actions: NavigationActions) => () => actions.archive({ kind: "session", id: SESSION_ID }, true);
+		const taken = organization();
+		expect(await journalOutcome(taken.actions, archive(taken.actions))).toBe("confirmed");
+		const refused = organization({ accept: false });
+		expect(await journalOutcome(refused.actions, archive(refused.actions))).toBe("unconfirmed");
+		// Off screen, the journal's run() returns without starting the change.
+		const covered = organization({ current: false });
+		expect(await journalOutcome(covered.actions, archive(covered.actions))).toBe("notTaken");
+		expect(covered.hub.writes).toEqual([]);
 	});
 
 	it("pins select mode's sessions through the same journal", async () => {

@@ -1,10 +1,12 @@
 import type { EvenerThread, Thread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { NavigationActions } from "../navigationActions";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { BoardHold, type HeldAction, turnSeen } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
 import { type StopOutcome, stopToast } from "./boardStops";
+import type { BoardOrganization } from "./useBoardOrganization";
 
 // boardStops (stopToast) reaches the mutation runtime's native modules.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
@@ -242,6 +244,80 @@ it("resolves each ask once its own replay has run", async () => {
 	answer();
 	await Promise.all([first, second]);
 	expect(methods(fresh)).toEqual(["evener/thread/name/set"]);
+});
+
+it("keeps a Shut down whose connection dropped while it read the thread", async () => {
+	const { hold, client, toasts, replay } = setup({ lastTurnEndedAt: stamp });
+	client.on("thread/shutdown", () => ({}) as never);
+	client.on("thread/read", () => {
+		// The read comes back over a connection that dropped and returned:
+		// what it says may be stale.
+		client.emitStateChange("reconnecting");
+		client.emitStateChange("ready");
+		return thread({ lastTurnEndedAt: stamp }) as never;
+	});
+	hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 1);
+	await replay.sendImmediate(client, () => client.state === "ready");
+	expect(methods(client)).toEqual([]);
+	expect(toasts).toEqual([]);
+	expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["shutDown"]);
+});
+
+describe("through the organization journal", () => {
+	/** A journal that takes each change (publishing it pending, then
+	 * confirmed) unless told it can't, recording what it was asked. */
+	function journal({ takes = true } = {}) {
+		const listeners = new Set<() => void>();
+		let state = { pending: false, uncertain: false, storageUnavailable: false, recovery: null, error: null };
+		const sent: unknown[] = [];
+		const change = async (request: unknown) => {
+			if (!takes) return;
+			sent.push(request);
+			state = { ...state, pending: true };
+			for (const listener of listeners) listener();
+			state = { ...state, pending: false };
+			for (const listener of listeners) listener();
+		};
+		const actions = {
+			getSnapshot: () => state,
+			subscribe: (listener: () => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			archive: (target: unknown, archived: boolean) => change({ archive: target, archived }),
+			assignPin: (target: unknown) => change({ assignPin: target }),
+			favorite: (id: string, favorited: boolean) => change({ favorite: id, favorited }),
+			reconcile: vi.fn(async () => {}),
+		} as unknown as NavigationActions & { reconcile: ReturnType<typeof vi.fn> };
+		const organization = { actions, state, ready: true, isCurrent: () => true } as unknown as BoardOrganization;
+		return { organization, actions, sent };
+	}
+
+	it("sends a held pin and project change with their targets, and settles each", async () => {
+		const { hold, replay, isLive } = setup();
+		const { organization, sent } = journal();
+		hold.hold({ kind: "pin", target: { sessionRef: "local:a", sectionId: "s1" } }, 1);
+		hold.hold({ kind: "project", project: { key: "evener", workingDir: "/src/evener" }, action: "archive" }, 2);
+		hold.hold({ kind: "project", project: { key: "notes" }, action: "pin" }, 3);
+		await replay.organize(organization, isLive);
+		expect(sent).toEqual([
+			{ assignPin: { sessionRef: "local:a", sectionId: "s1" } },
+			{ archive: { kind: "project", id: "evener", workingDir: "/src/evener" }, archived: true },
+			{ favorite: "notes", favorited: true },
+		]);
+		expect(hold.getSnapshot()).toEqual([]);
+	});
+
+	it("keeps a change the journal didn't take, and doesn't hand it to the journal", async () => {
+		const { hold, replay, isLive } = setup();
+		const { organization, actions, sent } = journal({ takes: false });
+		hold.hold({ kind: "archive", ref: "local:a", target: { kind: "session", id: "a" }, archived: true }, 1);
+		await replay.organize(organization, isLive);
+		expect(sent).toEqual([]);
+		expect(actions.reconcile).not.toHaveBeenCalled();
+		expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["archive"]);
+		expect(hold.cancelable(hold.getSnapshot()[0]?.id ?? "")).toBe(true);
+	});
 });
 
 it("runs one replay at a time", async () => {

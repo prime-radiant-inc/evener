@@ -862,8 +862,11 @@ function Board({
 	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
 		const target = { key: project.key, workingDir: project.working_dir };
 		if (!liveNow.current) holdAction({ kind: "project", project: target, action });
-		else if (organization.actions && organizationOpen(organization))
-			void projectChange(organization.actions, target, action);
+		else {
+			// Asked at the press: the journal may have moved since the render.
+			const now = organizationNow.current;
+			if (now.actions && organizationOpen(now)) void projectChange(now.actions, target, action);
+		}
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		// The menu offers what the project will be once what's held goes, so a
@@ -886,7 +889,7 @@ function Board({
 					openProjectMenu(
 						project,
 						actions,
-						() => !liveNow.current || organizationOpen(organization),
+						() => !liveNow.current || organizationOpen(organizationNow.current),
 						(action) => actOnProject(project, action),
 					)
 			: undefined;
@@ -1183,7 +1186,7 @@ function Board({
 					onArchive={() => void archiveChosen(selection.archive)}
 					onPin={() =>
 						chooseCategory(
-							() => !liveNow.current || organizationOpen(organization),
+							() => !liveNow.current || organizationOpen(organizationNow.current),
 							board.getSnapshot().pins.rows,
 							toast,
 							(section, name) => pinChosen(selection.pin, section, name),

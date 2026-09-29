@@ -17,9 +17,9 @@ import type { BoardHold, HeldAction, HeldRecord } from "./boardHold";
 import { turnStillSeen } from "./boardHold";
 import { type StopOutcome, stopToast } from "./boardStops";
 import {
-	archiveSession,
-	pinSession,
-	projectChange,
+	type JournalOutcome,
+	journalOutcome,
+	projectRequest,
 	RENAMED,
 	renameFailed,
 	renameSession,
@@ -88,16 +88,16 @@ export class BoardReplay {
 			const record = this.hold.getSnapshot().find((held) => !AT_ONCE.has(held.action.kind));
 			if (!record) return;
 			this.hold.claim(record.id);
-			if (!(await organizationChange(actions, record.action))) {
-				// The Board went away or the connection dropped: it stays held.
-				if (!organization.isCurrent() || !isLive()) {
-					this.hold.release(record.id);
-					return;
-				}
-				// Refused, or its outcome unknown: the journal holds it and
-				// settles it, as it does an online change.
-				void actions.reconcile();
+			const outcome = await organizationChange(actions, record.action);
+			// Not taken, or the Board went away or the connection dropped: it
+			// stays held, and goes when the journal is free again.
+			if (outcome === "notTaken" || !organization.isCurrent() || !isLive()) {
+				this.hold.release(record.id);
+				return;
 			}
+			// Its outcome unknown: the journal holds it and settles it, as it
+			// does an online change.
+			if (outcome === "unconfirmed") void actions.reconcile();
 			this.hold.settled(record.id);
 		}
 	}
@@ -122,6 +122,8 @@ export class BoardReplay {
 				toast(stopToast(outcome, action.title));
 			} else if (action.kind === "shutDown") {
 				const { thread } = await client.request("thread/read", { ref: action.ref, includeTurns: false });
+				// Read over a connection that dropped since, it may be stale.
+				if (lost()) return this.#keep(record);
 				// Dropped only when a turn runs that isn't the one you saw: with
 				// none running, shutting down stops nothing you didn't see.
 				if (thread.evener.activeTurnId && !turnStillSeen(action.seen, thread.evener)) toast(SHUT_DOWN_DROPPED);
@@ -181,15 +183,19 @@ class NewestAsk<Args extends unknown[]> {
 	}
 }
 
-/** One organization change through the journal: true once it confirms, and
- * false when it doesn't or throws. */
-async function organizationChange(actions: NavigationActions, action: HeldAction): Promise<boolean> {
+/** One organization change through the journal. A throw means it never
+ * reached the journal, whose run() settles its own failures. */
+async function organizationChange(actions: NavigationActions, action: HeldAction): Promise<JournalOutcome> {
 	try {
-		if (action.kind === "archive") return await archiveSession(actions, action.target, action.archived);
-		if (action.kind === "pin") return await pinSession(actions, action.target);
-		if (action.kind === "project") return await projectChange(actions, action.project, action.action);
-		return true;
+		return await journalOutcome(actions, () => organizationRequest(actions, action));
 	} catch {
-		return false;
+		return "notTaken";
 	}
+}
+
+function organizationRequest(actions: NavigationActions, action: HeldAction): Promise<void> {
+	if (action.kind === "archive") return actions.archive(action.target, action.archived);
+	if (action.kind === "pin") return actions.assignPin(action.target);
+	if (action.kind === "project") return projectRequest(actions, action.project, action.action);
+	return Promise.resolve();
 }

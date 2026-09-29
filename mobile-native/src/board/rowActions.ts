@@ -97,12 +97,15 @@ export function swipeActions(item: ClassifiedRow, context: RowActionContext): Sw
 	return { leading, trailing };
 }
 
-/** Runs one journaled change. True only when it ran and the hub confirmed
- * it; false when the journal refused it (busy, unresolved, or the Board not
- * on screen) or its outcome is unknown, which leaves the journal holding it
- * for the Board to settle. */
-async function journaled(actions: NavigationActions, change: () => Promise<void>): Promise<boolean> {
-	if (!organizationFree(actions.getSnapshot())) return false;
+/** How a journaled change went: "confirmed" when the hub confirmed it;
+ * "unconfirmed" when the journal took it but its outcome is unknown, which
+ * leaves the journal holding it for the Board to settle; "notTaken" when the
+ * journal refused it (busy, unresolved, its storage failing, or the Board
+ * not on screen), so nothing was sent. */
+export type JournalOutcome = "confirmed" | "unconfirmed" | "notTaken";
+
+export async function journalOutcome(actions: NavigationActions, change: () => Promise<void>): Promise<JournalOutcome> {
+	if (!organizationFree(actions.getSnapshot())) return "notTaken";
 	let ran = false;
 	const stop = actions.subscribe(() => {
 		if (actions.getSnapshot().pending) ran = true;
@@ -112,8 +115,14 @@ async function journaled(actions: NavigationActions, change: () => Promise<void>
 	} finally {
 		stop();
 	}
+	if (!ran) return "notTaken";
 	const state = actions.getSnapshot();
-	return ran && organizationFree(state) && state.recovery === null;
+	return organizationFree(state) && state.recovery === null ? "confirmed" : "unconfirmed";
+}
+
+/** Runs one journaled change: true only when the hub confirmed it. */
+async function journaled(actions: NavigationActions, change: () => Promise<void>): Promise<boolean> {
+	return (await journalOutcome(actions, change)) === "confirmed";
 }
 
 /** Archive or Unarchive, as the Projects screen does it
@@ -133,11 +142,18 @@ export function projectChange(
 	project: { key: string; workingDir?: string },
 	action: ProjectMenuAction,
 ): Promise<boolean> {
-	return journaled(actions, () =>
-		action === "pin" || action === "unpin"
-			? actions.favorite(project.key, action === "pin")
-			: actions.archive({ kind: "project", id: project.key, workingDir: project.workingDir }, action === "archive"),
-	);
+	return journaled(actions, () => projectRequest(actions, project, action));
+}
+
+/** The journal request a project change makes. */
+export function projectRequest(
+	actions: NavigationActions,
+	project: { key: string; workingDir?: string },
+	action: ProjectMenuAction,
+): Promise<void> {
+	return action === "pin" || action === "unpin"
+		? actions.favorite(project.key, action === "pin")
+		: actions.archive({ kind: "project", id: project.key, workingDir: project.workingDir }, action === "archive");
 }
 
 /** Select mode's Pin (ruling 18); a single row's Pin opens PinAssignment. */
