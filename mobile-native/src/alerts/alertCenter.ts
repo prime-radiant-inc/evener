@@ -143,11 +143,14 @@ export class AlertCenter {
 	offer(alert: Alert): void {
 		if (!this.wanted(alert)) return;
 		if (needsYou(alert)) this.remember(alert.ref);
-		// A finished result, and a session you started, are the quietest
-		// alerts: they never join or replace a banner that is up, a notice's
-		// included, and never wait (spec 13.3; the prototype's EV.alert drops
-		// a finished result behind any banner). The Board lists them anyway.
-		if (quiet(alert) && (this.banner !== null || this.holding())) return;
+		// A finished result is the quietest alert: it never joins or replaces a
+		// banner that is up, a notice's included, and never waits (spec 13.3;
+		// the prototype's EV.alert drops it behind any banner).
+		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
+		// A session you started never joins or replaces a banner that is up
+		// either, but it waits out a hold: it lands while you're elsewhere, often
+		// reading or typing, and without it you may start it again.
+		if (alert.kind === "started" && this.banner !== null && !this.holding()) return;
 		if (this.holding()) {
 			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(alert)), alert];
 			this.publish();
@@ -311,12 +314,14 @@ export class AlertCenter {
 		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
 		if (sessions.length === 0) {
-			// A held notice shows only when no session waits, a banner still up
-			// included, and then only the latest; the Board lists every notice
-			// either way (the prototype's releaseHeld).
-			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
-			if (notice === undefined || showing.length > 0) this.publish();
-			else this.show(notice);
+			// A held notice, or a session you started, shows only when no session
+			// waits, a banner still up included, and then only the latest, the
+			// started session first; the Board lists both either way (the
+			// prototype's releaseHeld).
+			const latest = [...waiting].reverse();
+			const next = latest.find((alert) => alert.kind === "started") ?? latest.find((alert) => alert.kind === "notice");
+			if (next === undefined || showing.length > 0) this.publish();
+			else this.show(next);
 			return;
 		}
 		// Held banners show when you leave, combined (spec 13.3). A banner about

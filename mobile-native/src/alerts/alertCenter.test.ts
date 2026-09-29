@@ -163,6 +163,26 @@ describe("what alerts at all", () => {
 		expect(alerts.tap()).toEqual({ kind: "session", ref: "a", title: "Fix the flaky test" });
 	});
 
+	it("keeps a started session waiting while you read or type, and shows it when you're done", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
+	});
+
+	it("shows a waiting started session before a waiting notice", () => {
+		const { alerts } = center();
+		const release = alerts.hold("covered");
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		alerts.offer(hostOffline);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
+	});
+
 	it("never lets a started session join or replace a banner that is up", () => {
 		const { alerts } = center();
 		alerts.offer(session("a"));

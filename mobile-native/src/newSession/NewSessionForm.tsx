@@ -94,18 +94,22 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		const title = outcome.thread.name || "New session";
 		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) {
 			// The session exists but this sheet can no longer open it: say so
 			// where the person is, so it isn't started twice (#3048).
-			offerAlert({ kind: "started", ref: outcome.thread.evener.ref, title, why: null });
+			offerAlert({
+				kind: "started",
+				ref: outcome.thread.evener.ref,
+				title: outcome.thread.name || "New session",
+				why: null,
+			});
 			return;
 		}
 		navigation.getParent()?.dispatch(
 			StackActions.replace("Conversation", {
 				hubId: outcome.hubId,
 				ref: outcome.thread.evener.ref,
-				title,
+				title: outcome.thread.name || "Conversation",
 			}),
 		);
 	}, [store, memory, navigation, imageSelection, offerAlert]);
