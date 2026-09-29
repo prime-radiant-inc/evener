@@ -3185,7 +3185,6 @@ function mountAdd(onClose = vi.fn()) {
 			client={pluginsClient([]).client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
