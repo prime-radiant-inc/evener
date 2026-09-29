@@ -138,12 +138,6 @@ func TestRefusedTransitionsLeaveTheStoreUntouched(t *testing.T) {
 	if _, err := store.Transition(record.ID, StateComplete, func(r *Record) { r.Host = "" }); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("Transition that invalidates the record: err = %v, want ErrInvalidRecord", err)
 	}
-	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage("{")
-	}); !errors.Is(err, ErrInvalidRecord) {
-		t.Fatalf("Transition carrying an unparseable boundary: err = %v, want ErrInvalidRecord", err)
-	}
-
 	if got := store.Sequence(); got != 0 {
 		t.Fatalf("sequence = %d after refused transitions, want 0", got)
 	}
@@ -204,15 +198,10 @@ func TestTransitionRefusesAFurtherMoveFromATerminalState(t *testing.T) {
 func TestTransitionResolvesOrphanUnverifiedToInterrupted(t *testing.T) {
 	store, _ := openTestStore(t)
 	record := createTestRecord(t, store, "h1")
-	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
-	}); err != nil {
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, nil); err != nil {
 		t.Fatalf("Transition(orphan-unverified): %v", err)
 	}
 	resolved, err := store.Transition(record.ID, StateInterrupted, func(r *Record) {
-		// The boundary belongs to the orphan state; the fencing slice clears it
-		// with the resolution, and the schema requires exactly that pairing.
-		r.OrphanBoundary = nil
 		r.Result = &Result{OK: false, Message: "test outcome"}
 	})
 	if err != nil {
@@ -237,18 +226,14 @@ func TestTransitionResolvesOrphanUnverifiedToInterrupted(t *testing.T) {
 func TestTransitionResolvesAnOrphanOnlyToInterrupted(t *testing.T) {
 	store, path := openTestStore(t)
 	record := createTestRecord(t, store, "h1")
-	orphan, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
-	})
+	orphan, err := store.Transition(record.ID, StateOrphanUnverified, nil)
 	if err != nil {
 		t.Fatalf("Transition(orphan-unverified): %v", err)
 	}
 	before := mustReadFile(t, path)
 
 	for _, to := range []State{StateComplete, StateFailed, StateRunning, StatePending} {
-		// The change clears the boundary the way a real resolution would, so the
-		// only thing that can refuse this transition is the edge rule itself.
-		if _, err := store.Transition(record.ID, to, func(r *Record) { r.OrphanBoundary = nil }); !errors.Is(err, ErrInvalidTransition) {
+		if _, err := store.Transition(record.ID, to, nil); !errors.Is(err, ErrInvalidTransition) {
 			t.Fatalf("Transition(%q) from orphan-unverified: err = %v, want ErrInvalidTransition", to, err)
 		}
 	}

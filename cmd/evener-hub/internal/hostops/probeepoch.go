@@ -25,26 +25,15 @@ import (
 // validate it against the host's current fencing epoch, and refuse stale epochs
 // without probing.
 //
-// FENCING BOUNDARY. The complete crash-fencing protocol its remote write half
-// describes — lease takeover, bounded kill/wait of the superseded epoch, guard
-// advance, and the remote guard file's total order across controller restarts
-// (crash-fencing spec §4) — is deliberately not here. It is the fencing slice's
-// (S17+, after S4). What a fencing slice must retrofit, and what this file
-// deliberately leaves as the honest subset:
-//
-//   - the guard epoch's cross-boot order: today the row admits an epoch whose
-//     boot id differs from the stored one (08c defines no cross-restart order
-//     for the pair alone) and only refuses a lower op sequence for the same boot
-//     id; the remote guard file's compare-and-advance is what defines the total
-//     order, and this validation must then run against the guard file's
-//     sequence, not this row;
-//   - per-calling-host keying: this hub's row is the single current epoch it was
-//     last presented (v1 admits one calling controller per host, depth-1
-//     topology); the fencing slice re-keys it per calling host when
-//     multi-controller admission lands;
-//   - takeover/kill/wait before the write half, and the quarantine an
-//     unverifiable boundary earns (§4): the write half runs without them until
-//     S17, authorized only by the persisted epoch and the host gate.
+// The crash-fencing execution the epoch model once anticipated — lease
+// takeover, bounded kill/wait of the superseded epoch, the remote guard file's
+// compare-and-advance, and the fencing quarantine — was removed with the rest
+// of the program (comp08). What remains is the honest subset this file always
+// implemented: the probe epoch's persistence and the guard epoch's admission,
+// where the guard row admits an epoch whose boot id differs from the stored one
+// and only refuses a lower op sequence for the same boot id. The row is the
+// single current epoch this hub was last presented, since v1 admits one calling
+// controller per host.
 
 // ProbeEpoch is one host's durable probe-epoch record: the controller boot id it
 // was minted under, the per-host monotonic op sequence that orders it within
