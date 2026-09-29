@@ -5729,6 +5729,64 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(reads).toBe(2);
   });
 
+  // RoboRev on #3010 (Medium): a fence must retire an already-scheduled retry
+  // immediately, not leave it to fire. Both hydrate paths call
+  // scheduleOwnedHydrationRetry right after recording the fence, and its
+  // deleted branch retires the lifecycle - so the timer is cancelled before the
+  // rejection even propagates.
+  test("a deletion fence cancels an already-scheduled retry immediately and settles the acquisition", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => {
+      throw new Error("transport hiccup");
+    });
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+
+    // The thread is deleted before the retry timer fires: the next read is
+    // fenced, and the live retry must be retired there and then.
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_a", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow(/deleted/);
+
+    // No timer advance: the fence retired the lifecycle synchronously.
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(true);
+  });
+
+  // RoboRev on #3010 (Low): the watched (subagent/delegate card) path needs the
+  // same terminal coverage as the pane path - a watcher that failed to settle
+  // would hang its caller indefinitely.
+  test("a durably deleted watched ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().watchThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
   // One representative Conflict-mapping test standing in for every
   // thread-level action above - each wraps its client.request in the exact
   // same mapConflict try/catch as send/steer/queue/interrupt (proven
