@@ -2002,3 +2002,10 @@ it("keeps a failed check's copy on its own provider when a link then opens anoth
 	await relink("work");
 	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
 });
+
+it("points an empty provider list at its one action (audit L6)", async () => {
+	providersHub([]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("No providers yet. Add one to start sessions.");
+});
