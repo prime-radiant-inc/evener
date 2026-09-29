@@ -498,6 +498,15 @@ describe("a run's questions", () => {
 	});
 });
 
+describe("a run's messages to subagents", () => {
+	// A send reads the same under the live name and the retired one.
+	it("says how many messages a run sent to subagents", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "delegate_send")])).toEqual(["sent a message"]);
+		expect(texts([step("a", "delegate_send"), step("b", "job_send_message")])).toEqual(["sent 2 messages"]);
+	});
+});
+
 describe("a run's job steps", () => {
 	it("says how often a run managed jobs", () => {
 		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);

@@ -42,6 +42,13 @@ export function isDelegateSendResult(raw: unknown): raw is DelegateSendRawState 
   );
 }
 
+// The statuses a delegate_send footer carries. A send's result status is a
+// job status, never the delegate's lifecycle (idle belongs to the delegate
+// call's receipt, stableDelegateResult): running while the delegate works,
+// else stableDelegateOutcomeJobStatus's completed, failed, cancelled, stopped
+// or exhausted (agent/delegate_runtime.go). delivered and not_delivered are
+// the footer's status before 2a94f56d14 (Aug 2026) retired the delegate job
+// schema; transcripts from then still carry them.
 const KNOWN_DELEGATE_SEND_STATUSES = new Set([
   "running",
   "completed",

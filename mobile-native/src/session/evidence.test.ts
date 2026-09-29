@@ -269,6 +269,23 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A message to a subagent shows what was sent (its arguments) and what came
+	// back, as any other tool's JSON does.
+	it("shows a message to a subagent as its arguments and result", () => {
+		expect(
+			stepEvidence({
+				label: "delegate_send",
+				detail: {
+					arguments: '{"to":"dlg_x","message":"Also check drain ordering."}',
+					output: "[delegate_id dlg_x · steered · running · running in background]",
+				},
+			}),
+		).toEqual([
+			{ kind: "json", label: "Arguments", text: '{\n  "to": "dlg_x",\n  "message": "Also check drain ordering."\n}' },
+			{ kind: "output", text: "[delegate_id dlg_x · steered · running · running in background]", lines: 1 },
+		]);
+	});
+
 	// A listing's status and bracketed codes read as words; a command in its
 	// label keeps its own spelling.
 	it("shows a job list with its codes in words", () => {

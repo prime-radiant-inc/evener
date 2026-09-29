@@ -233,6 +233,16 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   expect(toolFamily("ask_user")).toBe("ask");
   for (const name of ["job_status", "job_read_output", "job_list", "job_stop", "job_frobnicate"])
     expect(toolFamily(name)).toBe("jobs");
+  // A message to a subagent, under the live name or the retired one, is one
+  // family, as the web gives both one descriptor.
+  for (const name of ["delegate_send", "job_send_message"]) expect(toolFamily(name)).toBe("message");
+  // While it runs, a send says whom it is messaging.
+  expect(toolStepProgress({ toolName: "delegate_send", argumentsJSON: '{"to":"dlg_x"}' })).toBe(
+    "Sending a message to delegate dlg_x",
+  );
+  expect(toolStepProgress({ toolName: "job_send_message", argumentsJSON: "{}" })).toBe(
+    "Sending a message to a delegate",
+  );
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });

@@ -381,6 +381,8 @@ function partText(group: Group): string {
 			return group.questions === 1 ? "asked a question" : `asked ${group.questions} questions`;
 		case "jobs":
 			return `managed jobs ${times}`;
+		case "message":
+			return n === 1 ? "sent a message" : `sent ${n} messages`;
 		case "mcp":
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
