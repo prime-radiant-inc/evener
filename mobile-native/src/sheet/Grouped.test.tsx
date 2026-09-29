@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import {
+	Button,
 	FormError,
 	Group,
 	GroupedPage,
@@ -521,5 +522,47 @@ describe("a text field row", () => {
 		).root.findByType("TextInput" as never);
 		expect(input.props.multiline).toBe(true);
 		expect(input.props.editable).toBe(false);
+	});
+});
+
+describe("Button", () => {
+	const pressable = (tree: ReturnType<typeof render>) =>
+		tree.root.find((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button");
+	const styleOf = (node: ReactTestInstance, pressed = false) =>
+		Object.assign(
+			{},
+			...[typeof node.props.style === "function" ? node.props.style({ pressed }) : node.props.style].flat(),
+		);
+
+	it("draws the primary call to action filled in the accent, full width and 50pt, as the prototype's .btn.primary.big", () => {
+		const onPress = vi.fn();
+		const tree = render(<Button label="Open sign-in page" primary onPress={onPress} />);
+		const button = pressable(tree);
+		expect(button.props.accessibilityLabel).toBe("Open sign-in page");
+		expect(button.props.accessibilityState).toEqual({ disabled: false });
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.accentFill, minHeight: 50, alignSelf: "stretch" });
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.onFill,
+			fontSize: 17,
+			fontWeight: "600",
+		});
+		act(() => button.props.onPress());
+		expect(onPress).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws a plain button as a 36pt capsule on the surface, as the prototype's .btn", () => {
+		const tree = render(<Button label="Copy code" onPress={() => {}} />);
+		expect(styleOf(pressable(tree))).toMatchObject({ backgroundColor: light.surface, minHeight: 36 });
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
+	});
+
+	it("holds while disabled, and says so to VoiceOver", () => {
+		const tree = render(<Button label="Open sign-in page" primary disabled onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(button.props.disabled).toBe(true);
+		expect(button.props.accessibilityState).toEqual({ disabled: true });
+		expect(styleOf(button).opacity).toBe(0.45);
 	});
 });

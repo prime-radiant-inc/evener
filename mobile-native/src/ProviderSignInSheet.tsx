@@ -7,9 +7,9 @@ import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { AppState, Text, TextInput, View } from "react-native";
-import { fonts, space } from "./design/tokens";
+import { fonts, scaledType, space, uiType } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
-import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
+import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { Spinner } from "./sheet/Spinner";
@@ -127,55 +127,61 @@ export function ProviderSignInSheet({
 			<GroupedPage>
 				{state.phase === "idle" || state.phase === "starting" ? <Spinner label="Starting sign-in" /> : null}
 				{device && !waiting ? (
-					<>
-						<Section followedBy="group">
-							{body(
-								"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
-							)}
-							<View
+					// As the prototype draws it (hub.js 128-132): the code with Copy
+					// code beside it, the page's one call to action, and how long the
+					// code lasts. A poll's error or a failed copy or open lands in a
+					// footer right under it.
+					<Section followedBy={state.error || localError ? "footer" : undefined}>
+						{body(
+							"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
+						)}
+						<View
+							style={{
+								flexDirection: "row",
+								alignItems: "center",
+								justifyContent: "space-between",
+								gap: 12,
+								borderRadius: 12,
+								paddingHorizontal: 16,
+								paddingVertical: 14,
+								backgroundColor: palette.surface,
+							}}
+						>
+							<Text
+								selectable
+								allowFontScaling={allowFontScaling}
 								style={{
-									borderRadius: 12,
-									paddingHorizontal: 16,
-									paddingVertical: 14,
-									backgroundColor: palette.surface,
+									color: palette.inkHi,
+									fontFamily: fonts.mono,
+									fontWeight: "600",
+									fontSize: 26 * scale,
+									letterSpacing: 2,
+									flexShrink: 1,
 								}}
 							>
-								<Text
-									selectable
-									allowFontScaling={allowFontScaling}
-									style={{
-										color: palette.inkHi,
-										fontFamily: fonts.mono,
-										fontWeight: "600",
-										fontSize: 26 * scale,
-										letterSpacing: 2,
-									}}
-								>
-									{device.userCode}
-								</Text>
-							</View>
-						</Section>
-						<Group>
-							<Row
-								label="Open sign-in page"
-								tone="accent"
-								onPress={() => {
-									void openDevicePage();
-								}}
-							/>
-							<Row
+								{device.userCode}
+							</Text>
+							<Button
 								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
-								tone="accent"
 								onPress={() => {
 									setLocalError(null);
 									void copy(device.flowId, device.userCode);
 								}}
 							/>
-						</Group>
+						</View>
+						<Button
+							label="Open sign-in page"
+							primary
+							onPress={() => {
+								void openDevicePage();
+							}}
+						/>
 						{/* The hub drops a device flow after hubAuthFlowTTL, 15 minutes
 						    (app_auth.go); the provider's code expires in about that time. */}
-						<GroupFooter>The code expires in 15 minutes.</GroupFooter>
-					</>
+						<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, ...scaledType(uiType.footnote, scale) }}>
+							The code expires in 15 minutes.
+						</Text>
+					</Section>
 				) : null}
 				{device && waiting ? (
 					<>
