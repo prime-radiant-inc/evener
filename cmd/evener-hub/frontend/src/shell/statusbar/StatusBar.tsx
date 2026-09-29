@@ -6,12 +6,12 @@
 // activity state lives here.
 
 import { useNavigationStore } from "../../stores/navigation/store";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { focusedActivityScopeRef } from "../focusedSession";
 import { WatchGlyph } from "../rail/RailRow";
 import { openSessionByRef } from "../sessionPlacement";
 import { useWorkspaceStore } from "../workspace";
-import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./statusbar.module.css";
 import { type ActivityTab, deriveScope } from "./statusScope";
 

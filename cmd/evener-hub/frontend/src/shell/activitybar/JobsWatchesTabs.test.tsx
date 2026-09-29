@@ -1,20 +1,20 @@
 // The Jobs and Watches tabs of the activity sidebar: ordering, status
 // wording, glyph tones, drill/open behavior, and the omitted-watches grammar.
 
+import type { NavigationManifest } from "@evener/appwire-client";
+import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import type { NavigationManifest } from "@evener/appwire-client";
-import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { navigationStore } from "../../stores/navigation/store";
 import { MotionProvider } from "../../motion";
+import { navigationStore } from "../../stores/navigation/store";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { summaryOf, watchOf } from "../statusbar/scopeTestUtils";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
-import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import styles from "./activitybar.module.css";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
 function fixtureDescriptor<P>(
   id: PaneDescriptor<P>["id"],
@@ -78,7 +78,13 @@ const ROOT = summaryOf({
   ],
   watches: [
     watchOf({ id: "w1", note: "test heartbeat", cadence: [{ kind: "every", seconds: 300 }] }),
-    watchOf({ id: "w2", note: "build landed", cadence: [{ kind: "after", seconds: 600 }], active: false, deliveries: 1 }),
+    watchOf({
+      id: "w2",
+      note: "build landed",
+      cadence: [{ kind: "after", seconds: 600 }],
+      active: false,
+      deliveries: 1,
+    }),
   ],
   omitted_watches: 2,
   omitted_armed_watches: 1,
@@ -96,7 +102,10 @@ function installRoot() {
       [keyID(liveKey), resource(liveKey, { sessions: [ROOT] })],
       [
         keyID({ kind: "location", ref: "local:a" }),
-        resource({ kind: "location", ref: "local:a" }, { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT }),
+        resource(
+          { kind: "location", ref: "local:a" },
+          { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT },
+        ),
       ],
     ]),
     expanded: new Map(),
@@ -172,7 +181,10 @@ describe("WatchesTab", () => {
         [keyID(liveKey), resource(liveKey, { sessions: [bare] })],
         [
           keyID({ kind: "location", ref: "local:bare" }),
-          resource({ kind: "location", ref: "local:bare" }, { ref: "local:bare", top_level_ref: "local:bare", top_level: true, session: bare }),
+          resource(
+            { kind: "location", ref: "local:bare" },
+            { ref: "local:bare", top_level_ref: "local:bare", top_level: true, session: bare },
+          ),
         ],
       ]),
       expanded: new Map(),

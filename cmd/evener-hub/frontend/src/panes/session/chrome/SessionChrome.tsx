@@ -34,6 +34,7 @@ import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
+import { activitySidebarStore, useActivitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -113,7 +114,10 @@ export function SessionChrome({
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
-  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
+  // The Activity menu item's checked state is the sidebar's open state on
+  // desktop; on mobile the item opens the Sheet and is never "checked".
+  const sidebarOpen = useActivitySidebarStore((s) => s.open);
+  const activityOpen = !isMobile && sidebarOpen;
   const notesOpen = useTopNotesExpanded(sessionRef);
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -212,8 +216,10 @@ export function SessionChrome({
     else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
   };
   const openActivity = () => {
+    // Desktop: the activity sidebar (the zoom system's triage surface).
+    // Mobile: the per-session Sheet, unchanged.
     if (isMobile) activityRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
+    else activitySidebarStore.getState().toggle();
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;

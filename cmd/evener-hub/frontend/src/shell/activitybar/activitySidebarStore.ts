@@ -13,6 +13,7 @@ export interface ActivitySidebarState {
   openWith(tab?: ActivityTab): void;
   close(): void;
   setTab(tab: ActivityTab): void;
+  toggle(): void;
 }
 
 export const activitySidebarStore = createStore<ActivitySidebarState>()((set) => ({
@@ -21,6 +22,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set) =>
   openWith: (tab) => set((state) => ({ open: true, tab: tab ?? state.tab })),
   close: () => set({ open: false }),
   setTab: (tab) => set({ tab }),
+  toggle: () => set((state) => ({ open: !state.open })),
 }));
 
 export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarState) => T): T {

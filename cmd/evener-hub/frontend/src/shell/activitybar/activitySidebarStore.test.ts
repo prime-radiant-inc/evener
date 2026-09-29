@@ -30,4 +30,13 @@ describe("activitySidebarStore", () => {
     activitySidebarStore.getState().openWith();
     expect(activitySidebarStore.getState().tab).toBe("tasks");
   });
+
+  test("toggle flips open and keeps the tab", () => {
+    activitySidebarStore.getState().setTab("watches");
+    activitySidebarStore.getState().toggle();
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(activitySidebarStore.getState().tab).toBe("watches");
+    activitySidebarStore.getState().toggle();
+    expect(activitySidebarStore.getState().open).toBe(false);
+  });
 });

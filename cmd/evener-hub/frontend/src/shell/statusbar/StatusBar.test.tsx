@@ -15,7 +15,7 @@ import { resetFocusedActivityScopeForTests } from "../focusedSession";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StatusBar } from "./StatusBar";
-import { sampleTree, summaryOf, watchOf } from "./scopeTestUtils";
+import { sampleTree, summaryOf } from "./scopeTestUtils";
 
 function fixtureDescriptor<P>(
   id: PaneDescriptor<P>["id"],

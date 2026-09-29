@@ -13,7 +13,7 @@
 // check a setting.
 
 import { refParam } from "./routing";
-import { workspaceStore, type WorkspaceStoreState } from "./workspace";
+import { type WorkspaceStoreState, workspaceStore } from "./workspace";
 
 export function focusedSessionRef(): string | null {
   const state = workspaceStore.getState();

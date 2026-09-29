@@ -5,8 +5,8 @@
 
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import { focusedActivityScopeRef, focusedSessionRef, resetFocusedActivityScopeForTests } from "./focusedSession";
+import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 function fixtureDescriptor<P>(
