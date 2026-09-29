@@ -107,7 +107,8 @@ import {
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
-	shouldApplyExactRestore,
+	type AppliedRestore,
+	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
@@ -417,12 +418,7 @@ export function ConversationScreen({
 	const readerViewportHeight = useRef(0);
 	const [layoutRevision, setLayoutRevision] = useState(0);
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
-	const appliedReaderRestore = useRef<{
-		key: string;
-		y: number;
-		height: number;
-		scrollOffset: number;
-	} | null>(null);
+	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
@@ -436,6 +432,9 @@ export function ConversationScreen({
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	const follow = useLiveEndFollow();
 	const captureSuppressed = useRef(false);
+	// Whether you have dragged this session's list yet: older history pages
+	// on distance from the top only after that.
+	const userScrolled = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
 	// Puts the caret at `caret` in the composer and focuses it, on the next
@@ -1242,6 +1241,7 @@ export function ConversationScreen({
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
 		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
+		userScrolled.current = false;
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
@@ -1445,25 +1445,14 @@ export function ConversationScreen({
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
 			if (!measurement) return;
-			const scrollOffset = reachableReaderOffset(
-				measurement.y - command.viewOffset,
-				readerContentHeight.current,
-				readerViewportHeight.current,
-			);
-			if (
-				!shouldApplyExactRestore(
-					appliedReaderRestore.current,
-					measurement,
-					appliedReaderRestore.current?.scrollOffset ?? null,
-					scrollOffset,
-				)
-			)
-				return;
+			const desired = measurement.y - command.viewOffset;
+			const scrollOffset = reachableReaderOffset(desired, readerContentHeight.current, readerViewportHeight.current);
+			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
 			appliedReaderRestore.current = {
 				key: currentKey,
-				y: measurement.y,
 				height: measurement.height,
-				scrollOffset,
+				offset: scrollOffset,
+				desired,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
@@ -2594,8 +2583,11 @@ export function ConversationScreen({
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
 								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2).
-								if (y < 800) loadOlderPage();
+								// Older history loads as you near the top (spec 8.2), once you
+								// have scrolled yourself: at the live end of a page shorter than
+								// the screen the list sits near its top, and paging there
+								// chained every older page in on open.
+								if (y < 800 && userScrolled.current && !follow.state.current.following) loadOlderPage();
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(readerKey(item));
 									return measurement && measurement.y + measurement.height > y;
@@ -2613,14 +2605,18 @@ export function ConversationScreen({
 									);
 									const anchor = readerAnchor.current;
 									const measurement = readerMeasurements.current.get(readerKey(visible));
+									// Where you scrolled is where the anchor is: nothing to restore.
 									if (anchor && measurement)
 										appliedReaderRestore.current = {
-											...measurement,
-											scrollOffset: y,
+											key: measurement.key,
+											height: measurement.height,
+											offset: y,
+											desired: y,
 										};
 								}
 							}}
 							onScrollBeginDrag={() => {
+								userScrolled.current = true;
 								follow.dispatch({ type: "dragBegin" });
 								readerHeader.current = false;
 								captureSuppressed.current = false;

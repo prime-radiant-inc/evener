@@ -259,18 +259,29 @@ export function furthestMeasuredRowBeforeTarget(
 	return furthest;
 }
 
-export function shouldApplyExactRestore(
-	previous: ReaderMeasurement | null,
-	measurement: ReaderMeasurement,
-	previousOffset: number | null,
+/** The exact restore last applied for the reading anchor: its row and that
+ * row's height then, where the list went, and where it meant to go. */
+export interface AppliedRestore {
+	key: string;
+	height: number;
+	offset: number;
+	desired: number;
+}
+
+/** Whether an exact restore of the anchor's row to `offset` is due. Once per
+ * anchor: after one lands, the row's measured y moving (a virtualized list
+ * re-estimating rows it unmounted, which older pages provoke) never moves the
+ * list again, since chasing it made the list ping-pong. It is due again when
+ * the anchor's own row reflows (a text-size change), or when the last one was
+ * cut short by a list not yet long enough and the list now reaches further. */
+export function exactRestoreDue(
+	applied: AppliedRestore | null,
+	anchorRow: { key: string; height: number },
 	offset: number,
-) {
-	return (
-		previous?.key !== measurement.key ||
-		previous.y !== measurement.y ||
-		previous.height !== measurement.height ||
-		previousOffset !== offset
-	);
+): boolean {
+	if (!applied || applied.key !== anchorRow.key) return true;
+	if (applied.height !== anchorRow.height) return true;
+	return applied.offset !== applied.desired && offset !== applied.offset;
 }
 // A virtualized list may not yet extend far enough to reach the saved position.
 export function reachableReaderOffset(desiredOffset: number, contentHeight: number, viewportHeight: number): number {

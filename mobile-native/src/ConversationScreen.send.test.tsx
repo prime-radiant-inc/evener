@@ -955,6 +955,48 @@ it("opens at the start of a reply that finished since you last read to the end",
 	expect(indexes).not.toContain(0);
 });
 
+it("restores a reading position once, however its row's measured y moves after", async () => {
+	// A virtualized list re-estimating rows it unmounted (older pages provoke
+	// it) moves the anchor row's measured y back and forth; the restore used
+	// to chase every move, and the list ping-ponged.
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-once": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-once",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-once"));
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const items = () => transcriptList(tree).findAll((node) => String(node.type) === "Item");
+	// The rows are ask/reply for turn_1, then turn_2: its reply is row 3.
+	const reply = () => {
+		const cell = items()[3]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+		if (!cell) throw new Error("no reply cell");
+		return cell;
+	};
+	const layOut = (y: number) =>
+		act(() => reply().props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
+	flatListCalls.length = 0;
+	layOut(9_523);
+	await settle();
+	layOut(9_684);
+	await settle();
+	layOut(9_523);
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+});
+
 it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
@@ -1212,16 +1254,34 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
-it("loads older history as you scroll near the top", async () => {
+it("loads older history as you drag near the top", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
-	scrollTo(tree, 2_000);
+	const drag = (y: number) => {
+		const at = {
+			nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		};
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+		scrollTo(tree, y);
+		act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	};
+	drag(2_000);
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-	scrollTo(tree, 100);
+	drag(100);
 	await settle();
 	expect(
 		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 	).toEqual(["cursor-1"]);
+});
+
+it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
+	// Opening at the live end of a page shorter than the screen puts the list
+	// near its top; paging there chained every older page in on open, each
+	// prepend landing the list near the top again.
+	const { tree, hub } = await mount(twoTurns("ref-older-live"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
 it("doesn't page older history while the hub is away", async () => {
