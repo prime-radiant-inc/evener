@@ -1,7 +1,8 @@
 // @vitest-environment node
-import type { TaskRow } from "@evener/appwire-client";
+
 import { expect, test } from "vitest";
-import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
+import type { TaskRow } from "./taskListData";
+import { autoStartedTask, parseTaskState, taskLabel } from "./taskListStep";
 
 function task(overrides: Partial<TaskRow> & Pick<TaskRow, "id" | "status">): TaskRow {
   return { type: "implement", description: `task ${overrides.id}`, prompt: "", ...overrides };

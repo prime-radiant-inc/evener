@@ -19,22 +19,14 @@
 // variant's proposal.
 
 import type { ItemModel, TaskRow } from "@evener/appwire-client";
-import { taskAggregateLabel } from "@evener/appwire-client";
+import { freshNotes, mutationRows, parseTaskState, SUMMARY_MARK, taskAggregateLabel } from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
 import type { ToolRenderProps } from "../../panes/session/transcript/toolRenderers";
 import { registerToolRenderer } from "../../panes/session/transcript/toolRenderers";
-import {
-  freshNotes,
-  mutationRows,
-  type Progress,
-  parseProgress,
-  SUMMARY_MARK,
-  stateWindow,
-} from "../../panes/session/transcript/tools/taskCard";
+import { type Progress, parseProgress, stateWindow } from "../../panes/session/transcript/tools/taskCard";
 import { STATUS_TOUCH, TaskCheck } from "../../panes/session/transcript/tools/taskCheck";
 // The conservative variant renders inside today's card chrome unchanged.
 import prodCard from "../../panes/session/transcript/tools/taskcard.module.css";
-import { parseTaskState } from "../../panes/session/transcript/tools/taskData";
 import { Meter } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./taskcardmockups.module.css";

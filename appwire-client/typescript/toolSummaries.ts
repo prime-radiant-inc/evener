@@ -9,6 +9,7 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
+import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 
@@ -19,10 +20,20 @@ export interface ToolSummaryContext {
 }
 
 /** The parts of a step its summary reads. */
-export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output">;
+export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw">;
 
 /** The family a run's summary counts a step under. */
-export type ToolFamily = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "skill" | "mcp" | "tool";
+export type ToolFamily =
+  | "read"
+  | "edit"
+  | "search"
+  | "fetch"
+  | "webSearch"
+  | "shell"
+  | "skill"
+  | "tasks"
+  | "mcp"
+  | "tool";
 
 const GREP_PATTERN_CLIP = 50;
 const QUERY_CLIP = 120;
@@ -261,6 +272,26 @@ export function useSkillSummary(step: ToolStep): string {
   return name ? `Activated skill: ${name}` : "Activated a skill";
 }
 
+// --- tasks ----------------------------------------------------------------------
+
+/** Whether a task_list call asked for a change: a bare call (or an empty add
+ * and update, or the historical action "view") only reads the list. */
+export function taskListChanges(step: Pick<ToolStep, "argumentsJSON">): boolean {
+  const args = parseArgs(step.argumentsJSON);
+  const action = str(args, "action") ?? "";
+  if (action !== "") return action !== "view";
+  return [args.add, args.update].some((list) => Array.isArray(list) && list.length > 0);
+}
+
+// The latest task the call touched ("☑ Reproduce the race", "→ Fix the
+// drain"), as the web's task card folds it; a call that touched no task's
+// status says whether it changed the list or only read it.
+function taskListSummary(step: ToolStep): string {
+  const touched = taskMutationSummary(step);
+  if (touched) return touched;
+  return taskListChanges(step) ? "Updated the task list" : "Checked the task list";
+}
+
 // --- every other tool ---------------------------------------------------------
 
 /** A tool name's words: its underscores and hyphens are spaces
@@ -283,6 +314,7 @@ export function mcpToolParts(toolName: string): { server: string; tool: string }
 
 /** A tool no summary covers, in words: "Used github: create issue" for an MCP
  * tool, "Used compact context" for any other. Never its raw name. */
+
 export function fallbackToolSummary(step: Pick<ToolStep, "toolName">): string {
   return `Used ${toolInWords(step.toolName ?? "")}`;
 }
@@ -346,6 +378,8 @@ function progressFor(
       const skill = skillName(step);
       return skill ? `Activating skill: ${skill}` : "Activating a skill";
     }
+    case "tasks":
+      return taskListChanges(step) ? "Updating the task list" : "Checking the task list";
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -376,6 +410,7 @@ const TOOLS: Record<string, ToolEntry> = {
   exec_command: { family: "shell", summary: shellSummary },
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
+  task_list: { family: "tasks", summary: taskListSummary },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {
