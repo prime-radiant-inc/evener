@@ -164,7 +164,6 @@ export function QuestionDock({
 			<DockBody
 				// Keyed by the question, so each question opens at its top.
 				key={question.key}
-				scale={scale}
 			>
 				<View style={{ paddingHorizontal: 16, gap: 4 }}>
 					<Text

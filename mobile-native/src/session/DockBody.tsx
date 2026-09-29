@@ -4,14 +4,12 @@
 // dock's header and answer controls stay on screen outside it.
 import { type ReactNode, useRef } from "react";
 import { ScrollView, type StyleProp, type ViewStyle } from "react-native";
-import { DOCK_BODY_MIN_HEIGHT, shrinkingScroller } from "./dockCard";
+import { shrinkingScroller } from "./dockCard";
 
 export function DockBody({
-	scale,
 	contentContainerStyle,
 	children,
 }: {
-	scale: number;
 	contentContainerStyle?: StyleProp<ViewStyle>;
 	children: ReactNode;
 }) {
@@ -29,7 +27,9 @@ export function DockBody({
 	return (
 		<ScrollView
 			ref={scroller}
-			style={{ ...shrinkingScroller, minHeight: DOCK_BODY_MIN_HEIGHT * scale }}
+			// No floor: when room is short the body gives it up, down to a line,
+			// so the answer controls outside it always stay on screen.
+			style={shrinkingScroller}
 			contentContainerStyle={contentContainerStyle}
 			keyboardShouldPersistTaps="handled"
 			onLayout={(event) => {

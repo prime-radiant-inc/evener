@@ -114,7 +114,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 		// needs (a long target, the largest text sizes); Allow and Deny stay on
 		// screen.
 		<View testID="approval-dock" style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
-			<DockBody scale={scale} contentContainerStyle={{ gap: 8 }}>
+			<DockBody contentContainerStyle={{ gap: 8 }}>
 				<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 					<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
 					<Text

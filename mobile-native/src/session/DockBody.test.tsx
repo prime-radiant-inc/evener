@@ -1,18 +1,18 @@
-// A dock's scrolling body (spec 8.4): it keeps room for about two option rows
-// however little the screen has, and flashes its scroll indicator once when
-// what it holds is taller than the room it got.
+// A dock's scrolling body (spec 8.4): it gives up all the height it must, so
+// the dock's answer controls always stay on screen, and flashes its scroll
+// indicator once when what it holds is taller than the room it got.
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { DockBody } from "./DockBody";
-import { DOCK_BODY_MIN_HEIGHT, shrinkingScroller } from "./dockCard";
+import { shrinkingScroller } from "./dockCard";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
-function mount(scale = 1) {
+function mount() {
 	const flashScrollIndicators = vi.fn();
 	let tree!: ReturnType<typeof create>;
 	act(() => {
-		tree = create(<DockBody scale={scale}>{"A long question"}</DockBody>, {
+		tree = create(<DockBody>{"A long question"}</DockBody>, {
 			createNodeMock: () => ({ flashScrollIndicators }),
 		});
 	});
@@ -24,9 +24,8 @@ function mount(scale = 1) {
 }
 
 describe("a dock's scrolling body", () => {
-	it("shrinks to the room left, but never below about two option rows at the text size", () => {
-		expect(mount().scroller.props.style).toEqual({ ...shrinkingScroller, minHeight: DOCK_BODY_MIN_HEIGHT });
-		expect(mount(1.5).scroller.props.style).toMatchObject({ minHeight: DOCK_BODY_MIN_HEIGHT * 1.5 });
+	it("shrinks to whatever room is left, with no floor that could push the answer controls off the card", () => {
+		expect(mount().scroller.props.style).toEqual(shrinkingScroller);
 	});
 
 	it("flashes its scroll indicator once when what it holds is taller than its room", () => {

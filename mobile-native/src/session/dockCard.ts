@@ -19,7 +19,3 @@ export function dockCard(palette: Palette) {
 /** A scroller that takes its content's height until its column runs out of
  * room, then shrinks and scrolls. */
 export const shrinkingScroller = { flexGrow: 0, flexShrink: 1 } as const;
-
-/** The least a dock body keeps however little room is left: about two option
- * rows, so the question never shrinks away to nothing. */
-export const DOCK_BODY_MIN_HEIGHT = 88;

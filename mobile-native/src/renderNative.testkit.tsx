@@ -521,8 +521,8 @@ export function dockBody(tree: ReactTestRenderer, testID: string) {
 	const [scroller, ...others] = card.findAll((node) => String(node.type) === "ScrollView");
 	if (!scroller) throw new Error(`the dock ${testID} has no scroller`);
 	expect(others).toHaveLength(0);
-	// It keeps a floor, so the question never shrinks away to nothing.
-	expect(scroller.props.style).toMatchObject({ ...shrinkingScroller, minHeight: expect.any(Number) });
+	// No floor: the answer controls outside it win whatever room is short.
+	expect(scroller.props.style).toEqual(shrinkingScroller);
 	return {
 		scroller,
 		holds(label: string) {
