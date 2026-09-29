@@ -1788,16 +1788,56 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
 	}
+	// Every delegation gets its own durable artifacts directory at creation,
+	// under its own session state (<stateDir>/sessions/<childSessionID>) rather
+	// than a /tmp scratch base, so a seat with write access has a private place
+	// for report artifacts that survives it and is named in the creation result.
+	// A failure here aborts the committed start through the same construction-
+	// failure path as any later failure.
+	var artifactsDir string
+	// removeArtifacts takes back the just-created artifacts directory on an exit
+	// that leaves no child session to dispose. A start that fails before a child
+	// run exists (ensure or construct failing) reaches failCommittedStart with a
+	// nil prepared run, so its disposeUnadopted arm never runs and nothing else
+	// would remove the directory. If the removal fails, keep advertising the
+	// path (so the residue stays discoverable) and surface the failure.
+	var artifactsCleanupWarning string
+	removeArtifacts := func() {
+		if artifactsDir == "" {
+			return
+		}
+		if err := removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID); err != nil {
+			artifactsCleanupWarning = "delegate artifacts directory cleanup failed: " + err.Error()
+			return
+		}
+		// The path is gone, so the failure result must not advertise it.
+		artifactsDir = ""
+	}
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
 			result.Warnings = []string{selection.warning.Message}
 		}
+		if artifactsCleanupWarning != "" {
+			result.Warnings = append(result.Warnings, artifactsCleanupWarning)
+		}
 		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
+		// Advertise the artifacts directory only when it still exists: a failure
+		// path that disposed the child removed it, and the result must not name a
+		// path that is gone. A retained candidate keeps its directory and so keeps
+		// advertising it.
+		result.ArtifactsDir = advertiseArtifactsDir(artifactsDir)
 		return result
+	}
+	// ReserveCreate always mints a child session id, so an empty one is a bug:
+	// fail closed rather than silently skip the per-delegation artifacts dir.
+	artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, started.descriptor.ChildSessionID)
+	if err != nil {
+		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
+		removeArtifacts()
 		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
