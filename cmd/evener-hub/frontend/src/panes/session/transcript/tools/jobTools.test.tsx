@@ -397,6 +397,19 @@ test.each([
   expect(screen.queryByText(new RegExp(reason))).toBeNull();
 });
 
+// last_outcome is the daemon's delegatestore.Outcome, which carries a failed
+// run's cause beside its reason code (#3356): the body says the cause.
+test("job_status: body says a failed run's recorded cause, not its reason code", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "failed", reason: "run_error", error: "provider returned 500" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(/Last run failed: provider returned 500/)).toBeTruthy();
+});
+
 test("job_status: body renders exhausted outcome reason without danger text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;

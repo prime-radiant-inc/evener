@@ -80,7 +80,7 @@ interface DelegateStatusState {
   running_for_ms?: number;
   quiet_for_ms?: number;
   duration_ms?: number;
-  last_outcome?: { status?: string; ended_at?: string; reason?: string };
+  last_outcome?: { status?: string; ended_at?: string; reason?: string; error?: string };
   cwd?: string;
   isolation?: string;
   sandbox_mode?: string;
@@ -107,6 +107,7 @@ function normalizeDelegateStatus(raw: Record<string, unknown>): DelegateStatusSt
           status: strOrUndef((lo as Record<string, unknown>).status),
           ended_at: strOrUndef((lo as Record<string, unknown>).ended_at),
           reason: strOrUndef((lo as Record<string, unknown>).reason),
+          error: strOrUndef((lo as Record<string, unknown>).error),
         }
       : undefined;
   return {
@@ -305,7 +306,11 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   const tools = state.tools ?? [];
   const transcriptRef = state.transcript_ref;
   // The last run's reason is a code; say it in words (#3327).
-  const lastEnding = delegateEndingText({ outcome: state.last_outcome?.status, reason: state.last_outcome?.reason });
+  const lastEnding = delegateEndingText({
+    outcome: state.last_outcome?.status,
+    reason: state.last_outcome?.reason,
+    error: state.last_outcome?.error,
+  });
   // Copy the structured state, not item.output: the output text may carry
   // breaker/annotation text appended after the JSON, so re-serializing the
   // validated state gives the reader valid JSON on paste.
