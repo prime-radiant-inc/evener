@@ -943,8 +943,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// row, since trimmed rows couldn't come back: a memory trade-off that lasts
 	// until it does.
 	let pagesBefore = false;
+	/** Takes the hub's pageBefore when it says one as a boolean, `otherwise`
+	 * when it doesn't. */
+	function adoptPageBefore(said: unknown, otherwise: boolean): void {
+		pagesBefore = typeof said === "boolean" ? said : otherwise;
+	}
 	function adoptRead(conversation: MobileConversation): void {
-		pagesBefore = conversation.capabilities?.pageBefore === true;
+		adoptPageBefore(conversation.capabilities?.pageBefore, false);
 	}
 
 	// The rows the timeline keeps: the newest RETAINED_ITEM_CAP while the
@@ -3164,16 +3169,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
-				// A status frame the hub relays names pageBefore, and that is the
-				// hub's answer as much as a read's; one straight from a daemon
-				// names none and leaves the last answer standing. The service
-				// checks capabilities only on frames for the exact thread it has
-				// open, and this takes a frame by ref alone, so it checks the
-				// value's type itself.
-				if (n.method === "thread/status/changed") {
-					const said: unknown = n.params.capabilities?.pageBefore;
-					if (typeof said === "boolean") pagesBefore = said;
-				}
+				// A status frame the hub relays names pageBefore for its thread; one
+				// straight from a daemon names none and leaves the last answer.
+				if (n.method === "thread/status/changed" && n.params.threadId === state.conversation.threadId)
+					adoptPageBefore(n.params.capabilities?.pageBefore, pagesBefore);
 
 				// Every frame about this thread folds into the package reducer's
 				// model, and the display rows are a projection of that model: one

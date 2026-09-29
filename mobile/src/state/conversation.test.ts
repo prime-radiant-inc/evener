@@ -3147,52 +3147,100 @@ describe("ConversationStore", () => {
 				method: "thread/status/changed",
 				params: { threadId, ref: "ref-1", status: { type: "idle" }, capabilities: { ...ALL_TRUE_CAPS, pageBefore } },
 			}) as unknown as AnyNotification;
-
-		it("stops paging above a trim when a status frame says the hub doesn't page before", async () => {
-			const service = new FakeConversationService();
-			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+		const openRows = async (service: FakeConversationService, pageBefore: boolean) => {
+			service.openConv = makeConversation({
+				items: positionedRows(0, 600),
+				capabilities: { ...ALL_TRUE_CAPS, pageBefore },
+			});
 			const store = createConversationStore();
 			await store.getState().openProjected(service, createFakeSink(), "ref-1");
-			expect(store.getState().trimmedAbove).toBe(true);
+			return store;
+		};
+		const returnToEnd = (store: ReturnType<typeof createConversationStore>) => {
+			store.getState().setFollowingLiveEnd(false);
+			store.getState().setFollowingLiveEnd(true);
+		};
+
+		it("starts trimming when a status frame says the hub pages before", async () => {
+			const store = await openRows(new FakeConversationService(), false);
+			expect(store.getState().conversation?.items).toHaveLength(600);
+			store.getState().applyNotification(statusFrame(true));
+			returnToEnd(store);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+		});
+
+		// A hub that stops paging before (a downgrade, rare) stops future trims
+		// at once. Rows already trimmed stay trimmed for this open, and nothing
+		// is asked for above them; reopening the session reads them back.
+		it("stops trimming at once when a status frame says the hub doesn't page before", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 550) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined };
+			await store.getState().loadOlder(service);
+			expect(store.getState().conversation?.items).toHaveLength(550);
 			store.getState().applyNotification(statusFrame(false));
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().conversation?.items).toHaveLength(550);
+			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		it("keeps rows already trimmed when the hub stops paging before, until a reopen reads them back", async () => {
+			const service = new FakeConversationService();
+			const store = await openRows(service, true);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+			store.getState().applyNotification(statusFrame(false));
+			expect(store.getState().trimmedAbove).toBe(true);
+			expect(store.getState().conversation?.items).toHaveLength(500);
 			store.getState().setFollowingLiveEnd(false);
 			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
 			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
 			expect(service.olderRequests).toEqual([]);
-		});
-
-		it("starts trimming when a status frame says the hub pages before", async () => {
-			const service = new FakeConversationService();
 			service.openConv = makeConversation({
 				items: positionedRows(0, 600),
 				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
 			});
-			const store = createConversationStore();
 			await store.getState().openProjected(service, createFakeSink(), "ref-1");
 			expect(store.getState().conversation?.items).toHaveLength(600);
-			store.getState().applyNotification(statusFrame(true));
-			store.getState().setFollowingLiveEnd(false);
-			store.getState().setFollowingLiveEnd(true);
-			expect(store.getState().conversation?.items).toHaveLength(500);
+			expect(store.getState().trimmedAbove).toBe(false);
 		});
 
-		// The service checks a frame's capabilities only for the thread it has
-		// open (ref and threadId); the store takes a frame by ref alone, so it
-		// checks the value itself.
-		it.each([
-			["a frame for its thread", "thread-1"],
-			["a frame naming its ref but another thread id", "thread-other"],
-		] as const)("ignores a pageBefore that isn't a boolean, on %s", async (_frame, threadId) => {
+		// A capability belongs to a thread: a frame for another thread under
+		// this ref (a reset, say) says nothing about this one.
+		it("ignores another thread's pageBefore true", async () => {
+			const store = await openRows(new FakeConversationService(), false);
+			store.getState().applyNotification(statusFrame(true, "thread-other"));
+			returnToEnd(store);
+			expect(store.getState().conversation?.items).toHaveLength(600);
+		});
+
+		it("ignores another thread's pageBefore false", async () => {
 			const service = new FakeConversationService();
-			service.openConv = makeConversation({
-				items: positionedRows(0, 600),
-				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
-			});
-			const store = createConversationStore();
-			await store.getState().openProjected(service, createFakeSink(), "ref-1");
-			store.getState().applyNotification(statusFrame("yes", threadId));
+			const store = await openRows(service, true);
+			store.getState().applyNotification(statusFrame(false, "thread-other"));
 			store.getState().setFollowingLiveEnd(false);
-			store.getState().setFollowingLiveEnd(true);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+		});
+
+		it.each([
+			["a string", "yes"],
+			["null", null],
+		] as const)("keeps trimming past a pageBefore that is %s", async (_kind, said) => {
+			const store = await openRows(new FakeConversationService(), true);
+			store.getState().applyNotification(statusFrame(said));
+			returnToEnd(store);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+			expect(store.getState().trimmedAbove).toBe(true);
+		});
+
+		it("never starts trimming on a pageBefore that isn't a boolean", async () => {
+			const store = await openRows(new FakeConversationService(), false);
+			store.getState().applyNotification(statusFrame("yes"));
+			returnToEnd(store);
 			expect(store.getState().conversation?.items).toHaveLength(600);
 		});
 
