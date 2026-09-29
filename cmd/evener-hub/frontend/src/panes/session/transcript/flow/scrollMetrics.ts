@@ -25,12 +25,6 @@ export const AT_BOTTOM_THRESHOLD_PX = 4;
 // Legacy renderer.js parity (same doc, §15): isNearTop is "scrollTop < 200".
 export const NEAR_TOP_THRESHOLD_PX = 200;
 
-// How long a paging trigger keeps looking for a scroll port that has not
-// mounted yet. The transcript list and its triggers render in the same commit,
-// so the first look normally finds it; this only keeps a late mount from
-// silently disabling paging for the pane's whole life.
-export const PORT_RETRY_WINDOW_MS = 2_000;
-
 /**
  * True when the reader is within `thresholdPx` of the true bottom - or the
  * content doesn't scroll at all (scrollHeight <= clientHeight), which reads

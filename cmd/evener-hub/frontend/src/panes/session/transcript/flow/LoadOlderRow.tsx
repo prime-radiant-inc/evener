@@ -2,11 +2,11 @@
 // inline error with Retry) plus the geometry-driven trigger that fills a page
 // too short to scroll.
 //
-// Paging is automatic. Each surface owns the near-top scroll rule (the live
-// pane's useTranscriptScroll, the read-only pane's own listener); this row
-// covers the one case that rule cannot see - a page too short to fill its
-// scroll port, where there is nothing to scroll and so no scroll event ever
-// fires.
+// Paging is automatic, and the near-top rule belongs to the scroll coordinator
+// every transcript surface runs (useTranscriptScroll, both the live session
+// pane and the read-only transcript pane). This row adds the one case that rule
+// cannot see - a page too short to fill its scroll port, where there is nothing
+// to scroll and so no scroll event ever fires.
 //
 // Why it reads the SCROLL PORT's geometry instead of watching a sentinel of
 // its own: the row renders into FlowOverlay's non-scrolling top slot, so
@@ -30,7 +30,7 @@
 import { useEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./loadolderrow.module.css";
-import { PORT_RETRY_WINDOW_MS, shouldAutoLoadOlder } from "./scrollMetrics";
+import { shouldAutoLoadOlder } from "./scrollMetrics";
 
 export interface LoadOlderRowProps {
   // Fetches the next older page. Called automatically by the geometry check
@@ -70,6 +70,9 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
   // the content) is what clears it.
   const blockedRef = useRef(false);
   blockedRef.current = error !== null;
+  // Re-points the observation at whatever the transcript hands back now. Kept
+  // in a ref so the render effect below can call the mounted effect's closure.
+  const syncTargetsRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const maybeLoad = () => {
@@ -81,7 +84,7 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
     // jsdom has no ResizeObserver at all; a test that cares stubs it the way
     // DockHost.test.tsx stubs it for dockview. Without one there is still the
     // one geometry check to make; with one, its initial notification for each
-    // observed target IS that check, and it runs again on every later change.
+    // observed target is that check, and it runs again on every later change.
     if (typeof ResizeObserver !== "function") {
       maybeLoad();
       return undefined;
@@ -91,11 +94,10 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
     let content: HTMLElement | null = null;
     // Both halves of the geometry the decision reads are observed: the port's
     // (a pane resize) and its content's (the rows settling, or the transcript
-    // shrinking below the port). Re-resolving every time matters because a
-    // transcript can swap either node - a new port, or a new content child
-    // inside the same port - and watching one it has moved on from would never
-    // fire again.
-    const sync = () => {
+    // shrinking below the port). Re-resolving on every call matters because a
+    // transcript can swap either node, and observing the new one is what makes
+    // its initial notification fire the next check.
+    const syncTargets = () => {
       if (observer === null) return;
       const el = scrollElementRef.current();
       if (el !== port) {
@@ -113,25 +115,28 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
           if (content !== null) observer.observe(content);
         }
       }
+    };
+    syncTargetsRef.current = syncTargets;
+    observer = new ResizeObserver(() => {
+      syncTargets();
       maybeLoad();
-    };
-    observer = new ResizeObserver(sync);
-    sync();
-    let frame: number | null = null;
-    const retryDeadline = performance.now() + PORT_RETRY_WINDOW_MS;
-    const retryUntilMounted = () => {
-      if (port !== null || performance.now() > retryDeadline) return;
-      frame = requestAnimationFrame(() => {
-        sync();
-        retryUntilMounted();
-      });
-    };
-    retryUntilMounted();
+    });
+    syncTargets();
+    maybeLoad();
     return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
+      syncTargetsRef.current = () => {};
       observer?.disconnect();
     };
   }, []);
+
+  // A swapped port, or a port's first content child appearing after the first
+  // check, changes no observed border box - so the observer alone could never
+  // notice it and the row would sit watching a detached node. Any render that
+  // brings either node re-points the observation here (only an identity
+  // compare; the new target's own initial notification does the check).
+  useEffect(() => {
+    syncTargetsRef.current();
+  });
 
   return (
     <div className={CLASS.row} data-testid="load-older-row">

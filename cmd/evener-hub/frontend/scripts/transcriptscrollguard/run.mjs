@@ -262,13 +262,15 @@ async function main() {
         );
       }
       // Paging must still work: a real scroll to the top drives the near-top
-      // trigger and fetches a page.
-      if (failures.length === 0) {
-        const scrolled = JSON.parse(
-          await evaluate(send, "(async () => JSON.stringify(await window.scrollAwayAndWaitForPill()))()"),
-        );
-        if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
-      }
+      // trigger and fetches a page. Runs whatever the open assertions found, so
+      // a failure there cannot hide this coverage. (One request per tick is
+      // useTranscript.test.ts's to prove; a real scroll can legitimately fetch
+      // more than one page here, since the helper keeps re-zeroing the port.)
+      const scrolled = JSON.parse(
+        await evaluate(send, "(async () => JSON.stringify(await window.scrollAwayAndWaitForPill()))()"),
+      );
+      if (scrolled.errors.length > 0) failures.push(`page errors while paging: ${scrolled.errors.join("; ")}`);
+      if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
     } finally {
       await clearViewportOverride(send);
       page.close();

@@ -127,23 +127,44 @@ test("a null scroll element never loads", () => {
   expect(onLoad).not.toHaveBeenCalled();
 });
 
-// The list normally mounts in the same commit as this row; a give-up on the
-// first null read would silently disable paging for the pane's whole life.
-test("keeps looking across frames for a port that has not mounted yet", async () => {
-  vi.useFakeTimers();
+// A port that is not there on the first read (a late-mounting list) changes no
+// observed border box, so the observer alone would never notice it: the render
+// effect is what re-points the observation.
+test("re-points the observation at a port that appears on a later render", () => {
   const port = scrollPort(300, 500);
   const onLoad = vi.fn();
   let mounted = false;
-  render(
+  const { rerender } = render(
     <LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => (mounted ? port.el : null)} />,
   );
   expect(latestObserver().observed).toEqual([]);
   expect(onLoad).not.toHaveBeenCalled();
 
   mounted = true;
-  await vi.advanceTimersByTimeAsync(100);
+  rerender(
+    <LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => (mounted ? port.el : null)} />,
+  );
 
   expect(latestObserver().observed).toEqual([port.el, port.el.firstElementChild]);
+});
+
+// A transcript can hand back a different scroll element; watching the old one
+// would stop the geometry re-checks silently.
+test("re-points the observation when the transcript hands back a different port", () => {
+  const first = scrollPort(5000, 500);
+  const second = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  let port = first.el;
+  const { rerender } = render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port} />);
+  expect(latestObserver().observed).toEqual([first.el, first.el.firstElementChild]);
+
+  port = second.el;
+  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port} />);
+
+  expect(latestObserver().observed).toEqual([second.el, second.el.firstElementChild]);
+  latestObserver().resize();
+  // The first port overflowed, this one does not: the load comes from the port
+  // the row is watching NOW.
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
