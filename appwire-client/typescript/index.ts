@@ -157,7 +157,6 @@ export {
   delegateSendSummary,
   delegateSendTarget,
   isDelegateSendResult,
-  statusWordFromText,
 } from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";

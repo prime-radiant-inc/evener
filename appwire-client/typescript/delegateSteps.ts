@@ -42,17 +42,6 @@ export function isDelegateSendResult(raw: unknown): raw is DelegateSendRawState 
   );
 }
 
-const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
-
-/** The job status a footer's text names. Footer fields are optional, so a
- * status can't be read by position. */
-export function statusWordFromText(text: string): string | undefined {
-  for (const status of KNOWN_JOB_STATUSES) {
-    if (new RegExp(`\\b${status}\\b`).test(text)) return status;
-  }
-  return undefined;
-}
-
 const KNOWN_DELEGATE_SEND_STATUSES = new Set([
   "running",
   "completed",
@@ -64,9 +53,11 @@ const KNOWN_DELEGATE_SEND_STATUSES = new Set([
   "not_delivered",
 ]);
 
-/** A delegate_send footer: its text inside the brackets, and the index of its
- * line in the output. */
-export type DelegateSendFooterInfo = { text: string; index: number };
+/** A delegate_send footer: its text inside the brackets, the index of its
+ * line in the output, its status field when it has one ("running",
+ * "delivered", "not_delivered", …), and whether it says the delegate runs in
+ * the background. */
+export type DelegateSendFooterInfo = { text: string; index: number; status?: string; runningInBackground: boolean };
 
 /** The footer a delegate_send printed, when its output ends in one (after any
  * structured_result and watch lines); undefined when the output has none, or
@@ -109,14 +100,11 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   const statusField = fields[fieldIndex];
-  if (statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField)) {
-    fieldIndex += 1;
-  }
+  const status = statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField) ? statusField : undefined;
+  if (status !== undefined) fieldIndex += 1;
 
-  const runningField = fields[fieldIndex] ?? "";
-  if (runningField === "running in background") {
-    fieldIndex += 1;
-  }
+  const runningInBackground = fields[fieldIndex] === "running in background";
+  if (runningInBackground) fieldIndex += 1;
 
   const watchingField = fields[fieldIndex] ?? "";
   if (watchingField === "watching") {
@@ -130,7 +118,7 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   if (fieldIndex !== fields.length) return undefined;
-  return { text: footer, index };
+  return { text: footer, index, status, runningInBackground };
 }
 
 /** Who a send addressed: `to`, the live argument, or `target`, the retired
@@ -147,12 +135,15 @@ function sentTo(step: Pick<DelegateSendStep, "argumentsJSON">): StepWords {
 }
 
 /** "Sent a message to delegate dlg_x" · "running": the delegate it messaged
- * and, once the call settles, one status word from the footer's own text.
- * The footer's other fields (the delegate_id echo, started_job_id, "running
- * in background") are noise on one line and stay out of it. */
+ * and, once the call settles, its footer's status field in words ("not
+ * delivered"), or "running" when the footer names no status but says the
+ * delegate runs in the background. The footer's other fields (the
+ * delegate_id echo, the action, started_job_id) are noise on one line and
+ * stay out of it. */
 export function delegateSendWords(step: DelegateSendStep): StepWords {
   const footer = delegateSendFooter(step.output ?? "");
-  return withDetail(sentTo(step), footer ? statusWordFromText(footer.text) : undefined);
+  const status = footer?.status ?? (footer?.runningInBackground ? "running" : undefined);
+  return withDetail(sentTo(step), status?.replaceAll("_", " "));
 }
 
 export const delegateSendSummary = summaryOf(delegateSendWords);
