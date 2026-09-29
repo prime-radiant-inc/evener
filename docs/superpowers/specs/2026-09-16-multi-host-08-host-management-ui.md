@@ -1031,7 +1031,7 @@ both what was dropped and which fingerprint won. `remnantId` is present
 exactly when the commit staged a remnant, `remnantResolvedAt` exactly after
 `teardown-retry` or `teardown-recover` resolves it, `recoveryAttestation?`
 exactly on receipts resolved through `teardown-recover` (the `{operator,
-statement, observedAt}` attestation the recovery call validated — the audited
+statement, observedAt}` attestation the recovery call accepted and recorded — the audited
 recovery contract's durable record, pinned field-for-field by the
 protocol-shape test), `bootRecovered` (as `true`) exactly when boot
 finalized a crash-window staged-receipt marker (§5). `prunedReceipts` maps the
@@ -1349,7 +1349,7 @@ then clears the remnant in one atomic `hub.toml` write — recording the attesta
 `remnantResolvedAt` (outcome becomes `committed` with `remnantResolvedAt`) — so
 the forced clearance is an explicit audited operator decision, never a silent
 drop, and a concurrent retry can neither start inside the check nor have its
-in-progress cleanup marker cleared. The claimed attestation `operator` must equal the session's authenticated identity (crash-fencing spec §5); a mismatch refuses validation before any clearance. An attestation that fails validation or a
+in-progress cleanup marker cleared. The claimed attestation `operator` is matched against the caller's session identity only where the transport carries one (crash-fencing spec §5); this build's transport names no principal, so the attestation is recorded as given and never as verified. **Amended 2026-09-29 (unattributed posture).** The session-identity transport (real user credentials) is the named future item; when it lands, a mismatched `operator` refuses validation before any clearance. An attestation that fails validation or a
 safety check that still finds live state refuses without clearing, naming the
 blocking check, and releases the claim plus the gate. A replay of the original
 mutationId after resolution returns the
@@ -1695,9 +1695,10 @@ owner-knob family as the cleared-marker TTL (every `hub.toml` mutation and every
 boot compacts markers past either bound in the same atomic write; defaults ship
 in the implementing PR) — so a live host's recovered clearances stay bounded
 exactly like its retry markers. A `recovered-cleared` replay past the bound
-reads as `teardown-unknown-key`, never a second clearance. The attestation is validated before admission completes and the
-  safety checks in §6 run before the clearing write; any failure refuses
-  without clearing, naming the blocking check. The catalog pins the mutation
+reads as `teardown-unknown-key`, never a second clearance. The attestation is present and well-formed, and its operator bound where a
+  session identity exists, before admission completes; the safety checks in §6
+  run before the clearing write; any failure refuses without clearing, naming
+  the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
 - Mutation `concurrent-edit` refusal: conflict class, discriminator
   `concurrent-edit`, data `{stagedFingerprint: string, observedFingerprint:
