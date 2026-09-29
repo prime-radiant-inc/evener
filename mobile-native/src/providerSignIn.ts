@@ -98,7 +98,7 @@ export class ProviderSignIn {
 			...(interruptedWrite || interruptedPoll
 				? {
 						error:
-							"Sign-in could not be confirmed before the connection changed. Check credential status before trying again.",
+							"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
 					}
 				: {}),
 		});
@@ -204,7 +204,7 @@ export class ProviderSignIn {
 					phase: "expired",
 					busy: false,
 					device: undefined,
-					error: "Sign-in status could not be confirmed. Check credential status before trying again.",
+					error: "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
 				});
 			} else if (response.state === "pending") {
 				this.publish({ busy: false });
@@ -273,7 +273,8 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Sign-in completion could not be confirmed. Check credential status before submitting again.",
+					error:
+						"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
 				});
 				this.pendingOperation = null;
 			}
@@ -292,7 +293,7 @@ export class ProviderSignIn {
 			this.publish({
 				busy: false,
 				error: this.uncertain
-					? "Sign-in status could not be confirmed. Check credential status before trying again."
+					? "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again."
 					: null,
 				credentialState: status.signedIn && status.hasStoredOAuth ? "configured" : "unconfigured",
 			});
