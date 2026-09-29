@@ -1,10 +1,11 @@
 import { findEntityIds } from "@evener/appwire-client";
 import { type ReactNode, type ReactPortal, type RefObject, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { MERMAID_DIAGRAM_ATTR } from "../../../widgets/mermaid/markers";
 import { EntityRef } from "./EntityRef";
 import { segmentEntityIds } from "./entitySegments";
 
-const ENTITY_SKIP_SELECTOR = "code, pre, script, style, a, [data-entity-host]";
+const ENTITY_SKIP_SELECTOR = `code, pre, script, style, a, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`;
 
 /** Enhances only plain text owned by a rendered prose root. The original text
  * nodes stay in the tree as empty anchors so cleanup can restore React's DOM

@@ -4,7 +4,9 @@ import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
 import { useReadingType } from "./display/displayContext";
 import { externalMarkdownLink } from "./markdownLinks";
+import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
+import { MermaidDiagram } from "./MermaidDiagram";
 import { useColors } from "./ui";
 
 // Agent prose in the phone's reading font (the serif unless Display says
@@ -87,34 +89,49 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 		() => markdownStyle(colors, { body: reading.agentProse, headings: TRANSCRIPT_HEADINGS }),
 		[colors.palette, reading],
 	);
+	const segments = useMemo(() => splitNativeSegments(markdown), [markdown]);
 	return (
-		<EnrichedMarkdownText
-			markdown={markdown}
-			markdownStyle={style}
-			flavor="github"
-			selectable={selectable}
-			allowFontScaling
-			enableTaskListItemToggle={false}
-			streamingAnimation={false}
-			spoilerOverlay="solid"
-			onLinkPress={({ url }) => {
-				void openLink(url);
-			}}
-			onLinkLongPress={({ url }) => showLink(url)}
-			contextMenuItems={
-				selectable
-					? [
-							{
-								text: "Copy response",
-								onPress: () => {
-									void copyText(markdown);
-								},
-							},
-						]
-					: undefined
-			}
-			accessibilityActions={accessibilityActions}
-			onAccessibilityAction={onAccessibilityAction}
-		/>
+		<>
+			{segments.map((segment, index) =>
+				segment.kind === "mermaid" ? (
+					<MermaidDiagram
+						key={index}
+						source={segment.source}
+						accessibilityActions={accessibilityActions}
+						onAccessibilityAction={onAccessibilityAction}
+					/>
+				) : (
+					<EnrichedMarkdownText
+						key={index}
+						markdown={segment.source}
+						markdownStyle={style}
+						flavor="github"
+						selectable={selectable}
+						allowFontScaling
+						enableTaskListItemToggle={false}
+						streamingAnimation={false}
+						spoilerOverlay="solid"
+						onLinkPress={({ url }) => {
+							void openLink(url);
+						}}
+						onLinkLongPress={({ url }) => showLink(url)}
+						contextMenuItems={
+							selectable
+								? [
+										{
+											text: "Copy response",
+											onPress: () => {
+												void copyText(markdown);
+											},
+										},
+									]
+								: undefined
+						}
+						accessibilityActions={accessibilityActions}
+						onAccessibilityAction={onAccessibilityAction}
+					/>
+				),
+			)}
+		</>
 	);
 });

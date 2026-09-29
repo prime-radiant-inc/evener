@@ -231,7 +231,7 @@ func TestBrowserGateSuccessIsConcise(t *testing.T) {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
 	if tg.stdout.String() != want.String() || tg.stderr.Len() != 0 {
-		t.Fatalf("stdout = %q, stderr = %q; want only the seven verdicts", tg.stdout.String(), tg.stderr.String())
+		t.Fatalf("stdout = %q, stderr = %q; want only the eight verdicts", tg.stdout.String(), tg.stderr.String())
 	}
 }
 

@@ -62,6 +62,7 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));

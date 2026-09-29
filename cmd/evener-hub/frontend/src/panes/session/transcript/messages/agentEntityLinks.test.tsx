@@ -1,7 +1,7 @@
 import type { ActivityJob, ActivityTree, ThreadModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { StrictMode, useRef } from "react";
+import { StrictMode, useCallback, useRef } from "react";
 import { afterEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
@@ -120,6 +120,26 @@ function ExistingEntityHostHarness() {
         </span>
         <span>{` outside ${JOB}`}</span>
       </div>
+      {portals}
+    </>
+  );
+}
+
+const DIAGRAM_EXCLUSION_HTML = `<p>plain ${JOB} text</p><div data-mermaid-diagram=""><svg><text>${JOB}</text></svg></div>`;
+
+function DiagramExclusionHarness() {
+  const root = useRef<HTMLDivElement>(null);
+  const portals = useEntityTextEnhancement(root, []);
+  // Hand-built DOM (the walker's exclusion, not a real mermaid render): written
+  // in a stable ref callback so it is present before the layout effect and is
+  // not rewritten when setPortals re-renders this harness.
+  const mountRoot = useCallback((node: HTMLDivElement | null) => {
+    root.current = node;
+    if (node) node.innerHTML = DIAGRAM_EXCLUSION_HTML;
+  }, []);
+  return (
+    <>
+      <div ref={mountRoot} data-testid="diagram-exclusion-root" />
       {portals}
     </>
   );
@@ -261,5 +281,18 @@ test("a pre-existing entity host subtree is not wrapped", () => {
   expect(existingHost.textContent).toBe(JOB);
   expect(existingHost.querySelector('[data-testid="entity-trigger"]')).toBeNull();
   expect(root.querySelectorAll("[data-entity-host]")).toHaveLength(2);
+  expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
+});
+
+test("never enhances entity ids inside a diagram", () => {
+  render(
+    <TranscriptRenderProvider thread={thread} entities={entities}>
+      <DiagramExclusionHarness />
+    </TranscriptRenderProvider>,
+  );
+
+  const root = screen.getByTestId("diagram-exclusion-root");
+  expect(root.querySelector("[data-mermaid-diagram] [data-entity-host]")).toBeNull();
+  expect(root.querySelector("p [data-entity-host]")).not.toBeNull();
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
 });
