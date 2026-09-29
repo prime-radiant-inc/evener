@@ -45,7 +45,7 @@ export type BuiltinRunOutcome = { ok: true } | { ok: false; message: string };
 // runBuiltinCommand executes the match and reports back whether the
 // composer should clear its draft (success) or preserve it (failure) - the
 // FEEDBACK itself is a toast plus whatever live chrome the command's own
-// mutation already drives (the goal chip, the status row): most built-ins
+// mutation already drives (the CurrentWork goal row, the status row): most built-ins
 // (goal, compact, clear, steer, queue, aside, drain-as-steer, interrupt,
 // tasks, status, project) push no toast of their own and rely entirely on
 // that live chrome, while a few (shutdown, model, reasoning-effort, upgrade)
