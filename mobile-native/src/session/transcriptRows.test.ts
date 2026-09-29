@@ -320,9 +320,9 @@ describe("a run's one line", () => {
 			steps: 12,
 			durationMs: 480_000,
 			parts: [
-				{ family: "read", text: "read 6 files", failed: 0 },
-				{ family: "shell", text: "ran go test", failed: 2 },
-				{ family: "edit", text: "edited 3 files", failed: 0 },
+				{ key: "read", family: "read", text: "read 6 files", failed: 0 },
+				{ key: "shell", family: "shell", text: "ran go test", failed: 2 },
+				{ key: "edit", family: "edit", text: "edited 3 files", failed: 0 },
 			],
 			failed: 2,
 		});
@@ -332,12 +332,14 @@ describe("a run's one line", () => {
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
 		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
 		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
-		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
+		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
+			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
+		]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no
@@ -401,9 +403,33 @@ describe("a run's one line", () => {
 				step("a", "web_fetch"),
 				step("b", "task_list"),
 				step("c", "web_search"),
-				step("d", "use_skill"),
+				step("d", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "brainstorming" }) } }),
 			]).parts.map((part) => part.text),
-		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
+		).toEqual(["fetched 1 page", "used task list once", "searched the web once", "used skill brainstorming"]);
+	});
+
+	// Never "N other steps": MCP tools share one part, which names their
+	// server when there is one, and each tool no summary covers gets a part
+	// of its own in words.
+	it("names the MCP tools and each tool no summary covers", () => {
+		expect(
+			runSummary([
+				step("a", "github__create_issue"),
+				step("b", "github__list_issues"),
+				step("c", "linear_app__list_issues"),
+				step("d", "compact_context"),
+				step("e", "compact_context"),
+				step("f", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "a" }) } }),
+				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
+			]).parts.map((part) => [part.key, part.text]),
+		).toEqual([
+			["mcp", "used 3 MCP tools"],
+			["tool:compact context", "used compact context 2 times"],
+			["skill", "used 2 skills"],
+		]);
+		expect(
+			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
+		).toEqual(["used github 2 times"]);
 	});
 });
 

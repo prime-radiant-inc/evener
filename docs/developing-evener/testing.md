@@ -369,6 +369,59 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_CONTAINER=1` — the live deploy pipeline against a disposable container host
+
+The deploy pipeline kept after comp08 passes 1–3 (the crash-fencing stack's
+removal): an alpine+sshd Docker container stands in for the disposable host (the
+accepted D-7 plan), and the check drives the hub's own AppWire client through the
+pipeline's whole wire path — `evener/host/add` → `evener/host/attach` (which
+provisions the bare host) → `evener/host/plan` (mints the confirmation token) →
+`evener/host/deploy` → `evener/host/restart` → `evener/host/operations`. It
+asserts the operation records' pending → running → complete lifecycle and
+identity pair, the token's single use (a replay refuses the typed `token-missing`
+arm), the restart's host-side process replacement (the same endpoint serves the
+same stamped build from a provably later process start), and the host's own
+`launch-check` reporting the controller's build. It also pins the
+simplification's live proof: the container carries no evener-fence helper, no
+claim primitive, and no fencing state, and the happy path carries no
+fencing-flavoured refusal or prose.
+
+**This gate writes to the host** — it creates its own run-target directory there
+and starts a hub from it — which is why it needs `EVENER_SSH_E2E_DEPLOY=1` on top
+of `EVENER_SSH_E2E=1`, like the sibling deploy check. It skips under `-short`.
+`EVENER_SSH_E2E_HOST` targets an existing disposable host instead of the
+container (the override path) and skips the container; `EVENER_SSH_E2E_USER`
+sets that entry's ssh user, as in the sibling checks.
+
+Docker: the check caches one small image, `evener-e2e-ssh:local` (alpine plus
+openssh, curl, lsof, and procps — the host tools the product's ssh paths
+invoke), and removes its container when the run finishes; remove the cached
+image with `docker rmi evener-e2e-ssh:local`. When Docker or its daemon is
+unavailable (and no `EVENER_SSH_E2E_HOST` is set), the check skips with that
+reason; so does a `DOCKER_HOST` — or an active docker context — naming a
+non-local daemon, because the check publishes the container's sshd on this
+controller's `127.0.0.1` and cannot reach a remote daemon's port.
+
+How the container is reached: a per-run ed25519 key authorized in the container,
+the container's sshd published on a per-run loopback port, and a per-run
+`ssh_config` naming the alias. The product's plain `ssh` invocations are
+redirected to it by a per-run `ssh` shim placed first on `PATH`, because OpenSSH
+resolves its user config from the passwd-database home and NOT `$HOME` — a config
+in the controller's isolated HOME (the convention the other live checks use for
+hub state) would never be consulted. The shim hands the per-run config to exactly
+the alias's invocations and passes every other invocation through unchanged, so
+no product code changes.
+
+Prerequisites: Docker with a reachable daemon (or `EVENER_SSH_E2E_HOST`), a
+**clean** checkout (the controller's build identity is stamped from `HEAD`, and
+the check skips on a dirty tree), and the Go toolchain. Only the container's
+`linux/amd64` target is supported for the Docker path; other targets skip.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostDeployPipelineContainerE2E' -count=1 -v
+~~~
+
 ### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
 
 The credential push's criterion (component 07c,

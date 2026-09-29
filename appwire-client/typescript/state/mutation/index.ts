@@ -74,7 +74,7 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { createClientIdentity } from "./records";
+export { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
 export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";

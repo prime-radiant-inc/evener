@@ -14,7 +14,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { rowDisclosureIds } from "./disclosureKeys";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
-import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
+import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget, stepWords } from "./transcriptRows";
 
 type Run = Extract<TimelineRow, { kind: "run" }>;
 
@@ -28,10 +28,16 @@ interface StepPlace {
 function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: RunStep } & StepPlace) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const intent = step.detail.description || step.label;
+	// The model's own intent for the step, or else the step's words (the
+	// package's toolStepSummary), which already name what it acted on.
+	const ownIntent = step.detail.description;
+	const intent = ownIntent || stepWords(step);
 	// Rows re-render on every publish; keyed on the arguments text, a settled
 	// step parses its arguments (up to 64 KiB) once rather than every time.
-	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
+	const target = useMemo(
+		() => (ownIntent ? stepTarget(step.label, step.detail.arguments) : undefined),
+		[ownIntent, step.label, step.detail.arguments],
+	);
 	const evidence = useStepEvidence(step);
 	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
 	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
@@ -134,7 +140,7 @@ export function RunRow({
 			{live ? null : open ? "▾ " : "▸ "}
 			{`${runHeadText(summary)} · `}
 			{summary.parts.map((part, index) => (
-				<Fragment key={part.family}>
+				<Fragment key={part.key}>
 					{index > 0 ? ", " : null}
 					{part.text}
 					{part.failed > 0 ? <Text style={{ color: palette.dangerInk }}>{runPartFailedText(part)}</Text> : null}

@@ -96,7 +96,7 @@ test("web_search: falls back to the `q` arg key when `query` is absent", () => {
   const d = toolRendererFor("web_search");
   const args = JSON.stringify({ q: "fallback query" });
   expect(d.summary(item({ toolName: "web_search", argumentsJSON: args, output: "" }))).toBe(
-    'Searched the web for "fallback query" · 0 results',
+    'Searched the web for "fallback query"',
   );
 });
 

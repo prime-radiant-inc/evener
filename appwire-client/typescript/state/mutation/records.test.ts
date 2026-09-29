@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { createClientIdentity } from "./records";
+import type { MutationRecord } from "./records";
+import { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
 
 function fakeStorage(
   overrides: { getItem?: (key: string) => string | null; setItem?: (key: string, value: string) => void } = {},
@@ -26,6 +27,62 @@ function getRandomValuesSource() {
 function scriptedRandomUUIDSource(id: string) {
   return { randomUUID: () => id };
 }
+
+// A settled source record with every field the accepted whitelist names, plus
+// the optional outbox-only fields a real source may still carry.
+function settledSource(overrides: Record<string, unknown> = {}): MutationRecord {
+  return {
+    version: 1,
+    clientMutationId: "cm-1",
+    originClientId: "client-a",
+    targetRef: "local:1",
+    threadId: "thread-1",
+    instanceId: "instance-1",
+    method: "turn/queue",
+    payload: { ref: "local:1" },
+    attachments: [],
+    optimisticDisplay: { input: [{ type: "text", text: "hi" }] },
+    composerText: "hi",
+    intentSequence: 3,
+    createdAt: 42,
+    ...overrides,
+  };
+}
+
+test("acceptedRecord carries the accepted whitelist and drops outbox/recovery-only fields", () => {
+  const accepted = acceptedRecord(
+    settledSource({ state: "submitting", attempted: true, recoveryKind: "rejected", recoveryReason: "nope" }),
+  );
+  expect(accepted).toEqual({
+    version: 1,
+    clientMutationId: "cm-1",
+    originClientId: "client-a",
+    intentSequence: 3,
+    createdAt: 42,
+    targetRef: "local:1",
+    threadId: "thread-1",
+    instanceId: "instance-1",
+    method: "turn/queue",
+    payload: { ref: "local:1" },
+    attachments: [],
+    optimisticDisplay: { input: [{ type: "text", text: "hi" }] },
+    state: "accepted",
+  });
+  expect(accepted).not.toHaveProperty("attempted");
+  expect(accepted).not.toHaveProperty("recoveryKind");
+  expect(accepted).not.toHaveProperty("recoveryReason");
+  expect(accepted).not.toHaveProperty("composerText");
+});
+
+test("carriesOptimisticInput reports an input array and nothing else", () => {
+  expect(carriesOptimisticInput(settledSource())).toBe(true);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: { input: [] } }))).toBe(true);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: { text: "x" } }))).toBe(false);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: { input: "not-array" } }))).toBe(false);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: null }))).toBe(false);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: undefined }))).toBe(false);
+  expect(carriesOptimisticInput(settledSource({ optimisticDisplay: {} }))).toBe(false);
+});
 
 test("two instances over two storages keep separate identities", () => {
   const a = createClientIdentity(fakeStorage(), scriptedRandomUUIDSource("11111111-1111-4111-8111-111111111111"));
