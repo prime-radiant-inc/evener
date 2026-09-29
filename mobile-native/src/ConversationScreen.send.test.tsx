@@ -347,6 +347,7 @@ function hubClient(
 	readLatencyMs = 0,
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
+	olderPage: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -382,7 +383,10 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
-			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "thread/turns/list") {
+				await olderPage;
+				return { data: olderTurns };
+			}
 			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
@@ -438,6 +442,9 @@ async function mount(
 		settled = true,
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
+		// Holds the older page until the promise settles, for what happens
+		// while one is on its way.
+		olderPage = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -445,7 +452,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -1314,6 +1321,39 @@ describe("following the live end (spec 8.2)", () => {
 		expect(pill(tree)).toBeUndefined();
 	});
 
+	// Tapping "↓ new" follows again, but the cap trims the top only once the
+	// list reaches the end: trimming while it still travels would move what it
+	// passes.
+	it("trims past the cap only once the pill's scroll reaches the end", async () => {
+		const served = working("ref-follow-trim");
+		const turns = (served as unknown as { turns: { items: unknown[] }[] }).turns;
+		turns[0].items = Array.from({ length: 510 }, (_, i) => ({
+			id: `u-${i}`,
+			turnId: "turn_1",
+			type: "userMessage",
+			status: "completed",
+			text: `message ${i}`,
+			transcriptKey: `turn_1:${i}:0`,
+			position: { entry: i, item: 0 },
+		}));
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, pageBefore: true };
+		const { tree, hub } = await mount(served);
+		const rows = () => (list(tree).props.data as unknown[]).length;
+		drag(tree, 100);
+		// A reply lands below while you read above: nothing is trimmed, so the
+		// session's rows past the cap are all there.
+		stream(hub, served, "s-trim");
+		const grown = rows();
+		const tap = pill(tree);
+		if (!tap) throw new Error("no new-below pill");
+		act(() => tap.props.onPress());
+		// The pill scrolls toward the end; nothing is trimmed on the way.
+		expect(rows()).toBe(grown);
+		scrollTo(tree, END);
+		expect(rows()).toBeLessThan(grown);
+	});
+
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
 		const { tree, hub } = await mount(served);
@@ -1447,6 +1487,13 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toEqual([]);
 });
 
+it("moves the Session with the keyboard through the keyboard controller", async () => {
+	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
+	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
+	expect(avoiding).toHaveLength(1);
+	expect(avoiding[0]?.props).toMatchObject({ behavior: "padding", keyboardVerticalOffset: 64 });
+});
+
 // A short transcript rests just above the composer (spec 8.5), not at the top
 // with the page's empty middle between it and the bar.
 it("rests a short transcript's end just above the composer", async () => {
@@ -1485,6 +1532,40 @@ it("loads older history as you drag near the top", async () => {
 	expect(
 		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 	).toEqual(["cursor-1"]);
+});
+
+// A long session watched from its start: its first read held it all, so
+// there is no cursor, and the 500-row cap trimmed its top while you followed
+// the live end. Scrolling up asks for the trimmed rows by the oldest one kept.
+it("pages the rows the cap trimmed back as you drag near the top", async () => {
+	const served = thread("ref-trimmed", "idle");
+	const items = Array.from({ length: 600 }, (_, i) => ({
+		id: `u-${i}`,
+		turnId: "turn_1",
+		type: "userMessage",
+		status: "completed",
+		text: `message ${i}`,
+		transcriptKey: `turn_1:${i}:0`,
+		position: { entry: i, item: 0 },
+	}));
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ id: "turn_1", status: "completed", itemsView: "default", items },
+	];
+	// The hub's read says it pages this thread from a before position.
+	const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+	evener.capabilities = { ...evener.capabilities, pageBefore: true };
+	const { tree, hub } = await mount(served);
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	scrollTo(tree, 100);
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	const pages = hub.requests.filter((request) => request.method === "thread/turns/list").map((r) => r.params);
+	expect(pages).toHaveLength(1);
+	expect(pages[0]).toMatchObject({ ref: "ref-trimmed", before: { entry: 100, item: 0 } });
+	expect(pages[0]).not.toHaveProperty("cursor");
 });
 
 it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
@@ -2806,6 +2887,93 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
 		expect(renderedText(tree)).toContain("1 of 3");
+	});
+
+	describe("following the live end while find pages older history", () => {
+		// Whether new content pulls the list to its end. The size keeps the
+		// unmeasured test list (a 0pt viewport at offset 0) at its end.
+		const followsTheEnd = (tree: ReactTestRenderer) => {
+			flatListCalls.length = 0;
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 0));
+			return flatListCalls.some((call) => call.method === "scrollToEnd");
+		};
+		const unrelated = [askReplyTurn("turn_0", "Unrelated?", "Yes.")];
+
+		it("leaves the end while a page is on its way, and follows again when find closes", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree, hub } = await mount(findTurns("ref-find-close"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(false);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(true);
+			release();
+			await settle();
+		});
+
+		it("stays off the end when find closes after the list moved away from it", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree } = await mount(findTurns("ref-find-moved"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			act(() =>
+				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+			);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 4_000));
+			scrollTo(tree, 1_000);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(false);
+			release();
+			await settle();
+		});
+
+		it("follows again when a search reaches the start of history with no match", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-miss"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(true);
+		});
+
+		it("stays with a match it paged back to", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-paged-match"), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0", "Is it flaky?", "Sometimes.")],
+			});
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			await search(tree, "Is it flaky");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(flatListCalls.filter((call) => call.method === "scrollToIndex")).not.toEqual([]);
+			expect(followsTheEnd(tree)).toBe(false);
+		});
+
+		it("asks for no page when the match is already loaded", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-loaded"), { olderCursor: "cursor-1" });
+			chooseMenu("Find in session");
+			await search(tree, "settle");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+		});
 	});
 
 	it("says there are no older matches once history ends", async () => {

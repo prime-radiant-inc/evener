@@ -69,6 +69,7 @@ function valid(value: unknown): value is ReaderAnchor {
 }
 export function readerKey(row: TimelineRow): string {
 	if (row.kind === "details" || row.kind === "time") return row.id;
+	if (row.kind === "assistant" && row.callKey) return row.callKey;
 	if (row.kind === "assistant" && row.roundKey) return row.roundKey;
 	return row.transcriptKey ?? row.id;
 }
