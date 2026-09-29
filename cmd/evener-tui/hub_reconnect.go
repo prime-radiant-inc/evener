@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // hubDialer opens a fresh hub connection together with the ordered frame feed
@@ -55,7 +56,7 @@ func (m *hubModel) hubConnectionLost() tea.Cmd {
 		return nil
 	}
 	m.addNotice(m.connectionNotice("the hub's notification stream ended", "Reconnecting…"))
-	return reconnectHub(m.dialHub, 1, 0)
+	return reconnectHub(m.reconnectContext(), m.dialHub, 1, 0)
 }
 
 // applyHubReconnect folds one attempt's outcome. Retries do not give up: a hub
@@ -63,11 +64,17 @@ func (m *hubModel) hubConnectionLost() tea.Cmd {
 // trying looks exactly like the silent failure this whole path exists to end.
 func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	if msg.err != nil {
+		ctx := m.reconnectContext()
+		// The TUI exited and canceled its lifetime context: there is no model
+		// to reconnect for, so do not spin the loop back up.
+		if ctx.Err() != nil {
+			return nil
+		}
 		attempt := msg.attempt + 1
 		m.reconnectAttempt = attempt
 		delay := hubReconnectDelay(attempt)
 		m.addNotice(m.connectionNotice(msg.err.Error(), fmt.Sprintf("Retrying in %s (attempt %d).", delay, attempt)))
-		return reconnectHub(m.dialHub, attempt, delay)
+		return reconnectHub(ctx, m.dialHub, attempt, delay)
 	}
 	if m.client != nil {
 		_ = m.client.Close()
@@ -134,12 +141,14 @@ func (m hubModel) connectionNotice(reason, nextAction string) noticePanel {
 	}
 }
 
-func reconnectHub(dial hubDialer, attempt int, delay time.Duration) tea.Cmd {
+func reconnectHub(ctx context.Context, dial hubDialer, attempt int, delay time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		if delay > 0 {
-			time.Sleep(delay)
+		if err := llm.DefaultSleep(ctx, delay); err != nil {
+			// The TUI exited while this retry was parked; report the
+			// cancellation instead of dialing after the model is gone.
+			return hubReconnectMsg{attempt: attempt, err: err}
 		}
-		client, frames, err := dial(context.Background())
+		client, frames, err := dial(ctx)
 		return hubReconnectMsg{client: client, frames: frames, attempt: attempt, err: err}
 	}
 }
