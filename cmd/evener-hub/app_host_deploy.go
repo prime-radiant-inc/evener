@@ -473,6 +473,15 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
 			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan))
 	}
+	if active, ok := errors.AsType[*hostfence.AttemptActiveError](err); ok {
+		// An active bootstrap attempt (the claim arbiter found another claimant)
+		// is the same transient busy family: the host is fenced until the holder
+		// completes, and the client retries. Never `fencing-helper-absent`, since
+		// the helper is not the problem, and never `probe-failed`.
+		return appwire.HostBusyTransient(fmt.Sprintf(
+			"host %q: a bootstrap attempt at epoch %s/%d is active, so this attempt refused: %v",
+			name, active.Epoch.BootID, active.Epoch.OpSeq, active))
+	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)

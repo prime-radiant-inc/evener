@@ -267,6 +267,28 @@ func (e *AttemptOrphanError) Error() string {
 		e.Host, e.Epoch.BootID, e.Epoch.OpSeq, detail)
 }
 
+// AttemptActiveError reports §6:135's claim arbiter finding a live attempt this
+// caller did not win: another attempt owns the fence and may be mid-delivery, so
+// this caller must not deliver (it lost) and must not open the fenced path
+// either (the owner's remote work may still be starting or running). It rides
+// the transient busy class — retry with backoff — and is deliberately neither
+// `fencing-helper-absent` (the helper is not the problem) nor `probe-failed`.
+type AttemptActiveError struct {
+	Host   string
+	Epoch  Epoch
+	Detail string
+}
+
+// Error renders the refusal naming the host and the attempt epoch.
+func (e *AttemptActiveError) Error() string {
+	detail := e.Detail
+	if detail == "" {
+		detail = "another attempt holds the host's bootstrap claim"
+	}
+	return fmt.Sprintf("host %q: bootstrap attempt %s/%d is active: %s; retry once it completes",
+		e.Host, e.Epoch.BootID, e.Epoch.OpSeq, detail)
+}
+
 // Bootstrap runs §6's first-contact attempt for the host's current record. It
 // decides from the store's record (re-read at entry, so a retry racing the
 // finalize replays under dedup rather than delivering again, §6:139); on an
@@ -386,8 +408,21 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		}
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
 	}
-	if !report.Bare() {
-		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaim(report))
+	if !report.Claimed {
+		// The claim arbiter found another claimant: an attempt is active on the
+		// host and this one lost. The helper is not absent — reporting the absent
+		// class here would tell the operator to provision out-of-band while
+		// another attempt is mid-flight — so the honest class is the transient
+		// busy one (retry with backoff).
+		return BootstrapOutcome{}, &AttemptActiveError{
+			Host: req.Host, Epoch: req.Epoch,
+			Detail: "another attempt holds the host's bootstrap claim (a lost claim race)",
+		}
+	}
+	if len(report.ForeignProcesses) > 0 || len(report.ForeignGuardHolders) > 0 {
+		// §6:135: any live foreign presence refuses fail-closed with the typed
+		// absent class, and the exemption never degrades to overwrite.
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeForeignPresence(report))
 	}
 	if claim == nil {
 		// A winning report with no held claim is a point-in-time answer, not the
@@ -401,7 +436,13 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	// bytes inside (§6:131), unfenced but under the won claim.
 	step("deliver")
 	if err := runDelivery(ctx, req); err != nil {
-		return BootstrapOutcome{}, err
+		if ctx.Err() != nil || errors.Is(err, errNoDeliveryRunner) {
+			return BootstrapOutcome{}, err
+		}
+		// A delivery that could not run the helper at all — a transport failure
+		// or a non-zero exit — is §6:135's absent class, so a caller classifies
+		// it as the conflict-class refusal rather than a generic/probe error.
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the helper delivery failed: "+err.Error())
 	}
 
 	// The delivered helper must pass §6's own read-only presence/version gate
@@ -410,7 +451,20 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	step("verify")
 	wrapper := Wrapper{Runner: req.Runner, Host: req.Host, Path: req.Path}
 	if _, err := wrapper.Check(ctx); err != nil {
-		return BootstrapOutcome{}, err
+		switch {
+		case ctx.Err() != nil:
+			// The caller's own context ended: raw, as everywhere else.
+			return BootstrapOutcome{}, err
+		case helperGateRefusal(err):
+			// The gate's own typed refusal (absent/untrusted) passes through with
+			// its exact class and data, never double-wrapped.
+			return BootstrapOutcome{}, err
+		default:
+			// The verify round trip read nothing (a transport failure): §6:135's
+			// absent class, so a caller classifies it as the conflict-class
+			// refusal and never maps it to `probe-failed` (§8:161-162).
+			return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the delivered helper could not be verified: "+err.Error())
+		}
 	}
 
 	// §6:137 — converge helperInstalled in the same finalizing atomic write, or
@@ -427,24 +481,82 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 }
 
 // recoverFencedAttempt runs §6:139's recovery for a host carrying the attempt
-// fence without helperInstalled: it re-probes the remote read-only and verifies
-// no bootstrapped process from the crashed attempt is live before the next
-// mutation. The probe names the epoch the fence persisted — the crashed
-// attempt's own epoch, not the next attempt's — so a restart cannot make the
-// probe miss the crashed attempt's process. A live process refuses with
-// AttemptOrphanError; an unidentifiable attempt (a fence with no epoch) or an
-// unavailable verification refuses fail-closed with the typed
-// fencing-helper-absent, the class §8:162 gives the unverifiable
-// bootstrap-guard claim. Only a verified-gone attempt opens the fenced path.
-func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Provisioning) (BootstrapOutcome, error) {
-	if req.Probe == nil {
-		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
-			"the crashed bootstrap attempt's process cannot be verified: the host carries no read-only attempt probe; provision the helper out-of-band and repair the host through the one-time migration path")
-	}
+// fence without helperInstalled. It is NOT the read-only step its first
+// description said: recovery's first step is the §6:135 claim arbiter, because
+// the fence record alone cannot tell a crashed attempt's pre-delivery window
+// from a live attempt about to deliver, and opening the fenced path while an
+// attempt is active would overlap it. Recovery therefore:
+//
+//  1. refuses an unidentifiable attempt (a fence with no epoch) as absent;
+//  2. requires the claim-plus-quiesce primitive and refuses without it as
+//     absent (an active attempt cannot be excluded);
+//  3. tries the claim. A lost claim (Claimed=false) or any non-bare answer means
+//     an attempt is active or foreign work lives: refuse with AttemptActiveError
+//     (the transient busy class), never a clean fenced/provisioned outcome;
+//  4. holding the won claim across the read-only re-probe and the decision,
+//     probes the epoch the fence persisted, and releases on every path.
+//
+// The probe names the fence's own attempt epoch, not the request's, so a restart
+// cannot make it miss the crashed attempt's process. A live process refuses with
+// AttemptOrphanError; an unverifiable one refuses as absent (the class §8:162
+// gives the unverifiable bootstrap-guard claim); a converged record replays as
+// provisioned. Only a verified-gone attempt opens the fenced path.
+//
+// The claim is the arbiter the spec already defines ("exactly one concurrent
+// claimant wins; a loser reads false", and the claim is "held for the caller's
+// whole delivery"), so an owner parked between the fence write and its claim is
+// caught by step 3 on either side: whichever of the owner and the recoverer
+// claims first wins, and the other reads the honest active/busy class.
+func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Provisioning) (outcome BootstrapOutcome, err error) {
 	attempt := record.AttemptEpoch
 	if attempt.IsZero() {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the attempt fence records no epoch, so the crashed attempt cannot be identified; repair the host out-of-band through the one-time migration path")
+	}
+	if req.Quiesce == nil {
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the host carries no pre-existing trusted atomic claim-plus-quiesce primitive, so an active bootstrap attempt cannot be excluded from recovery; provision the helper out-of-band and repair the host through the one-time migration path")
+	}
+	report, claim, err := req.Quiesce.ClaimAndQuiesce(ctx, req.Epoch)
+	if claim != nil {
+		defer func() {
+			if releaseErr := claim.Release(context.WithoutCancel(ctx)); releaseErr != nil {
+				outcome.ReleaseErr = releaseErr
+				if req.Logf != nil {
+					req.Logf("bootstrap: releasing the recovery claim for host %q failed: %v", req.Host, releaseErr)
+				}
+				if err == nil {
+					err = releaseErr
+				} else {
+					err = errors.Join(err, releaseErr)
+				}
+			}
+		}()
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return BootstrapOutcome{}, err
+		}
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
+	}
+	if !report.Bare() {
+		// Not bare means either another claimant holds the claim (an active
+		// attempt) or foreign work lives. Recovery must not conclude while an
+		// attempt may be active, so it refuses with the honest busy class rather
+		// than reporting a fenced posture.
+		detail := "an attempt holds the host's bootstrap claim"
+		if report.Claimed {
+			detail = describeForeignPresence(report)
+		}
+		return BootstrapOutcome{}, &AttemptActiveError{Host: req.Host, Epoch: attempt, Detail: detail}
+	}
+	if claim == nil {
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the host's claim-plus-quiesce primitive returned no held claim, so recovery cannot exclude an active attempt")
+	}
+	if req.Probe == nil {
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the crashed bootstrap attempt's process cannot be verified: the host carries no read-only attempt probe; repair the host through the one-time migration path")
 	}
 	live, err := req.Probe.BootstrappedProcessLive(ctx, attempt)
 	if err != nil {
@@ -472,13 +584,17 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 	return BootstrapOutcome{Kind: BootstrapFenced, Provisioning: fresh}, nil
 }
 
+// errNoDeliveryRunner reports a Bootstrap request with no remote runner: a
+// caller/configuration error, never a helper-absent refusal.
+var errNoDeliveryRunner = errors.New("hostfence: bootstrap delivery needs a remote runner")
+
 // runDelivery executes the one exempt delivery step through the remote runner.
 // It is a single remote command: decode the embedded helper bytes to a temp
 // path, make it executable, and move it into place atomically. A non-zero exit
 // is the command's own failure and leaves the attempt fence standing.
 func runDelivery(ctx context.Context, req BootstrapRequest) error {
 	if req.Runner == nil {
-		return errors.New("hostfence: bootstrap delivery needs a remote runner")
+		return errNoDeliveryRunner
 	}
 	command, err := deliveryCommand(Wrapper{Path: req.Path}.remotePath())
 	if err != nil {
@@ -532,11 +648,17 @@ func helperAbsentRefusal(host, detail string) error {
 	return fmt.Errorf("%w (%s)", gate, detail)
 }
 
-// describeClaim renders a non-bare claim report for the refusal's detail.
-func describeClaim(report QuiesceReport) string {
+// helperGateRefusal reports whether err already is the helper gate's own typed
+// refusal, which a caller passes through rather than wraps again.
+func helperGateRefusal(err error) bool {
+	_, ok := errors.AsType[*HelperGateError](err)
+	return ok
+}
+
+// describeForeignPresence renders the foreign presence a bare-claiming report
+// observed, for the absent refusal's detail.
+func describeForeignPresence(report QuiesceReport) string {
 	switch {
-	case !report.Claimed:
-		return "the host's bootstrap claim was lost to another claimant (a lost claim race)"
 	case len(report.ForeignProcesses) > 0:
 		return "a foreign process is live outside the claim: " + strings.Join(report.ForeignProcesses, ", ")
 	default:

@@ -119,6 +119,10 @@ func (q *scriptedQuiesce) ClaimAndQuiesce(_ context.Context, epoch Epoch) (Quies
 // bareClaim is the winning claim with no foreign presence.
 func bareClaim() QuiesceReport { return QuiesceReport{Claimed: true} }
 
+// bareQuiesce is a claim primitive that wins with no foreign presence and holds
+// a fresh claim.
+func bareQuiesce() *scriptedQuiesce { return &scriptedQuiesce{report: bareClaim()} }
+
 // scriptedProbe is the recovery re-probe's scripted answer.
 type scriptedProbe struct {
 	live  bool
@@ -249,17 +253,20 @@ func TestBootstrapRefusesWithoutClaimPrimitive(t *testing.T) {
 	}
 }
 
-// TestBootstrapRefusesLostClaimRaceAndForeignPresence pins §6:135's other two
-// refusal arms: a lost claim race and any live foreign process or guard holder
-// each refuse fail-closed with the typed fencing-helper-absent, and never
-// degrade to overwrite.
+// TestBootstrapRefusesLostClaimRaceAndForeignPresence pins §6:135's refusal
+// arms: a lost claim race is the honest transient busy class (an attempt is
+// active — reporting the absent class would send the operator out-of-band while
+// another attempt is mid-flight), while any live foreign process or guard
+// holder refuses fail-closed with the typed fencing-helper-absent, and neither
+// degrades to overwrite.
 func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 	cases := []struct {
-		name   string
-		report QuiesceReport
-		err    error
+		name     string
+		report   QuiesceReport
+		err      error
+		wantBusy bool
 	}{
-		{name: "lost claim race", report: QuiesceReport{Claimed: false}},
+		{name: "lost claim race", report: QuiesceReport{Claimed: false}, wantBusy: true},
 		{name: "foreign process", report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}},
 		{name: "foreign guard holder", report: QuiesceReport{Claimed: true, ForeignGuardHolders: []string{"boot-9"}}},
 		{name: "primitive failed", err: errors.New("claim primitive unavailable")},
@@ -272,9 +279,15 @@ func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 				Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 				Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: tc.report, err: tc.err},
 			})
-			var gate *HelperGateError
-			if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
-				t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+			if tc.wantBusy {
+				if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
+					t.Fatalf("err = %v, want an AttemptActiveError for the lost claim race", err)
+				}
+			} else {
+				var gate *HelperGateError
+				if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+					t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+				}
 			}
 			if len(runner.calls) != 0 {
 				t.Fatalf("remote calls = %v, want none after a refused claim", runner.calls)
@@ -400,8 +413,8 @@ func TestBootstrapCrashWindowBeforeFirstSideEffect(t *testing.T) {
 	if probe.calls != 1 {
 		t.Fatalf("recovery probes = %d, want 1", probe.calls)
 	}
-	if retryQuiesce.calls != 0 || len(retryRunner.calls) != 0 {
-		t.Fatalf("recovery touched the remote: quiesce=%d runner=%v", retryQuiesce.calls, retryRunner.calls)
+	if retryQuiesce.calls != 1 || len(retryRunner.calls) != 0 {
+		t.Fatalf("recovery claims once and never delivers: quiesce=%d runner=%v", retryQuiesce.calls, retryRunner.calls)
 	}
 	if len(store.writes) != 1 {
 		t.Fatalf("store writes = %v, want no second attempt fence", store.writes)
@@ -432,14 +445,15 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with a live bootstrapped process: refuse, never mutate.
 	live := &scriptedProbe{live: true}
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: nil, Probe: live,
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: live,
 	})
 	if _, ok := errors.AsType[*AttemptOrphanError](err); !ok {
 		t.Fatalf("err = %v, want an *AttemptOrphanError for the live crashed-attempt process", err)
 	}
-	// Recovery with no probe primitive at all: unverifiable, refused as absent.
+	// Recovery with a claim but no probe primitive: unverifiable, refused as
+	// absent.
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: nil, Probe: nil,
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: nil,
 	})
 	var gate *HelperGateError
 	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
@@ -448,7 +462,7 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with the process confirmed gone: the fenced path opens.
 	clearProbe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: nil, Probe: clearProbe,
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: clearProbe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
 		t.Fatalf("clear recovery = (%v, %v), want BootstrapFenced", outcome.Kind, err)
@@ -584,7 +598,9 @@ func TestDeliveryCommandInstallsTheEmbeddedHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delivery command failed: %v\n%s", err, out)
 	}
-	installed := filepath.Join(home, ".local", "share", "evener", "fence")
+	// Derive the expected path from the constant the delivery uses, so a changed
+	// install path cannot leave the test asserting a stale one.
+	installed := filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(HelperInstallPath, "~/")))
 	info, err := os.Stat(installed)
 	if err != nil {
 		t.Fatalf("installed helper: %v", err)
@@ -597,7 +613,7 @@ func TestDeliveryCommandInstallsTheEmbeddedHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installed helper version: %v", err)
 	}
-	if got := strings.TrimSpace(string(versionOut)); got != "1" {
+	if got := strings.TrimSpace(string(versionOut)); got != strconv.Itoa(HelperVersion) {
 		t.Fatalf("installed helper reports version %q, want 1", got)
 	}
 }
@@ -666,7 +682,7 @@ func TestBootstrapRecoveryProbesThePersistedAttemptEpoch(t *testing.T) {
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
 		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
-		Store: store, Runner: &scriptedRunner{}, Probe: probe,
+		Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
 		t.Fatalf("recovery = (%v, %v), want the fenced path", outcome.Kind, err)
@@ -710,8 +726,8 @@ func TestBootstrapDoesNotDeliverWhenAnotherAttemptOwnsTheFence(t *testing.T) {
 	if err != nil || outcome.Kind != BootstrapFenced {
 		t.Fatalf("delayed attempt = (%v, %v), want the fenced recovery path", outcome.Kind, err)
 	}
-	if quiesce.calls != 0 || len(runner.calls) != 0 {
-		t.Fatalf("the delayed attempt delivered again: quiesce=%d runner=%v", quiesce.calls, runner.calls)
+	if quiesce.calls != 1 || len(runner.calls) != 0 {
+		t.Fatalf("recovery claims once (the arbiter) and never delivers: quiesce=%d runner=%v", quiesce.calls, runner.calls)
 	}
 	if probe.seen != owner.AttemptEpoch {
 		t.Fatalf("recovery probed %+v, want the fence owner's epoch %+v", probe.seen, owner.AttemptEpoch)
@@ -736,7 +752,7 @@ func TestBootstrapRecoveryNamesThePersistedEpochInTheOrphan(t *testing.T) {
 	probe := &scriptedProbe{live: true}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
 		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
-		Store: store, Runner: &scriptedRunner{}, Probe: probe,
+		Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	orphan, ok := errors.AsType[*AttemptOrphanError](err)
 	if !ok {
@@ -848,8 +864,8 @@ func TestBootstrapDoesNotDeliverWhenTwoAttemptsShareTheEpoch(t *testing.T) {
 	if err != nil || outcome.Kind != BootstrapFenced {
 		t.Fatalf("same-epoch loser = (%v, %v), want the fenced recovery path", outcome.Kind, err)
 	}
-	if quiesce.calls != 0 || len(runner.calls) != 0 {
-		t.Fatalf("the same-epoch loser delivered again: quiesce=%d runner=%v", quiesce.calls, runner.calls)
+	if quiesce.calls != 1 || len(runner.calls) != 0 {
+		t.Fatalf("recovery claims once (the arbiter) and never delivers: quiesce=%d runner=%v", quiesce.calls, runner.calls)
 	}
 }
 
@@ -880,7 +896,7 @@ func TestBootstrapRecoveryReplaysWhenTheRecordConverged(t *testing.T) {
 	store := &convergingStore{scriptedStore: base}
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Probe: probe,
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	if err != nil {
 		t.Fatalf("recovery = %v", err)
@@ -890,5 +906,174 @@ func TestBootstrapRecoveryReplaysWhenTheRecordConverged(t *testing.T) {
 	}
 	if outcome.Provisioning.HelperVersion != HelperVersion {
 		t.Fatalf("outcome record = %+v, want the converged record", outcome.Provisioning)
+	}
+}
+
+// TestBootstrapRecoveryRefusesWhileAnAttemptIsActive pins the recovery arbiter's
+// losing arm: when the claim is already held (an attempt is active), recovery
+// refuses with the transient busy class and never reports a fenced posture, and
+// its probe never runs.
+func TestBootstrapRecoveryRefusesWhileAnAttemptIsActive(t *testing.T) {
+	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
+	probe := &scriptedProbe{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
+		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}}, Probe: probe,
+	})
+	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
+		t.Fatalf("err = %v, want an AttemptActiveError while the owner is active", err)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("recovery probed %d times while an attempt is active, want 0", probe.calls)
+	}
+}
+
+// TestBootstrapRecoveryRefusesOnForeignPresence pins the recovery arbiter's
+// non-bare arm: foreign work live on the host means recovery still refuses with
+// the busy class rather than concluding.
+func TestBootstrapRecoveryRefusesOnForeignPresence(t *testing.T) {
+	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
+	probe := &scriptedProbe{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
+		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}}, Probe: probe,
+	})
+	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
+		t.Fatalf("err = %v, want an AttemptActiveError for foreign presence during recovery", err)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("recovery probed %d times with foreign presence, want 0", probe.calls)
+	}
+}
+
+// TestBootstrapOwnerLosesTheClaimToARecoverer pins the owner's arm of the
+// fence->claim window: the fence winner whose claim loses to a recoverer must
+// not report the absent class (the helper is not the problem) but the honest
+// transient busy class, and it must never deliver.
+func TestBootstrapOwnerLosesTheClaimToARecoverer(t *testing.T) {
+	store := &scriptedStore{}
+	runner := &scriptedRunner{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}},
+	})
+	if _, ok := errors.AsType[*AttemptActiveError](err); !ok {
+		t.Fatalf("err = %v, want an AttemptActiveError for the owner's lost claim", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none: the owner must not deliver after losing the claim", runner.calls)
+	}
+}
+
+// TestBootstrapTypesDeliveryFailuresAsAbsent pins §6:135's "delivery
+// unavailable ⇒ typed fencing-helper-absent": a transport failure and a
+// non-zero delivery exit are both the absent class (a caller can classify them
+// as the conflict-class refusal, never probe-failed), while the caller's own
+// cancellation stays raw.
+func TestBootstrapTypesDeliveryFailuresAsAbsent(t *testing.T) {
+	cases := []struct {
+		name  string
+		fn    func(command string) (string, string, int, error)
+		check func(t *testing.T, err error)
+	}{
+		{
+			name: "transport failure",
+			fn: func(string) (string, string, int, error) {
+				return "", "", 0, errors.New("ssh transport died")
+			},
+			check: func(t *testing.T, err error) {
+				gate, ok := errors.AsType[*HelperGateError](err)
+				if !ok || gate.Discriminator != DiscriminatorHelperAbsent {
+					t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+				}
+				if !strings.Contains(err.Error(), "ssh transport died") {
+					t.Fatalf("err = %v, want the transport cause in the detail", err)
+				}
+			},
+		},
+		{
+			name: "non-zero exit",
+			fn: func(string) (string, string, int, error) {
+				return "", "base64: command not found", 3, nil
+			},
+			check: func(t *testing.T, err error) {
+				gate, ok := errors.AsType[*HelperGateError](err)
+				if !ok || gate.Discriminator != DiscriminatorHelperAbsent {
+					t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Bootstrap(context.Background(), BootstrapRequest{
+				Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+				Store: &scriptedStore{}, Runner: &scriptedRunner{fn: tc.fn}, Quiesce: bareQuiesce(),
+			})
+			tc.check(t, err)
+		})
+	}
+
+	// The caller's own cancellation is not a helper-absent refusal.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Bootstrap(ctx, BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: &scriptedStore{},
+		Runner: &scriptedRunner{fn: func(string) (string, string, int, error) {
+			return "", "", 0, context.Canceled
+		}},
+		Quiesce: bareQuiesce(),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+	if _, ok := errors.AsType[*HelperGateError](err); ok {
+		t.Fatalf("err = %v, want the raw cancellation, not a gate refusal", err)
+	}
+}
+
+// TestBootstrapTypesVerifyFailuresAsAbsent pins the verify arm: a transport
+// failure reading the delivered helper's version is §6:135's absent class (never
+// a raw error a caller maps to probe-failed), while the gate's own untrusted
+// refusal passes through with its exact class and data.
+func TestBootstrapTypesVerifyFailuresAsAbsent(t *testing.T) {
+	// (a) the version read fails at the verify step.
+	transport := &scriptedRunner{fn: func(command string) (string, string, int, error) {
+		if strings.HasSuffix(command, " version") {
+			return "", "", 0, errors.New("version read failed")
+		}
+		return "", "", 0, nil
+	}}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: &scriptedStore{}, Runner: transport, Quiesce: bareQuiesce(),
+	})
+	gate, ok := errors.AsType[*HelperGateError](err)
+	if !ok || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal for the verify transport failure", err, DiscriminatorHelperAbsent)
+	}
+	if !strings.Contains(err.Error(), "version read failed") {
+		t.Fatalf("err = %v, want the transport cause in the detail", err)
+	}
+
+	// (b) a mismatched reported version surfaces as the untrusted gate refusal,
+	// unchanged (no double-wrap, no absent).
+	untrusted := &scriptedRunner{fn: func(command string) (string, string, int, error) {
+		if strings.HasSuffix(command, " version") {
+			return "99\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}}
+	_, err = Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: &scriptedStore{}, Runner: untrusted, Quiesce: bareQuiesce(),
+	})
+	gate, ok = errors.AsType[*HelperGateError](err)
+	if !ok || gate.Discriminator != DiscriminatorHelperUntrusted {
+		t.Fatalf("err = %v, want the typed %s refusal for the mismatched version", err, DiscriminatorHelperUntrusted)
+	}
+	if gate.ObservedVersion != 99 {
+		t.Fatalf("observed version = %d, want 99", gate.ObservedVersion)
 	}
 }

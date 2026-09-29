@@ -238,8 +238,8 @@ func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 	if err != nil || outcome.Kind != hostfence.BootstrapFenced {
 		t.Fatalf("recovery = (%v, %v), want the fenced path", outcome.Kind, err)
 	}
-	if probe.calls != 1 || retryQuiesce.calls != 0 || len(retryRunner.calls) != 0 {
-		t.Fatalf("recovery touched the remote: probe=%d quiesce=%d runner=%v", probe.calls, retryQuiesce.calls, retryRunner.calls)
+	if probe.calls != 1 || retryQuiesce.calls != 1 || len(retryRunner.calls) != 0 {
+		t.Fatalf("recovery claims once and never delivers: probe=%d quiesce=%d runner=%v", probe.calls, retryQuiesce.calls, retryRunner.calls)
 	}
 	if record := liveRecord(t, f.path, "alpha"); record.HelperInstalled {
 		t.Fatalf("recovery converged helperInstalled: %+v", record)
@@ -270,7 +270,7 @@ func TestHostBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with a live process refuses; the file is untouched.
 	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
-		Runner: &hubRunner{}, Probe: &hubProbe{live: true},
+		Runner: &hubRunner{}, Quiesce: bareQuiesce(), Probe: &hubProbe{live: true},
 	})
 	if _, ok := errors.AsType[*hostfence.AttemptOrphanError](err); !ok {
 		t.Fatalf("err = %v, want an AttemptOrphanError for the live crashed-attempt process", err)
@@ -584,7 +584,7 @@ func TestHubBootstrapRecoveryProbesThePersistedEpoch(t *testing.T) {
 	probe := &hubProbe{}
 	if _, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-new", OpSeq: 3},
-		Store: f.m.bootstrapStore(), Runner: &hubRunner{}, Probe: probe,
+		Store: f.m.bootstrapStore(), Runner: &hubRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	}); err != nil {
 		t.Fatalf("recovery = %v", err)
 	}
@@ -612,5 +612,27 @@ func TestOrphanAttemptRefusalIsTransientBusy(t *testing.T) {
 	}
 	if !strings.Contains(wire.Message, "boot-1/7") {
 		t.Fatalf("orphan refusal message = %q, want the crashed epoch named", wire.Message)
+	}
+}
+
+// TestAttemptActiveRefusalIsTransientBusy pins the wire class for an active
+// bootstrap attempt: the transient busy refusal (retry with backoff), never
+// fencing-helper-absent and never probe-failed, naming the attempt's epoch.
+func TestAttemptActiveRefusalIsTransientBusy(t *testing.T) {
+	m := testHostManager(nil, nil)
+	active := &hostfence.AttemptActiveError{
+		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-2", OpSeq: 4}, Detail: "another attempt holds the claim",
+	}
+	err := m.operationProbeRefusal("alpha", active)
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeConflict {
+		t.Fatalf("active refusal = (%v, %v), want a conflict-class wire error", wire, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
+		t.Fatalf("active refusal data = %#v, want the %s arm", wire.Data, appwire.ErrorHostBusyTransient)
+	}
+	if !strings.Contains(wire.Message, "boot-2/4") {
+		t.Fatalf("active refusal message = %q, want the attempt epoch named", wire.Message)
 	}
 }
