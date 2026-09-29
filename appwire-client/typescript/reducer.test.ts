@@ -8873,6 +8873,14 @@ test("hydrateThread carries the recovery fence from thread.evener.resumeRequired
   expect(testHydrate({ evener: { resumeRequired: true } }).resumeRequired).toBe(true);
 });
 
+// The hub's own admission answer, carried straight from the wire. It is what
+// the client now keys Send on, so the model must mirror it (an absent wire
+// value means not foldable, never a guess).
+test("hydrateThread carries the resume-only foldable bit from thread.evener.resumeOnlyFoldable", () => {
+  expect(testHydrate().resumeOnlyFoldable).toBe(false);
+  expect(testHydrate({ evener: { resumeOnlyFoldable: true } }).resumeOnlyFoldable).toBe(true);
+});
+
 test("evener/notes/updated replaces both notes and stamps lastFrameAt", () => {
   const initial = testHydrate({ evener: { humanNote: "old human", agentNote: "old agent" } });
   const updated = applyNotification(

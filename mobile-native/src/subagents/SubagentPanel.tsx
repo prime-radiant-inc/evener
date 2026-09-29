@@ -18,6 +18,7 @@ import { stopOffer } from "./stopOffer";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
 import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
+import { destructiveButton } from "../haptics";
 
 export interface Coordinator {
 	ref: string;
@@ -35,6 +36,9 @@ export interface SubagentPanelProps {
 	/** The hub takes no message for the subagent: the bar takes the composer's place. */
 	barShown: boolean;
 	showToast(text: string): void;
+	/** This subagent's row in its coordinator's tree, as the tree reads it, for
+	 * the screen's state line to time its run as the row does. */
+	onRow?(row: SubagentRow | null): void;
 	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
 }
 
@@ -48,6 +52,7 @@ export function SubagentPanel({
 	inFront,
 	barShown,
 	showToast,
+	onRow,
 	navigation,
 }: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
@@ -55,6 +60,10 @@ export function SubagentPanel({
 	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
+	useEffect(() => {
+		onRow?.(row);
+		return () => onRow?.(null);
+	}, [onRow, row]);
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 
@@ -95,34 +104,30 @@ export function SubagentPanel({
 		(target: SubagentRow) => {
 			Alert.alert(`Stop “${target.title}”?`, "Anything it started keeps running.", [
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Stop",
-					style: "destructive",
-					onPress: async () => {
-						if (!client) return;
-						try {
-							// The stop names the coordinator's thread as it reads now: a
-							// coordinator that restarted since the screen opened runs
-							// under a new one. Read without following, as the bar's
-							// capability read is.
-							const link = new SessionLink(client, coordinator.ref);
-							const now = await link.read({ follow: false }).finally(() => link.dispose());
-							const response = await client.request("evener/delegate/stop", {
-								ref: coordinator.ref,
-								threadId: now.threadId,
-								delegateId: target.id,
-							});
-							if (response.outcome === "stopping")
-								requests.request(coordinator.ref, target, Date.now(), { direct: true });
-							// notRunning: it was already finishing; the tree says how it ended.
-							else void tree.reload();
-						} catch (error) {
-							if (isMethodNotFound(error)) setDirectUnsupported(true);
-							else if (isResourceNotFound(error)) void tree.reload();
-							else showToast(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`);
-						}
-					},
-				},
+				destructiveButton("Stop", async () => {
+					if (!client) return;
+					try {
+						// The stop names the coordinator's thread as it reads now: a
+						// coordinator that restarted since the screen opened runs
+						// under a new one. Read without following, as the bar's
+						// capability read is.
+						const link = new SessionLink(client, coordinator.ref);
+						const now = await link.read({ follow: false }).finally(() => link.dispose());
+						const response = await client.request("evener/delegate/stop", {
+							ref: coordinator.ref,
+							threadId: now.threadId,
+							delegateId: target.id,
+						});
+						if (response.outcome === "stopping")
+							requests.request(coordinator.ref, target, Date.now(), { direct: true });
+						// notRunning: it was already finishing; the tree says how it ended.
+						else void tree.reload();
+					} catch (error) {
+						if (isMethodNotFound(error)) setDirectUnsupported(true);
+						else if (isResourceNotFound(error)) void tree.reload();
+						else showToast(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				}),
 			]);
 		},
 		[client, coordinator.ref, requests, tree, showToast],

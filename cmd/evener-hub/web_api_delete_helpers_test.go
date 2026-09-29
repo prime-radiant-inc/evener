@@ -37,7 +37,7 @@ func TestProjectDeletionOwnershipErrorUnwrapNil(t *testing.T) {
 
 func TestProjectDeletionStateDirFromMap(t *testing.T) {
 	s := &WebServer{}
-	got := s.projectDeletionStateDir("proj", "thread1", map[string]string{"thread1": "/custom/state"})
+	got := s.projectDeletionStateDir("", "proj", "thread1", map[string]string{"thread1": "/custom/state"})
 	if got != "/custom/state" {
 		t.Fatalf("expected /custom/state, got %q", got)
 	}
@@ -45,7 +45,7 @@ func TestProjectDeletionStateDirFromMap(t *testing.T) {
 
 func TestProjectDeletionStateDirFromConfig(t *testing.T) {
 	s := &WebServer{cfg: hubcore.WebConfig{StateDir: "/data"}}
-	got := s.projectDeletionStateDir("proj", "thread1", nil)
+	got := s.projectDeletionStateDir("", "proj", "thread1", nil)
 	if got != filepath.Join("/data", "projects", "proj") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("expected /data/projects/proj, got %q", got)
 	}
@@ -53,7 +53,7 @@ func TestProjectDeletionStateDirFromConfig(t *testing.T) {
 
 func TestProjectDeletionStateDirEmptyWhenNoConfig(t *testing.T) {
 	s := &WebServer{}
-	got := s.projectDeletionStateDir("proj", "thread1", nil)
+	got := s.projectDeletionStateDir("", "proj", "thread1", nil)
 	if got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}

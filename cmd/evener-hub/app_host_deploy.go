@@ -34,10 +34,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -457,6 +459,13 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 // predates the handler and every other read failure is `probe-failed` with the
 // failure half named.
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
+	// The fencing refusals this surface shares with the first-contact caller are
+	// converted first, so a helper gate that happens to wrap a probe read (the
+	// helper self-test is itself a read-only round trip) is never `probe-failed`
+	// (§6:161).
+	if wire, ok := fencingRefusalWire(name, err); ok {
+		return wire
+	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -473,6 +482,83 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	default:
 		return appwire.ProbeFailed(name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
 			"probing host %q's running state failed: %v", name, err))
+	}
+}
+
+// fencingRefusalWire converts the refusal classes the fenced probe and the
+// first-contact bootstrap share onto their typed envelopes, ok=false when err
+// is none of them so each caller keeps its remaining arms.
+//
+//   - The helper gate (§8:161) rides the conflict class: a known discriminator
+//     renders its arm (absent or untrusted, with the pinned or observed
+//     version); a discriminator this build cannot render is still a gate
+//     refusal and refuses as an internal error naming the unknown class —
+//     never as `fencing-helper-absent` and never as `probe-failed`.
+//   - A bootstrap attempt bound to a registration the host no longer carries
+//     (a remove and re-add landed while the attempt paused) is the deploy
+//     pipeline's `stale-entry` class on its generation binding: the caller
+//     re-resolves the host and retries. Never a helper-gate arm.
+//   - A crashed bootstrap attempt whose process is still live fences the host
+//     the way an open orphan-unverified record does (§8:158): the transient
+//     busy class, with the diagnostic naming the crashed epoch. Never
+//     `probe-failed`, which names only a re-probe read failure.
+func fencingRefusalWire(name string, err error) (appwire.WireError, bool) {
+	if wire, ok := helperGateWireRefusal(err); ok {
+		return wire, true
+	}
+	if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
+		return appwire.InternalError(fmt.Sprintf(
+			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err)), true
+	}
+	if stale, ok := errors.AsType[*hostfence.StaleAttemptError](err); ok {
+		return appwire.StaleEntry(appwire.StaleEntryBindingGeneration, stale.Error()), true
+	}
+	if orphan, ok := errors.AsType[*hostfence.AttemptOrphanError](err); ok {
+		return appwire.HostBusyTransient(fmt.Sprintf(
+			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
+			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan)), true
+	}
+	return appwire.WireError{}, false
+}
+
+// helperGateWireRefusal maps crash-fencing §8's typed helper-gate refusal onto
+// its AppWire envelope: the conflict class, with the host and the pinned helper
+// version the operator must install out-of-band. ok is false for any other
+// error, so a caller can only classify a genuine gate refusal this way.
+func helperGateWireRefusal(err error) (appwire.WireError, bool) {
+	gate, ok := errors.AsType[*hostfence.HelperGateError](err)
+	if !ok {
+		return appwire.WireError{}, false
+	}
+	// The wire message is the error's own text: helperAbsentRefusal wraps the
+	// gate with the reason the claim/delivery was refused (a lost claim race, a
+	// live foreign process, a failed probe), and that detail must reach the
+	// caller. gate.Host and gate.PinnedVersion carry the data half.
+	return helperGateWire(gate, err.Error())
+}
+
+// helperGateWire is the one conversion from a helper-gate refusal to §8's
+// conflict-class envelope, shared by every surface (the probe classifier here and
+// orphan-resolve's verify arm). A known discriminator renders as its pinned arm —
+// the pinned version for the absent arm, the distrusted version for the untrusted
+// one — and a discriminator this build does not know returns ok=false, so no
+// surface ever renders an unknown class as absent or untrusted and each refuses
+// it explicitly (§8:161's fail-closed posture).
+func helperGateWire(gate *hostfence.HelperGateError, message string) (appwire.WireError, bool) {
+	switch gate.Discriminator {
+	case hostfence.DiscriminatorHelperAbsent:
+		// §8's data names the version to act on: the pinned version the operator
+		// must install out-of-band.
+		return appwire.FencingHelperAbsent(gate.Host, strconv.Itoa(gate.PinnedVersion), message), true
+	case hostfence.DiscriminatorHelperUntrusted:
+		// The untrusted arm names the distrusted version in place of the absent
+		// one.
+		return appwire.FencingHelperUntrusted(gate.Host, strconv.Itoa(gate.ObservedVersion), message), true
+	default:
+		// A discriminator this build does not know is not the absent class: the
+		// caller refuses it explicitly rather than rendering it as an arm this
+		// build never defined.
+		return appwire.WireError{}, false
 	}
 }
 

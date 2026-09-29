@@ -179,7 +179,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 
 var (
 	resolveTurnStartSource = sourceForThread
-	resumeTurnStartThread  = hubThreadAutoResume
+	resumeTurnStartThread  = resumeTurnStartThreadResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
 	}
@@ -190,6 +190,20 @@ var (
 		return c.TrustRepo(ctx, p)
 	}
 )
+
+// resumeTurnStartThreadResume is the resume a failed turn/start runs before its
+// one retry (the two call sites in the turn/start handler below). A turn/start
+// the resume-only carve-out admitted IS the request whose send folds and owns
+// the resume, so its resume runs explicit (non-automatic), which clears the
+// ResumeRequired fence; every other turn/start keeps the automatic resume, and
+// a session without a resume obligation is unchanged. See
+// turnStartResumeExplicit and sessionAdmitsResumeRequired (app_sources.go).
+func resumeTurnStartThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	if turnStartResumeExplicit(ctx, cfg, params.Ref, params.Session) {
+		return hubThreadResume(ctx, cfg, sources, params)
+	}
+	return hubThreadAutoResume(ctx, cfg, sources, params)
+}
 
 type threadReadRelayPolicy interface {
 	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
@@ -992,6 +1006,11 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 	}
 }
+
+// navigationStatsLogfFor is where navigation build stats lines go. Tests that
+// build a hub web server replace it so a slow build cannot write to stderr
+// outside a test that asserts the line (which passes cfg.Logf).
+var navigationStatsLogfFor = hubLogfFor
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)

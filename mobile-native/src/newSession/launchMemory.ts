@@ -1,6 +1,6 @@
 // What this phone remembers about starting sessions on one hub: the setups
-// sessions were started with, so New session opens on the latest one (spec
-// 11's "Same as last time"; recipes are deferred). It is per hub, because a
+// sessions were started with, so New session opens on the newest one (spec
+// 11; recipes are deferred). It is per hub, because a
 // setup names that hub's hosts and folders.
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { readJson, removeKeys } from "../deviceStorage";

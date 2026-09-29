@@ -51,9 +51,15 @@ func crashPerformLeavingCommand(t *testing.T, remote *fenceRemote, epoch Epoch, 
 // descendants of the command under test.
 func writeLeaseEntry(t *testing.T, remote *fenceRemote, id, state, kind, pid, start, nonce, cgroup string) {
 	t.Helper()
+	writeLeaseEntryRegisteredAt(t, remote, time.Now(), id, state, kind, pid, start, nonce, cgroup)
+}
+
+// writeLeaseEntryRegisteredAt writes a lease entry registered at the given time.
+func writeLeaseEntryRegisteredAt(t *testing.T, remote *fenceRemote, registeredAt time.Time, id, state, kind, pid, start, nonce, cgroup string) {
+	t.Helper()
 	body := "id\t" + id + "\n" +
 		"command\tsleep 30\n" +
-		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339) + "\n" +
+		"registeredAt\t" + registeredAt.UTC().Format(time.RFC3339) + "\n" +
 		"state\t" + state + "\n" +
 		"ownershipKind\t" + kind + "\n" +
 		"pid\t" + pid + "\n" +
@@ -239,7 +245,16 @@ func TestScriptKillNonceOwnedEntrySignalsTheExactCarrier(t *testing.T) {
 	}()
 	defer func() { _ = carrier.Process.Kill() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
-	writeLeaseEntry(t, remote, nonce, LeaseRunning, "nonce", "", "", nonce, "")
+	writeLeaseEntryRegisteredAt(t, remote, time.Now().Add(time.Hour), nonce, LeaseRunning, "nonce", "", "", nonce, "")
+	// An unrelated same-uid process whose environment cannot be read, as any busy
+	// host has (root tests run beside other packages). The scan's fail-closed
+	// probe reads such a process started at or after the entry's registration as
+	// a possible descendant and answers live without ever reaching the carrier.
+	// The entry is registered after every process running now, so the probe's
+	// started-before rule holds this fixture and any ambient process out,
+	// whatever the host runs.
+	ambient := startUninspectableSleeper(t, "unrelated")
+	defer func() { _ = ambient.Process.Kill(); _, _ = ambient.Process.Wait() }()
 	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", nonce)
 	if code != 0 {
 		t.Fatalf("kill exited %d: %s", code, stderr)
@@ -1297,8 +1312,16 @@ func TestScriptKillSettlesAReusedIdentityWithoutSignaling(t *testing.T) {
 		t.Fatalf("start the process: %v", err)
 	}
 	defer func() { _ = victim.Process.Kill(); _, _ = victim.Process.Wait() }()
+	// An unrelated same-uid process whose environment cannot be read, as any
+	// busy host has. The scan cannot disprove such a process, so one that
+	// started after the entry's registration keeps the member live. The entry
+	// is registered after every process running now, so the scan's rule that
+	// a process started before registration is not the command's descendant
+	// holds this one and any other ambient process out, whatever the host runs.
+	ambient := startUninspectableSleeper(t, "unrelated")
+	defer func() { _ = ambient.Process.Kill(); _, _ = ambient.Process.Wait() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
-	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	writeLeaseEntryRegisteredAt(t, remote, time.Now().Add(time.Hour), "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
 	if _, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1"); code != 0 {
 		t.Fatalf("kill exited %d: %s", code, stderr)
 	}

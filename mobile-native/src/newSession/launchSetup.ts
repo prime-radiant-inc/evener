@@ -2,7 +2,7 @@
 // the latest start it opens on, and a host change all speak in this shape,
 // and every rule applied to it is a pure function here.
 import { basename, type LaunchConfigLayer } from "@evener/appwire-client";
-import { effortName } from "../session/sessionFacts";
+import { effortName, hostIdOf } from "../session/sessionFacts";
 
 /** The launch overrides the sheet owns: Plugins, Access and More options.
  * Everything else stays at the hub's defaults on the phone (spec 11). */
@@ -46,6 +46,21 @@ export interface SessionSeed {
 	/** The session's model as it reports it: "provider/model", or a bare model. */
 	model?: string;
 	effort?: string;
+}
+
+/** A session read as New session like this's seed (ruling 24): its host,
+ * folder, and its own model and effort when it has them. The session's
+ * plugins and access aren't on the wire, so the sheet keeps its own. */
+export function seedFromSession(
+	ref: string,
+	session: { cwd: string; modelProvider: string; reasoningEffort?: string },
+): SessionSeed {
+	return {
+		host: hostIdOf(ref),
+		cwd: session.cwd,
+		...(session.modelProvider ? { model: session.modelProvider } : {}),
+		...(session.reasoningEffort ? { effort: session.reasoningEffort } : {}),
+	};
 }
 
 export function ownedOverrides(layer: LaunchConfigLayer): OwnedOverrides {
@@ -138,6 +153,14 @@ export const ACCESS_LEVELS: readonly AccessLevel[] = [
 export function accessOf(sandbox: string | undefined, hubDefault: string | undefined): AccessLevel {
 	const mode = sandbox || hubDefault || FULL_ACCESS.mode;
 	return ACCESS_LEVELS.find((level) => level.mode === mode) ?? { mode, label: mode, detail: "" };
+}
+
+/** The access a form can name: the person's own choice, else the hub's
+ * default once the hub has said it (`hubDefaults` null until then). Null while
+ * the default is unknown, since accessOf's fallback, no sandbox, is the least
+ * safe guess. */
+export function knownAccess(sandbox: string | undefined, hubDefaults: { sandbox?: string } | null): AccessLevel | null {
+	return sandbox || hubDefaults ? accessOf(sandbox, hubDefaults?.sandbox) : null;
 }
 
 /** Network matters only inside a sandbox (the schema's sandbox_net: "Has no

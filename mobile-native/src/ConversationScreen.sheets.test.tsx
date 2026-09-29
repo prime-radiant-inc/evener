@@ -16,7 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { alertRequests, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { alertRequests, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -407,6 +407,19 @@ it("titles the header with the session's state, and opens its info on a press", 
 	tree.unmount();
 });
 
+it("opens New session like this one: its host, folder, model and effort", async () => {
+	const { tree } = mount({ ...thread, evener: { ...thread.evener, reasoningEffort: "high" } });
+	await flush();
+
+	act(() => menuAction("New session like this").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
+		hubId: "hub-1",
+		hubName: expect.any(String),
+		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
+	});
+	tree.unmount();
+});
+
 it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
 	const { tree } = mount();
 	await flush();
@@ -499,8 +512,11 @@ it("shows the chosen detail level and confirms it", async () => {
 	const { tree } = mount();
 	await flush();
 
+	playedHaptics.length = 0;
 	act(() => levelAction("Full").onPress());
 
+	// Spec 16.6: a selection tick on a detail level.
+	expect(playedHaptics).toEqual(["selection"]);
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");

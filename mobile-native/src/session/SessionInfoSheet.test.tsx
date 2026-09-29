@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { alertRequests, playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -117,6 +117,7 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 		controls: controls as unknown as SessionControls,
 		hostLabel: (id) => (id === "local" ? "Work hub" : id),
 		modelLabel: "Claude Sonnet 5 · High",
+		runMs: () => null,
 		ready: true,
 		editGoal: vi.fn(() => void calls.push("editGoal")),
 		clearGoal: vi.fn(() => void calls.push("clearGoal")),
@@ -525,6 +526,20 @@ describe("actions", () => {
 		},
 	);
 
+	it("times a subagent by its run, as the nav bar and its row do", () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run four.
+		provide(
+			conversation({
+				status: { type: "active", activeFlags: [] } as MobileConversation["status"],
+				activeTurnStartedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+			}),
+			{ runMs: () => 4 * 60_000 },
+		);
+		const text = renderedText(sheet());
+		expect(text).toContain("Working · 4m");
+		expect(text).not.toContain("Working · 2m");
+	});
+
 	it("draws Shut down and Delete as destructive", () => {
 		provide(conversation({ capabilities: { ...NONE, shutdown: true } }));
 		const tree = sheet();
@@ -543,7 +558,10 @@ describe("actions", () => {
 			message: "It stops now and keeps its history. Sending a message resumes it.",
 		});
 		expect(calls).toEqual([]);
+		playedHaptics.length = 0;
 		act(() => confirm?.buttons?.[1]?.onPress?.());
+		// Spec 16.6: rigid on a destructive confirmation.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
 		await flush();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});

@@ -40,6 +40,18 @@ export interface BoardSnapshot {
 	auth: AuthStatusResponse[];
 	/** The hub's plugins, for the broken-plugin notices. */
 	plugins: PluginEntry[];
+	/** True once this controller's own first sign-in read has landed, even
+	 * if it found the list the snapshot already held: the in-app alerts'
+	 * notice baseline waits for it. */
+	authRead: boolean;
+}
+
+export interface BoardControllerOptions {
+	/** "board" (the default) reads everything the Board shows. "attention"
+	 * reads only what the in-app alerts need: Live, Needs you, the manifest
+	 * and the sign-ins, and never the pin catalog, its categories or the
+	 * plugins, since a broken plugin never alerts (phase 6 ruling 5). */
+	scope?: "board" | "attention";
 }
 export interface BoardController {
 	getSnapshot(): BoardSnapshot;
@@ -249,7 +261,8 @@ function shown<T>(reader: NavigationPages<T> | undefined, kept: Page<T> | null):
 	return kept ?? fresh ?? emptyPage;
 }
 
-export function createBoardController(): BoardController {
+export function createBoardController({ scope = "board" }: BoardControllerOptions = {}): BoardController {
+	const attention = scope === "attention";
 	const listeners = new Set<() => void>();
 	let readers: Readers | null = null;
 	let retained: Retained = nothingRetained;
@@ -260,6 +273,7 @@ export function createBoardController(): BoardController {
 	// until the current connection's read of it lands.
 	let auth: AuthStatusResponse[] = [];
 	let plugins: PluginEntry[] = [];
+	let authRead = false;
 
 	const build = (): BoardSnapshot => {
 		const pins = shown(readers?.pins, retained.pins);
@@ -298,6 +312,7 @@ export function createBoardController(): BoardController {
 				: null,
 			auth,
 			plugins,
+			authRead,
 		};
 	};
 	let snapshot = build();
@@ -360,7 +375,8 @@ export function createBoardController(): BoardController {
 
 	/** Every paged reader: Live, Needs you, the pin catalog and the
 	 * categories. */
-	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins, ...categoryPagesOf(bound)];
+	const pages = (bound: Readers) =>
+		attention ? [bound.live, bound.needsYou] : [bound.live, bound.needsYou, bound.pins, ...categoryPagesOf(bound)];
 
 	/** Keep one reader per category the catalog shown lists (the fresh
 	 * catalog once it loaded, the retained one until then), and forget the
@@ -436,6 +452,7 @@ export function createBoardController(): BoardController {
 			(result) => {
 				// Go sends an empty (nil) slice as null.
 				auth = unlessSame(auth, result.providers ?? []);
+				authRead = true;
 			},
 		);
 	const readPlugins = (bound: Readers) =>
@@ -451,9 +468,11 @@ export function createBoardController(): BoardController {
 		if (bound.pluginPoll !== null) clearInterval(bound.pluginPoll);
 		bound.pluginPoll = null;
 	};
-	/** Reads both notice lists and polls the plugins from now on. */
+	/** Reads both notice lists and polls the plugins from now on; the
+	 * attention scope reads only the sign-ins. */
 	const readNoticeLists = (bound: Readers) => {
 		readAuth(bound);
+		if (attention) return;
 		readPlugins(bound);
 		stopPluginPoll(bound);
 		bound.pluginPoll = setInterval(() => readPlugins(bound), PLUGIN_POLL);
@@ -485,7 +504,8 @@ export function createBoardController(): BoardController {
 			noticeReads: { auth: 0, plugins: 0 },
 			pluginPoll: null,
 		};
-		bound.stop.push(bound.live.subscribe(publish), followInFull(bound.needsYou), followInFull(bound.pins));
+		bound.stop.push(bound.live.subscribe(publish), followInFull(bound.needsYou));
+		if (!attention) bound.stop.push(followInFull(bound.pins));
 		for (const page of pages(bound)) bound.stop.push(page.watch());
 		bound.stop.push(
 			bound.manifest.watch(),

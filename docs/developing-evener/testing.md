@@ -430,16 +430,19 @@ and the UI's writes go through: the host's `AGENTS.md` via Save, the in-repo
 pane's own **Trust**, and a credential push from the `credentials` pane's own
 button.
 
-Eight of the nine are held to a value seeded only on the host: the pane must
+All nine are held to a value seeded only on the host: the pane must
 render the HOST's value and must not render this hub's. `credentials`,
 `agents-md`, `launch-evener`, `project`, `plugins`, `skills` and `mcp` read a
 seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose text
 the pane shows as a preview, and the check then drives the pane's own **Trust**
 action and requires the host to report the file trusted — so that pane proves the
-read AND exercises a host-side write. `plugins-manager` asserts structure — the
-pane rendered, with no load error, carrying the selected host — because its
-catalog is a set of marketplaces CLONED under the host rather than a file, so a
-file seed cannot produce a listing. That is the honest limit of this check.
+read AND exercises a host-side write. `plugins-manager` is held to a seeded
+value too: the check seeds the host's own `known_marketplaces.json` over ssh
+before the host hub starts (a file the store reads, whose directory source is
+referenced in place), then requires the host's seeded marketplace to be listed
+and the controller's default marketplace names to be absent. The seed and the
+read are pinned without a host by
+`TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore`.
 
 The `credentials` pane also carries the credential-push action, and the check
 drives it end to end. The controller's own store is seeded first, through the
@@ -448,8 +451,8 @@ name matches one of the disposable host's own provider instances — so the host
 locked conditional set classifies the pushed key `added` rather than skipping it
 as "no matching instance on the host". The driver then presses **Push
 credentials to <host>**, waits for the `Push report for <host>` region, and
-requires it to name the seeded instance with action `added` (anything but
-`added`/`updated` — including a `failed` row, a skip, or an unrecognized value —
+requires it to name the seeded instance with action `added` or `updated`
+(anything else — including a `failed` row, a skip, or an unrecognized value —
 fails the run and prints what it saw), and requires the failure alert to be
 absent. Because a report the browser rendered is not proof that a write landed,
 the load-bearing assertion is the Go owner's: it reads the DISPOSABLE host's own
@@ -951,9 +954,15 @@ Enforcement of the ratios is conditional. A local run only warns. A package over
 budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
 CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
 `testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
-`make test-rebaseline` lands a measured baseline. A clean-host baseline is
-checked in, so the ratios are enforced under `CHECK=1` in a CI-shaped
-environment today.
+`make test-rebaseline` lands a measured baseline. The checked-in baseline
+predates issue #172's switch to package wall time, so the Go-package ratio check
+stays warn-only even under `CHECK=1` until `make test-rebaseline` rewrites it
+under the new metric (#141): a budget whose Go-package numbers were blessed
+under a different metric is never enforced, and a full rebaseline records the
+metric marker that re-enables enforcement. A narrowed `--modules`/`--no-web`
+rebaseline never adds the marker; it only preserves one a full rebaseline
+already stamped. The `"web"` row and the per-test ceiling keep the metrics
+issue #172 did not change, so both stay enforced either way.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never
@@ -1658,7 +1667,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
-| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A bless writes every package it measured and preserves the rest of the file, so a narrowed run refreshes part of the file instead of deleting the entries it did not measure. Under CHECK=1 in a CI-shaped environment a package over 1.5x its budget or any per-test ceiling breach is nonzero too; a missing or empty budget file always exits zero. |
+| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row and the per-test ceiling keep their unchanged metrics and stay enforced. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios are warnings. The "web" row and any per-test ceiling breach are metric-independent and nonzero regardless, and a missing or empty budget file always exits zero. |
 
 ### Other targets
 

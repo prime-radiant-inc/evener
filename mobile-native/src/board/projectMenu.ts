@@ -16,15 +16,11 @@ export const PROJECT_MENU_LABELS: Record<ProjectMenuAction, string> = {
 
 export function projectMenuActions(
 	project: NavigationProjectSummary,
-	context: { connected: boolean; organizationReady: boolean; archived: boolean },
+	context: { archived: boolean },
 ): ProjectMenuAction[] {
-	if (
-		!context.connected ||
-		!context.organizationReady ||
-		project.key === "no-project" ||
-		!controllerOwnedProject(project.sources)
-	)
-		return [];
+	// Offline, or with the journal busy, a change is held until it can go
+	// (phase 6 ruling 18).
+	if (project.key === "no-project" || !controllerOwnedProject(project.sources)) return [];
 	const actions: ProjectMenuAction[] = [project.favorite ? "unpin" : "pin"];
 	if (project.working_dir) actions.push(context.archived || project.is_archived ? "unarchive" : "archive");
 	return actions;

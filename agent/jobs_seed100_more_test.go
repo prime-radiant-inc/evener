@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -42,7 +43,7 @@ func seed100JobsMore(t *testing.T) {
 	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
 	closeJM := newTestJM(t)
 	closeJM.appendTeardown = func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error { return want }
-	_ = closeJM.closeRuntimeState()
+	_ = closeJM.closeRuntimeState(context.Background())
 	jm.appendAbandonSnapshots = func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error) { return nil, want }
 	jm.running["abandoned-one"] = &runningJob{rec: &jobstore.JobRecord{JobID: "abandoned-one"}, done: make(chan struct{})}
 	jm.abandonRunningJob("abandoned-one")

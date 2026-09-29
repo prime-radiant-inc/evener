@@ -187,6 +187,25 @@ type hostManagerConfig struct {
 	// orphanAttestationMaxAge is §5's owner-set maximum attestation age; zero
 	// takes the shipped default (one hour). See OrphanResolve.
 	orphanAttestationMaxAge time.Duration
+	// bootstrapRunner returns the one-shot remote-command runner the
+	// first-contact delivery and its self-test run through (crash-fencing
+	// §6:131's one exempt delivery step). In production it is the manager's
+	// fence runner — the same ssh process seam the resolve's remote-fencing arm
+	// uses. Nil leaves the flow's remote steps unavailable, which fails closed.
+	bootstrapRunner func(host string) hostfence.Runner
+	// bootstrapQuiesce returns the host-side atomic claim-plus-quiesce primitive
+	// §6:135's delivery gate requires. Nil is the honest production value today:
+	// no pre-existing trusted host-side claim-plus-quiesce primitive exists in
+	// this build, so delivery stays unavailable and the flow refuses fail-closed
+	// with the typed `fencing-helper-absent` (§6:137/:141's out-of-band
+	// provisioning posture). A later slice that lands the primitive wires it
+	// here; nothing in this build falls back to an ordinary-SSH claim-then-check.
+	bootstrapQuiesce func(entry hostreg.Host) hostfence.ClaimQuiesce
+	// bootstrapProbe returns §6:139's read-only recovery re-probe of a crashed
+	// attempt. Nil is the honest production value today: until a host-side probe
+	// exists, recovery of an attempt-fenced host refuses fail-closed as §6's
+	// absent class rather than opening the fenced path unverified.
+	bootstrapProbe func(entry hostreg.Host) hostfence.AttemptProbe
 	// planControllerDirty reports whether the running controller's build is
 	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
 	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
@@ -358,6 +377,27 @@ type hostPersistChange struct {
 	// file's older mark, and a tombstoned name's tombstone is raised with its
 	// [generations] twin (validateHostTombstones requires the pair to agree).
 	highWaterRaises map[string]HostGeneration
+	// provisioning is the bootstrap record this write updates (crash-fencing
+	// §6:133/:137): the durable bootstrap-attempt fence and the converged
+	// helperInstalled flag with its version record each land in their own atomic
+	// hub.toml write. Like the other staged records it is merged by the
+	// derivation and installed only by a successful write, so a failed write
+	// leaves both the file and the store exactly as they were.
+	provisioning *pendingHostProvisioning
+	// carryProvisioning restores the bootstrap records this write must re-emit
+	// beyond the store's own set: a compensation rolling a removal back to the
+	// pre-mutation live entry carries the flags the removal's staged write pruned
+	// (the store lost them and the file no longer holds the name's record), so a
+	// failed removal never leaves a live host reading as never-provisioned.
+	// Keyed by host name; applied after the derivation's liveness prune.
+	carryProvisioning map[string]hostfence.Provisioning
+}
+
+// pendingHostProvisioning is the bootstrap record one hub.toml write carries,
+// keyed by the host name the record is keyed by.
+type pendingHostProvisioning struct {
+	Name         string
+	Provisioning hostfence.Provisioning
 }
 
 // pendingHostStoreSync is one cross-file intent a hub.toml write carries,
@@ -459,6 +499,12 @@ type hostStore struct {
 	// belongs to. The commit's staged write installs it, the store purge applies
 	// it after the swap, and a follow-up write drops it.
 	storeSync map[string]HostStoreSyncIntent
+	// provisioning is the bootstrap half of the per-host machine records, keyed
+	// by host name (crash-fencing §6:131-137): the durable bootstrap-attempt
+	// fence and the converged helperInstalled flag with its version record. Boot
+	// loads it from the file's [host_records] tables, the bootstrap flow's own
+	// atomic writes install it, and every other rewrite carries it forward.
+	provisioning map[string]hostfence.Provisioning
 }
 
 // set installs entries as the store's contents; the constructor calls it once
@@ -536,6 +582,30 @@ func (s *hostStore) setStoreSync(intents map[string]HostStoreSyncIntent) {
 	s.storeSync = intents
 }
 
+// setProvisioning installs the bootstrap record set (crash-fencing §6) the boot
+// load or a successful write derived.
+func (s *hostStore) setProvisioning(provisioning map[string]hostfence.Provisioning) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.provisioning = provisioning
+}
+
+// provisioningFor returns one host's bootstrap record, the zero value when the
+// store carries none. Callers hold the mutation lock.
+func (s *hostStore) provisioningFor(name string) hostfence.Provisioning {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.provisioning[name]
+}
+
+// provisioningSnapshot returns a copy of the stored bootstrap record set, keyed
+// by host name.
+func (s *hostStore) provisioningSnapshot() map[string]hostfence.Provisioning {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.provisioning)
+}
+
 // storeSyncSnapshot returns a copy of the stored cross-file intent set, keyed
 // by host name.
 func (s *hostStore) storeSyncSnapshot() map[string]HostStoreSyncIntent {
@@ -600,6 +670,7 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	s.remnants = records.remnants
 	s.attempts = records.attempts
 	s.storeSync = records.storeSync
+	s.provisioning = records.provisioning
 	if records.highWater != nil {
 		s.highWater = records.highWater
 	}
@@ -846,7 +917,7 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 		maps.Copy(preserved, records.droppedTombstones)
 		maps.Copy(preserved, records.raisedHighWater)
 	}
-	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, preserved)
+	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, records.provisioning, preserved)
 	if len(hostRecords) == 0 {
 		delete(doc, "host_records")
 	} else {
@@ -1488,6 +1559,20 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			return manager.FenceCommandRunnerFor(entry)
 		}
 	}
+	// The first-contact delivery and its self-test ride the same ssh process
+	// seam as the resolve's remote-fencing arm (crash-fencing §6:131: the one
+	// exempt delivery step). A hub with no manager leaves the runner nil, which
+	// fails closed; the claim primitive and the recovery probe stay nil until a
+	// later slice lands a host-side implementation (§6:135/:139).
+	if m.cfg.bootstrapRunner == nil && manager != nil {
+		m.cfg.bootstrapRunner = func(name string) hostfence.Runner {
+			entry, ok := hosts.Get(name)
+			if !ok {
+				return nil
+			}
+			return manager.FenceCommandRunnerFor(entry)
+		}
+	}
 	// The remnant fence is wired to the real record set (registry spec 08 §6):
 	// every gate that consults it — the retention and capacity exemptions, the
 	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the
@@ -1547,6 +1632,11 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// pendingRestart) is its own durable operation for the same reason
 		// (§6), so its ssh subprocesses are armed under the record too.
 		manager.SetEnsureRestartHook(m.EnsureRestart)
+		// The first-attach repair runs the hub's first-contact caller before its
+		// launch's first mutating remote command (crash-fencing §6:131): the
+		// exemption and its refusal classes are the caller's, and sshconn only
+		// orders it.
+		manager.SetBootstrapHook(m.BootstrapFirstContact)
 	}
 	if m.cfg.deployHost == nil && manager != nil {
 		// The production deploy step (deploy pipeline 08b §6): the 04b deploy
@@ -1611,6 +1701,10 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
+	// The bootstrap records (crash-fencing §6:131-137) load with the other
+	// machine-managed sections: decodeConfig validated the flag combinations, so
+	// they are restored as-is and every later rewrite carries them forward.
+	m.cfg.store.setProvisioning(hostProvisioningRecords(fileRecords.HostRecords))
 	collided := false
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
@@ -3134,6 +3228,7 @@ func (m *hubHostManager) installRestoredRecords(cfg Config) {
 	m.cfg.store.setRecordMaps(nonNilMap(cfg.Tombstones), nonNilMap(cfg.PrunedReceipts))
 	m.cfg.store.setRemnantMaps(nonNilMap(cfg.StagedReceipts), nonNilMap(cfg.TeardownRemnants), nonNilMap(cfg.TeardownAttempts))
 	m.cfg.store.setStoreSync(nonNilMap(cfg.PendingStoreSync))
+	m.cfg.store.setProvisioning(hostProvisioningRecords(cfg.HostRecords))
 	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(cfg))
 }
 

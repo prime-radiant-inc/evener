@@ -153,9 +153,14 @@ export function nativeModuleMock() {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		ActivityIndicator: "ActivityIndicator",
+		// In front the whole test; a test that needs the app to come and go
+		// mocks its own.
+		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 		Animated,
-		Alert: { alert: recordAlert },
+		Appearance: { setColorScheme: () => {} },
+		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
+		Image: "Image",
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
@@ -341,6 +346,21 @@ export interface AlertRequest {
  * about and invokes the one it wants; production Alert never returns. */
 export const alertRequests: AlertRequest[] = [];
 
+/** One Alert.prompt call the mounted tree made: a test answers it by calling
+ * `callback` with the text it types, as pressing OK would. */
+export interface PromptRequest {
+	title: string;
+	message?: string;
+	callback?: (text: string) => void;
+}
+
+/** Every Alert.prompt call the mounted tree made, oldest first. */
+export const promptRequests: PromptRequest[] = [];
+
+function recordPrompt(title: string, message?: string, callback?: (text: string) => void): void {
+	promptRequests.push({ title, message, callback });
+}
+
 function recordAlert(
 	title: string,
 	message?: string,
@@ -386,6 +406,12 @@ export function scriptedClient(
 	} as ConversationClientLike;
 	return { client, methods, requests, unsubscribes: () => unsubscribes };
 }
+
+/** What expo-haptics played, in order ("selection", "impact:light",
+ * "notification:warning"...), recorded by the setup file's fake
+ * (vitestSetup.ts). Clear it (`playedHaptics.length = 0`) before the press
+ * a test asserts on. */
+export const playedHaptics: string[] = [];
 
 /** The connection value the retained-screen suites report through their
  * mocked ConnectionProvider: the Work hub's profile, its client, the state

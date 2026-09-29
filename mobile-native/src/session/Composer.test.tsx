@@ -18,6 +18,11 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// Records what the composer holds: whether, and as what kind.
+const holds = vi.hoisted(() => ({ calls: [] as [boolean, string][] }));
+vi.mock("../alerts/alertsContext", () => ({
+	useHoldAlerts: (active: boolean, kind: string) => holds.calls.push([active, kind]),
+}));
 
 const light = palettes.light;
 
@@ -201,5 +206,27 @@ describe("the model chip (spec 8.5)", () => {
 		expect(tree.root.findAll((node) => String(node.type) === "Pressable")).toEqual([]);
 		expect(tree.root.findAll((node) => String(node.type) === "SymbolView")).toEqual([]);
 		expect(renderedText(tree)).toBe("muse-spark-1.3");
+	});
+});
+
+describe("holding banners while you type (spec 13.3)", () => {
+	// The composer's own hold; its expanded editor's HoldingModal holds as
+	// "covered" beside it.
+	const holding = () => holds.calls.filter(([, kind]) => kind === "quiet").at(-1);
+	it("holds while the field is focused with text in it, and lets go on a blank field or a blur", () => {
+		holds.calls.length = 0;
+		const { props, tree } = composer();
+		const field = () => fields(tree)[0];
+		act(() => field()?.props.onFocus());
+		expect(holding()).toEqual([false, "quiet"]);
+		act(() => tree.update(<Composer {...props} value="half a thought" />));
+		expect(holding()).toEqual([true, "quiet"]);
+		// Sending empties the field, and that lets banners go.
+		act(() => tree.update(<Composer {...props} value="  " />));
+		expect(holding()).toEqual([false, "quiet"]);
+		act(() => tree.update(<Composer {...props} value="more" />));
+		expect(holding()).toEqual([true, "quiet"]);
+		act(() => field()?.props.onBlur());
+		expect(holding()).toEqual([false, "quiet"]);
 	});
 });

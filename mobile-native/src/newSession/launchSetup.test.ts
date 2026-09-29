@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	seedFromSession,
 	accessOf,
+	knownAccess,
 	effortLabel,
 	type LaunchSetup,
 	modelFromId,
@@ -46,7 +48,7 @@ describe("the overrides the sheet owns", () => {
 	});
 });
 
-describe("the latest start (spec 11's Same as last time)", () => {
+describe("the newest remembered start (spec 11)", () => {
 	it("opens a new sheet on the newest start", () => {
 		const history = [
 			{ setup: setup({ effort: "high" }), at: 1 },
@@ -141,6 +143,26 @@ describe("from the form and from a session", () => {
 		});
 	});
 
+	it("reads a session as a seed for New session like this (ruling 24)", () => {
+		expect(
+			seedFromSession("paradise-park:thread-9", {
+				cwd: "/Users/jesse/git/evener",
+				modelProvider: "lunaroute/glm-5.3-vision",
+				reasoningEffort: "high",
+			}),
+		).toEqual({
+			host: "paradise-park",
+			cwd: "/Users/jesse/git/evener",
+			model: "lunaroute/glm-5.3-vision",
+			effort: "high",
+		});
+		// A session with no model or effort of its own leaves the sheet's.
+		expect(seedFromSession("local:thread-1", { cwd: "/tmp", modelProvider: "" })).toEqual({
+			host: "local",
+			cwd: "/tmp",
+		});
+	});
+
 	it("finds a model named the way a session names it", () => {
 		const models = [
 			{ provider: "lunaroute", model: "glm-5.3" },
@@ -151,5 +173,17 @@ describe("from the form and from a session", () => {
 		expect(modelFromId("muse-spark-1.3", models)).toBe(models[2]);
 		expect(modelFromId("glm-5.3", models)).toBeNull();
 		expect(modelFromId("gpt-5.6", models)).toBeNull();
+	});
+});
+
+describe("the access a form can name", () => {
+	it("is the person's own choice, or the hub's default once the hub has said it", () => {
+		expect(knownAccess("restricted", null)?.label).toBe("Restricted");
+		expect(knownAccess(undefined, { sandbox: "workspace-write" })?.label).toBe("Workspace write");
+		expect(knownAccess(undefined, {})?.label).toBe("Full access");
+	});
+
+	it("is nothing while the hub's default is unknown, never the least safe level", () => {
+		expect(knownAccess(undefined, null)).toBeNull();
 	});
 });

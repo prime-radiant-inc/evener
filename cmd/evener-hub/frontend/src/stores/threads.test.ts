@@ -33,6 +33,10 @@ import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
@@ -46,17 +50,21 @@ import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
+  hasBlockedUnknown,
+  hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
   putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeOnlyLocalDispatchable,
+  resumeOnlyLocalModel,
   resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
@@ -378,6 +386,10 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // The store-wide resume-only predicate reads the pending-turns projection
+  // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
+  // rows a prior test left before this one hydrates.
+  resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
@@ -5645,6 +5657,146 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     await flushPendingTurnsProjectionForTests();
     expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+  });
+
+  // UI-01: a durable deletion fence is terminal for the ref's hydration
+  // lifecycle. A pane retains its claim, but the hub has proven the ref gone,
+  // so the retry loop must not keep reading an unrecoverable target and the
+  // acquisition promise must settle instead of hanging forever.
+  test("a durably deleted ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    // The acquisition settles rather than awaiting a retry that can never
+    // publish into this owner generation.
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    // Nothing is left to advance: the fence armed no retry.
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
+  // UI-01's cached-model half: a fence that lands after the ref hydrated must
+  // still expose the deletion. The store deliberately keeps the (now stale)
+  // model, so the deleted surface has to be read from deletedRefs rather than
+  // from "no model".
+  test("a deletion fence recorded after hydration exposes the deletion while the cached model remains", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+    await threadsStore.getState().ensureThread("ref_gone");
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_gone")).rejects.toThrow(/deleted/);
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    // The stale model is retained, so the deletion is observable independently
+    // of it, and no retry is armed against the unrecoverable target.
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+  });
+
+  // Control: the terminal deleted path must not swallow ordinary transient
+  // failures - a transport rejection still schedules exactly one retry that
+  // recovers the ref.
+  test("a transient read failure still schedules one retry and recovers", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) throw new Error("transport hiccup");
+      return readResponse("ref_a", { name: "Recovered" });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(false);
+
+    runScheduledHydrationRetry();
+    await expect(acquisition).resolves.toBeUndefined();
+    await waitFor(() => {
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    });
+    expect(reads).toBe(2);
+  });
+
+  // RoboRev on #3010 (Medium): a fence must retire an already-scheduled retry
+  // immediately, not leave it to fire. Both hydrate paths call
+  // scheduleOwnedHydrationRetry right after recording the fence, and its
+  // deleted branch retires the lifecycle - so the timer is cancelled before the
+  // rejection even propagates.
+  test("a deletion fence cancels an already-scheduled retry immediately and settles the acquisition", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => {
+      throw new Error("transport hiccup");
+    });
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+
+    // The thread is deleted before the retry timer fires: the next read is
+    // fenced, and the live retry must be retired there and then.
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_a", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow(/deleted/);
+
+    // No timer advance: the fence retired the lifecycle synchronously.
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(true);
+  });
+
+  // RoboRev on #3010 (Low): the watched (subagent/delegate card) path needs the
+  // same terminal coverage as the pane path - a watcher that failed to settle
+  // would hang its caller indefinitely.
+  test("a durably deleted watched ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().watchThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
   });
 
   // One representative Conflict-mapping test standing in for every
@@ -10921,6 +11073,526 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
   expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
 });
 
+// RoboRev Medium (PR 2862): the fence a Stop arms was set only AFTER the
+// forceStop RPC settled, so the drain window itself - the hub's Stopping > 0,
+// for which sessionActionRecoveryError refuses even turn/start - was unfenced
+// at the store. A send pressed while the stop RPC was still in flight enqueued
+// and dispatched into the hub's refusal, parking the intent in recovery, which
+// is exactly what the fence above exists to keep from happening. The obligation
+// must be armed when the drain begins, not when it ends; the two tests above
+// seed the obligation directly and so could not see this gap.
+test("a Stop in flight arms the recovery fence for the drain window", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "stop-drain" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:draining";
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  const stop = deferred<void>();
+  const requested = nextHandledRequest(fake, "evener/thread/forceStop", () => stop.promise);
+  // Hold the cancellation write open. The drain window begins at the click,
+  // and this is the window BEFORE that write completes - the write is an await,
+  // and the in-flight Stop is not itself a fence, so a send offered here must
+  // still be refused rather than enqueued and dispatched.
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().forceStop(ref);
+    await hold.reached;
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    hold.release();
+    await requested;
+    // Mid-drain: the hub holds Stopping > 0 and refuses even turn/start, so the
+    // store's own admission must refuse the send here rather than dispatch it.
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // The obligation a stale thread refresh could clear mid-drain must not
+    // re-open the fence: the in-flight Stop is its own fence. Clear it exactly
+    // as a superseded hydration would, then press Send again.
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+    // Admission still refuses the send with only stopInFlight standing.
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // Dispatch is fenced for every method while Stopping > 0: turn/interrupt is
+    // exempt at admission but must still never reach the wire here.
+    await threadsStore.getState().interrupt(ref);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
+    stop.resolve();
+    await pending;
+  } finally {
+    hold.release();
+  }
+});
+
+// RoboRev Medium (all three reviewers): the store-wide resume-only predicate
+// must read the delivery-uncertain rows the composer's blockedMutations
+// selector fences on, not merely stopInFlight. A direct caller that bypasses
+// the composer - the palette's slash fallthrough, the ask dock's batch send, a
+// failed turn's Retry - reaches enqueueMutationIntent with no such read, so a
+// blockedUnknown row must keep turn/start refused there exactly as the surfaces
+// render it (the fence-refusal test above).
+test("a merely-resumable local session's send refuses while a blockedUnknown row stands", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:stopped-uncertain";
+  fake.on("thread/read", (params) =>
+    readResponse(params.ref ?? ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: params.ref ?? ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  // The resume-only shape the hub admits turn/start for, obligation armed.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // A delivery-uncertain row for the ref: exactly the shape the composer's
+  // useBlockedMutationEntries selector fences on. Without the store-level read
+  // the predicate would fold the resume into a send ahead of reconciling it.
+  const uncertain = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  await refreshPendingTurnsProjection(ref);
+  await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// RoboRev Medium: the dispatch gate exempted EVERY queued mutation once the
+// session matched resumeOnlyLocalModel, but the hub's carve-out admits only
+// turn/start. A queued turn/queue/turn/steer/turn/interrupt from before the
+// fence would therefore dispatch into a refusal and be parked in recovery
+// instead of staying parked in the outbox. The dispatcher now names the
+// record's method (dispatcher.ts's method-aware lookup), and the gate exempts
+// only turn/start, so a queued non-send method never reaches the wire.
+test("a merely-resumable local session's queued non-send method stays parked", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "queued-method" });
+  await storage.enqueueIntent({
+    targetRef: "local:stopped-queued",
+    threadId: "thr_local:stopped-queued",
+    method: "turn/queue",
+    payload: { ref: "local:stopped-queued", input: [{ type: "text", text: "queued before recovery" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued before recovery" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse("local:stopped-queued", {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: "local:stopped-queued",
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let queued = 0;
+  fake.on("turn/queue", (params) => {
+    queued += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // Hydrate the pinned ref (arming the obligation), then let the recovery
+  // window's dispatch pass run: the turn/queue must never leave the outbox.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  await flushIndexedDBUntil(() => false);
+  expect(threadsStore.getState().restartBlockingObligations.has("local:stopped-queued")).toBe(true);
+  expect(queued).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// RoboRev Medium: the queued-non-send fence was order-blind at dispatch. The
+// admission question ("may a NEW send be minted behind this queue?") and the
+// dispatch question ("is this exact head record admissible?") genuinely
+// differ: hasQueuedNonSend answers the first, but at dispatch the head record
+// may itself be the turn/start with nothing ahead of it. With this outbox
+// [turn/start, turn/queue] on a foldable ref, the head turn/start must
+// dispatch; before the fix the whole ref was refused before the gate could
+// inspect the head's method, so the session could neither resume nor drain.
+// The queued turn/queue behind it stays parked, and a NEW send is still
+// refused at admission while that queued row stands.
+test("a merely-resumable local session's head turn/start dispatches ahead of a queued non-send", async () => {
+  const ref = "local:head-send-queued-tail";
+  const storage = new MutationOutboxIndexedDB();
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "resume and send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "resume and send" },
+  });
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued behind the send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued behind the send" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  let queuedCalls = 0;
+  fake.on("turn/queue", (params) => {
+    queuedCalls += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // The head turn/start dispatches even though a non-send row sits behind it.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toBe(1);
+  // The queued non-send row behind it stays parked: the hub admits only
+  // turn/start under the resume-only carve-out.
+  expect(queuedCalls).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  await refreshPendingTurnsProjection(ref);
+  // The two readings the fix splits: the head record is dispatchable even
+  // though a new send behind it is not (the queued row still stands).
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  expect(resumeOnlyLocalDispatchable(ref)).toBe(true);
+  await expect(threadsStore.getState().send(ref, "another")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+});
+
+// Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at
+// the target's FIFO ahead of a folded send (the dispatcher is strictly FIFO per
+// target and the hub's carve-out admits only turn/start), so the store-wide
+// predicate must not fold while one stands. The read answers from the durable
+// outbox, and a queued turn/start - the send itself - does not block it.
+test("the queued-non-send projection read blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Not ready: no dispatch pass runs, so a "submitting" row stays queued and
+  // the read observes exactly the durable state under test.
+  connectFakeClient("connecting");
+
+  const ref = "local:queued-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued turn/start is the send itself: it does not make the ref unfolable.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued non-send row does: folding a send behind it would starve the send.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// The merely-resumable snapshot the three tests below drive: ResumeRequired with
+// no send capability, and optionally the hub's foldable bit. A ref that is not
+// foldable is the one whose fence a status fold must NOT clear - the hub stamped
+// ResumeRequired for a cause whose turn/start it still refuses.
+function resumeOnlySnapshot(ref: string, foldable = false): ThreadReadResponse {
+  return readResponse(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...CAPABILITIES, send: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      ...(foldable ? { resumeOnlyFoldable: true } : {}),
+      queue: { revision: 0 },
+    },
+  });
+}
+
+// RoboRev Medium (round 13): the off-shut-down clear ends only the
+// merely-resumable window a genuinely resume-only snapshot opened. A ref that
+// was never resume-only - a restart-required daemon, an unconfirmed force-stop
+// exit, connection recovery - carries no resumeOnlyFoldable bit, so a status
+// fold off the shut-down set is not evidence the hub resumed it. Clearing that
+// ref's recovery obligation would admit mutations the hub still rejects.
+test("an off-shut-down status fold keeps the fence for a ref that was never resume-only", async () => {
+  const ref = "local:not-resume-only-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    // No foldable bit: the hub stamped ResumeRequired for a cause whose
+    // turn/start it still refuses, so this fold is no evidence it resumed.
+    resumeOnlySnapshot(ref),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+  // The bit was never set, so the fold is not evidence the hub resumed it: the
+  // recovery obligation the snapshot armed must survive.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+});
+
+// RoboRev Medium (round 13): a status fold must not drop a fence an in-flight
+// Stop this page started owns. The Stop's group holds the obligation on purpose
+// until its RPC settles, and the hub holds Stopping > 0 (refusing even
+// turn/start) for that whole window, so the off-shut-down clear skips it.
+test("an off-shut-down status fold leaves a stop-owned fence armed", async () => {
+  const ref = "local:stop-owned-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => resumeOnlySnapshot(ref, true));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  const stop = deferred<void>();
+  fake.on("evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  await flushUntil(() => threadsStore.getState().stoppingRefs.has(ref));
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  // The stop group still owns the obligation: the fold did not drop its fence.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+
+  stop.resolve();
+  await pending;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 13): the resumeOnlyFoldable bit is the PREVIOUS
+// connection's answer (applyThreadResumeRequirement stamped it on a snapshot
+// that connection produced). After the connection generation changes the hub's
+// connection-recovery fence can refuse a folded turn/start on the new
+// connection, so the retained bit must not fold a send. A connection change
+// invalidates it (invalidateHeldHistoriesForReconnect, the store's single
+// reconnect hook), and only a fresh read on the current connection re-stamps
+// folding.
+test("a connection generation change invalidates a retained resumeOnlyFoldable bit", async () => {
+  const ref = "local:resume-only-reconnect";
+  const snapshot = (threadRef: string) => resumeOnlySnapshot(threadRef, true);
+  const first = connectFakeClient("ready");
+  first.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  await threadsStore.getState().ensureThread(ref);
+  await flushPendingTurnsProjectionForTests();
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // The connection that produced the snapshot is replaced by a fresh one.
+  const next = new FakeClient("ready");
+  next.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  connectionStore.getState().connect(next);
+
+  // Synchronously after the rewire the outgoing connection's bit is gone: no
+  // folded send is admitted from a bit the previous connection produced.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+
+  // A fresh read on the current connection, still carrying the bit, restores
+  // folding.
+  await waitFor(() => expect(resumeOnlyLocalModel(ref)).toBe(true));
+});
+
+// RoboRev Medium (round 8): an ATTEMPTED non-send row survives a force stop
+// (cancelUnattemptedMutations keeps attempted rows) and still parks at the
+// target's FIFO. The method-aware dispatcher parks any non-turn/start head of a
+// resume-only ref BEFORE markAttempted, so such a row is both attempted and
+// still "submitting". The queued-non-send read must count it as blocking: a new
+// send is otherwise admitted, enqueued behind the parked head, and never
+// dispatched - while the Resume notice/button is already removed for a
+// resume-only session, leaving no UI path out.
+test("an attempted non-send row blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:attempted-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "parked non-send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  // Dispatched once, then parked by the resume-only fence: attempted, still
+  // "submitting", never settled.
+  expect(await storage.markAttempted(row.clientMutationId)).toBe(true);
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 8): the projection answers from an empty outbox until
+// its first durable read resolves. Failing closed only on a never-installed
+// projection left an installed-but-not-yet-refreshed one reporting "no
+// uncertainty", so a resume could fold ahead of an unreconciled blockedUnknown
+// row in the window between hydration and the refresh completing. Readiness is
+// per ref: an unloaded ref is not foldable, and folds only once its own durable
+// outbox has loaded.
+test("a foldable ref whose outbox has not loaded is not foldable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:not-yet-loaded";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  // The module's own subscription started a refresh for this ref, but it has
+  // not resolved: the projection holds no durable rows for it yet, so the
+  // predicate must fail closed rather than fold a resume ahead of a row it has
+  // not read.
+  // The two direct reads the store-wide predicate folds in fail closed too
+  // (the readiness seam), before any durable read has loaded.
+  expect(hasBlockedUnknown(ref)).toBe(true);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  // Only once the durable outbox has loaded is the ref foldable.
+  await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
+  expect(hasBlockedUnknown(ref)).toBe(false);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+});
+
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
   const fake = new FakeClient();
   connectionStore.setState({ client: fake, state: "ready" });
@@ -11056,6 +11728,187 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
 });
 
+// RoboRev Medium (PR 2862, round 9): stoppingRefs is a boolean Set with no
+// ownership or generation. Two overlapping forceStop calls therefore cleared
+// the fence when the FIRST completed, while the second stop was still
+// draining - and a stale thread/read refresh could then clear the restart
+// obligation too, reopening mutation dispatch for the rest of the stop
+// window. A per-ref in-flight count keeps the fence armed until the last stop
+// returns, whichever order they finish in.
+test("an earlier forceStop completion cannot clear the fence while a second stop still drains", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const stops = [deferred<void>(), deferred<void>()];
+  let stopCalls = 0;
+  fake.on("evener/thread/forceStop", () => stops[stopCalls++]?.promise ?? Promise.resolve());
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // The first stop resolves while the second is still in flight.
+  stops[0]?.resolve();
+  await first;
+  // The fence must stay armed: the second stop has not returned.
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // A stale refresh clearing the obligation must not reopen dispatch while
+  // the second stop still drains: stoppingRefs is the independent fence.
+  threadsStore.setState((state) => {
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    restartBlockingObligations.delete(ref);
+    return { restartBlockingObligations };
+  });
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // Only when the last stop returns does the fence clear.
+  stops[1]?.resolve();
+  await second;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Low (PR 2862, round 9, a regression from the round's own Stop
+// fence): the restart obligation forceStop arms is restored only when the
+// cancellation write fails. A requireClient() lookup failure (offline, no
+// ready client) throws before any signal reaches a daemon, so the armed
+// obligation must be restored exactly as the storage failure does - and
+// refreshThread must NOT be kicked, since while offline it cannot clear the
+// fence and only leaves a live session's recovery fenced.
+test("forceStop with no connected client leaves the obligation untouched and does not refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("forceStop with no connected client restores a pre-existing obligation exactly", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+// RoboRev Medium (PR 2862, round 11): each forceStop captured the obligation
+// map's value and restored it unconditionally when it aborted, so overlapping
+// stops clobbered the one shared recovery obligation. The obligation now lives
+// in the refcounted stop group: captured once on the 0 -> 1 transition and
+// restored on the 1 -> 0 transition only when no member ever signalled a
+// daemon. An aborting member never writes back its own captured value over an
+// entry another still-active member owns.
+test("an aborted forceStop cannot clear the obligation a second stop owns", async () => {
+  // Only the first stop's cancellation write fails; the second proceeds.
+  let cancels = 0;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation === "cancelUnattempted" && ++cancels === 1) throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("storage unavailable");
+  await second;
+
+  // The second stop reached the daemon, so the fence must stay armed even
+  // though the aborted first stop's restore ran while it was still draining.
+  expect(forceStopRpc).toHaveBeenCalledTimes(1);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 12): endStop restored the group's captured obligation
+// on the no-signal 1 -> 0 transition unconditionally, so an aborting stop
+// deleted (or overwrote) a recovery fence a CONCURRENT hydration had armed
+// during its cancellation await. publishAndReconcileThreadHydration arms a fresh
+// Symbol() on any read reporting resumeRequired, and such a read can resolve
+// while the stop is still in that await; the abort then clobbered the newer
+// fence, leaving the client unfenced while the hub still held ResumeRequired.
+// The group now owns the exact symbol it armed and settles the ref's obligation
+// only while the ref still holds it, so the hydration's fence survives.
+test("an aborted forceStop leaves a concurrently armed recovery fence in place", async () => {
+  const ref = "local:abort-hydration";
+  const freshFence = Symbol("hydrated-fence");
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation !== "cancelUnattempted") return;
+      // A hydration arms a fresh obligation while the stop's cancellation write
+      // is still in flight (publishAndReconcileThreadHydration's own setState),
+      // then the write fails and aborts the stop before it signals a daemon.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, freshFence),
+      }));
+      throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("storage unavailable");
+
+  // The aborted stop must not delete the hydration's newer fence.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(freshFence);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+test("two overlapping aborted forceStops leave the obligation at its pre-group value", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+
+  // Neither stop reached a daemon: the obligation is exactly the pre-group
+  // value, never a sibling stop's arming symbol.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(threadsStore.getState().restartBlockingObligations.size).toBe(1);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("two overlapping aborted forceStops leave no stale obligation when none existed", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+});
+
 test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {
   const stale = new FakeClient("connecting");
   const current = new FakeClient("ready");
@@ -11174,6 +12027,9 @@ describe("Stop cancellation as durable outbox state", () => {
 
     await expect(threadsStore.getState().forceStop("ref_a")).rejects.toThrow("storage unavailable");
     expect(forceStopRpc).not.toHaveBeenCalled();
+    // The abort touched no daemon and leaves the user free to retry: the fence
+    // armed with the drain is restored to its captured state (none was armed).
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
 
     failWrites = false;
     await threadsStore.getState().forceStop("ref_a");

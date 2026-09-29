@@ -1434,6 +1434,28 @@ func applyThreadResumeRequirement(ctx context.Context, cfg hubcore.WebConfig, re
 	if recovery.ResumeRequired || recovery.Stopping > 0 || sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
 		thread.Evener.ResumeRequired = true
 		thread.Evener.Capabilities.Send = false
+		thread.Evener.ResumeOnlyFoldable = resumeOnlyFoldable(ctx, cfg, ref, threadID)
 	}
 	return thread
+}
+
+// resumeOnlyFoldable reports whether a turn/start on this connection would be
+// admitted under the resume-only carve-out - the shape
+// sessionAdmitsResumeRequired admits for a request, read without one: the
+// requirement is set, no Stop is draining, the exit is confirmed, the
+// connection fence does not apply, and no incompatible-protocol daemon refuses
+// the turn/start outright.
+func resumeOnlyFoldable(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	state := sessionRecoveryState(cfg, ref, threadID)
+	if !state.ResumeRequired || state.Stopping > 0 || !state.ExitConfirmed {
+		return false
+	}
+	// A daemon on an incompatible protocol refuses every turn/start
+	// (daemonRestartRequiredError), so the bit must not claim otherwise. The
+	// caller's restart-required override runs after this overlay, so the
+	// question is asked here rather than read off the status stamped later.
+	if _, required, err := restartRequiredDaemon(ctx, cfg, ref, threadID); err != nil || required {
+		return false
+	}
+	return sessionConnectionRecoveryError(ctx, cfg, ref, threadID) == nil
 }

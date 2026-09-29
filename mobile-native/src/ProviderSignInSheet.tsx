@@ -1,173 +1,354 @@
+// Signing a provider in without leaving the app (spec 12): the hub's device
+// flow hands the phone a page and a code, so the sheet copies the code on the
+// way, opens the page in the in-app browser, and closes it again once the
+// flow's own polling sees the sign-in land.
 import * as Clipboard from "expo-clipboard";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, AppState, Linking, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { SymbolView } from "expo-symbols";
+import * as WebBrowser from "expo-web-browser";
+import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, AppState, Pressable, Text, TextInput, View } from "react-native";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { fonts, space } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
-import { ConnectionStatus } from "./ConnectionStatus";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
+import { SheetStatus } from "./sheet/SheetStatus";
+import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
+
+const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
+const OPEN_FAILED = "Could not open the sign-in page.";
 
 export function ProviderSignInSheet({
 	flow,
 	name,
-	hubName,
 	connected,
 	onClose,
 }: {
 	flow: ProviderSignIn;
 	name: string;
-	hubName: string;
 	connected: boolean;
 	onClose(): void;
 }) {
-	const colors = useColors();
+	const { palette } = useColors();
+	const scale = useTextScale();
 	const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot);
 	const [redirect, setRedirect] = useState("");
 	const [localError, setLocalError] = useState<string | null>(null);
-	const [copied, setCopied] = useState(false);
+	// Both name the device flow they happened in, so a flow started again
+	// begins uncopied and unopened without resetting them.
+	const [copiedFlow, setCopiedFlow] = useState<string | null>(null);
+	const [openedFlow, setOpenedFlow] = useState<string | null>(null);
 	useEffect(() => {
 		flow.setActive(AppState.currentState === "active");
 		const subscription = AppState.addEventListener("change", (value) => flow.setActive(value === "active"));
 		return () => subscription.remove();
 	}, [flow]);
-	async function open(url: string) {
+	const authorized = state.phase === "authorized";
+	useEffect(() => {
+		// The sign-in landed while the page may still be open over the app.
+		// With no browser open the call rejects, which is nothing to report.
+		if (!authorized) return;
+		WebBrowser.dismissBrowser().catch(() => {});
+		// A copy or open that failed earlier doesn't matter once signed in.
 		setLocalError(null);
+	}, [authorized]);
+	async function copy(flowId: string, code: string) {
+		let copied = false;
+		try {
+			copied = await Clipboard.setStringAsync(code);
+		} catch {}
+		// A failed copy takes back an earlier "Code copied".
+		setCopiedFlow(copied ? flowId : null);
+		if (!copied) setLocalError(COPY_FAILED);
+	}
+	// openBrowserAsync resolves only when the page closes, so the waiting state
+	// starts as it opens and is taken back if it couldn't.
+	// Only a plain http(s) page with no user info opens.
+	function openable(url: string): boolean {
 		try {
 			const parsed = new URL(url);
-			if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password)
-				throw new Error("Unsupported URL");
-			await Linking.openURL(url);
+			return ["https:", "http:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
 		} catch {
-			setLocalError("Could not open the authorization page.");
+			return false;
 		}
 	}
-	async function copy() {
-		setLocalError(null);
+	async function open(url: string, onOpening?: (opening: boolean) => void) {
 		try {
-			if (state.device && (await Clipboard.setStringAsync(state.device.userCode))) setCopied(true);
-			else setLocalError("Could not copy the code. Select it to copy manually.");
+			if (!openable(url)) throw new Error("Unsupported URL");
+			onOpening?.(true);
+			await WebBrowser.openBrowserAsync(url);
 		} catch {
-			setLocalError("Could not copy the code. Select it to copy manually.");
+			onOpening?.(false);
+			setLocalError(OPEN_FAILED);
 		}
 	}
+	const device = state.phase === "device" ? state.device : undefined;
+	const waiting = !!device && openedFlow === device.flowId;
+	const openDevicePage = async () => {
+		if (!device) return;
+		setLocalError(null);
+		// Nothing is copied for a page that won't open.
+		if (!openable(device.verificationUrl)) {
+			setLocalError(OPEN_FAILED);
+			return;
+		}
+		await copy(device.flowId, device.userCode);
+		await open(device.verificationUrl, (opening) => setOpenedFlow(opening ? device.flowId : null));
+	};
+	const startAgain = () => {
+		setLocalError(null);
+		setRedirect("");
+		void flow.start();
+	};
+	const body = (text: ReactNode) => (
+		<Text
+			allowFontScaling={allowFontScaling}
+			style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 21 * scale }}
+		>
+			{text}
+		</Text>
+	);
+	const statement = (text: string) => (
+		<Text
+			allowFontScaling={allowFontScaling}
+			style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600" }}
+		>
+			{text}
+		</Text>
+	);
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<View style={styles.fill}>
-						<Copy muted>{hubName}</Copy>
-					</View>
-					<Action onPress={onClose}>{state.phase === "authorized" ? "Done" : "Cancel"}</Action>
-				</View>
-				{/* The native sheet covers the banner the screen shows behind it,
-				 * and a sign-in opened from behind that banner may sit entirely in
-				 * the time the connection is away: the status and the manual
-				 * reconnect live here too. */}
-				{!connected && <ConnectionStatus />}
-				<ScrollView
-					automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-					keyboardShouldPersistTaps="handled"
-					contentContainerStyle={{ padding: 20, gap: 12 }}
-				>
-					<Copy>Sign in to {name}</Copy>
-					{!connected && <Copy muted>Waiting for the hub…</Copy>}
-					<ErrorMessage message={localError || state.error} />
-					{state.busy && <ActivityIndicator accessibilityLabel="Checking sign-in" />}
-					{state.credentialState !== "unknown" && (
-						<Copy>
-							{state.credentialState === "configured"
-								? "Current OAuth sign-in is configured."
-								: "Current OAuth sign-in is not configured."}
-						</Copy>
-					)}
-					{state.phase === "authorized" && <Copy>Signed in. The hub picks up the new credentials once it's back.</Copy>}
-					{state.phase === "device" && state.device && (
-						<>
-							<Copy>Copy the code, then authorize in your browser.</Copy>
-							<Copy>{state.device.userCode}</Copy>
-							<View style={[styles.row, { flexWrap: "wrap" }]}>
-								<Action
-									onPress={() => {
-										void copy();
+		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
+				<Header title={`Sign in to ${name}`} close={authorized ? "Done" : "Cancel"} onClose={onClose} />
+				<SheetStatus />
+				<GroupedPage>
+					{state.phase === "idle" || state.phase === "starting" ? (
+						<ActivityIndicator accessibilityLabel="Starting sign-in" style={{ padding: 32 }} />
+					) : null}
+					{device && !waiting ? (
+						<Section>
+							{body(
+								"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
+							)}
+							<View
+								style={{
+									flexDirection: "row",
+									alignItems: "center",
+									justifyContent: "space-between",
+									gap: 12,
+									borderRadius: 12,
+									paddingHorizontal: 16,
+									paddingVertical: 14,
+									backgroundColor: palette.surface,
+								}}
+							>
+								<Text
+									selectable
+									allowFontScaling={allowFontScaling}
+									style={{
+										color: palette.inkHi,
+										fontFamily: fonts.mono,
+										fontWeight: "600",
+										fontSize: 26 * scale,
+										letterSpacing: 2,
+										flexShrink: 1,
 									}}
 								>
-									{copied ? "Code copied" : "Copy code"}
-								</Action>
+									{device.userCode}
+								</Text>
 								<Action
 									onPress={() => {
-										if (state.device) void open(state.device.verificationUrl);
+										setLocalError(null);
+										void copy(device.flowId, device.userCode);
 									}}
 								>
-									Open authorization page
+									{copiedFlow === device.flowId ? "Code copied" : "Copy code"}
 								</Action>
 							</View>
-							<Copy muted>Waiting for authorization. You can return here after approving it.</Copy>
-							{state.error && (
-								<Action
+							<Action
+								tone="primary"
+								onPress={() => {
+									void openDevicePage();
+								}}
+							>
+								Open sign-in page
+							</Action>
+						</Section>
+					) : null}
+					{device && waiting ? (
+						<>
+							<Section centered>
+								{/* After a failed poll nothing is being waited on: the next
+								    check is the person's (Check again, below). */}
+								{state.error ? null : statement("Waiting for you to finish signing in…")}
+								{/* The code stays selectable, and copyable, in case the
+								    automatic copy failed. */}
+								{body(
+									<>
+										Your code is{" "}
+										<Text selectable style={{ fontFamily: fonts.mono }}>
+											{device.userCode}
+										</Text>
+										.
+									</>,
+								)}
+							</Section>
+							<Group>
+								<Row
+									label="Open sign-in page"
+									tone="accent"
+									onPress={() => {
+										void openDevicePage();
+									}}
+								/>
+								<Row
+									label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+									tone="accent"
+									onPress={() => {
+										setLocalError(null);
+										void copy(device.flowId, device.userCode);
+									}}
+								/>
+							</Group>
+						</>
+					) : null}
+					{device && state.error ? (
+						<>
+							<GroupFooter tone="danger">{state.error}</GroupFooter>
+							<Group>
+								<Row
+									label="Check again"
+									tone="accent"
 									disabled={!connected || state.busy}
 									onPress={() => {
 										void flow.retryPoll();
 									}}
-								>
-									Retry status check
-								</Action>
-							)}
+								/>
+							</Group>
 						</>
-					)}
-					{state.phase === "browser" && state.browser && (
+					) : null}
+					{state.phase === "browser" && state.browser ? (
 						<>
-							<Copy>Authorize in your browser, then paste the full redirect URL here.</Copy>
-							<Action
-								onPress={() => {
-									if (state.browser) void open(state.browser.url);
-								}}
-							>
-								Open authorization page
-							</Action>
-							<TextInput
-								accessibilityLabel="Redirect URL"
-								value={redirect}
-								onChangeText={setRedirect}
-								autoCapitalize="none"
-								autoCorrect={false}
-								editable={!state.busy}
-								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-							/>
-							<Action
-								disabled={!connected || state.busy || !redirect.trim()}
-								onPress={() => {
-									const value = redirect;
-									setRedirect("");
-									void flow.complete(value);
-								}}
-							>
-								Finish sign-in
-							</Action>
+							<Section>{body("Open the sign-in page and sign in, then paste the full redirect URL here.")}</Section>
+							<Group>
+								<Row
+									label="Open sign-in page"
+									tone="accent"
+									onPress={() => {
+										setLocalError(null);
+										if (state.browser) void open(state.browser.url);
+									}}
+								/>
+							</Group>
+							<Group>
+								<TextInput
+									accessibilityLabel="Redirect URL"
+									placeholder="Paste the redirect URL"
+									placeholderTextColor={palette.inkLow}
+									allowFontScaling={allowFontScaling}
+									value={redirect}
+									onChangeText={setRedirect}
+									autoCapitalize="none"
+									autoCorrect={false}
+									editable={!state.busy}
+									style={{
+										color: palette.inkHi,
+										fontSize: 17 * scale,
+										minHeight: 44,
+										paddingHorizontal: 16,
+										paddingVertical: 11,
+									}}
+								/>
+								<Row
+									label="Finish sign-in"
+									tone="accent"
+									disabled={!connected || state.busy || !redirect.trim()}
+									onPress={() => {
+										const value = redirect;
+										setRedirect("");
+										void flow.complete(value);
+									}}
+								/>
+							</Group>
+							{state.error ? <GroupFooter tone="danger">{state.error}</GroupFooter> : null}
 						</>
-					)}
-					{["device", "browser", "error", "expired"].includes(state.phase) && (
-						<Action
-							disabled={!connected || state.busy}
-							onPress={() => {
-								void flow.checkStatus();
-							}}
-						>
-							Check credential status
-						</Action>
-					)}
-					{["error", "expired"].includes(state.phase) && (
-						<Action
-							disabled={!connected || state.busy}
-							onPress={() => {
-								setCopied(false);
-								setRedirect("");
-								void flow.start();
-							}}
-						>
-							Start again
-						</Action>
-					)}
-				</ScrollView>
+					) : null}
+					{state.phase === "expired" || state.phase === "error" ? (
+						<>
+							{/* An expired code's flow error sends you to check the status by
+							 * hand, a step the sheet no longer has, so it says what happened. */}
+							{state.phase === "expired" ? (
+								<Section>{statement("The code expired.")}</Section>
+							) : state.error ? (
+								<Section>{statement(state.error)}</Section>
+							) : null}
+							<Group>
+								<Row label="Start again" tone="accent" disabled={!connected || state.busy} onPress={startAgain} />
+							</Group>
+						</>
+					) : null}
+					{authorized ? (
+						<Section centered>
+							<SymbolView name="checkmark" tintColor={palette.aliveInk} size={34} />
+							{statement(`Signed in to ${name}`)}
+							{body("Sessions using it can continue.")}
+						</Section>
+					) : null}
+					{localError ? <GroupFooter tone="danger">{localError}</GroupFooter> : null}
+				</GroupedPage>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
+	);
+}
+
+/** A stretch of the sheet outside any group: its prose, the code, a button.
+ * The group that follows brings its own 16pt, so the bottom padding is what's
+ * left of the space under it. */
+function Section({ children, centered = false }: { children: ReactNode; centered?: boolean }) {
+	return (
+		<View
+			style={{
+				paddingHorizontal: 20,
+				paddingTop: centered ? 28 : 16,
+				paddingBottom: centered ? 28 - space.groupGap : 0,
+				gap: centered ? 8 : 16,
+				alignItems: centered ? "center" : "stretch",
+			}}
+		>
+			{children}
+		</View>
+	);
+}
+
+/** The sheet's header: Cancel, or Done once signed in, and the title. */
+function Header({ title, close, onClose }: { title: string; close: "Cancel" | "Done"; onClose(): void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", minHeight: 44, paddingHorizontal: 16 }}>
+			<View style={{ flex: 1, alignItems: "flex-start" }}>
+				<Pressable accessibilityRole="button" accessibilityLabel={close} hitSlop={8} onPress={onClose}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							color: palette.accentInk,
+							fontSize: 17 * scale,
+							fontWeight: close === "Done" ? "600" : "400",
+						}}
+					>
+						{close}
+					</Text>
+				</Pressable>
+			</View>
+			<Text
+				accessibilityRole="header"
+				allowFontScaling={allowFontScaling}
+				numberOfLines={1}
+				style={{ flex: 2, textAlign: "center", color: palette.inkHi, fontSize: 17 * scale, fontWeight: "600" }}
+			>
+				{title}
+			</Text>
+			<View style={{ flex: 1 }} />
+		</View>
 	);
 }

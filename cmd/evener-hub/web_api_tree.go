@@ -23,8 +23,11 @@ func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
 	return s.navigation.EmptyMutation()
 }
 
+// projectKeyForStateDir names the project a PastEntry.StateDir belongs to. The
+// state dir is the project bucket itself (<state>/projects/<id>), so its base
+// is the project ID that keys navigation project resources.
 func projectKeyForStateDir(stateDir string) string {
-	return filepath.Base(filepath.Dir(stateDir))
+	return filepath.Base(stateDir)
 }
 
 var (
@@ -44,9 +47,12 @@ type navigationSnapshot struct {
 	projectIdentities   map[string][]identifier.Project
 	projectConflicts    map[string]bool
 	remoteOwnership     map[string]favoriteRemoteOwnership
+	remoteRoots         *hubcore.RootIndex
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
 	remoteIncompleteIDs map[string]struct{}
 	remoteGeneration    uint64
+	// resolveDuration is the time ResolveProjectMap took inside this capture.
+	resolveDuration time.Duration
 }
 
 type favoriteRemoteOwnership struct {
@@ -149,6 +155,30 @@ func canonicalPinAssignments(assignments map[hubcore.ArchiveKey]hubcore.SessionP
 	return out
 }
 
+// dropSubagentPins removes the assignments whose target is a known subagent
+// from what navigation presents, and takes them out of their section's member
+// count. Favorites and pins never target a subagent; a stale row is inert here
+// and stays in the store until the user unpins it.
+func dropSubagentPins(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, sections []hubcore.PinSection, subagents map[string]bool) (map[hubcore.ArchiveKey]hubcore.SessionPin, []hubcore.PinSection) {
+	if len(subagents) == 0 {
+		return assignments, sections
+	}
+	kept := make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(assignments))
+	dropped := make(map[string]int)
+	for key, assignment := range assignments {
+		if subagents[pinDecisionKey(key).ID] {
+			dropped[assignment.SectionID]++
+			continue
+		}
+		kept[key] = assignment
+	}
+	adjusted := append([]hubcore.PinSection(nil), sections...)
+	for i := range adjusted {
+		adjusted[i].MemberCount -= dropped[adjusted[i].ID]
+	}
+	return kept, adjusted
+}
+
 func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[hubcore.ArchiveKey]bool {
 	projects := make(map[hubcore.ArchiveKey]bool)
 	for key, favorite := range presentation {
@@ -206,11 +236,14 @@ func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, ap
 	value := s.treeCache.Get(key, time.Now(), func() hubcore.TreeCacheValue {
 		t := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
 		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
+		// This authority serves alias lookup, which falls back to the id's own
+		// spellings, so it carries no session facts: the stores are not read.
+		authority, _ := s.favoriteAuthorityForReferences(snapshot, t, nil)
 		return hubcore.TreeCacheValue{
 			Tree:              t,
 			AttentionSummary:  sum,
 			Live:              snapshot.live,
-			FavoriteAuthority: favoriteAuthorityForNavigation(snapshot, t),
+			FavoriteAuthority: authority,
 		}
 	})
 	return value.Tree, value.AttentionSummary, value.Live, value.FavoriteAuthority
@@ -321,12 +354,66 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	}
 }
 
+// sessionsUnderIncompatibleDaemons selects the past sessions whose ownership
+// a restartRequired or unconfirmed daemon can decide: those daemons' own
+// sessions and everything reachable from them through parent or job-tree-root
+// links. Any other session has no path to such a daemon, so verifying it
+// could only report ancestry gaps that no daemon could account for. An
+// unconfirmed claim without a usable identity cannot exclude any session.
+func sessionsUnderIncompatibleDaemons(past []hubcore.PastEntry, live []hubcore.LiveEntry, unconfirmed []rendezvous.Entry) []hubcore.PastEntry {
+	var pending []string
+	addDaemon := func(entry rendezvous.Entry, sessionID string) {
+		pending = append(pending, sessionID, entry.SessionID, entry.ThreadID)
+		if ref, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err == nil {
+			pending = append(pending, ref.ThreadID)
+		}
+	}
+	for _, entry := range live {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			addDaemon(entry.Entry, entry.SessionID)
+		}
+	}
+	for _, entry := range unconfirmed {
+		if _, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err != nil {
+			return past
+		}
+		addDaemon(entry, "")
+	}
+	linked := make(map[string][]string, len(past))
+	for _, entry := range past {
+		for _, owner := range []string{entry.Meta.ParentSessionID, entry.Meta.JobTreeRootSessionID} {
+			if owner != "" {
+				linked[owner] = append(linked[owner], entry.Meta.ID)
+			}
+		}
+	}
+	reached := make(map[string]bool)
+	for len(pending) > 0 {
+		id := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if id == "" || reached[id] {
+			continue
+		}
+		reached[id] = true
+		pending = append(pending, linked[id]...)
+	}
+	var affected []hubcore.PastEntry
+	for _, entry := range past {
+		if reached[entry.Meta.ID] {
+			affected = append(affected, entry)
+		}
+	}
+	return affected
+}
+
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
 	var unconfirmedOwnership bool
 	var ownershipErr error
+	var unconfirmed []rendezvous.Entry
 	if s.cfg.Roster != nil {
 		roster := s.cfg.Roster.Snapshot()
+		unconfirmed = roster.Unconfirmed
 		ownershipErr = roster.OwnershipError
 		live = roster.Live
 		unconfirmedOwnership = len(roster.Unconfirmed) > 0
@@ -346,7 +433,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	}) {
 		// Persisted delegates have no rendezvous of their own. Preserve the
 		// authenticated owner's restart restriction in every navigation projection.
-		for _, past := range pastEntries {
+		for _, past := range sessionsUnderIncompatibleDaemons(pastEntries, live, unconfirmed) {
 			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
@@ -372,12 +459,14 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		return isTombstone
 	}
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
+	var remoteMetas []schema.SessionMeta
 	for _, thread := range fetch.threads {
 		meta, entry, ok := appThreadTreeEntries(thread)
 		if !ok {
 			continue
 		}
 		metas = append(metas, meta)
+		remoteMetas = append(remoteMetas, meta)
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
@@ -403,7 +492,9 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	// Resolve live working directories once at ingestion. BuildTree and the
 	// orphan-live projection reuse this carried identity rather than resolving
 	// in grouping or rendering loops.
+	resolveStart := time.Now()
 	resolvedProjects := hubcore.ResolveProjectMap(metas, live)
+	resolveDuration := time.Since(resolveStart)
 	projectCandidates := make(map[string]map[string]identifier.Project, len(resolvedProjects)+len(carriedProjectCandidates))
 	for path, project := range resolvedProjects {
 		addNavigationProjectCandidate(projectCandidates, path, project)
@@ -454,9 +545,11 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		projectIdentities:   projectIdentities,
 		projectConflicts:    projectConflicts,
 		remoteOwnership:     favoriteRemoteOwnerships(fetch.threads),
+		remoteRoots:         hubcore.NewRootIndex(remoteMetas),
 		remoteSources:       fetch.sources,
 		remoteIncompleteIDs: incompleteIDs,
 		remoteGeneration:    fetch.generation,
+		resolveDuration:     resolveDuration,
 	}
 }
 
@@ -509,7 +602,7 @@ func selectNavigationProjects(candidates map[string]map[string]identifier.Projec
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
-	snapshot := s.navigationSnapshotInputs(ctx)
+	snapshot := s.navigationSnapshot(ctx)
 	return snapshot.metas, snapshot.live, snapshot.projects
 }
 
@@ -1125,43 +1218,120 @@ func (s *WebServer) favoriteDecisions() (map[hubcore.ArchiveKey]bool, error) {
 	return f, nil
 }
 
-func favoriteAuthorityForNavigation(snapshot navigationSnapshot, tree hubcore.Tree) hubcore.FavoriteAuthority {
-	topLevel := hubcore.TopLevelSessionIDs(snapshot.metas)
-	lineage := favoriteLineageQualities(snapshot.metas)
-	metaIDs := make(map[string]struct{}, len(snapshot.metas))
-	authority := hubcore.FavoriteAuthority{}
-	for _, meta := range snapshot.metas {
-		if meta.ID == "" {
-			continue
+// referencedSessionIDs names every session the favorite and pin stores refer
+// to, in the spelling each store keeps.
+func referencedSessionIDs(favorites map[hubcore.ArchiveKey]bool, assignments map[hubcore.ArchiveKey]hubcore.SessionPin) []string {
+	ids := make([]string, 0, len(favorites)+len(assignments))
+	for key := range favorites {
+		if key.Kind == "session" {
+			ids = append(ids, key.ID)
 		}
-		metaIDs[meta.ID] = struct{}{}
-		_, isTopLevel := topLevel[meta.ID]
-		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
-			ID:       meta.ID,
-			Aliases:  favoriteSessionAliases(meta.ID),
-			TopLevel: isTopLevel,
-			Lineage:  lineage[meta.ID],
-			Source:   favoriteSessionSourceQuality(meta.ID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
-		})
 	}
+	for key := range assignments {
+		ids = append(ids, pinDecisionKey(key).ID)
+	}
+	return ids
+}
+
+// localSessionIndex is the past-index view the referenced-ID authority reads:
+// lineage from the root index and a membership check that never probes disk.
+type localSessionIndex struct {
+	roots *hubcore.RootIndex
+	known func(id string) bool
+}
+
+func (s *WebServer) localSessionIndex() localSessionIndex {
+	if s.cfg.Past == nil {
+		return localSessionIndex{roots: hubcore.NewRootIndex(nil), known: func(string) bool { return false }}
+	}
+	past := s.cfg.Past
+	return localSessionIndex{roots: past.RootIndex(), known: func(id string) bool {
+		_, ok := past.Lookup(id)
+		return ok
+	}}
+}
+
+// favoriteAuthorityForReferences collects authority for the sessions the
+// stores reference, not for every session the hub holds. The second result is
+// the set of referenced canonical ids that are known subagents: no favorite or
+// pin may target one, so navigation drops them.
+func (s *WebServer) favoriteAuthorityForReferences(snapshot navigationSnapshot, tree hubcore.Tree, ids []string) (hubcore.FavoriteAuthority, map[string]bool) {
+	sessions, subagents := referencedSessionAuthorities(ids, snapshot, s.localSessionIndex())
+	return hubcore.FavoriteAuthority{
+		Sessions: sessions,
+		Projects: favoriteProjectAuthorities(snapshot),
+		Nodes:    tree.FavoriteNodeAuthorities(),
+	}, subagents
+}
+
+// referencedSessionAuthorities builds the session authority for each distinct
+// referenced id from the local root index and the remote thread snapshot. An id
+// no source knows gets no authority and classifies Dormant. A known subagent
+// (persisted meta, a live entry's running child, or a remote subagent thread)
+// is not top level and classifies ConfirmedInvalid. Rootness comes from the
+// shared nesting rule inside RootIndex, so lineage is always complete here.
+func referencedSessionAuthorities(ids []string, snapshot navigationSnapshot, local localSessionIndex) ([]hubcore.FavoriteSessionAuthority, map[string]bool) {
+	remoteRoots := snapshot.remoteRoots
+	if remoteRoots == nil {
+		remoteRoots = hubcore.NewRootIndex(nil)
+	}
+	running := hubcore.RunningSubagentIDs(snapshot.live)
+	liveIDs := make(map[string]bool, len(snapshot.live))
 	for _, entry := range snapshot.live {
-		if entry.SessionID == "" {
+		if entry.SessionID != "" {
+			liveIDs[entry.SessionID] = true
+		}
+	}
+	var sessions []hubcore.FavoriteSessionAuthority
+	subagents := make(map[string]bool)
+	seen := make(map[string]bool, len(ids))
+	for _, raw := range ids {
+		id, remote := canonicalSessionDecisionID(raw)
+		if seen[id] {
 			continue
 		}
-		if _, exists := metaIDs[entry.SessionID]; exists {
+		seen[id] = true
+		roots, inIndex := local.roots, false
+		if remote {
+			roots = remoteRoots
+			_, inIndex = snapshot.remoteOwnership[id]
+		}
+		isSubagent := roots.IsSubagent(id) || running[id]
+		if !isSubagent && !remote {
+			inIndex = local.known(id)
+		}
+		if !isSubagent && !inIndex && !liveIDs[id] {
 			continue
 		}
-		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
-			ID:       entry.SessionID,
-			Aliases:  favoriteSessionAliases(entry.SessionID),
-			TopLevel: true,
+		if isSubagent {
+			subagents[id] = true
+		}
+		// A live session whose meta has not reached an index is a root.
+		topLevel := !isSubagent && (!inIndex || roots.TopLevel(id))
+		sessions = append(sessions, hubcore.FavoriteSessionAuthority{
+			ID:       id,
+			Aliases:  favoriteSessionAliases(id),
+			TopLevel: topLevel,
 			Lineage:  hubcore.FavoriteAuthorityComplete,
-			Source:   favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
+			Source:   favoriteSessionSourceQuality(id, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
 		})
 	}
-	authority.Projects = favoriteProjectAuthorities(snapshot)
-	authority.Nodes = tree.FavoriteNodeAuthorities()
-	return authority
+	return sessions, subagents
+}
+
+// canonicalSessionDecisionID maps a decision's session spelling to the id the
+// authority is keyed by: the bare id for the controller's own sessions, the
+// host-qualified ref for a remote one.
+func canonicalSessionDecisionID(raw string) (id string, remote bool) {
+	ref, err := hubapi.ParseRef(raw)
+	switch {
+	case err != nil:
+		return raw, false
+	case ref.HostID == "local":
+		return ref.SessionID, false
+	default:
+		return ref.String(), true
+	}
 }
 
 func favoriteSessionAliases(id string) []string {
@@ -1269,80 +1439,6 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func favoriteLineageQualities(metas []schema.SessionMeta) map[string]hubcore.FavoriteAuthorityQuality {
-	qualities := make(map[string]hubcore.FavoriteAuthorityQuality, len(metas))
-	byID := make(map[string]int, len(metas))
-	children := make(map[string][]string)
-	for _, meta := range metas {
-		if meta.ID == "" {
-			continue
-		}
-		byID[meta.ID]++
-		qualities[meta.ID] = hubcore.FavoriteAuthorityComplete
-		if meta.ParentSessionID != "" && !meta.IsSubagent {
-			children[meta.ParentSessionID] = append(children[meta.ParentSessionID], meta.ID)
-		}
-	}
-	markIncomplete := func(id string) {
-		if id != "" {
-			qualities[id] = hubcore.FavoriteAuthorityIncomplete
-		}
-	}
-	for _, meta := range metas {
-		if meta.ID == "" {
-			continue
-		}
-		if meta.IsSubagent && meta.ParentSessionID == "" {
-			markIncomplete(meta.ID)
-		}
-		if meta.ParentSessionID != "" {
-			if meta.ParentSessionID == meta.ID || byID[meta.ParentSessionID] != 1 {
-				markIncomplete(meta.ID)
-			}
-		}
-	}
-	for parentID, childIDs := range children {
-		if len(uniqueStrings(childIDs)) > 1 {
-			markIncomplete(parentID)
-			for _, childID := range childIDs {
-				markIncomplete(childID)
-			}
-		}
-	}
-	for _, meta := range metas {
-		if meta.ID == "" || meta.ParentSessionID == "" {
-			continue
-		}
-		seen := map[string]struct{}{}
-		current := meta.ID
-		for current != "" {
-			if _, ok := seen[current]; ok {
-				markIncomplete(current)
-				for id := range seen {
-					markIncomplete(id)
-				}
-				break
-			}
-			seen[current] = struct{}{}
-			parent, ok := findMetaByID(metas, current)
-			if !ok {
-				break
-			}
-			current = parent.ParentSessionID
-		}
-	}
-	return qualities
-}
-
-func findMetaByID(metas []schema.SessionMeta, id string) (schema.SessionMeta, bool) {
-	for _, meta := range metas {
-		if meta.ID == id {
-			return meta, true
-		}
-	}
-	return schema.SessionMeta{}, false
-}
-
 func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteProjectAuthority {
 	claims := make(map[string]hubcore.FavoriteProjectAuthority)
 	projectIdentities := snapshot.projectIdentities
@@ -1352,17 +1448,20 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 			projectIdentities[path] = []identifier.Project{project}
 		}
 	}
+	// Group session IDs by working directory once; each project then reads
+	// its own group instead of rescanning every session.
+	idsByDir := make(map[string][]string)
+	for _, meta := range snapshot.metas {
+		dir := hubcore.EffectiveWorkingDir(meta)
+		idsByDir[dir] = append(idsByDir[dir], meta.ID)
+	}
+	for _, entry := range snapshot.live {
+		idsByDir[entry.WorkingDir] = append(idsByDir[entry.WorkingDir], entry.SessionID)
+	}
 	for path, projects := range projectIdentities {
 		owners := make(map[string]favoriteProjectOwnerEvidence)
-		for _, meta := range snapshot.metas {
-			if hubcore.EffectiveWorkingDir(meta) == path {
-				favoriteProjectOwnerEvidenceAdd(owners, meta.ID, snapshot)
-			}
-		}
-		for _, entry := range snapshot.live {
-			if entry.WorkingDir == path {
-				favoriteProjectOwnerEvidenceAdd(owners, entry.SessionID, snapshot)
-			}
+		for _, id := range idsByDir[path] {
+			favoriteProjectOwnerEvidenceAdd(owners, id, snapshot)
 		}
 		if len(owners) == 0 {
 			owners["local"] = favoriteProjectOwnerEvidence{quality: hubcore.FavoriteAuthorityIncomplete}

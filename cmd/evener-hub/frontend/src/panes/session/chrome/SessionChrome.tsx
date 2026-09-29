@@ -1,10 +1,9 @@
 // SessionChrome: the session pane's chrome surface. Its default footer
 // presentation is ONE quiet status-bar row (cadence where needed, model ·
-// effort, context, live work, queue depth, and the goal chip when a goal is
-// set) with the session "⋯" menu pinned to the trailing edge. Its composer
-// presentation keeps the same StatusRow and menu owner but omits the
-// footer-only cadence and goal controls. Every real value (the ThreadModel,
-// capabilities, ...) is read from the threads store internally via
+// effort, context, live work, queue depth) with the session "⋯" menu pinned
+// to the trailing edge. Its composer presentation keeps the same StatusRow
+// and menu owner but omits the footer-only cadence. Every real value (the
+// ThreadModel, capabilities, ...) is read from the threads store internally via
 // useThreadsStore, same as every other pane-level component in this app
 // (mirrors Session.tsx's own model lookup).
 //
@@ -13,15 +12,23 @@
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The three
+// and Shut down. The composer placement alone can also lead with the
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
 // panels stay mounted triggerless so their imperative handles still open the
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
 // the menu's "Activity · N" label reads the summary that refresh maintains.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
-// hands off to it - design-system.md §9) - so GoalControl below is the
-// goal chip + clear popover only.
+// hands off to it - design-system.md §9). The former goal chip + clear
+// popover (GoalControl) is deleted entirely: Jesse's 2026-09-28 ruling on
+// the #1339 composer row dropped it from the composer placement, and the
+// footer mount that remained was production-dead (only the composer and
+// menu placements ever mount), so the component went rather than staying
+// dead code - the goal objective stays editable, and it and its live
+// status stay visible, through the composer's own CurrentWork goal row
+// and its inline /goal built-in; the iteration count the chip's popover
+// carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
@@ -31,7 +38,7 @@ import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { navigate, paneToURL } from "../../../shell/routing";
-import { SessionMenu, type SessionMenuProps } from "../../../shell/sessionMenu/SessionMenu";
+import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
@@ -47,7 +54,6 @@ import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
-import { GoalControl } from "./GoalControl";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
@@ -69,6 +75,14 @@ export interface SessionChromeProps {
    * (issue #1335).
    */
   discoveryOnly?: boolean;
+  /**
+   * Turn verbs for the session menu, offered by the composer's narrow
+   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). Only
+   * the composer placement forwards them: the footer and menu-only mounts
+   * share SessionMenu with the rail, where no draft exists for Steer to
+   * send. Composer.tsx owns presence, disablement, and the press handlers.
+   */
+  turnVerbs?: SessionMenuTurnVerbs;
 }
 
 const CLASS = {
@@ -90,6 +104,7 @@ export function SessionChrome({
   onOpenTasks,
   discoverActivity = false,
   discoveryOnly = false,
+  turnVerbs,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -309,10 +324,11 @@ export function SessionChrome({
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            {/* Production mounts ONLY this placement (Composer.tsx), so the
-              goal chip must ride here too — footer-only left it unreachable
-              in the real app. */}
-            <GoalControl sessionRef={sessionRef} model={model} />
+            {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
+                "drop goal inline in the composer"): the composer row is
+                status and menu alone, and the goal objective stays visible
+                and editable through the composer's own CurrentWork goal row
+                and its inline /goal built-in. */}
           </div>
         ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
@@ -323,7 +339,6 @@ export function SessionChrome({
               <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            <GoalControl sessionRef={sessionRef} model={model} />
           </div>
         )}
         <div className={CLASS.right}>
@@ -344,6 +359,9 @@ export function SessionChrome({
             // the menu's leading pane group.
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            // Composer placement only: the header comment on the prop says
+            // why the other placements must never carry turn verbs.
+            turnVerbs={placement === "composer" ? turnVerbs : undefined}
             actions={{
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();

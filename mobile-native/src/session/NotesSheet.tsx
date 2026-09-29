@@ -13,6 +13,7 @@ import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } fro
 import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
@@ -20,6 +21,7 @@ import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
 import { canWriteHumanNote, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
+import { destructiveButton, haptic } from "../haptics";
 
 export interface NotesHost {
 	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">;
@@ -193,6 +195,7 @@ function Quiet({ children, small = false }: { children: string; small?: boolean 
 function NoteEditor({ notes, working, focus }: { notes: NotesController; working: boolean; focus: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	const note = useSyncExternalStore(notes.subscribe, notes.getSnapshot);
 	const [focused, setFocused] = useState(false);
 	// Opened from the bar's "Your note: …", the caret waits at the end, ready to
@@ -224,9 +227,9 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 				allowFontScaling={allowFontScaling}
 				style={{
-					fontFamily: typeRoles.yourMessage.fontFamily,
-					fontSize: typeRoles.yourMessage.fontSize * scale,
-					lineHeight: typeRoles.yourMessage.lineHeight * scale,
+					fontFamily: reading.yourMessage.fontFamily,
+					fontSize: reading.yourMessage.fontSize * scale,
+					lineHeight: reading.yourMessage.lineHeight * scale,
 					color: palette.prose,
 					minHeight: 120,
 					textAlignVertical: "top",
@@ -309,7 +312,11 @@ function LinkRow({
 					// Remove link, when offered, is the last item before Cancel.
 					...(writable ? { destructiveButtonIndex: items.length - 1 } : {}),
 				},
-				(index) => items[index]?.run(),
+				(index) => {
+					// Spec 16.6: Remove link is its own confirmation.
+					if (writable && index === items.length - 1) haptic("rigid");
+					items[index]?.run();
+				},
 			);
 			return;
 		}
@@ -318,7 +325,9 @@ function LinkRow({
 		Alert.alert(
 			label || link.url,
 			undefined,
-			items.map((item) => ({ text: item.label, onPress: item.run })),
+			items.map((item) =>
+				item.run === remove ? destructiveButton(item.label, item.run) : { text: item.label, onPress: item.run },
+			),
 			{ cancelable: true },
 		);
 	};

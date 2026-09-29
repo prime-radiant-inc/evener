@@ -2,8 +2,8 @@
 set -eu
 
 repo="https://github.com/prime-radiant-inc/evener"
-# evener-dev, the dev tooling binary, still rides in release archives so older
-# versions (which required it) can upgrade into them, but is not installed.
+# Release archives carry evener alone: evener-dev, the dev tooling binary, has
+# no install path and is no longer built into them.
 bins="evener"
 
 if [ -n "${PREFIX:-}" ]; then

@@ -61,7 +61,7 @@ export function ProviderEditor({
 	});
 	// The save's assertion belongs to the row this editor was OPENED on, not
 	// whatever it resolves to now: the screen this editor lives in survives
-	// reconnects behind a banner (ProvidersScreen), so a row another client
+	// reconnects behind a status line (hub/ProvidersPage), so a row another client
 	// moved while this one was away republishes under the open editor with a
 	// new fingerprint - and an assertion read from the live row would approve
 	// a save against a destination the user never saw. Captured here, the

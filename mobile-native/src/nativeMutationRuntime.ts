@@ -298,6 +298,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		};
 	}
 
+	/** The client a session screen, or the flush, registered this target
+	 * with; undefined while nobody holds it. */
+	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
+		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
+	}
+
 	beginAuthoritativeRead(
 		hubId: string,
 		targetRef: string,

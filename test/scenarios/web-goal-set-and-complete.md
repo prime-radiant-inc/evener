@@ -7,8 +7,8 @@
 - **goal/set via ⌘K palette** — the "Set session goal" command
   (`shell/palette/commands.ts:464-476`, id `goal`, capability-scoped) calls
   `threadsStore.getState().setGoal(ref, objective)`. The same call backs
-  Session actions → **Set goal…** and the `GoalControl` dialog
-  (`panes/session/chrome/GoalControl.tsx:153,165`).
+  the composer's inline `/goal` built-in, which runs the same catalog entry
+  from the draft (`panes/session/composer/builtinCommand.ts`).
 - **A6 capability gate** — `goal/set` is pre-flight gated by the `Goal`
   thread capability inside `setGoalWithResume`
   (`cmd/evener-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
@@ -21,15 +21,21 @@
   (`agent/session_lifecycle.go:1386`), NOT the ~2.5KB rendered continuation
   prompt. The full prompt goes to the model as a steering turn, never to the
   UI.
-- **status chip + terminal report** — a set goal renders a
-  `Goal: <status>` chip whose popover
-  (`[data-testid="goal-popover"]`, `GoalControl.tsx:200-205`) reads
-  `<status> · <N> iterations`; on completion the chip flips to `complete`.
+- **goal row + terminal report** — a set goal renders the CurrentWork goal
+  row in the composer (`[data-testid="current-work-goal"]`, its value button
+  `[data-testid="current-work-goal-value"]`,
+  `panes/session/composer/CurrentWork.tsx`) showing the objective text; on
+  completion the REST detail's `goal_status` flips to `complete` (step 4).
+  The former `Goal: <status>` chip and its popover are gone — Jesse's
+  2026-09-28 ruling on the #1339 composer row deleted the production-dead
+  `GoalControl` — so the goal's status now reads from the row itself
+  (`[data-testid="current-work-goal-status"]`), while iterations remain
+  readable from the REST detail and the doctor transcript, not from the page.
 
 The Go layer covers the gate and persistence with unit tests
 (`cmd/evener-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
 `agent/session_goal_*_test.go`); this is the live web counterpart that
-proves the palette, the chip, and the marker actually render.
+proves the palette, the goal row, and the marker actually render.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
@@ -141,8 +147,9 @@ done
    (Use the literal token from `~/.evener/auth-token`, not the path. Note the
    ref form — a bare `/s/<SID>` renders "Page not found" by design.) Then
    open the ⌘K palette, run **Set session goal**, and enter the same
-   objective — or use Session actions → **Set goal…**, type into the
-   `Objective` textarea, and press **Save** (`GoalControl.tsx:224-238`).
+   objective — or type `/goal <objective>` into the composer and send it
+   (the inline built-in running the same catalog entry,
+   `panes/session/composer/builtinCommand.ts`).
    There is no `window` handle to call `setGoal` through; drive the control.
 
 4. **[browser-free] Watch the goal run.** The flattened goal fields ride on
@@ -156,23 +163,30 @@ done
    **Expected:** at least one poll shows `goal_status: "active"` with
    `goal_iterations >= 1`.
 
-5. **[browser] Read the chip and the continuation marker [B6].**
+5. **[browser] Read the goal row and the continuation marker [B6].**
    ```javascript
    (() => {
-     const chip = [...document.querySelectorAll("button")]
-       .map((b) => b.textContent)
-       .find((t) => t && t.startsWith("Goal: "));
+     const goalRow = document.querySelector('[data-testid="current-work-goal"]');
      return {
        port: location.port,                        // page-identity check, always
-       chip,                                       // "Goal: active" | "Goal: complete"
+       goalRow: goalRow?.textContent ?? null,      // the Goal label plus the objective, once set
+       // The page's word for the REST detail's raw goal_status: "Active"
+       // while the goal runs, "Complete" (or "Blocked") at the end — it
+       // must agree with step 4's poll.
+       goalStatus: document.querySelector('[data-testid="current-work-goal-status"]')?.textContent ?? null,
        goalNotices: [...document.querySelectorAll('[data-testid="system-notice-line"]')]
          .map((el) => el.textContent)
          .filter((t) => /continuing toward/i.test(t)),
      };
    })()
    ```
-   Click the chip to open `[data-testid="goal-popover"]` and read its status
-   line (`<status> · <N> iterations`).
+   The row's value button (`[data-testid="current-work-goal-value"]`) is the
+   edit affordance — pressing it reopens the composer with the `/goal` draft
+   (`panes/session/composer/Composer.tsx`'s `editGoal`). The row's status
+   word (`current-work-goal-status`) is the page's status readout — `Active`
+   while the goal runs, `Complete` (or `Blocked`) at the end, the
+   title-cased page word for step 4's raw `goal_status`; iterations are not
+   on the page, and the authoritative cross-check is step 4's REST poll.
 
    Cross-check against the daemon's authoritative record — the steering turns
    it actually sent the model:
@@ -196,7 +210,7 @@ done
    cat "$tmpdir/seed.txt" "$tmpdir/double.txt" 2>/dev/null
    ```
    **Expected:** `final=complete`; `seed.txt` is `7` and `double.txt` is
-   `14`. In the browser the chip reads `Goal: complete` and the transcript
+  `14`. The REST detail reads `goal_status: complete` and the transcript
    carries a final Goal system notice reporting why it stopped.
    Falsification: it ends `blocked` with files present and correct — the
    no-progress breaker mis-fired; or it never reaches a terminal state
@@ -224,7 +238,8 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
   that tries `window.EvenerAppwire.request("goal/set", …)` throws, and one that
   optional-chains it **fails open** — reporting "no goal set" for what looks
   exactly like a real regression. Set the goal through `/rpc` (step 2) for the
-  exact assertion and through the palette/dialog (step 3) for the UI one.
+  exact assertion and through the palette or the composer's `/goal` built-in
+  (step 3) for the UI one.
 - **`goal_status`/`goal_iterations` are flat, top-level REST fields.** There
   is no `goal` object on `/api/sessions/<ref>`; `hubapi` cannot depend on
   `appwire`, so `appwire.GoalState` (`appwire/types.go:356-359`) is
@@ -234,11 +249,11 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
   the objective was cleared, when a turn is already running (the gate picks
   the goal up after it), or when no immediate start was possible — the goal
   is set in every one of those cases (`appwire/types.go:991-995`).
-- **The goal chip only exists once a goal is set.** `GoalControl` renders
-  nothing at all with `model.goal` null (`GoalControl.tsx:193`) — the
-  "Set goal…" entry point lives in the session actions menu and the palette,
-  not as a permanent control on the strip. An absent chip before step 2/3 is
-  correct.
+- **The goal row only exists once a goal is set.** `CurrentWork` renders no
+  goal row while no goal is set (`panes/session/composer/CurrentWork.tsx`) —
+  the entry points are the palette's **Set session goal** command and the
+  composer's `/goal` built-in, not a permanent control on the strip. An
+  absent row before step 2/3 is correct.
 - **Model nondeterminism.** A capable model may finish in a single turn
   (0 continuations) — then step 5 has no continuation message to inspect.
   The two-step ordered objective biases toward ≥1 continuation; if you get

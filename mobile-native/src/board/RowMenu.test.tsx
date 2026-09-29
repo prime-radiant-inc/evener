@@ -105,6 +105,8 @@ describe("the row menu sheet (ruling 28)", () => {
 			hostLabel,
 			act: vi.fn((_, action) => calls.push(`act:${action}`)),
 			openSession: vi.fn(() => calls.push("open")),
+			held: () => [],
+			cancel: vi.fn((id) => calls.push(`cancel:${id}`)),
 			closed: vi.fn(),
 			...over,
 		};
@@ -157,6 +159,13 @@ describe("the row menu sheet (ruling 28)", () => {
 		act(() => pressableLabelled(tree, "Shut down").props.onPress());
 		expect(calls).toEqual(["goBack", "act:shutDown"]);
 		expect(provided.act).toHaveBeenCalledWith(item("working", { state: "active" }), "shutDown");
+	});
+
+	it("offers to cancel what waits for the connection, after the actions (phase 6 ruling 18)", () => {
+		const { provided, calls } = host({ held: () => [{ id: "held-1", label: "Cancel Archive" }] });
+		const tree = mountSheet(provided);
+		act(() => pressableLabelled(tree, "Cancel Archive").props.onPress());
+		expect(calls).toEqual(["goBack", "cancel:held-1"]);
 	});
 
 	it("leaves, then opens the session from the card", () => {

@@ -1,13 +1,18 @@
 // The grouped list the Hub and New session sheets are built from (spec 12 and
 // 16): uppercase section labels, inset groups of rows on the surface color over
-// the canvas, and ink-low footers. A row carries a bare SF Symbol in ink-mid
+// the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { Children, Fragment, isValidElement, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Switch, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
+import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+
+/** Above a section label. */
+const SECTION_TOP = 20;
+/** A row's leading glyph slot. */
+const GLYPH = 22;
 
 /** The scrolling page a grouped sheet page sits in. */
 export function GroupedPage({ children }: { children: ReactNode }) {
@@ -26,10 +31,12 @@ export function GroupedPage({ children }: { children: ReactNode }) {
 
 /** A section label: SF Pro semibold 12, uppercase, +0.06em (spec 16.2). A
  * machine label (a marketplace, a provider profile) is Menlo as typed and never
- * uppercased (spec 11). */
+ * uppercased (spec 11). A group takes its label as Group's `label`; this
+ * heads anything else, such as a segmented control or a footer. */
 export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { fontSize, lineHeight, ...sectionCase } = scaledType(uiType.sectionLabel, scale);
 	return (
 		<Text
 			accessibilityRole="header"
@@ -37,15 +44,13 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 			style={[
 				{
 					color: palette.inkMid,
-					fontSize: 12 * scale,
-					lineHeight: 16 * scale,
-					paddingHorizontal: 32,
-					paddingTop: 20,
+					fontSize,
+					lineHeight,
+					paddingHorizontal: space.labelInset,
+					paddingTop: SECTION_TOP,
 					paddingBottom: 6,
 				},
-				machine
-					? { fontFamily: fonts.mono }
-					: ({ fontWeight: "600", letterSpacing: 0.72, textTransform: "uppercase" } as const),
+				machine ? { fontFamily: fonts.mono } : sectionCase,
 			]}
 		>
 			{children}
@@ -53,29 +58,80 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 	);
 }
 
-/** An inset group of rows with hairlines between them, not around them. */
-export function Group({ children }: { children: ReactNode }) {
+/** Where a row's text starts when the row carries a symbol. */
+const ICON_ROW_TEXT = space.rowInset + GLYPH + space.rowGap;
+
+/** Reads a child's `icon` prop, so only a Row or SwitchRow placed directly in
+ * the group counts: a row wrapped in another component, or a custom child,
+ * gets the plain 16pt hairline inset even if it draws a symbol. */
+function carriesSymbol(row: ReactNode): boolean {
+	return isValidElement<{ icon?: unknown }>(row) && Boolean(row.props.icon);
+}
+
+/** An inset group of rows with hairlines between them, not around them. A
+ * group with a section label sits right under it; one without keeps the
+ * prototype's 16pt from whatever comes before it (`.group + .group`), so two
+ * groups in a row never touch. A hairline starts under the text when the rows
+ * on both sides of it carry a symbol, as iOS Settings draws it. */
+export function Group({
+	children,
+	label,
+	machineLabel = false,
+}: {
+	children: ReactNode;
+	label?: string;
+	/** The label is a marketplace or similar machine name (see GroupLabel). */
+	machineLabel?: boolean;
+}) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
-	return (
-		<View style={{ marginHorizontal: 16, borderRadius: 12, overflow: "hidden", backgroundColor: palette.surface }}>
+	const group = (
+		<View
+			style={{
+				marginHorizontal: space.margin,
+				marginTop: label ? 0 : space.groupGap,
+				borderRadius: 12,
+				overflow: "hidden",
+				backgroundColor: palette.surface,
+			}}
+		>
 			{rows.map((row, index) => (
 				<Fragment key={isValidElement(row) && row.key !== null ? row.key : `row-${index}`}>
 					{index > 0 ? (
-						<View testID="hairline" style={{ height: 0.5, marginLeft: 16, backgroundColor: palette.edge }} />
+						<View
+							testID="hairline"
+							style={{
+								height: 0.5,
+								marginLeft: carriesSymbol(rows[index - 1]) && carriesSymbol(row) ? ICON_ROW_TEXT : space.rowInset,
+								backgroundColor: palette.edge,
+							}}
+						/>
 					) : null}
 					{row}
 				</Fragment>
 			))}
 		</View>
 	);
+	if (!label) return group;
+	return (
+		<>
+			<GroupLabel machine={machineLabel}>{label}</GroupLabel>
+			{group}
+		</>
+	);
+}
+
+/** The space above a page's first block when that block isn't a group, such
+ * as the Plugins page's segmented control: a group keeps its own space. */
+export function GroupGap() {
+	return <View style={{ height: space.groupGap }} />;
 }
 
 /** A row's leading slot: a bare symbol, or the empty space an unchecked
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 	return (
-		<View style={{ width: 22, alignItems: "center" }}>
+		<View style={{ width: GLYPH, alignItems: "center" }}>
 			{name ? <SymbolView name={name} tintColor={color} size={17} /> : null}
 		</View>
 	);
@@ -83,10 +139,14 @@ function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 
 export interface RowProps {
 	label: string;
-	/** A second line in ink-low. */
+	/** The label is a model id or similar machine text: Menlo. */
+	machineLabel?: boolean;
+	/** A second line in ink-mid. */
 	sub?: string;
 	/** The second line is a path or an id: Menlo. */
 	machineSub?: boolean;
+	/** "danger" for a second line that reports a problem ("1 need attention"). */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	/** The trailing value: text in ink-mid, or a node such as a tag. */
 	value?: ReactNode;
@@ -103,10 +163,25 @@ export interface RowProps {
 	accessibilityLabel?: string;
 }
 
+/** Between the label and a value that wrapped under it. */
+const WRAPPED_VALUE_GAP = 4;
+
+/** Whether a node draws anything: React renders nothing for null,
+ * undefined, booleans and the empty string. */
+function rendersSomething(node: ReactNode): boolean {
+	return node !== undefined && node !== null && typeof node !== "boolean" && node !== "";
+}
+
+/** A grouped row. The label and the value share one wrapping line, with the
+ * second line below it. The label is sized by its own text and grows into the
+ * free space, so a value that doesn't fit beside it moves under it: the
+ * label's words never break apart to make room ("paradise-/park"). */
 export function Row({
 	label,
+	machineLabel = false,
 	sub,
 	machineSub = false,
+	subTone = "normal",
 	icon,
 	value,
 	chevron = false,
@@ -129,17 +204,43 @@ export function Row({
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
 			<View style={{ flex: 1, gap: 2 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: labelColor, fontSize: 17 * scale, lineHeight: 22 * scale }}
+				<View
+					testID="row-line"
+					style={{
+						flexDirection: "row",
+						flexWrap: "wrap",
+						alignItems: "center",
+						columnGap: space.rowGap,
+						rowGap: WRAPPED_VALUE_GAP,
+					}}
 				>
-					{label}
-				</Text>
+					<Text
+						testID="row-label"
+						allowFontScaling={allowFontScaling}
+						style={{
+							flexGrow: 1,
+							flexShrink: 1,
+							color: labelColor,
+							...scaledType(uiType.listRow, scale),
+							...(machineLabel ? { fontFamily: fonts.mono } : null),
+						}}
+					>
+						{label}
+					</Text>
+					{rendersSomething(value) ? (
+						<View testID="row-value" style={{ flexShrink: 1 }}>
+							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+						</View>
+					) : null}
+				</View>
 				{sub ? (
 					<Text
 						allowFontScaling={allowFontScaling}
 						style={[
-							{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale },
+							{
+								color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+								...scaledType(uiType.footnote, scale),
+							},
 							machineSub ? { fontFamily: fonts.mono } : null,
 						]}
 					>
@@ -147,31 +248,22 @@ export function Row({
 					</Text>
 				) : null}
 			</View>
-			{plainValue !== undefined ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkMid, fontSize: 17 * scale, fontVariant: ["tabular-nums"] }}
-				>
-					{plainValue}
-				</Text>
-			) : (
-				(value ?? null)
-			)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
 	const style = {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 12,
+		gap: space.rowGap,
 		minHeight: 44,
-		paddingHorizontal: 16,
-		paddingVertical: 11,
+		paddingHorizontal: space.rowInset,
+		paddingVertical: space.rowPadding,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
+	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	if (!onPress)
 		return (
-			<View accessible accessibilityLabel={reading} style={style}>
+			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
 				{body}
 			</View>
 		);
@@ -179,7 +271,7 @@ export function Row({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
-			accessibilityState={checked === undefined ? { disabled } : { disabled, selected: checked }}
+			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
@@ -191,55 +283,89 @@ export function Row({
 
 /** A row whose trailing control is a switch in the accent color (spec 16.1:
  * switches are accent, never the working green). The switch is the accessible
- * element, so VoiceOver can flip it. */
+ * element, so VoiceOver can flip it. With `onPress`, the row's text also opens
+ * something (an installed plugin's detail) as its own button, and the row
+ * stays undimmed while only the switch is disabled. */
 export function SwitchRow({
 	label,
 	sub,
+	subTone = "normal",
 	icon,
 	value,
 	onChange,
 	disabled = false,
+	onPress,
+	accessibilityLabel,
+	switchLabel,
 }: {
 	label: string;
 	sub?: string;
+	/** "danger" for a second line that reports a problem, such as "Broken". */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	value: boolean;
 	onChange(value: boolean): void;
 	disabled?: boolean;
+	/** The row's text opens a detail. */
+	onPress?: () => void;
+	/** VoiceOver's reading of the text `onPress` opens. */
+	accessibilityLabel?: string;
+	/** VoiceOver's name for the switch, when the label alone doesn't say what
+	 * it sets ("superpowers on by default"). */
+	switchLabel?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const text = (
+		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}>
+				{label}
+			</Text>
+			{sub ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+						...scaledType(uiType.footnote, scale),
+					}}
+				>
+					{sub}
+				</Text>
+			) : null}
+		</View>
+	);
 	return (
 		<View
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
-				gap: 12,
+				gap: space.rowGap,
 				minHeight: 44,
-				paddingHorizontal: 16,
+				paddingHorizontal: space.rowInset,
 				paddingVertical: 8,
-				opacity: disabled ? 0.4 : 1,
+				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
-			<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+			{onPress ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={accessibilityLabel ?? [label, sub].filter(Boolean).join(", ")}
+					onPress={onPress}
+					style={({ pressed }) => ({
+						flex: 1,
+						alignSelf: "stretch",
+						justifyContent: "center",
+						opacity: pressed ? 0.6 : 1,
+					})}
 				>
-					{label}
-				</Text>
-				{sub ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
-					>
-						{sub}
-					</Text>
-				) : null}
-			</View>
+					{text}
+				</Pressable>
+			) : (
+				text
+			)}
 			<Switch
-				accessibilityLabel={label}
+				accessibilityLabel={switchLabel ?? label}
 				accessibilityHint={sub}
 				value={value}
 				disabled={disabled}
@@ -252,29 +378,77 @@ export function SwitchRow({
 	);
 }
 
-/** A group's footer: ink-low, or the attention or danger ink when it reports
+/** A row that edits a machine value (an address, a path, a list of paths) in
+ * Menlo, as typed: no capitals or corrections. The label is VoiceOver's name
+ * for it; the page's section label shows it. */
+export function TextFieldRow({
+	label,
+	value,
+	onChangeText,
+	multiline = false,
+	disabled = false,
+}: {
+	label: string;
+	value: string;
+	onChangeText(text: string): void;
+	multiline?: boolean;
+	disabled?: boolean;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<TextInput
+			accessibilityLabel={label}
+			value={value}
+			onChangeText={onChangeText}
+			multiline={multiline}
+			editable={!disabled}
+			autoCapitalize="none"
+			autoCorrect={false}
+			spellCheck={false}
+			allowFontScaling={allowFontScaling}
+			style={{
+				color: palette.inkHi,
+				fontFamily: fonts.mono,
+				fontSize: uiType.subheadline.fontSize * scale,
+				minHeight: multiline ? 88 : 44,
+				paddingHorizontal: space.rowInset,
+				paddingVertical: space.rowPadding,
+				textAlignVertical: multiline ? "top" : "center",
+				opacity: disabled ? 0.4 : 1,
+			}}
+		/>
+	);
+}
+
+/** A group's footer: ink-mid, or the attention or danger ink when it reports
  * something a person must act on. */
 export function GroupFooter({
 	children,
 	tone = "normal",
+	machine = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** Text the machine wrote, such as an error the hub reported: Menlo. */
+	machine?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkLow;
+	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkMid;
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{
-				color,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
-				paddingHorizontal: 32,
-				paddingTop: 6,
-				paddingBottom: 8,
-			}}
+			style={[
+				{
+					color,
+					...scaledType(uiType.footnote, scale),
+					paddingHorizontal: space.labelInset,
+					paddingTop: 6,
+					paddingBottom: 8,
+				},
+				machine ? { fontFamily: fonts.mono } : null,
+			]}
 		>
 			{children}
 		</Text>
@@ -305,7 +479,7 @@ export function Segmented<T extends string>({
 			style={{
 				flexDirection: "row",
 				gap: 2,
-				marginHorizontal: 16,
+				marginHorizontal: space.margin,
 				padding: 2,
 				borderRadius: 22,
 				backgroundColor: palette.inset,
@@ -338,7 +512,7 @@ export function Segmented<T extends string>({
 							numberOfLines={1}
 							style={{
 								color: chosen ? palette.accentInk : palette.inkHi,
-								fontSize: 15 * scale,
+								fontSize: uiType.subheadline.fontSize * scale,
 								fontWeight: chosen ? "600" : "400",
 							}}
 						>
@@ -381,5 +555,91 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 		>
 			{text}
 		</Text>
+	);
+}
+
+/** A row's trailing value with a tag beside it: a host's version and its gray
+ * "Hub runs 0.9.412", or the Hosts count and its amber "1 offline". */
+export function RowValue({
+	text,
+	tag,
+	tone = "normal",
+}: {
+	text?: string;
+	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
+	/** "attention" for a value that may need a human, such as Offline. */
+	tone?: "normal" | "attention";
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+			{text ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						flexShrink: 1,
+						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
+						fontSize: uiType.listRow.fontSize * scale,
+						fontVariant: ["tabular-nums"],
+					}}
+				>
+					{text}
+				</Text>
+			) : null}
+			{tag ? <Tag text={tag.text} tone={tag.tone} /> : null}
+		</View>
+	);
+}
+
+/** A filter field over a list, on the inset fill: a magnifying glass, the
+ * field, and a clear button once something is typed. `label` is both its
+ * VoiceOver label and its placeholder. */
+export function SearchField({
+	label,
+	query,
+	onChange,
+}: {
+	label: string;
+	query: string;
+	onChange(query: string): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			style={{
+				marginHorizontal: space.margin,
+				minHeight: 36,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 6,
+				paddingHorizontal: 10,
+				borderRadius: 10,
+				backgroundColor: palette.inset,
+			}}
+		>
+			<SymbolView name="magnifyingglass" size={15} tintColor={palette.inkLow} />
+			<TextInput
+				accessibilityLabel={label}
+				placeholder={label}
+				placeholderTextColor={palette.inkLow}
+				value={query}
+				onChangeText={onChange}
+				autoCorrect={false}
+				allowFontScaling={allowFontScaling}
+				style={{ flex: 1, color: palette.inkHi, fontSize: uiType.listRow.fontSize * scale, paddingVertical: 8 }}
+			/>
+			{query ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Clear filter"
+					onPress={() => onChange("")}
+					hitSlop={10}
+				>
+					<SymbolView name="xmark.circle.fill" size={15} tintColor={palette.inkLow} />
+				</Pressable>
+			) : null}
+		</View>
 	);
 }

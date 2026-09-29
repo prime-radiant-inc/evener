@@ -5,6 +5,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { CurrentWork } from "./CurrentWork";
+import styles from "./currentwork.module.css";
 
 function currentWorkCssRule(selector: string): string {
   const path = join(dirname(fileURLToPath(import.meta.url)), "currentwork.module.css");
@@ -87,6 +88,77 @@ test("keeps one text-content live region while task and goal change", () => {
   view.rerender(<CurrentWork goal="Finish safely" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
   expect(screen.getByRole("status")).toBe(status);
   expect(status.textContent).toBe("Goal: Finish safely");
+});
+
+test("renders the goal's status beside the objective, in the row and the live region", () => {
+  render(
+    <CurrentWork goal="Keep the session focused" goalStatus="active" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
+  );
+
+  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("Active");
+  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (Active)");
+});
+
+test("renders a blocked goal's status word in the attention ink", () => {
+  render(
+    <CurrentWork goal="Keep the session focused" goalStatus="blocked" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
+  );
+
+  const status = screen.getByTestId("current-work-goal-status");
+  expect(status.textContent).toBe("Blocked");
+  expect(status.className).toContain(styles.statusBlocked);
+  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (Blocked)");
+});
+
+test("renders an unknown status as written", () => {
+  render(
+    <CurrentWork goal="Keep the session focused" goalStatus="in review" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
+  );
+
+  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("in review");
+  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (in review)");
+});
+
+test("renders prototype-named statuses as written, not inherited Object.prototype values", () => {
+  for (const goalStatus of ["__proto__", "constructor"] as const) {
+    const { unmount } = render(
+      <CurrentWork
+        goal="Keep the session focused"
+        goalStatus={goalStatus}
+        onOpenTasks={vi.fn()}
+        onEditGoal={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("current-work-goal-status").textContent).toBe(goalStatus);
+    expect(screen.getByRole("status").textContent).toBe(`Goal: Keep the session focused (${goalStatus})`);
+    unmount();
+  }
+});
+
+test.each([
+  { name: "none", goalStatus: undefined },
+  { name: "whitespace only", goalStatus: "  " },
+])("renders no status word when the goal carries $name", ({ goalStatus }) => {
+  render(
+    <CurrentWork goal="Keep the session focused" goalStatus={goalStatus} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
+  );
+
+  expect(screen.queryByTestId("current-work-goal-status")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused");
+});
+
+test("gives the status word the row's containment contract", () => {
+  const status = currentWorkCssRule("status");
+  // The wire status is a free string: a long one must ellipsize like the
+  // objective instead of pushing the row past the pane, and it must render
+  // as written rather than case-mangled by a text transform.
+  expect(status).toContain("min-width: 0");
+  expect(status).toContain("overflow: hidden");
+  expect(status).toContain("text-overflow: ellipsis");
+  expect(status).not.toContain("text-transform: uppercase");
+
+  expect(currentWorkCssRule("statusBlocked")).toContain("color: var(--attention-ink)");
 });
 
 test("renders task and goal values as keyboard-accessible link actions with full-text titles", async () => {

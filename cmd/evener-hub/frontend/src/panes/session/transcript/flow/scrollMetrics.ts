@@ -77,3 +77,38 @@ export function isNearTop(scrollTop: number, thresholdPx: number = NEAR_TOP_THRE
 export function readScrollMetrics(el: HTMLElement): ScrollMetrics {
   return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
 }
+
+/**
+ * Whether a transcript with older history should load a page now: true while
+ * the rendered content does not fill its scroll port.
+ *
+ * A page that already overflows is the near-top scroll trigger's job, on both
+ * surfaces. The one case that trigger cannot see is a page too short to scroll
+ * at all - nothing to scroll means no scroll event ever fires - and that is
+ * what this fills.
+ */
+export function shouldAutoLoadOlder(el: HTMLElement): boolean {
+  // A port with no rendered box has not been laid out yet (or is hidden):
+  // "nothing overflows" is vacuously true there, and reading that as "the page
+  // is too short" would load older history before the transcript is visible.
+  // The triggers re-check on every geometry change, so the load happens once
+  // the port does have a box.
+  if (el.clientHeight <= 0 && el.offsetHeight <= 0) return false;
+  return el.scrollHeight <= el.clientHeight;
+}
+
+/**
+ * The nodes a transcript paging trigger observes to re-check its geometry
+ * whenever it changes: the scroll port itself (a pane resize) and the port's
+ * content (the rows settling, or the transcript shrinking below the port).
+ *
+ * Both the scroll coordinator and the paging row need exactly these, and both
+ * depend on the VirtualList's `root > sizer` shape to find the second, so that
+ * assumption lives here rather than in two observers that could drift apart.
+ */
+export function portGeometryTargets(el: HTMLElement): HTMLElement[] {
+  const targets = [el];
+  const content = el.firstElementChild;
+  if (content instanceof HTMLElement) targets.push(content);
+  return targets;
+}

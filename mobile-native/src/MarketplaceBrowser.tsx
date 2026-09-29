@@ -2,12 +2,10 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActivityIndicator,
 	Alert,
-	FlatList,
 	KeyboardAvoidingView,
-	Modal,
 	Platform,
-	Pressable,
 	ScrollView,
+	Text,
 	TextInput,
 	View,
 } from "react-native";
@@ -16,7 +14,9 @@ import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
+import { space, uiType } from "./design/tokens";
 import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
@@ -25,8 +25,10 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { ModalConnectionStatus } from "./retainedScreen";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Group, GroupFooter, Row } from "./sheet/Grouped";
+import { SheetStatus } from "./sheet/SheetStatus";
+import { Action, allowFontScaling, Choice, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
@@ -36,6 +38,7 @@ export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins. Try a
 const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
 
 export function MarketplaceBrowser({
+	segment = "browse",
 	client,
 	connectionState,
 	hubName,
@@ -52,6 +55,11 @@ export function MarketplaceBrowser({
 	onMarketplaceAdded,
 	onRemovedMarketplace,
 }: {
+	/** Which half of the browser the Plugins page shows: "marketplaces" lists
+	 * each marketplace with its source, adds one, and opens one to update its
+	 * source or remove it; "browse" opens a marketplace's catalog to install
+	 * from, beside the same Update source and Remove. */
+	segment?: "marketplaces" | "browse";
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
 	hubName: string;
@@ -133,7 +141,8 @@ export function MarketplaceBrowser({
 	 * (onAppliedRemoval's null notice). */
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 }) {
-	const colors = useColors();
+	const { palette } = useColors();
+	const scale = useTextScale();
 	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
 	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
 	// Marketplace writes take the same gate an install does; see
@@ -148,7 +157,7 @@ export function MarketplaceBrowser({
 	// the screen's guard can fence or retire a name while its dialog is open,
 	// and the callback the confirm fires holds only the set it captured when
 	// the dialog opened. The ref keeps the latest set reachable from that
-	// callback - assigned in an effect, never during render (the PluginsScreen
+	// callback - assigned in an effect, never during render (the PluginsPage
 	// currentClient pattern).
 	const appliedRemovalNamesRef = useRef(appliedRemovalNames);
 	useEffect(() => {
@@ -175,9 +184,11 @@ export function MarketplaceBrowser({
 	// The selected catalog is read from the store's cache. A mutation here or a
 	// change from another client retires the entry, and an empty slot is this
 	// view's cue to request it again - the web's expanded node does the same.
-	const catalog = selected ? state.browseCatalogs.get(selected) : undefined;
+	// Only Browse shows a catalog, so only Browse reads one.
+	const catalogName = segment === "browse" ? selected : null;
+	const catalog = catalogName ? state.browseCatalogs.get(catalogName) : undefined;
 	const loaded = catalog?.status === "loaded" ? catalog : undefined;
-	const browseTarget = catalogToBrowse(selected, state.marketplaces, state.browseCatalogs);
+	const browseTarget = catalogToBrowse(catalogName, state.marketplaces, state.browseCatalogs);
 	useEffect(() => {
 		if (browseTarget) void state.browseMarketplace(browseTarget);
 	}, [browseTarget, state.browseMarketplace]);
@@ -214,89 +225,85 @@ export function MarketplaceBrowser({
 		const version = revision.current;
 		Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Remove",
-				style: "destructive",
-				onPress: () => {
-					// The dialog can stay open across another client's removal, which
-					// a trusted read lands without the name, and across the screen
-					// fencing it: re-read both the guard the screen holds now and the
-					// store's own state, never the captured ones, because a removal
-					// that already stood must not be issued again. A failed read
-					// cannot vouch either way, so its retained rows never stop the
-					// write - the hub's own applied answer is what speaks then.
-					const current = marketplaces.getState();
-					if (
-						revision.current !== version ||
-						!canUseConnection() ||
-						appliedRemovalNamesRef.current.has(name) ||
-						(current.marketplacesError === null &&
-							current.marketplaces !== null &&
-							!current.marketplaces.some((item) => item.name === name))
-					)
+			destructiveButton("Remove", () => {
+				// The dialog can stay open across another client's removal, which
+				// a trusted read lands without the name, and across the screen
+				// fencing it: re-read both the guard the screen holds now and the
+				// store's own state, never the captured ones, because a removal
+				// that already stood must not be issued again. A failed read
+				// cannot vouch either way, so its retained rows never stop the
+				// write - the hub's own applied answer is what speaks then.
+				const current = marketplaces.getState();
+				if (
+					revision.current !== version ||
+					!canUseConnection() ||
+					appliedRemovalNamesRef.current.has(name) ||
+					(current.marketplacesError === null &&
+						current.marketplaces !== null &&
+						!current.marketplaces.some((item) => item.name === name))
+				)
+					return;
+				// Classify, record, and reconcile BEFORE the revision fence: the
+				// guard and warning live at the screen, so they must survive this
+				// view's selection changes and remounts; only the browser-local
+				// busy and write-failed displays stay behind the fence.
+				void (async () => {
+					let caught: unknown;
+					const outcome = await runGatedMutation(gate, canUseConnection, () =>
+						state.removeMarketplace(name).catch((error: unknown) => {
+							caught = error;
+							throw error;
+						}),
+					);
+					if (outcome === "not-ready") {
+						// Nothing ran, so nothing reports: a not-ready removal is
+						// not one the hub confirmed, and reporting it would retire a
+						// cleanup warning that still stands. The status copy the
+						// connection banner already shows covers the reason nothing
+						// ran, and the write-failed copy an earlier outcome left
+						// stays too - a press that ran nothing retires nothing.
 						return;
-					// Classify, record, and reconcile BEFORE the revision fence: the
-					// guard and warning live at the screen, so they must survive this
-					// view's selection changes and remounts; only the browser-local
-					// busy and write-failed displays stay behind the fence.
-					void (async () => {
-						let caught: unknown;
-						const outcome = await runGatedMutation(gate, canUseConnection, () =>
-							state.removeMarketplace(name).catch((error: unknown) => {
-								caught = error;
-								throw error;
-							}),
-						);
-						if (outcome === "not-ready") {
-							// Nothing ran, so nothing reports: a not-ready removal is
-							// not one the hub confirmed, and reporting it would retire a
-							// cleanup warning that still stands. The status copy the
-							// connection banner already shows covers the reason nothing
-							// ran, and the write-failed copy an earlier outcome left
-							// stays too - a press that ran nothing retires nothing.
-							return;
-						}
-						setError(null);
-						if (outcome === "refused") {
-							if (revision.current !== version) return;
-							setError(PLUGIN_MUTATION_BUSY);
-							return;
-						}
-						if (outcome === "ran") {
-							// Report before the revision fence, the way an applied outcome
-							// records: the warning is the screen's, so it must survive this
-							// view's selection changes and remounts.
-							onRemovedMarketplace(name, client);
-							return;
-						}
-						// An applied removal (appliedRemovalNotice's doc) never reads as
-						// a failed write: record it with the parent's guard - the notice
-						// becomes the screen-level warning, null shows nothing - and
-						// reconcile a stale list, never a retry hint.
-						const notice = appliedRemovalNotice(caught);
-						if (notice !== undefined) {
-							// The store as the outcome landed - the screen's own, which
-							// survives this view: the snapshot decides whether a fence is
-							// needed at all, and its publication version is the baseline
-							// the screen records against that name. Everything the store
-							// published at or below it predates this fence - including a
-							// stale read's answer the rejection just passed ownership to -
-							// so only a later publication retires it (the prop's doc).
-							// The reconciliation read still publishes somewhere a mounted
-							// browser reads: this view's own unmount must not stop it -
-							// the remount whose first read fails is exactly the case the
-							// retained model exists for.
-							const current = marketplaces.getState();
-							if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
-								return;
-							if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
-							return;
-						}
+					}
+					setError(null);
+					if (outcome === "refused") {
 						if (revision.current !== version) return;
-						setError(WRITE_FAILED);
-					})();
-				},
-			},
+						setError(PLUGIN_MUTATION_BUSY);
+						return;
+					}
+					if (outcome === "ran") {
+						// Report before the revision fence, the way an applied outcome
+						// records: the warning is the screen's, so it must survive this
+						// view's selection changes and remounts.
+						onRemovedMarketplace(name, client);
+						return;
+					}
+					// An applied removal (appliedRemovalNotice's doc) never reads as
+					// a failed write: record it with the parent's guard - the notice
+					// becomes the screen-level warning, null shows nothing - and
+					// reconcile a stale list, never a retry hint.
+					const notice = appliedRemovalNotice(caught);
+					if (notice !== undefined) {
+						// The store as the outcome landed - the screen's own, which
+						// survives this view: the snapshot decides whether a fence is
+						// needed at all, and its publication version is the baseline
+						// the screen records against that name. Everything the store
+						// published at or below it predates this fence - including a
+						// stale read's answer the rejection just passed ownership to -
+						// so only a later publication retires it (the prop's doc).
+						// The reconciliation read still publishes somewhere a mounted
+						// browser reads: this view's own unmount must not stop it -
+						// the remount whose first read fails is exactly the case the
+						// retained model exists for.
+						const current = marketplaces.getState();
+						if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
+							return;
+						if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
+						return;
+					}
+					if (revision.current !== version) return;
+					setError(WRITE_FAILED);
+				})();
+			}),
 		]);
 	}
 	const needle = query.trim().toLowerCase();
@@ -307,169 +314,185 @@ export function MarketplaceBrowser({
 	const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
 	const installedError = plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
 	const browsing = catalog?.status === "loading";
-	const header = (
-		<View style={{ gap: 8, paddingBottom: 12 }}>
-			<Copy muted>{hubName}</Copy>
-			<ErrorMessage message={error || listError} />
-			{listError && (
-				<Action
-					disabled={!ready}
-					onPress={whenReady(canUseConnection, () => {
-						void state.fetchMarketplaces();
-					})}
-				>
-					Retry marketplaces
-				</Action>
-			)}
-			{selected ? (
-				<>
-					<Action onPress={() => select(null)}>All marketplaces</Action>
-					<Copy>{selected}</Copy>
-					{marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
-					{loaded?.description && <Copy>{loaded.description}</Copy>}
-					<View style={[styles.row, { flexWrap: "wrap" }]}>
-						<Action disabled={busy || !ready} onPress={refresh}>
-							Update source
-						</Action>
-						<Action disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")} onPress={remove}>
-							Remove marketplace
-						</Action>
-					</View>
-					<TextInput
-						accessibilityLabel="Filter marketplace plugins"
-						placeholder="Filter this catalog"
-						placeholderTextColor={colors.secondary}
-						value={query}
-						onChangeText={setQuery}
-						autoCapitalize="none"
-						autoCorrect={false}
-						style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+	// A failed read keeps the last list in the store; rows a failed read
+	// cannot vouch for stay hidden until a fresh read lands, and the error copy
+	// and Retry speak instead. The empty-state copy claims only what the
+	// retained list itself says: a non-empty list a failed read hides must not
+	// also read as "no marketplaces" beside that error, while a list the last
+	// trusted read left genuinely empty may still say so.
+	const rows = state.marketplacesError === null ? (state.marketplaces ?? []) : [];
+	const problem = error || listError;
+	const catalogProblem = catalogError || installedError;
+	const problems = (
+		<>
+			{problem ? <GroupFooter tone="danger">{problem}</GroupFooter> : null}
+			{listError ? (
+				<Group>
+					<Row
+						label="Retry marketplaces"
+						tone="accent"
+						disabled={!ready}
+						onPress={whenReady(canUseConnection, () => {
+							void state.fetchMarketplaces();
+						})}
 					/>
-					<ErrorMessage message={catalogError || installedError} />
-					{catalogError && (
-						<Action
-							disabled={!ready}
-							onPress={whenReady(canUseConnection, () => {
-								void state.reloadCatalog(selected);
-							})}
-						>
-							Retry catalog
-						</Action>
-					)}
-					{installedError && (
-						<Action
-							disabled={!ready}
-							onPress={whenReady(canUseConnection, () => {
-								void plugins.fetchPlugins();
-							})}
-						>
-							Retry installed status
-						</Action>
-					)}
-				</>
-			) : (
-				<Action disabled={busy || !ready} onPress={whenReady(canUseConnection, () => setAdding(true))}>
-					Add marketplace
-				</Action>
-			)}
-			{busy && <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />}
-		</View>
+				</Group>
+			) : null}
+			{busy ? <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" /> : null}
+		</>
 	);
 	return (
 		<>
+			{problems}
 			{selected ? (
-				<FlatList
-					data={catalogPlugins}
-					keyExtractor={(item) => item.name}
-					contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-					keyboardShouldPersistTaps="handled"
-					ListHeaderComponent={header}
-					refreshing={browsing}
-					onRefresh={() => {
-						if (canUseConnection()) void state.reloadCatalog(selected);
-					}}
-					ListEmptyComponent={
-						browsing ? (
-							<ActivityIndicator accessibilityLabel="Loading marketplace catalog" />
-						) : loaded ? (
-							<Copy muted>{needle ? "No matching plugins." : "No plugins in this catalog."}</Copy>
-						) : null
-					}
-					renderItem={({ item }) => {
-						const target = { plugin: item.name, marketplace: selected };
-						const existing = plugins.plugins?.some(
-							(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
-						);
-						return (
-							<View
-								style={{
-									paddingVertical: 10,
-									borderBottomWidth: 0.5,
-									borderColor: colors.border,
-									gap: 4,
-								}}
-							>
-								<Copy>{item.name}</Copy>
-								{item.description && <Copy muted>{item.description}</Copy>}
-								{item.author && <Copy muted>{item.author}</Copy>}
-								<Action
-									disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
-									label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
-									onPress={() => {
-										if (existing) onOpenPlugin(target);
-										else install(target);
+				<>
+					<Group>
+						<Row label="All marketplaces" tone="accent" onPress={() => select(null)} />
+					</Group>
+					<Group label={selected} machineLabel>
+						{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
+						{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
+						<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
+						<Row
+							label="Remove"
+							accessibilityLabel="Remove marketplace"
+							tone="danger"
+							disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")}
+							onPress={remove}
+						/>
+					</Group>
+					{segment === "browse" ? (
+						<>
+							{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
+							<Group label="Catalog">
+								<TextInput
+									accessibilityLabel="Filter marketplace plugins"
+									placeholder="Filter this catalog"
+									placeholderTextColor={palette.inkLow}
+									value={query}
+									onChangeText={setQuery}
+									autoCapitalize="none"
+									autoCorrect={false}
+									allowFontScaling={allowFontScaling}
+									style={{
+										minHeight: 44,
+										paddingHorizontal: space.rowInset,
+										fontSize: uiType.listRow.fontSize * scale,
+										color: palette.inkHi,
 									}}
-								>
-									{existing ? "Installed · Open" : "Install"}
-								</Action>
-							</View>
-						);
-					}}
-				/>
+								/>
+							</Group>
+							{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
+							{catalogProblem ? (
+								<Group>
+									{catalogError ? (
+										<Row
+											label="Retry catalog"
+											tone="accent"
+											disabled={!ready}
+											onPress={whenReady(canUseConnection, () => {
+												void state.reloadCatalog(selected);
+											})}
+										/>
+									) : null}
+									{installedError ? (
+										<Row
+											label="Retry installed status"
+											tone="accent"
+											disabled={!ready}
+											onPress={whenReady(canUseConnection, () => {
+												void plugins.fetchPlugins();
+											})}
+										/>
+									) : null}
+								</Group>
+							) : null}
+							{browsing ? <ActivityIndicator accessibilityLabel="Loading marketplace catalog" /> : null}
+							{!browsing && loaded && catalogPlugins.length === 0 ? (
+								<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
+							) : null}
+							{catalogPlugins.length > 0 ? (
+								<>
+									<Group>
+										{catalogPlugins.map((item) => {
+											const target = { plugin: item.name, marketplace: selected };
+											const existing = plugins.plugins?.some(
+												(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
+											);
+											return (
+												<Row
+													key={item.name}
+													label={item.name}
+													sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
+													value={
+														<Text
+															allowFontScaling={allowFontScaling}
+															style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
+														>
+															{existing ? "Installed · Open" : "Install"}
+														</Text>
+													}
+													accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
+													disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
+													onPress={() => {
+														if (existing) onOpenPlugin(target);
+														else install(target);
+													}}
+												/>
+											);
+										})}
+									</Group>
+								</>
+							) : null}
+						</>
+					) : null}
+				</>
 			) : (
-				<FlatList
-					// A failed read keeps the last list in the store; rows a failed
-					// read cannot vouch for stay hidden until a fresh read lands, and
-					// the error copy and Retry above speak instead. The empty-state
-					// copy below claims only what the retained list itself says: a
-					// non-empty list a failed read hides must not also read as "no
-					// marketplaces" beside that error, while a list the last trusted
-					// read left genuinely empty may still say so.
-					data={state.marketplacesError === null ? (state.marketplaces ?? []) : []}
-					keyExtractor={(item) => item.name}
-					contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-					ListHeaderComponent={header}
-					refreshing={state.marketplacesLoading}
-					onRefresh={() => {
-						if (canUseConnection()) void state.fetchMarketplaces();
-					}}
-					ListEmptyComponent={
-						state.marketplacesLoading ? (
-							<ActivityIndicator accessibilityLabel="Loading marketplaces" />
-						) : state.marketplaces?.length === 0 ? (
-							<Copy muted>No marketplaces on this hub.</Copy>
-						) : null
-					}
-					renderItem={({ item }) => (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`Browse ${item.name}`}
-							onPress={() => select(item.name)}
-							style={({ pressed }) => ({
-								minHeight: 56,
-								paddingVertical: 9,
-								borderBottomWidth: 0.5,
-								borderColor: colors.border,
-								opacity: pressed ? 0.65 : 1,
-							})}
-						>
-							<Copy>{item.name}</Copy>
-							<Copy muted numberOfLines={2}>
-								{marketplaceSourceLabel(item.source)}
-							</Copy>
-						</Pressable>
-					)}
-				/>
+				<>
+					{state.marketplacesLoading && rows.length === 0 ? (
+						<ActivityIndicator accessibilityLabel="Loading marketplaces" />
+					) : null}
+					{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
+						<GroupFooter>No marketplaces on this hub.</GroupFooter>
+					) : null}
+					{rows.length > 0 ? (
+						<Group>
+							{rows.map((item) =>
+								segment === "browse" ? (
+									<Row
+										key={item.name}
+										label={item.name}
+										accessibilityLabel={`Browse ${item.name}`}
+										chevron
+										onPress={() => select(item.name)}
+									/>
+								) : (
+									<Row
+										key={item.name}
+										label={item.name}
+										sub={marketplaceSourceLabel(item.source)}
+										machineSub
+										chevron
+										onPress={() => select(item.name)}
+									/>
+								),
+							)}
+						</Group>
+					) : null}
+					{segment === "marketplaces" ? (
+						<>
+							<Group>
+								<Row
+									label="Add marketplace…"
+									accessibilityLabel="Add marketplace"
+									tone="accent"
+									disabled={busy || !ready}
+									onPress={whenReady(canUseConnection, () => setAdding(true))}
+								/>
+							</Group>
+						</>
+					) : null}
+				</>
 			)}
 			{adding && (
 				<AddMarketplace
@@ -591,7 +614,7 @@ export function AddMarketplace({
 		else onClose();
 	}
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<View style={styles.fill}>
@@ -599,7 +622,7 @@ export function AddMarketplace({
 					</View>
 					<Action onPress={onClose}>Cancel</Action>
 				</View>
-				<ModalConnectionStatus connectionState={connectionState} />
+				{connectionState === "ready" ? null : <SheetStatus />}
 				<KeyboardAvoidingView style={styles.fill} enabled={Platform.OS === "android"} behavior="height">
 					<ScrollView
 						automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
@@ -667,6 +690,6 @@ export function AddMarketplace({
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
