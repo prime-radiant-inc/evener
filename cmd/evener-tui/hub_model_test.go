@@ -99,9 +99,8 @@ func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 		},
 		Projects: []hubTreeProject{
 			{
-				Key:         "evener",
-				Name:        "evener",
-				RollupState: "awaiting",
+				Key:  "evener",
+				Name: "evener",
 				Sessions: []hubTreeNode{
 					{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "evener", Live: true},
 					{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "evener", Live: true},
@@ -109,9 +108,8 @@ func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 				},
 			},
 			{
-				Key:         "brainstorm",
-				Name:        "brainstorm",
-				RollupState: "active",
+				Key:  "brainstorm",
+				Name: "brainstorm",
 				Sessions: []hubTreeNode{
 					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "active", Project: "brainstorm", Live: true},
 				},
@@ -176,17 +174,15 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 	m.width = 100
 	m.tree = hubTreeResponse{
 		Projects: []hubTreeProject{{
-			Key:         "evener",
-			Name:        "evener",
-			RollupState: "idle",
+			Key:  "evener",
+			Name: "evener",
 			Sessions: []hubTreeNode{
 				{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "evener", SourceLabel: "local", Model: "gpt-5", Live: true, UpdatedAt: 20},
 				{Ref: "remote:01BETA", SessionID: "01BETA", Title: "beta task", State: "active", Project: "evener", SourceLabel: "remote", Model: "openai/gpt-5.5", Live: true, UpdatedAt: 10},
 			},
 		}, {
-			Key:         "remote",
-			Name:        "remote",
-			RollupState: "idle",
+			Key:  "remote",
+			Name: "remote",
 			Sessions: []hubTreeNode{
 				{Ref: "remote:01GAMMA", SessionID: "01GAMMA", Title: "gamma task", State: "idle", Project: "remote", SourceLabel: "remote", Model: "openai/gpt-5.5", Live: true, UpdatedAt: 5},
 			},
@@ -631,9 +627,8 @@ func TestHubModelDashboardSlashOpensCommandPalette(t *testing.T) {
 
 func TestBuildProjectRowsShowsLiveThenRecent(t *testing.T) {
 	project := hubTreeProject{
-		Key:         "evener",
-		Name:        "evener",
-		RollupState: "awaiting",
+		Key:  "evener",
+		Name: "evener",
 		Sessions: []hubTreeNode{
 			{Ref: "local:01ENDED", SessionID: "01ENDED", Title: "ended history", State: "ended", Project: "evener", Live: false},
 			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "awaiting", Project: "evener", Live: true},

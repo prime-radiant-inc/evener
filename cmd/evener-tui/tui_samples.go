@@ -146,18 +146,16 @@ func sampleDashboardTree() hubTreeResponse {
 		Live: []hubTreeNode{evenerLive, evenerBusy, daemonLive},
 		Projects: []hubTreeProject{
 			{
-				Key:         "evener",
-				Name:        "evener",
-				WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener",
-				RollupState: "active",
-				Sessions:    []hubTreeNode{evenerLive, evenerBusy, evenerEnded},
+				Key:        "evener",
+				Name:       "evener",
+				WorkingDir: "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener",
+				Sessions:   []hubTreeNode{evenerLive, evenerBusy, evenerEnded},
 			},
 			{
-				Key:         "daemon-src",
-				Name:        "daemon-src",
-				WorkingDir:  "/repo/daemon",
-				RollupState: "idle",
-				Sessions:    []hubTreeNode{daemonLive},
+				Key:        "daemon-src",
+				Name:       "daemon-src",
+				WorkingDir: "/repo/daemon",
+				Sessions:   []hubTreeNode{daemonLive},
 			},
 		},
 	}

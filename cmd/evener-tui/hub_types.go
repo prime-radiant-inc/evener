@@ -14,12 +14,11 @@ type hubTreeResponse struct {
 }
 
 type hubTreeProject struct {
-	Key         string
-	Name        string
-	WorkingDir  string
-	RollupState string
-	Sessions    []hubTreeNode
-	identity    string // presentation grouping only; never used as an action key
+	Key        string
+	Name       string
+	WorkingDir string
+	Sessions   []hubTreeNode
+	identity   string // presentation grouping only; never used as an action key
 }
 
 type hubTreeNode struct {
@@ -213,7 +212,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(attentionState(node.State, node.ApprovalPending), node.IsSubagent), identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}

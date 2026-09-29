@@ -63,7 +63,7 @@ func runHubControlProgram(t *testing.T) {
 	tree := hubTreeResponse{Projects: []hubTreeProject{
 		{Name: "empty", Sessions: nil},
 		{Name: "", WorkingDir: "/tmp/none", Sessions: []hubTreeNode{{Ref: ":", SessionID: "invalid"}}},
-		{Name: "alpha", WorkingDir: "/tmp/alpha", RollupState: "idle", Sessions: []hubTreeNode{
+		{Name: "alpha", WorkingDir: "/tmp/alpha", Sessions: []hubTreeNode{
 			{Ref: "bad", SessionID: "bad"},
 			{Ref: "local:a", SessionID: "a", Title: "", State: "", Live: false, CreatedAt: 1},
 			{Ref: "local:b", SessionID: "b", Title: "Beta", State: "active", Live: true, UpdatedAt: 4,
