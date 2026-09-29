@@ -63,7 +63,7 @@ const BOOT = {
 // so a pass that meant to exercise one surface while the other rendered is
 // caught here instead of passing tautologically.
 function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {}) {
-  if (m.errors.length > 0) failures.push(`page errors on the ${label} paged open: ${m.errors.join("; ")}`);
+  if (m.errors.length > 0) failures.push(`page errors on ${label} paged open: ${m.errors.join("; ")}`);
   if (m.clientHeight <= 0) {
     failures.push(
       `${label} opened with no scroll-port height (clientHeight ${m.clientHeight}) - the pane did not render`,
@@ -74,10 +74,10 @@ function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {})
         `needs more than ${m.overflowRequired}) - the open contract was not exercised`,
     );
   }
-  if (!m.pagingRow) failures.push(`the ${label} opened without the paging row mounted (no olderCursor?)`);
+  if (!m.pagingRow) failures.push(`${label} opened without the paging row mounted (no olderCursor?)`);
   if (m.listCalls !== 0) {
     failures.push(
-      `opening the ${label} with older history auto-loaded ${m.listCalls} older page(s); the automatic paging trigger ` +
+      `opening ${label} with older history auto-loaded ${m.listCalls} older page(s); the automatic paging trigger ` +
         "must wait until the reader approaches the top of history",
     );
   }
