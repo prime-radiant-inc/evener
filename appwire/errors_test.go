@@ -127,3 +127,31 @@ func TestTranscriptItemCursorError(t *testing.T) {
 		t.Fatalf("serialized-byte assertion is not mutation-sensitive: %s", mutated)
 	}
 }
+
+// A refusal marked not accepted keeps its code, message and category, and says
+// the request wasn't carried out and isn't to be retried.
+func TestNotAcceptedMarksARefusalKeepingWhatItSaid(t *testing.T) {
+	marked := InvalidParams("cwd is not a directory").NotAccepted("mutation-1")
+	data, ok := marked.Data.(ErrorData)
+	if !ok {
+		t.Fatalf("data = %#v, want ErrorData", marked.Data)
+	}
+	if marked.Code != CodeInvalidParams || marked.Message != "cwd is not a directory" || data.EvenerErrorInfo != ErrorInvalidParams {
+		t.Fatalf("marked = %+v, want the refusal's own code, message and category", marked)
+	}
+	want := ErrorData{
+		EvenerErrorInfo:  ErrorInvalidParams,
+		ClientMutationID: "mutation-1",
+		MutationOutcome:  MutationOutcomeNotAccepted,
+		RetryDisposition: RetryDispositionNone,
+	}
+	if data != want {
+		t.Fatalf("data = %+v, want %+v", data, want)
+	}
+	// Data of another shape gives way to the standard data, so the outcome is
+	// always readable.
+	other := WireError{Code: CodeInternalError, Message: "boom", Data: map[string]string{"x": "y"}}.NotAccepted("")
+	if data, _ := other.Data.(ErrorData); data.MutationOutcome != MutationOutcomeNotAccepted {
+		t.Fatalf("data = %#v, want the not-accepted outcome", other.Data)
+	}
+}

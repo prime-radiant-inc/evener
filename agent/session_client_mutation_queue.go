@@ -516,10 +516,8 @@ func rejectClientMutation(record *clientMutationRecord, err error) {
 	if !errors.As(err, &wireErr) {
 		wireErr = appwire.Conflict(err.Error())
 	}
+	wireErr = wireErr.NotAccepted(record.ClientMutationID)
 	data, _ := wireErr.Data.(appwire.ErrorData)
-	data.ClientMutationID = record.ClientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
 	record.OperationState = clientMutationOperationRejected
 	record.ExecutionState = "rejected"
 	record.ProjectionState = appwire.MutationProjectionRemoved
