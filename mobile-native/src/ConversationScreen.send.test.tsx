@@ -2081,6 +2081,46 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
 	});
 
+	// While you type in the composer the queue folds to one line: with one
+	// message, its action; with several, their count, which opens them.
+	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		await press(tree, "Steer now, check the logs");
+		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	it("folds several queued messages to their count while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "2 queued")).toBeDefined();
+		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("folds a held message to its count and Send now while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "1 held")).toBeDefined();
+		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
+		act(() => keyboard.hide());
+	});
+
+	// With the dock in the composer's place, a keyboard up is for something
+	// else (the find bar, say), so the queue stays as it is.
+	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
+		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
+		expect(field(tree)).toBeUndefined();
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
 	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
 		const served = thread("ref-steer-stale", "active", false, ["check the logs"]);
 		const { tree, hub } = await mount(served);
@@ -3040,6 +3080,15 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
 		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
+		const { tree } = await mount(thread("ref-next-typing", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		act(() => keyboard.show());
+		expect(capsule(tree)).toBeUndefined();
+		act(() => keyboard.hide());
+		expect(capsule(tree)).toBeDefined();
 	});
 
 	it("shows no Next while the find bar is open", async () => {
