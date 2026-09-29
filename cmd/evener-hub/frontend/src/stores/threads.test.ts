@@ -12610,6 +12610,122 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // The fallback is not the ref's durable FIFO head. The dispatcher sends only
+  // nextDispatchable (the ref's head) and re-checks its admission before every
+  // attempt; the fallback must re-earn that admission and must not jump an
+  // earlier undelivered durable send. Here an earlier queued message A is stuck
+  // ("submitting") because no turn/queue handler ever delivers it, so it stays
+  // durable and pins the ref; B's enqueue then times out. B must fail closed
+  // rather than reach the daemon ahead of A.
+  test("a fallback send refuses to jump an earlier undelivered durable send for the ref", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-fallback-order";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // A enqueues durably and, with no handler, is attempted but never
+    // delivered: it stays a "submitting" row and keeps the ref pinned.
+    await threadsStore.getState().queue("ref_a", "A");
+    expect((await storage.listOutbox("ref_a")).filter((record) => record.method === "turn/queue")).toHaveLength(1);
+
+    // Storage wedges for B's enqueue.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const sendB = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(sendB).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // B must not reach the daemon ahead of A's undelivered queued send.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // A is untouched by B's refusal.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect((await reader.listOutbox("ref_a")).filter((record) => record.method === "turn/queue")).toHaveLength(1);
+    reader.close();
+  });
+
+  // The fallback discards the RPC response. What projects the turn, then? The
+  // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
+  // has NO turn/started case; the only case that builds turns and items is
+  // history/updated (case at reducer.ts:3528 -> applyHistoryUpdated at 3068).
+  // The turn is therefore projected from the daemon's own read-model push,
+  // exactly as for a dispatched row - the receipt the dispatcher would have
+  // settled only settles the optimistic/pending copy, which the fallback never
+  // wrote. Pin it: after a fallback send, a history/updated push shows the
+  // turn, and nothing is left stuck optimistic.
+  test("a fallback-dispatched send is projected from the daemon's history/updated push, not stuck optimistic", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-fallback-projection";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on a versioned read so the live history/updated frame below
+    // merges into the same boot generation instead of being invalidated.
+    fake.on("thread/read", (params) => versionedReadResponse(params.ref ?? "ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "hello");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // Nothing is left stuck optimistic: the fallback wrote no durable or
+    // optimistic row for this send.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOptimistic("ref_a")).toEqual([]);
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+    // The daemon's read-model push is what projects the turn.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "", startedAt: 1000 }],
+      },
+    });
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_1"]);
+  });
+
   // A Stop is the one durable write that must NOT take the direct fallback.
   // Its enqueue is enqueueInterruptAndCancel: the ref's cancelable rows turn
   // "canceled" in the same transaction that writes the turn/interrupt record,

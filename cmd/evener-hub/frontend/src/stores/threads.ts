@@ -825,9 +825,19 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-function currentDispatchClient(targetRef?: string, method?: string): AppwireClientLike | null {
+// currentDispatchClient is the dispatch admission: the wired client and its
+// epoch must still be current, and the named ref must pass its fences. The
+// `requireArmed` clause is the dispatcher's own precondition - a ref is
+// dispatched only while it is in dispatchableMutationRefs, the set of refs with
+// durable work waiting. enqueueMutationIntent's fallback asks the SAME question
+// with requireArmed false: it has no durable row of its own, so it cannot be in
+// that set for its own sake, and the clause's absence only means "the client is
+// current and the ref is not fenced" - the admission the fallback needs. The
+// refs that DO hold durable work are covered separately, by the fallback's own
+// pinnedMutationRefs ordering guard.
+function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
-  if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
   const state = threadsStore.getState();
   if (
     targetRef &&
@@ -2270,24 +2280,50 @@ async function enqueueMutationIntent(
       if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
+    // Persistent storage failure on a composer send: the durable write could
+    // not be made, so send it as a plain RPC right now, exactly as the
+    // non-durable operations do (setModel, rename, compact, ...). The outbox
+    // row, the dispatcher, the receipt/settle machinery and the recovery list
+    // are all skipped - there is nothing durable to settle or replay.
+    //
+    // It must still re-earn the admission the dispatcher would grant, because
+    // it is NOT the ref's durable FIFO head. currentDispatchClient is that
+    // exact admission (the dispatcher asks it per ref and method), so re-run
+    // it: it re-checks the wired client and readyEpoch - both may have changed
+    // across the watchdogs - the client's ready state, and the ref's fences (a
+    // pending reconciliation, a reconciliation failure, a Stop drain via
+    // stoppingRefs, the restart obligation with turn/start's resume-only
+    // carve-out, and restartRequired). requireArmed is off: the fallback's own
+    // durable-unawareness is why its ordering guard below is pinnedMutationRefs,
+    // not dispatchableMutationRefs - a background pin refresh legitimately
+    // clears that set when the ref has no rows, and requiring it here would
+    // refuse the fallback for a ref with nothing to reorder. And a fallback send
+    // must not jump an earlier undelivered durable send: pinnedMutationRefs is
+    // the in-memory proof this ref holds outbox or optimistic rows, while the
+    // precise answer (whether the ref's nextDispatchable head is this send)
+    // lives in storage - exactly what is unavailable here. Refuse rather than
+    // reorder.
+    const dispatchClient = currentDispatchClient(ref, intent.method, false);
+    if (dispatchClient === null || pinnedMutationRefs.has(ref)) {
+      if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+      throw error;
+    }
+    // The click armed this ref's dispatch bookkeeping for a durable row that
+    // now does not exist, so disarm it (a pin is not this click's to drop).
+    dispatchableMutationRefs.delete(ref);
+    //
+    // The forfeited cross-tab Stop fence: this send carries no click-time stop
+    // epoch - whether the capture read timed out, or the capture succeeded and
+    // only the enqueue timed out. The epoch is a commit-order comparison
+    // against the durable row the enqueue would have written, not a wire
+    // parameter (the dispatcher sends record.payload alone), so a send with no
+    // row carries none either way. A Stop landing in another tab during that
+    // window therefore cannot be honoured for it; the composer's draft is
+    // untouched (it lives in localStorage), and a send is retryable by hand -
+    // the trade the fallback makes against failing closed.
+    await dispatchMutationDirectly(dispatchClient, intent);
+    return undefined;
   }
-  // Persistent storage failure on a composer send: the durable write could not
-  // be made, so send it as a plain RPC right now, exactly as the non-durable
-  // operations do (setModel, rename, compact, ...). The outbox row, the
-  // dispatcher, the receipt/settle machinery and the recovery list are all
-  // skipped - there is nothing durable to settle or replay. The click armed
-  // the ref's dispatch bookkeeping for a durable row that now does not exist,
-  // so disarm it first (a pin, if any, is not this click's to drop).
-  //
-  // The forfeited cross-tab Stop fence: this send carries no click-time stop
-  // epoch when the capture read itself timed out, so a Stop landing in another
-  // tab during that window cannot be honoured for it - there is no epoch this
-  // tab ever read to compare against. The composer's draft is untouched
-  // either way (it lives in localStorage). A send is retryable by hand, which
-  // is the trade the fallback makes against failing closed.
-  if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
-  await dispatchMutationDirectly(client, intent);
-  return undefined;
 }
 
 // A durable write that timed out may mean only that storage is slow to
