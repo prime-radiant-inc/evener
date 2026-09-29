@@ -514,7 +514,9 @@ export function truncateItem(
 }
 
 /** The row the next older page ends above after a trim: the oldest row kept
- * that names its transcript position. */
+ * that names its transcript position. Rows ahead of it with none (a live
+ * overlay row, a notice) come back in the page, where they fold into the
+ * rows already held. */
 export function trimBoundary(
 	state: Pick<ConversationState, "trimmedAbove" | "conversation">,
 ): ThreadItemPosition | undefined {
@@ -2229,8 +2231,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// own paging cursor, and the fresh reread's window cursor knows
 					// nothing about pages this client already consumed — keep the
 					// advancement, or the next loadOlder re-requests that page (or
-					// resurrects paging at a cursor exhausted history had stopped). A FAILED racing page also bumps the page
-					// token but moves the cursor not at all, so the entry comparison
+					// resurrects paging at a cursor exhausted history had stopped).
+					// A FAILED racing page also bumps the page token but moves the
+					// cursor not at all, so the entry comparison
 					// — not the token, and not row ownership — is what separates the
 					// two: the fresh read's own signal still wins unless the store's
 					// own cursor actually moved during the await.
@@ -2329,6 +2332,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					);
 					const commitBase = {
 						conversation: committedConversation,
+						// A read of another instance replaces the window, and with it
+						// any trim above it; the same instance keeps its trim.
+						...(replacesInstance ? { trimmedAbove: lastCapTrimmed } : {}),
 						olderCursor: mergedCursor,
 						hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
 						hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
@@ -2620,11 +2626,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					}
 					return { status: "ignored" };
 				} catch (err) {
-					// A page above the trimmed rows names the oldest row kept, a row
-					// this thread holds; the hub finds it stale when nothing precedes
-					// it (the transcript's first). Nothing is older, and there is
-					// nothing to re-read.
-					if (before !== undefined && isStaleCursorError(err)) {
+					// A page above the trimmed rows with no cursor names the oldest
+					// row kept, a row this thread holds; the hub finds it stale when
+					// nothing precedes it (the transcript's first). Nothing is older,
+					// and there is nothing to re-read. With a cursor the page keeps
+					// that cursor's fence, and stale means a reset thread: that is
+					// the re-read below.
+					if (cursor === null && before !== undefined && isStaleCursorError(err)) {
 						if (!isBindingCurrent(opBinding)) return { status: "ignored" };
 						if (get().conversationGeneration !== gen || olderToken !== loadOlderToken) return { status: "ignored" };
 						set({ loadingOlder: false, trimmedAbove: false, olderCursor: null, hasEarlierItems: false });

@@ -98,8 +98,9 @@ export function nextFollow(state: LiveEndFollow, event: FollowEvent): LiveEndFol
 
 /** The follow state for a screen: `state.current` for handlers to read at
  * once, and `away` as React state, since the "↓ new" pill renders from it.
- * `onFollowing` hears whether the reader follows the live end, on the first
- * event and whenever it changes. */
+ * `onFollowing` hears whether the reader follows the live end whenever it
+ * changes, and on every reset: a reset opens a session, whose store may be new
+ * and hasn't heard. */
 export function useLiveEndFollow(onFollowing?: (following: boolean) => void) {
 	const state = useRef<LiveEndFollow>({ following: false, touch: "none", away: null, dragged: false });
 	const [away, setAway] = useState<ReadonlySet<string> | null>(null);
@@ -109,7 +110,7 @@ export function useLiveEndFollow(onFollowing?: (following: boolean) => void) {
 	const dispatch = useCallback((event: FollowEvent) => {
 		state.current = nextFollow(state.current, event);
 		setAway(state.current.away);
-		if (reported.current !== state.current.following) {
+		if (event.type === "reset" || reported.current !== state.current.following) {
 			reported.current = state.current.following;
 			listener.current?.(state.current.following);
 		}

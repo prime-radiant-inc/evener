@@ -3099,6 +3099,39 @@ describe("ConversationStore", () => {
 
 		// The page before the oldest row kept is stale when that row is the
 		// transcript's first: there is nothing older, and nothing to re-read.
+		// A read of another instance replaces the window, and the rows it
+		// trimmed with it.
+		it("forgets a trim when a read replaces the instance", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			expect(store.getState().trimmedAbove).toBe(true);
+			service.openConv = makeConversation({ items: positionedRows(0, 10), instanceId: "instance-2" });
+			await store.getState().rehydrate(service, sink);
+			expect(store.getState().conversation?.items).toHaveLength(10);
+			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		// With a cursor held, the page keeps that cursor's fence, and stale
+		// means the thread was reset since the read: re-read it, as for any
+		// stale cursor.
+		it("re-reads a thread whose page above the trimmed rows comes back stale with a cursor held", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			const reads = service.readProjectionCalls.length;
+			service.olderItems = Promise.reject(
+				new WireError("stale transcript cursor", -32020, { evenerErrorInfo: "transcriptItemCursorStale" }),
+			) as never;
+			await store.getState().loadOlder(service);
+			expect(service.readProjectionCalls).toHaveLength(reads + 1);
+		});
+
 		it("takes a stale page above the trimmed rows as nothing older", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(0, 600) });
@@ -11312,7 +11345,7 @@ describe("ConversationStore", () => {
 	//   state                          | store cursor | conv cursor | turns   | scope
 	//   initial (open)                 | null         | "cursor-1"  | [t2]    | loaded
 	//   loadOlder (wire has more)      | "cursor-2"   | "cursor-2"  | [t1,t2] | loaded
-	//   cap hit (wire still has more)  | null         | "more"      | [t1,t2] | loaded
+	//   cap hit (wire still has more)  | "more"       | "more"      | [t1,t2] | loaded
 	//   rehydrate, page history kept   | (unchanged)  | prior conv's| [t1,t2] | loaded
 	//                                  |              | own cursor  |         |
 	//   rehydrate, no page history     | fresh read's | fresh read's| fresh   | per fresh

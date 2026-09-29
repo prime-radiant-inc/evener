@@ -185,15 +185,17 @@ describe("pagesOlder", () => {
 });
 
 // The store trims the 500-row cap only while the reader follows the end, so it
-// hears whether they do: on the first event, and whenever it changes.
+// hears whether they do: whenever it changes, and on every reset, since a
+// reset opens a session whose store may be new and hasn't heard.
 describe("reporting whether the reader follows", () => {
-	it("reports the first event and each change, not repeats", () => {
+	it("reports each change and every reset, not repeats in between", () => {
 		const onFollowing = vi.fn();
 		const follow = renderHook(() => useLiveEndFollow(onFollowing));
-		act(() => follow.result.current.dispatch({ type: "reset", following: true }));
-		act(() => follow.result.current.dispatch({ type: "reset", following: true }));
+		act(() => follow.result.current.dispatch({ type: "reset", following: false }));
 		act(() => follow.result.current.dispatch({ type: "dragBegin" }));
 		act(() => follow.result.current.dispatch({ type: "reset", following: false }));
-		expect(onFollowing.mock.calls).toEqual([[true], [false]]);
+		act(() => follow.result.current.dispatch({ type: "follow" }));
+		act(() => follow.result.current.dispatch({ type: "follow" }));
+		expect(onFollowing.mock.calls).toEqual([[false], [false], [true]]);
 	});
 });
