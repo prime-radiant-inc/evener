@@ -1,4 +1,4 @@
-import type { AnsiColor, AnsiRun } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import type { AnsiColor, AnsiLine, AnsiRun } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 
 export interface NativeAnsiTextStyle {
 	color?: string;
@@ -67,4 +67,33 @@ export function ansiRunTextStyle(run: AnsiRun, dark: boolean): NativeAnsiTextSty
 		style.textDecorationLine = decorations.join(" ") as NativeAnsiTextStyle["textDecorationLine"];
 	}
 	return style;
+}
+
+// A terminal's tab stops: every 8 columns.
+const TAB_STOP = 8;
+
+/** The line with each tab expanded to spaces up to the next tab stop, as a
+ * terminal sets it. A native Text draws a tab with no width ("tree.go\t32"
+ * read "tree.go32"), and the column carries across the line's runs, so a tab
+ * after colored text still lands on the stop. */
+export function expandLineTabs(line: AnsiLine): AnsiLine {
+	let column = 0;
+	return line.map((run) => {
+		if (!run.text.includes("\t")) {
+			column += [...run.text].length;
+			return run;
+		}
+		let text = "";
+		for (const char of run.text) {
+			if (char === "\t") {
+				const spaces = TAB_STOP - (column % TAB_STOP);
+				text += " ".repeat(spaces);
+				column += spaces;
+			} else {
+				text += char;
+				column += 1;
+			}
+		}
+		return { ...run, text };
+	});
 }

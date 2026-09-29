@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
-import { ansiRunTextStyle } from "./ansiOutputStyles";
+import { ansiRunTextStyle, expandLineTabs } from "./ansiOutputStyles";
 
 function parsedRun(lines: ReturnType<typeof parseAnsiLines>, index: number) {
 	const run = lines[index]?.[0];
@@ -61,4 +61,13 @@ test("concealed runs preserve their layout but override all visible opacity", ()
 	const run = parsedRun(parseAnsiLines("\u001b[2;8;31;44mconcealed\u001b[28m"), 0);
 	expect(run.hidden).toBe(true);
 	expect(ansiRunTextStyle(run, true)).toMatchObject({ opacity: 0 });
+});
+
+test("expands tabs to the next stop of 8, counting columns across runs", () => {
+	const [line] = parseAnsiLines("\u001b[32mok\u001b[0m\tgo\ttest\t");
+	expect(expandLineTabs(line ?? []).map((run) => run.text)).toEqual(["ok", "      go      test    "]);
+	// Code points, not UTF-16 units: an emoji takes one column.
+	expect(expandLineTabs(parseAnsiLines("😀\tx")[0] ?? []).map((run) => run.text)).toEqual(["😀       x"]);
+	const plain = parseAnsiLines("no tabs")[0] ?? [];
+	expect(expandLineTabs(plain)[0]).toBe(plain[0]);
 });
