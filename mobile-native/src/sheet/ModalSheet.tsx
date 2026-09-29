@@ -17,12 +17,7 @@ export function ModalSheet({
 }) {
 	const { palette } = useColors();
 	return (
-		<HoldingModal
-			visible={visible}
-			animationType="slide"
-			presentationStyle="pageSheet"
-			onRequestClose={onRequestClose}
-		>
+		<HoldingModal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onRequestClose}>
 			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
 				<Sheet {...sheet} />
 			</SafeAreaView>

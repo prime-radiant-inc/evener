@@ -594,12 +594,7 @@ function Plugins({
 							/>
 						</Group>
 						<Group>
-							<Row
-								label="Upgrade"
-								tone="accent"
-								disabled={busy || !ready}
-								onPress={() => upgrade(selected, entry)}
-							/>
+							<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
 							<Row
 								label="Remove"
 								accessibilityLabel="Remove plugin"

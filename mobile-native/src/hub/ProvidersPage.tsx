@@ -644,9 +644,7 @@ function Providers({
 												}
 												accessibilityLabel="Test connection"
 												tone="accent"
-												disabled={
-													surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready
-												}
+												disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
 												onPress={whenReady(canUseConnection, () => {
 													probeCredentials(instance.name);
 												})}
