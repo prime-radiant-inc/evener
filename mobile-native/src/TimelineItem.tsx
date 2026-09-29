@@ -29,10 +29,11 @@ import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from 
 // (tool:call:<callId> becomes item_tool_<entry>_<part>); the call id is the
 // same on both, so a run keys by it and stays open across the change. A run
 // whose first step changes (a parallel call settling before it) still starts
-// a new key.
-function disclosureKey(item: TimelineRow): [string, string] {
+// a new key. The turn rides along, since call ids are the provider's and a
+// run never spans a turn.
+function disclosureKey(item: TimelineRow): string[] {
 	const callId = item.kind === "run" ? item.steps[0]?.detail.callId : undefined;
-	return callId ? ["run-call", callId] : [item.kind, item.id];
+	return callId ? ["run-call", item.turnId ?? "", callId] : [item.kind, item.id];
 }
 
 export function TimelineItem({
