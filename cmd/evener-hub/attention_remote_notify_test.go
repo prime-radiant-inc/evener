@@ -51,10 +51,9 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 		<-done
 	})
 
-	// Barrier on the watcher loop: an unbuffered send returns only after the
-	// loop received the previous poke, so two sends guarantee the initial seed
-	// run completed with the remote approval still absent.
-	poke <- struct{}{}
+	// The initial seed run is synchronous before the watcher loop, so this
+	// unbuffered send returns only after that seed recorded a baseline with the
+	// remote approval still absent.
 	poke <- struct{}{}
 
 	cache.StoreSnapshot([]appwire.Thread{{

@@ -65,7 +65,7 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 		// remote-thread cache, so reading the roster alone left their
 		// question/approval out of the broadcast (#2529).
 		snapshot := web.navigationSnapshot(ctx)
-		m, sum := hubcore.DeriveAttention(snapshot.metas, snapshot.live, decisions)
+		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 		w.Tick(m, sum)
 	}
 	run()
