@@ -57,11 +57,13 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		// Unblock the writer's open(O_WRONLY) by opening the read end without
-		// blocking. The body is far smaller than the pipe buffer, so the write
-		// completes without this end being drained; keep it open until the
-		// writer returns so it never sees EPIPE.
-		reader, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		// Unblock the writer's open(O_WRONLY) by opening the read/write end
+		// without blocking: O_RDWR returns immediately on a FIFO and satisfies a
+		// blocked O_WRONLY opener, so the writer can never be left hanging even
+		// on this error path. The body is far smaller than the pipe buffer, so
+		// the write completes without this end being drained; keep it open until
+		// the writer returns so it never sees EPIPE.
+		reader, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			result <- fmt.Sprintf("open FIFO reader: %v", err)
 			return
