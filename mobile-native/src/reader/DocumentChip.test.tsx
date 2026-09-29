@@ -181,7 +181,7 @@ describe("since you last read it", () => {
 	const read = (updatedAt: string) =>
 		memory.left(
 			{ sessionRef: "local:fix", path: PATH },
-			{ title: "Plan", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix", updatedAt },
+			{ title: "Plan", blocks: [], position: null, sessionTitle: "Fix", updatedAt },
 		);
 	const dots = (tree: ReactTestRenderer) =>
 		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill");

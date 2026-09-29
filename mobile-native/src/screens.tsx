@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { ApprovalDock } from "./session/ApprovalDock";
+import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
@@ -119,6 +120,7 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack } from "./session/FloatingStack";
+import { atEnd, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
@@ -253,12 +255,12 @@ export type Routes = {
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
-		/** The session whose folder holds the file. */
+		/** The document's session, whose folder holds the file; Open session,
+		 * Quote in reply and the review go to it too (ruling 16). */
 		sessionRef: string;
 		path: string;
-		/** The session the Reader sits over, where Open session and reviews go. */
-		reviewRef: string;
-		reviewTitle: string;
+		/** That session's title, for Open session, Quote in reply and the review. */
+		sessionTitle: string;
 		/** When the file was last written, as its opener reported it. */
 		updatedAt?: string;
 	};
@@ -284,9 +286,9 @@ export type Routes = {
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
 
-/** A document's comments and its review: the document, and the session the
- * review goes to. */
-type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
+/** A document's comments and its review: the document, and its session's title,
+ * which the review goes to (ruling 16). */
+type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; sessionTitle: string };
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
@@ -424,19 +426,16 @@ export function ConversationScreen({
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
-	const readerLatest = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
 	// finished since.
 	const turnsSeen = useRef<string | undefined>(undefined);
 	// Where the session opened is decided once per route (spec 7.3).
 	const openedFor = useRef<string | null>(null);
-	// The reader keys the list held when you left its end; null at the end.
-	// Rows that arrive below it make "↓ 3 new".
-	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
+	// Following the live end, what moves the list, and the rows it held when
+	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
+	const follow = useLiveEndFollow();
 	const captureSuppressed = useRef(false);
-	const readerDragging = useRef(false);
-	const readerMomentum = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
 	// Puts the caret at `caret` in the composer and focuses it, on the next
@@ -1204,8 +1203,7 @@ export function ConversationScreen({
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
 				path,
-				reviewRef: route.params.ref,
-				reviewTitle: route.params.title,
+				sessionTitle: route.params.title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			}),
 		[navigation, route.params.hubId, route.params.ref, route.params.title],
@@ -1243,11 +1241,10 @@ export function ConversationScreen({
 		readerPageAttempts.current = new Set<string>();
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
-		readerLatest.current = readerAnchor.current === null;
+		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
-		setAwayKeys(null);
-	}, [route.params.hubId, route.params.ref]);
+	}, [route.params.hubId, route.params.ref, follow.dispatch]);
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
 	// waits, the start of a reply that finished since you last reached the
@@ -1272,7 +1269,7 @@ export function ConversationScreen({
 		);
 		if (target.kind === "live") {
 			readerAnchor.current = null;
-			readerLatest.current = true;
+			follow.dispatch({ type: "follow" });
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 		} else if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
@@ -1284,7 +1281,7 @@ export function ConversationScreen({
 				bindingInstance,
 				turnsSeen.current,
 			);
-			readerLatest.current = false;
+			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
 		}
@@ -1378,7 +1375,7 @@ export function ConversationScreen({
 		if (findCurrentNow.current !== null) scrollToFindMatch(findCurrentNow.current);
 	}
 	function scrollToFindMatch(index: number) {
-		readerLatest.current = false;
+		follow.dispatch({ type: "unfollow" });
 		readerHeader.current = false;
 		// The reading position follows the jump, so nothing pulls the list back.
 		captureSuppressed.current = false;
@@ -1405,16 +1402,15 @@ export function ConversationScreen({
 			timelineRows.length === 0 ||
 			!focused ||
 			readerHeader.current ||
-			readerLatest.current ||
-			readerDragging.current ||
-			readerMomentum.current
+			follow.state.current.following ||
+			follow.state.current.touch !== "none"
 		)
 			return;
 		if (anchor.conversationInstance && snapshot.status !== "open") return;
 		if (anchor.conversationInstance && bindingInstance && anchor.conversationInstance !== bindingInstance) {
 			readerAnchor.current = null;
 			appliedReaderRestore.current = null;
-			readerLatest.current = true;
+			follow.dispatch({ type: "follow" });
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 			return;
 		}
@@ -1428,7 +1424,7 @@ export function ConversationScreen({
 			timelineRows,
 			[...readerMeasurements.current.values()],
 			96,
-			!readerDragging.current && !readerMomentum.current,
+			follow.state.current.touch === "none",
 		);
 		const targetIndex = resolveReaderAnchor(anchor, timelineRows);
 		const measurementProgress =
@@ -1977,9 +1973,8 @@ export function ConversationScreen({
 	function jumpToLive() {
 		readerHeader.current = false;
 		readerAnchor.current = null;
-		readerLatest.current = true;
+		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
-		setAwayKeys(null);
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: true });
 	}
 	// The render-time action drives the placeholder, the label and whether
@@ -2260,8 +2255,17 @@ export function ConversationScreen({
 			return null;
 		}
 		if (origin.kind === "draft") {
-			if (action === "discard") document.dismiss();
-			else if (action === "edit") document.restore();
+			if (action === "discard") {
+				document.dismiss();
+				// The ghost stands in for a lost send the outbox still holds (the
+				// draft's `sameSend` match): Discard clears that row too, or it
+				// returns as its own "Couldn't confirm this was sent" ghost.
+				if (origin.clientMutationId !== undefined)
+					await getNativeMutationRuntime().discardUndelivered(
+						origin.clientMutationId,
+						nativeMutationTargetKey(route.params.hubId, route.params.ref),
+					);
+			} else if (action === "edit") document.restore();
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -2389,7 +2393,7 @@ export function ConversationScreen({
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
 	// "↓ 3 new": rows that arrived below while you read above the end.
-	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
+	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
 	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
@@ -2552,6 +2556,10 @@ export function ConversationScreen({
 							onLayout={(event) => {
 								readerViewportHeight.current = event.nativeEvent.layout.height;
 								setLayoutRevision((revision) => revision + 1);
+								// The viewport changed (the keyboard, a dock): while following,
+								// the end stays in view.
+								if (follow.state.current.following)
+									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							data={timelineRows}
 							// The live run changes when a turn starts or ends, without the
@@ -2568,27 +2576,27 @@ export function ConversationScreen({
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
+							// Dragging the transcript lowers the keyboard: following the finger
+							// as in Messages on iOS, and at the drag's start on Android, which
+							// has no interactive dismissal.
+							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
 								setLayoutRevision((revision) => revision + 1);
-								if (readerLatest.current)
+								if (follow.state.current.following)
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-								const y = contentOffset.y;
+								const y = event.nativeEvent.contentOffset.y;
 								listOffset.current = y;
-								headerHiding.onScroll(y, readerDragging.current || readerMomentum.current);
+								headerHiding.onScroll(y, follow.state.current.touch !== "none");
 								if (!focused) return;
-								if (y + layoutMeasurement.height >= contentSize.height - 48) {
-									if (awayKeys !== null) setAwayKeys(null);
-									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
-								} else if (awayKeys === null) {
-									setAwayKeys(new Set(timelineRows.map(readerKey)));
-								}
+								const end = atEnd(event.nativeEvent);
+								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
 								if (captureSuppressed.current) return;
 								// Older history loads as you near the top (spec 8.2).
 								if (y < 800) loadOlderPage();
@@ -2617,23 +2625,25 @@ export function ConversationScreen({
 								}
 							}}
 							onScrollBeginDrag={() => {
-								readerDragging.current = true;
-								readerLatest.current = false;
+								follow.dispatch({ type: "dragBegin" });
 								readerHeader.current = false;
 								captureSuppressed.current = false;
 								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 								restoreFrame.current = null;
 							}}
-							onScrollEndDrag={() => {
-								readerDragging.current = false;
+							// Letting go at the end, or a flick settling there, follows it
+							// again (spec 8.2); a row landing mid-drag never moves the list
+							// under the finger.
+							onScrollEndDrag={(event) => {
+								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onMomentumScrollBegin={() => {
-								readerMomentum.current = true;
+								follow.dispatch({ type: "momentumBegin" });
 							}}
-							onMomentumScrollEnd={() => {
-								readerMomentum.current = false;
+							onMomentumScrollEnd={(event) => {
+								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}
@@ -2667,7 +2677,7 @@ export function ConversationScreen({
 								restoreFrame.current = requestAnimationFrame(() => {
 									restoreFrame.current = null;
 									const anchor = readerAnchor.current;
-									if (!anchor || readerDragging.current || readerMomentum.current) return;
+									if (!anchor || follow.state.current.touch !== "none") return;
 									captureSuppressed.current = true;
 									timeline.current?.scrollToOffset({
 										offset: Math.max(0, index * Math.max(1, averageItemLength) + anchor.withinItemOffset),
@@ -2759,9 +2769,9 @@ export function ConversationScreen({
 							onHeight={setFloatingHeight}
 						/>
 					</View>
-					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
+					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8 }}>
 						<ScrollView
-							style={{ flexGrow: 0, flexShrink: 1 }}
+							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
@@ -2788,7 +2798,10 @@ export function ConversationScreen({
 								) : null}
 							</View>
 						</ScrollView>
-						<View>
+						{/* Only the dock's slot gives up height, so a dock taller than the
+						    room left scrolls its body and keeps its answer controls on
+						    screen (spec 8.4); the tray and the composer keep theirs. */}
+						<View style={{ flexShrink: 1 }}>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.
@@ -2827,86 +2840,87 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-								/>
-							) : null}
-							{bottom.tray ? (
-								<LiveStatusTray
-									session={conversation}
-									frames={frames}
-									connected={connected}
-									canStop={!!permitted?.stop}
-									stopping={stopping || pending}
-									onStop={() => {
-										void stop();
-									}}
-									onJumpToLive={jumpToLive}
-								/>
-							) : null}
-							{subagentOf ? (
-								<SubagentPanel
-									hubId={route.params.hubId}
-									ref={route.params.ref}
-									coordinator={subagentOf}
-									inFront={focused}
-									barShown={subagentBar}
-									showToast={showSubagentToast}
-									onRow={setSubagentRow}
-									navigation={navigation as never}
-								/>
-							) : null}
-							{composerShown ? (
-								<Composer
-									value={draft.record.draft}
-									editable={draft.loaded}
-									onChangeText={(text) => {
-										// A "/" that starts an empty draft opens Commands and
-										// skills in its place (spec 8.5).
-										if (text === "/" && draft.record.draft === "" && commandsHost) {
-											openCommands();
-											return;
-										}
-										document.edit(text);
-									}}
-									inputRef={composerInput}
-									placeholder={composerPlaceholder(onlineAction, answering)}
-									// Under an open dock, whose own button reads "Send answer",
-									// this Send says it sends what you typed.
-									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
-									sendEnabled={sendEnabled}
-									onSend={() => {
-										void send();
-									}}
-									onPhotoLibrary={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose();
-									}}
-									onCamera={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose("camera");
-									}}
-									onCommands={commandsHost ? openCommands : undefined}
-									settings={bottom.modelChip ? composerSettings : null}
-									above={
-										<>
-											{waitingForAgent}
-											<ImageAttachments document={document} selection={imageSelection} />
-											<ErrorMessage message={imageState.error} />
-										</>
-									}
-								/>
-							) : notice ? (
-								<SessionNotice
-									kind={notice}
-									busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
-									disabled={!controls}
-									error={notice === "restartNeeded" ? restart.error : null}
-									onPress={() => {
-										if (notice === "paused") void controls?.resume();
-										else void restart.restart();
-									}}
+									composerUp={composerShown}
 								/>
 							) : null}
 						</View>
+						{bottom.tray ? (
+							<LiveStatusTray
+								session={conversation}
+								frames={frames}
+								connected={connected}
+								canStop={!!permitted?.stop}
+								stopping={stopping || pending}
+								onStop={() => {
+									void stop();
+								}}
+								onJumpToLive={jumpToLive}
+							/>
+						) : null}
+						{subagentOf ? (
+							<SubagentPanel
+								hubId={route.params.hubId}
+								ref={route.params.ref}
+								coordinator={subagentOf}
+								inFront={focused}
+								barShown={subagentBar}
+								showToast={showSubagentToast}
+								onRow={setSubagentRow}
+								navigation={navigation as never}
+							/>
+						) : null}
+						{composerShown ? (
+							<Composer
+								value={draft.record.draft}
+								editable={draft.loaded}
+								onChangeText={(text) => {
+									// A "/" that starts an empty draft opens Commands and
+									// skills in its place (spec 8.5).
+									if (text === "/" && draft.record.draft === "" && commandsHost) {
+										openCommands();
+										return;
+									}
+									document.edit(text);
+								}}
+								inputRef={composerInput}
+								placeholder={composerPlaceholder(onlineAction, answering)}
+								// Under an open dock, whose own button reads "Send answer",
+								// this Send says it sends what you typed.
+								sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
+								sendEnabled={sendEnabled}
+								onSend={() => {
+									void send();
+								}}
+								onPhotoLibrary={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose();
+								}}
+								onCamera={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose("camera");
+								}}
+								onCommands={commandsHost ? openCommands : undefined}
+								settings={bottom.modelChip ? composerSettings : null}
+								above={
+									<>
+										{waitingForAgent}
+										<ImageAttachments document={document} selection={imageSelection} />
+										<ErrorMessage message={imageState.error} />
+									</>
+								}
+							/>
+						) : notice ? (
+							<SessionNotice
+								kind={notice}
+								busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
+								disabled={!controls}
+								error={notice === "restartNeeded" ? restart.error : null}
+								onPress={() => {
+									if (notice === "paused") void controls?.resume();
+									else void restart.restart();
+								}}
+							/>
+						) : null}
 					</View>
 				</View>
 			</KeyboardAvoidingView>
