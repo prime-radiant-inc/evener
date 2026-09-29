@@ -91,6 +91,9 @@ func TestSession_FallbackUsesDispatchSnapshot(t *testing.T) {
 		}
 	}()
 
+	// TRIPWIRE: scripted in-process adapter with a channel barrier, no real
+	// I/O; this ceiling only fires on a genuine deadlock, never as a timing
+	// mechanism.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
