@@ -480,7 +480,10 @@ it("offers the code's page as the one call to action, with Copy code beside the 
 	const expiry = tree.root.find(
 		(node) => String(node.type) === "Text" && node.props.children === "The code expires in 15 minutes.",
 	);
-	expect(Object.assign({}, ...[expiry.props.style].flat())).toMatchObject({ color: palettes.light.inkLow, fontSize: 13 });
+	expect(Object.assign({}, ...[expiry.props.style].flat())).toMatchObject({
+		color: palettes.light.inkLow,
+		fontSize: 13,
+	});
 	// At the largest text sizes Copy code moves under the code rather than
 	// pushing past the box.
 	const box = tree.root.find((node) => node.type === Button && node.props.label === "Copy code").parent;
