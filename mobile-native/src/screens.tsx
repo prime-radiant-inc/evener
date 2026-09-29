@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { ApprovalDock } from "./session/ApprovalDock";
+import { BottomBar } from "./session/BottomBar";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
@@ -2522,7 +2523,7 @@ export function ConversationScreen({
 	);
 
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
@@ -2754,7 +2755,7 @@ export function ConversationScreen({
 							onHeight={setFloatingHeight}
 						/>
 					</View>
-					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8 }}>
+					<BottomBar>
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
@@ -2906,7 +2907,7 @@ export function ConversationScreen({
 								}}
 							/>
 						) : null}
-					</View>
+					</BottomBar>
 				</View>
 			</KeyboardAvoidingView>
 		</SafeAreaView>

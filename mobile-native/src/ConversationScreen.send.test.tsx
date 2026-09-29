@@ -1681,6 +1681,38 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	});
 });
 
+describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
+	const flat = (node: ReactTestInstance) => Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+	const bar = (tree: ReactTestRenderer) => tree.root.findByProps({ testID: "session-bottom-bar" });
+
+	it("runs the full width to the screen's bottom edge, under a hairline, clearing the home indicator", async () => {
+		const { tree } = await mount(thread("ref-bar", "active"));
+		// The screen leaves the bottom safe area to the bar, which paints it.
+		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
+		expect(screen?.props.edges).not.toContain("bottom");
+		expect(flat(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: 34 });
+		expect(flat(bar(tree)).marginHorizontal ?? 0).toBe(0);
+		// The tray and the composer ride in it.
+		expect(
+			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
+		).toHaveLength(1);
+		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
+	});
+
+	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
+		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
+		act(() => keyboard.show());
+		expect(flat(bar(tree)).paddingBottom).toBe(0);
+		act(() => keyboard.hide());
+		expect(flat(bar(tree)).paddingBottom).toBe(34);
+	});
+
+	it("holds a question dock too", async () => {
+		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
+		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
+	});
+});
+
 describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 	function withApproval(ref: string): Thread {
 		const served = thread(ref, "active");
