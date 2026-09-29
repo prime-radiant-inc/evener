@@ -4,7 +4,7 @@ import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, neverSettlingRequest, nextRealTask, settleRealTasks } from "./testing/stalledIndexedDB";
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",
@@ -19,29 +19,6 @@ const intent: MutationIntent = {
 // number of turns; the bound is a tripwire, not the mechanism.
 async function flushMicrotasks(turns = 5): Promise<void> {
   for (let i = 0; i < turns; i += 1) await Promise.resolve();
-}
-
-// One real macrotask hop, off the faked timers: MessageChannel is a task the
-// setTimeout fake does not touch. fake-indexeddb delivers open/delete events on
-// such a task, which a fake-timer advance does not reach.
-function nextRealTask(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(null);
-  });
-}
-
-// Yield to the real task queue until `ready()`, bounded, so a parked recovery
-// can progress without its fake watchdog firing first.
-async function settleRealTasks(ready: () => boolean): Promise<void> {
-  for (let i = 0; i < 20 && !ready(); i += 1) {
-    await nextRealTask();
-  }
 }
 
 afterEach(() => {

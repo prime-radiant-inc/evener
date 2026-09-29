@@ -12,6 +12,12 @@ import type { ItemModel } from "./model";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
+import {
+  findSessionsProgress,
+  findSessionsSummary,
+  readTranscriptProgress,
+  readTranscriptSummary,
+} from "./transcriptSteps";
 import { worktreeProgress, worktreeSummary } from "./worktreeSteps";
 
 /** What a step's summary reads besides the step: the session's directory,
@@ -33,6 +39,8 @@ export type ToolFamily =
   | "shell"
   | "skill"
   | "tasks"
+  | "transcript"
+  | "sessions"
   | "worktree"
   | "mcp"
   | "tool";
@@ -392,6 +400,10 @@ function progressFor(
     }
     case "tasks":
       return taskListChanges(step) ? "Updating the task list" : "Checking the task list";
+    case "transcript":
+      return readTranscriptProgress(step);
+    case "sessions":
+      return findSessionsProgress(step);
     case "worktree":
       return worktreeProgress(step);
     case "mcp":
@@ -425,6 +437,9 @@ const TOOLS: Record<string, ToolEntry> = {
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
   task_list: { family: "tasks", summary: taskListSummary },
+  read_transcript: { family: "transcript", summary: readTranscriptSummary },
+  read_session_transcript: { family: "transcript", summary: readTranscriptSummary },
+  find_session_transcripts: { family: "sessions", summary: findSessionsSummary },
   manage_worktree: { family: "worktree", summary: worktreeSummary },
 };
 

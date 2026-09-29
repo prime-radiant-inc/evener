@@ -13,16 +13,16 @@ import {
 	lineCount,
 	parseArgs,
 	prettyJSON,
+	readTranscriptEnvelope,
 	type ShellOutput,
 	shellOutput,
 	skillContext,
 	str,
-	type TaskRow,
 	toolFamily,
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
-import type { ActivityDetail } from "../projectedRows";
+import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
 export type Evidence =
@@ -46,7 +46,7 @@ export type Evidence =
 	| { kind: "error"; text: string; exitCode?: number };
 
 /** A task in a task_list step's checklist, with the note the call added. */
-export type ChecklistTask = Pick<TaskRow, "id" | "status" | "description"> & { note?: string };
+export type ChecklistTask = DetailTask & { note?: string };
 
 /** Output lines shown in the transcript before "Show all N lines". */
 export const EVIDENCE_PREVIEW_LINES = 40;
@@ -89,8 +89,9 @@ function shellNotes(run: ShellOutput): Evidence[] {
 
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
-// checklist, what a worktree operation says it did, an MCP or other tool's
-// JSON pretty-printed; anything else as the tool printed it.
+// checklist, a transcript a read returned, what a worktree operation says it
+// did, an MCP or other tool's JSON pretty-printed; anything else as the tool
+// printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -125,6 +126,20 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 				return { id, status, description, ...(note === undefined ? {} : { note }) };
 			});
 			return [{ kind: "tasks", tasks }];
+		}
+		case "transcript": {
+			// The transcript itself, as the web's body shows it, and how many
+			// turns the read's budget left out.
+			const envelope = readTranscriptEnvelope({ output: text });
+			if (envelope?.content === undefined) return rawOutput(text);
+			const evidence = rawOutput(envelope.content.replace(/\n+$/, ""));
+			const elided = envelope.elidedTurns ?? 0;
+			if (elided > 0)
+				evidence.push({
+					kind: "note",
+					text: `${elided} ${elided === 1 ? "turn" : "turns"} left out by the read's budget`,
+				});
+			return evidence;
 		}
 		case "worktree":
 			// What the operation says it did, not the JSON around it.
