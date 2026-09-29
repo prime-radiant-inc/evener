@@ -501,22 +501,9 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 	return sess, client, profile
 }
 
-// resolvedTempDir returns a fresh t.TempDir with symlinks resolved. Tests that
-// hand a temp path to a session which canonicalizes it must compare against the
-// resolved path: on macOS /var is a symlink to /private/var, so t.TempDir()'s
-// /var/... path never equals the session's stored /private/var/... one (#2497).
-func resolvedTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
-	}
-	return dir
-}
-
 func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
 	t.Helper()
-	stateDir := resolvedTempDir(t)
+	stateDir := realTempDirForTest(t)
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
