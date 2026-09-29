@@ -325,15 +325,20 @@ func (c *delegateTreeController) delegateAttentionRestored(delegateID string) {
 }
 
 // parkDelegateAttention takes delegateID out of the drive until new attention
-// arrives for it (noteDelegateAttentionLocked) or the daemon restarts.
-func (c *delegateTreeController) parkDelegateAttention(delegateID string) {
+// arrives for it (noteDelegateAttentionLocked) or the daemon restarts. It
+// reports whether this call parked it, so overlapping passes say so once.
+func (c *delegateTreeController) parkDelegateAttention(delegateID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	delete(c.attentionRestoreFailures, delegateID)
+	if _, parked := c.attentionParked[delegateID]; parked {
+		return false
+	}
 	if c.attentionParked == nil {
 		c.attentionParked = make(map[string]struct{})
 	}
 	c.attentionParked[delegateID] = struct{}{}
-	delete(c.attentionRestoreFailures, delegateID)
+	return true
 }
 
 // giveUpAttentionPlan is the hand-over of delegateID's owed attention to the

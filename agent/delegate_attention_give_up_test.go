@@ -198,3 +198,68 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 	}
 	c.mu.Unlock()
 }
+
+// A delegate whose transcript is gone has nothing to hand over: the
+// attention must not be forgotten as though it had been delivered. Giving up
+// parks it and says so.
+func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root, fixture := fenced.root, fenced.fixture
+	root.cfg.testOnly.delegateAttentionGiveUpAfter = 2
+	for _, path := range []string{
+		filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json"),
+		transcriptPath(fixture.stateDir, fenced.grandchildSessionID),
+	} {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove %s: %v", path, err)
+		}
+	}
+	eventsDone := captureSessionEvents(root)
+
+	for range 2 {
+		root.drivePendingStableDelegateAttention()
+	}
+	c := root.delegateController
+	c.mu.Lock()
+	_, parked := c.attentionParked[fenced.grandchildDelegateID]
+	_, stillOwed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
+	c.mu.Unlock()
+	root.Close()
+	if !parked || !stillOwed {
+		t.Fatalf("after giving up on a missing transcript: parked=%t owed=%t, want the attention kept and the delegate parked", parked, stillOwed)
+	}
+	undeliverable := 0
+	for _, warning := range warningEvents(<-eventsDone) {
+		if warning.Code == events.WarningCodeDelegateAttentionUndeliverable {
+			undeliverable++
+		}
+	}
+	if undeliverable != 1 {
+		t.Fatalf("undeliverable warnings = %d, want one", undeliverable)
+	}
+}
+
+// Overlapping passes that both give up on the same delegate park it once and
+// say so once.
+func TestParkingTwiceWarnsOnce(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root, fixture := fenced.root, fenced.fixture
+	path := transcriptPath(fixture.stateDir, fenced.grandchildSessionID)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove grandchild transcript: %v", err)
+	}
+	eventsDone := captureSessionEvents(root)
+	busy := errors.New("load committed delegate session metadata: gone")
+	root.giveUpDelegateAttention(fenced.grandchildDelegateID, busy)
+	root.giveUpDelegateAttention(fenced.grandchildDelegateID, busy)
+	root.Close()
+	undeliverable := 0
+	for _, warning := range warningEvents(<-eventsDone) {
+		if warning.Code == events.WarningCodeDelegateAttentionUndeliverable {
+			undeliverable++
+		}
+	}
+	if undeliverable != 1 {
+		t.Fatalf("undeliverable warnings = %d, want one for the one park", undeliverable)
+	}
+}

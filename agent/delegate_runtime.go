@@ -1217,17 +1217,37 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	if !ok {
 		return
 	}
-	escalateErr := s.escalateOneUnreachableDelegateAttention(plan)
+	escalateErr := s.handOverDelegateAttention(plan)
 	if escalateErr == nil {
 		s.delegateController.delegateAttentionRestored(delegateID)
+		s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
 		slog.Warn("delegate attention handed to the root after repeated restore failures", "session", s.ID(), "delegate", delegateID, "error", restoreErr.Error())
 		return
 	}
-	s.delegateController.parkDelegateAttention(delegateID)
+	// Overlapping passes may both give up; only the one that parks says so.
+	if !s.delegateController.parkDelegateAttention(delegateID) {
+		return
+	}
 	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_error", restoreErr.Error(), "handover_error", escalateErr.Error())
 	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	s.emit(events.EventWarning, data)
+}
+
+// handOverDelegateAttention transfers plan's attention to the root. The
+// escalation's fold read treats a missing transcript as empty (attention
+// never made durable) and forgets the ids, which here would drop owed
+// attention as though delivered; a delegate whose transcript is gone has
+// nothing to hand over, so that is a failure.
+func (s *Session) handOverDelegateAttention(plan delegateFencedAttentionEscalation) error {
+	sourcePath, _, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		return fmt.Errorf("delegate transcript: %w", err)
+	}
+	return s.escalateOneUnreachableDelegateAttention(plan)
 }
 
 func (s *Session) drivePendingStableDelegateAttention() bool {
