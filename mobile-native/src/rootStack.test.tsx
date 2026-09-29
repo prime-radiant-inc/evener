@@ -1,4 +1,5 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
+import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { palettes } from "./design/tokens";
 import { render } from "./renderNative.testkit";
@@ -42,4 +43,20 @@ it("grows the app's page titles with Dynamic Type, stopping at xxxLarge", () => 
 	expect(options()?.headerTitleStyle).toMatchObject({ fontSize: 23 });
 	text.fontScale = 53 / 17;
 	expect(options()?.headerTitleStyle).toMatchObject({ fontSize: 23 });
+});
+
+// The navigator takes these as screenOptions on every render, so they keep
+// their identity until the colors or the text size change.
+it("hands the navigator the same options until the text size changes", () => {
+	const seen: NativeStackNavigationOptions[] = [];
+	function Probe(_: { tick: number }) {
+		seen.push(useRootStackOptions());
+		return null;
+	}
+	const tree = render(<Probe tick={0} />);
+	act(() => tree.update(<Probe tick={1} />));
+	expect(seen[1]).toBe(seen[0]);
+	text.fontScale = 23 / 17;
+	act(() => tree.update(<Probe tick={2} />));
+	expect(seen[2]).not.toBe(seen[1]);
 });
