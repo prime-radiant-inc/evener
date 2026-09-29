@@ -10,7 +10,18 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import {
+	AccessibilityInfo,
+	ActionSheetIOS,
+	Alert,
+	AppState,
+	Platform,
+	Pressable,
+	ScrollView,
+	Text,
+	TextInput,
+	View,
+} from "react-native";
 import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
@@ -199,6 +210,17 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 	const reading = useReadingType();
 	const note = useSyncExternalStore(notes.subscribe, notes.getSnapshot);
 	const [focused, setFocused] = useState(false);
+	// The status line under the editor. iOS ignores accessibilityLiveRegion, so
+	// announce each change there; Android reads the polite region on its own, and
+	// announcing too would say it twice. The first render is skipped: the line
+	// starts as the note's standing explanation, not a change to speak (#2903).
+	const status = noteStatusLine(note.phase, working);
+	const announced = useRef(status);
+	useEffect(() => {
+		if (status === announced.current) return;
+		announced.current = status;
+		if (Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(status);
+	}, [status]);
 	// Opened from the bar's "Your note: …", the caret waits at the end, ready to
 	// add to it; the first move of the caret hands the selection back to iOS.
 	const [caret, setCaret] = useState(() => (focus ? { start: note.text.length, end: note.text.length } : undefined));
@@ -247,7 +269,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				accessibilityLiveRegion="polite"
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
-				{noteStatusLine(note.phase, working)}
+				{status}
 			</Text>
 		</View>
 	);
