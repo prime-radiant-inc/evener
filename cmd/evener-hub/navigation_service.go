@@ -1584,7 +1584,6 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	// in particular, test and compatibility fixtures replace these functions.
 	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
 	_, attention := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-	authority := favoriteAuthorityForNavigation(snapshot, tree)
 	favorites, err := s.web.favoriteDecisions()
 	if err != nil {
 		return navigationSourceSnapshot{}, err
@@ -1603,7 +1602,9 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	if err != nil {
 		return navigationSourceSnapshot{}, err
 	}
+	authority, subagents := s.web.favoriteAuthorityForReferences(snapshot, tree, referencedSessionIDs(favorites, assignments))
 	favoriteView := hubcore.ClassifyFavoriteDecisions(favorites, authority).Presentation
+	assignments, sections = dropSubagentPins(assignments, sections, subagents)
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
 	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
