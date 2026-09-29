@@ -39,7 +39,7 @@ export function ThoughtRow({
 				<Text
 					selectable
 					allowFontScaling={allowFontScaling}
-					style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+					style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 				>
 					{text}
 				</Text>

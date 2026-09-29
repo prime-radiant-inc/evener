@@ -47,7 +47,7 @@ export function ContinueReadingRow({
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{
-						...face("semibold"),
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 19 * scale,
 						color: palette.inkHi,

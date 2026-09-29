@@ -88,7 +88,7 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					ellipsizeMode="tail"
 					style={{
 						flexShrink: 1,
-						...face("semibold"),
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,

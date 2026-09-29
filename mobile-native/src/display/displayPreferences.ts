@@ -11,6 +11,9 @@ export interface DisplayChoices {
 	readingFont: ReadingFont;
 }
 
+/** The appearances in the order Display offers them. */
+export const APPEARANCE_CHOICES: readonly AppearanceChoice[] = ["system", "light", "dark"];
+
 /** Each appearance as Display names it. */
 export const APPEARANCE_LABELS: Record<AppearanceChoice, string> = { system: "System", light: "Light", dark: "Dark" };
 
@@ -19,7 +22,6 @@ export const DISPLAY_KEY = "evener.native.display";
 
 export type DisplayStorage = Pick<SyncStringStorage, "getItemSync" | "setItemSync">;
 
-const APPEARANCES: readonly string[] = ["system", "light", "dark"];
 const FONTS: readonly string[] = ["serif", "sans"];
 
 /** A stored value this build doesn't know, or can't parse, reads as the
@@ -34,7 +36,7 @@ function read(storage: DisplayStorage): DisplayChoices {
 	const record = value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 	return {
 		appearance:
-			typeof record.appearance === "string" && APPEARANCES.includes(record.appearance)
+			typeof record.appearance === "string" && (APPEARANCE_CHOICES as readonly string[]).includes(record.appearance)
 				? (record.appearance as AppearanceChoice)
 				: DEFAULT_DISPLAY.appearance,
 		readingFont:

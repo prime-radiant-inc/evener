@@ -78,7 +78,7 @@ export function QuoteBlock({
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{
-					...face("regular"),
+					...face.regular,
 					color: palette.inkMid,
 					fontSize: size * scale,
 					lineHeight: lineHeight * scale,

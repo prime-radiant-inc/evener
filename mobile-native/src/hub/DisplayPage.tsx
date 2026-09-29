@@ -6,6 +6,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { useDisplayChoices, useDisplayPreferences } from "../display/displayContext";
 import {
+	APPEARANCE_CHOICES,
 	APPEARANCE_LABELS,
 	type AppearanceChoice,
 	type DisplayChoices,
@@ -17,9 +18,10 @@ import { GroupedPage, GroupFooter, GroupLabel, Group, Row, Segmented } from "../
 import { SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 
-const APPEARANCES: readonly { value: AppearanceChoice; label: string }[] = (["system", "light", "dark"] as const).map(
-	(value) => ({ value, label: APPEARANCE_LABELS[value] }),
-);
+const APPEARANCES: readonly { value: AppearanceChoice; label: string }[] = APPEARANCE_CHOICES.map((value) => ({
+	value,
+	label: APPEARANCE_LABELS[value],
+}));
 const READING_FONTS: readonly { value: ReadingFont; label: string }[] = [
 	{ value: "serif", label: "Serif" },
 	{ value: "sans", label: "Sans" },

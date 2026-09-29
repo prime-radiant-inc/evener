@@ -54,8 +54,8 @@ it("gives agent-written text the serif under Serif, and the system face with its
 		return null;
 	}
 	render(<Probe />);
-	expect(seen.face?.("regular")).toEqual({ fontFamily: fonts.serif });
-	expect(seen.face?.("semibold")).toEqual({ fontFamily: fonts.serifSemibold });
+	expect(seen.face?.regular).toEqual({ fontFamily: fonts.serif });
+	expect(seen.face?.semibold).toEqual({ fontFamily: fonts.serifSemibold });
 	const values = new Map<string, string>();
 	const prefs = new DisplayPreferences({
 		getItemSync: (key) => values.get(key) ?? null,
@@ -69,6 +69,6 @@ it("gives agent-written text the serif under Serif, and the system face with its
 			<Probe />
 		</DisplayProvider>,
 	);
-	expect(seen.face?.("regular")).toEqual({});
-	expect(seen.face?.("semibold")).toEqual({ fontWeight: "600" });
+	expect(seen.face?.regular).toEqual({});
+	expect(seen.face?.semibold).toEqual({ fontWeight: "600" });
 });

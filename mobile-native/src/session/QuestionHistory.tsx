@@ -23,7 +23,7 @@ export function QuestionHistory({
 				<Text
 					key={`${question.header}\u0000${question.question}`}
 					allowFontScaling={allowFontScaling}
-					style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
+					style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
 				>
 					{question.question}
 				</Text>

@@ -155,7 +155,7 @@ export function QuestionDock({
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						...face("semibold"),
+						...face.semibold,
 						fontSize: 17 * scale,
 						lineHeight: 24 * scale,
 						color: palette.prose,
@@ -166,7 +166,7 @@ export function QuestionDock({
 				{display.why ? (
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+						style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 					>
 						{display.why}
 					</Text>
