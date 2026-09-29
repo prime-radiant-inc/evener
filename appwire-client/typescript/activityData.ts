@@ -132,6 +132,7 @@ export interface ActivityDelegate {
   projectionRevision?: number;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable?: boolean;
   notResumableReason?: string;
@@ -493,6 +494,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "status",
     "outcome",
     "reason",
+    "error",
     "notResumableReason",
     "task",
     "description",

@@ -68,6 +68,17 @@ fuzz-seeds:
 # (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
+# Step 1 builds the agent module with -run '^$' — compile-only, deliberately.
+# The agent module's non-Fuzz suite is ~14k tests and measured well past the
+# whole `make test` budget under the tag, so the gate does not run it tagged.
+# That is safe rather than a gap: every agent-side invariant.Hold site is
+# reached under the tag by a registered fuzz or rapid target this same gate
+# replays — jobstore's fold/notify monotonicity by TestJobstoreSeqFuzz
+# (rapid-replay.sh) and history_repair.go's post-repair rescan by
+# FuzzFc1RepairOrphanedToolResults (FUZZ_SEED_REPLAY). A new agent invariant
+# must clear the same bar: prove a registered tagged target reaches it (add a
+# seed or target if not), per "Internal invariants under evenerfuzz" in
+# docs/developing-evener/fuzzing.md.
 # Steps 2-5 run every NON-Fuzz test, skipping the FuzzXxx corpus: the
 # FUZZ_SEED_REPLAY step below replays exactly that set (proven by
 # `go test -tags evenerfuzz --list '^Fuzz'` per module — the replay list is

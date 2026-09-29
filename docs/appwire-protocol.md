@@ -424,6 +424,7 @@ An embedded type contributes its own fields inline.
 | `userCode` | `string` |  |  |
 | `verificationUrl` | `string` |  |  |
 | `intervalSeconds` | `int` |  |  |
+| `expiresInSeconds` | `int` | yes |  |
 | `fallback` | `bool` | yes |  |
 
 
