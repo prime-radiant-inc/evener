@@ -12673,6 +12673,74 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // A settled WireError is the daemon's own answer, so it is surfaced at once:
+  // an identical retry cannot succeed. Pinned by call count - a retry would
+  // show a second turn/start.
+  test("a fallback send does not retry a settled WireError refusal", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-conflict";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("turn is not active", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(ConflictError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The retry is bounded: a transport failure on both attempts is surfaced
+  // after exactly two, with nothing else left to try.
+  test("a fallback send surfaces a transport failure after both attempts", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-exhausted";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new Error("FakeClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "failed twice while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("FakeClient: socket closed");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The fallback is not the ref's durable FIFO head. The dispatcher sends only
   // nextDispatchable (the ref's head) and re-checks its admission before every
   // attempt; the fallback must re-earn that admission and must not jump an
