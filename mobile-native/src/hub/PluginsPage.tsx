@@ -274,7 +274,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	const clearFocus = useCallback(() => navigation.setParams({ focus: undefined }), [navigation]);
 	const openMarketplace = useCallback(
 		(name: string, segment: "marketplaces" | "browse") =>
-			navigation.navigate("Marketplace", { hubId: route.params.hubId, name, segment }),
+			navigation.push("Marketplace", { hubId: route.params.hubId, name, segment }),
 		[navigation, route.params.hubId],
 	);
 	if (activeProfile?.id !== route.params.hubId)
@@ -411,6 +411,7 @@ function Plugins({
 				appliedRemovalNames,
 				onAppliedRemoval,
 				onRemovedMarketplace,
+				marketplaceWarning,
 			}),
 			[
 				hubId,
@@ -424,6 +425,7 @@ function Plugins({
 				appliedRemovalNames,
 				onAppliedRemoval,
 				onRemovedMarketplace,
+				marketplaceWarning,
 			],
 		),
 	);

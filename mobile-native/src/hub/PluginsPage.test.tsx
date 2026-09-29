@@ -3180,7 +3180,7 @@ it("installs a catalog's plugin from Browse", async () => {
 it("pushes a marketplace's page from its list, so the edge swipe returns there (audit M8)", async () => {
 	const hub = pageHub([]);
 	harness.connection = readyConnection(hub as unknown as ConversationClientLike);
-	const navigation = { setParams: vi.fn(), navigate: vi.fn() };
+	const navigation = { setParams: vi.fn(), navigate: vi.fn(), push: vi.fn() };
 	const props = { route: { params: { hubId: "hub-1" } }, navigation } as unknown as ComponentProps<typeof PluginsPage>;
 	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
@@ -3188,12 +3188,12 @@ it("pushes a marketplace's page from its list, so the edge swipe returns there (
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
 	});
-	expect(navigation.navigate).toHaveBeenCalledWith("Marketplace", { hubId: "hub-1", name: "acme", segment: "browse" });
+	expect(navigation.push).toHaveBeenCalledWith("Marketplace", { hubId: "hub-1", name: "acme", segment: "browse" });
 	await choose(tree, "Marketplaces");
 	await act(async () => {
 		marketplaceRow(tree, "acme").props.onPress();
 	});
-	expect(navigation.navigate).toHaveBeenLastCalledWith("Marketplace", {
+	expect(navigation.push).toHaveBeenLastCalledWith("Marketplace", {
 		hubId: "hub-1",
 		name: "acme",
 		segment: "marketplaces",

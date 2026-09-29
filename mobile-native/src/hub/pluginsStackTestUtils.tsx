@@ -1,6 +1,6 @@
 // The Plugins page as the Hub's stack holds it, for tests: the page, and a
 // marketplace's page pushed over it with the Plugins page still mounted
-// underneath, sharing the slot the Hub sheet provides. `navigate("Marketplace")`
+// underneath, sharing the slot the Hub sheet provides. `push("Marketplace")`
 // pushes, the harness's "Back to Plugins" control and the marketplace page's
 // goBack pop, and `popTo("Plugins", params)` pops with the params the Plugins
 // page then reads. Every other navigation call reaches the test's own mocks.
@@ -20,9 +20,9 @@ export function PluginsStack({ route, navigation }: PluginsProps) {
 		() =>
 			({
 				...navigation,
-				navigate: (name: string, params: unknown) => {
+				push: (name: string, params: unknown) => {
 					if (name === "Marketplace") setPushed(params as HubRoutes["Marketplace"]);
-					else (navigation.navigate as (name: string, params: unknown) => void)(name, params);
+					else (navigation.push as (name: string, params: unknown) => void)(name, params);
 				},
 				setParams: (params: Partial<HubRoutes["Plugins"]>) => {
 					if ("focus" in params) setFocus(params.focus);

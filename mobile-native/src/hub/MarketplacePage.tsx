@@ -7,7 +7,7 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect } from "react";
 import { MarketplaceDetail } from "../MarketplaceBrowser";
-import { GroupedPage } from "../sheet/Grouped";
+import { GroupedPage, GroupFooter } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { usePluginsScreenSlot } from "./pluginsScreenSlot";
@@ -24,7 +24,10 @@ export function MarketplacePage({ route, navigation }: NativeStackScreenProps<Hu
 	return (
 		<GroupedPage>
 			<SheetStatus />
+			{owned.marketplaceWarning ? <GroupFooter tone="danger">{owned.marketplaceWarning}</GroupFooter> : null}
+			{/* Keyed by name: a marketplace's filter, error and pending writes are its own. */}
 			<MarketplaceDetail
+				key={name}
 				segment={segment}
 				name={name}
 				client={owned.client}

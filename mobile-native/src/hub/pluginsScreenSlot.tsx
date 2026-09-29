@@ -17,8 +17,9 @@ import {
 } from "react";
 import type { MarketplaceWrites } from "../MarketplaceBrowser";
 
-/** What the pushed page writes through, and the hub it was published for. */
-export type PluginsScreenSlot = MarketplaceWrites & { hubId: string };
+/** What the pushed page writes through, the hub it was published for, and
+ * the Plugins page's removal warning, which the pushed page covers. */
+export type PluginsScreenSlot = MarketplaceWrites & { hubId: string; marketplaceWarning: string | null };
 
 type SlotState = [PluginsScreenSlot | null, Dispatch<SetStateAction<PluginsScreenSlot | null>>];
 

@@ -10,6 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
+import { SearchField } from "../sheet/SearchField";
 import { MarketplacePage } from "./MarketplacePage";
 import { type PluginsScreenSlot, PluginsScreenSlotProvider, usePublishPluginsScreen } from "./pluginsScreenSlot";
 
@@ -27,12 +28,14 @@ function slotFor(hubId: string, ready = true): PluginsScreenSlot {
 }
 
 /** A Plugins page's publication over its own fake hub, which lists acme. */
-function hubSlot(hubId: string, ready = true, listed = true) {
+function hubSlot(hubId: string, ready = true, listed = true, catalog: { name: string }[] = []) {
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({
-		marketplaces: listed ? [{ name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 }] : [],
+		marketplaces: listed
+			? ["acme", "beta"].map((name) => ({ name, source: { kind: "github" as const, repo: `${name}/plugins` }, lastUpdated: 1 }))
+			: [],
 	}));
-	hub.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+	hub.on("evener/marketplace/browse", (params: { name: string }) => ({ name: params.name, plugins: catalog }));
 	hub.on("evener/plugin/list", () => ({ plugins: [] }));
 	const client = hub as unknown as ConversationClientLike;
 	const gate = createHubWriteGate();
@@ -50,6 +53,7 @@ function hubSlot(hubId: string, ready = true, listed = true) {
 		appliedRemovalNames: new Set(),
 		onAppliedRemoval: () => true,
 		onRemovedMarketplace: () => {},
+		marketplaceWarning: null,
 	};
 	return { slot, hub };
 }
@@ -60,7 +64,12 @@ function Publisher({ slot }: { slot: PluginsScreenSlot }) {
 	return null;
 }
 
-function page(slot: PluginsScreenSlot | null, navigation: { goBack: () => void; popTo: () => void }, pushed = true) {
+function page(
+	slot: PluginsScreenSlot | null,
+	navigation: { goBack: () => void; popTo: () => void },
+	pushed = true,
+	name = "acme",
+) {
 	return (
 		<PluginsScreenSlotProvider>
 			{slot ? <Publisher slot={slot} /> : null}
@@ -69,7 +78,7 @@ function page(slot: PluginsScreenSlot | null, navigation: { goBack: () => void; 
 					route={{
 						key: "Marketplace",
 						name: "Marketplace",
-						params: { hubId: "hub-1", name: "acme", segment: "browse" },
+						params: { hubId: "hub-1", name, segment: "browse" },
 					}}
 					navigation={navigation as unknown as NativeStackScreenProps<HubRoutes, "Marketplace">["navigation"]}
 				/>
@@ -173,4 +182,49 @@ it("goes back when the Plugins page underneath goes", async () => {
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	await act(async () => tree.update(page(null, navigation)));
 	expect(navigation.goBack).toHaveBeenCalledTimes(1);
+});
+
+it("starts each marketplace clean: another marketplace's filter doesn't carry over", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const slot = hubSlot("hub-1", true, true, [{ name: "tool" }]).slot;
+	const tree = await pushedOver(slot, navigation);
+	await act(async () => tree.root.findByType(SearchField).props.onChangeText("zzz"));
+	await act(async () => tree.update(page(slot, navigation, true, "beta")));
+	await act(async () => {});
+	expect(tree.root.findByType(SearchField).props.value).toBe("");
+});
+
+it("shows the Plugins page's removal warning on the marketplace's own page", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const warning = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
+	const tree = await pushedOver({ ...slotFor("hub-1"), marketplaceWarning: warning }, navigation);
+	const shown = tree.root.findByType(MarketplacePage);
+	expect(shown.findAll((node) => node.props.children === warning).length).toBeGreaterThan(0);
+});
+
+it("opens an installed plugin back on the Plugins page", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const { slot, hub } = hubSlot("hub-1", true, true, [{ name: "tool" }]);
+	hub.on("evener/plugin/list", () => ({
+		plugins: [
+			{
+				plugin: "tool",
+				marketplace: "acme",
+				version: "1",
+				installPath: "/p/tool",
+				enabled: true,
+				autoUpgrade: false,
+				broken: false,
+				installedAt: 1,
+				lastUpdated: 1,
+			},
+		],
+	}));
+	void slot.installed.getState().fetchPlugins();
+	const tree = await pushedOver(slot, navigation);
+	await act(async () => tree.root.findByProps({ accessibilityLabel: "Open tool from acme" }).props.onPress());
+	expect(navigation.popTo).toHaveBeenCalledWith("Plugins", {
+		hubId: "hub-1",
+		focus: { plugin: "tool", marketplace: "acme" },
+	});
 });
