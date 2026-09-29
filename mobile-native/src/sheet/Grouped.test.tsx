@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag } from "./Grouped";
+import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag, TextFieldRow } from "./Grouped";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -181,5 +181,30 @@ describe("a row's value with a tag", () => {
 	it("shows the tag alone when there is no value", () => {
 		const tree = render(<RowValue tag={{ text: "Hub runs 0.9.412", tone: "gray" }} />);
 		expect(texts(tree).map((node) => node.props.children)).toEqual(["Hub runs 0.9.412"]);
+	});
+});
+
+describe("a text field row", () => {
+	it("edits a machine value in Menlo, named for VoiceOver, without capitalizing or correcting it", () => {
+		const changes: string[] = [];
+		const tree = render(
+			<TextFieldRow label="SSH address" value="attic.lan" onChangeText={(text) => changes.push(text)} />,
+		);
+		const input = tree.root.findByType("TextInput" as never);
+		expect(input.props.accessibilityLabel).toBe("SSH address");
+		expect(input.props.value).toBe("attic.lan");
+		expect(input.props.autoCapitalize).toBe("none");
+		expect(input.props.autoCorrect).toBe(false);
+		expect(merged(input.props.style)).toMatchObject({ fontFamily: fonts.mono, color: light.inkHi });
+		input.props.onChangeText("attic.local");
+		expect(changes).toEqual(["attic.local"]);
+	});
+
+	it("takes several lines when asked, and holds while disabled", () => {
+		const input = render(
+			<TextFieldRow label="Roots" value="" onChangeText={() => {}} multiline disabled />,
+		).root.findByType("TextInput" as never);
+		expect(input.props.multiline).toBe(true);
+		expect(input.props.editable).toBe(false);
 	});
 });

@@ -11,13 +11,15 @@ export interface HubFleet {
 	live: LiveSessionsReader | null;
 }
 
-export function useHubFleet(client: ConversationClientLike | null): HubFleet {
+/** newMutationId is the random id each host edit or removal carries; the
+ * sheet hands in expo-crypto's randomUUID. */
+export function useHubFleet(client: ConversationClientLike | null, newMutationId?: () => string): HubFleet {
 	const fleet = useMemo<HubFleet>(
 		() =>
 			client
-				? { hosts: new HostsController(client), live: new LiveSessionsReader(client) }
+				? { hosts: new HostsController(client, newMutationId), live: new LiveSessionsReader(client) }
 				: { hosts: null, live: null },
-		[client],
+		[client, newMutationId],
 	);
 	useEffect(() => {
 		const unwatch = fleet.live?.watch();
