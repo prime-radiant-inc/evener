@@ -147,6 +147,27 @@ test("says the count list_dir states, one entry or many", () => {
     "Listed a · 2 entries",
   );
   expect(listed("d.go\t3\n\n1 of 5 entries (offset 4)")).toBe("Listed a · 1 entry");
+  // An entry named like a count is an entry: only the footer, after the blank
+  // line (or alone, for an empty directory), is the count.
+  expect(listed("2 entries.md\t9\nb.go\t3\nc.go\t4\n\n3 entries")).toBe("Listed a · 3 entries");
+  expect(listed("0 entries.md\t9\n\n1 of 4 entries (offset 3)")).toBe("Listed a · 1 entry");
+  // A trailing newline after the footer still leaves it the last line.
+  expect(listed("b.go\t3\nc.go\t4\n\n2 entries\n")).toBe("Listed a · 2 entries");
+  // An entry named like a count is an entry even as the last line of an
+  // output without the footer, which counts its lines.
+  expect(listed("2 entries.md\t9\n")).toBe("Listed a · 1 entry");
+  expect(listed("b.go\t3\nc.go\t4\n2 entries.md\t9")).toBe("Listed a · 3 entries");
+  // The registry's repetition nudge, appended after a blank line, is not the
+  // listing's last line.
+  expect(
+    listed(
+      "b.go\t3\nc.go\t4\nd.go\t5\n\n3 entries\n\nYou have now made this same call and received the identical result 2 times in a row.",
+    ),
+  ).toBe("Listed a · 3 entries");
+  // Without a footer, a nudge's lines aren't counted as entries.
+  expect(
+    listed("a.go\nb.go\n\nYou have now made this same call and received the identical result 2 times in a row."),
+  ).toBe("Listed a · 2 entries");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });
