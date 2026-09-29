@@ -5,6 +5,7 @@ import {
 	quietState,
 	type SearchResult,
 } from "@evener/appwire-client";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
@@ -13,6 +14,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useReducer,
 	useRef,
@@ -42,6 +44,8 @@ import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
+import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { headerRowFill, navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -369,6 +373,14 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
+	// Where the device has Liquid Glass, one glass spans the nav bar and the
+	// chips under it (spec 16.3), and the Board scrolls under both: its
+	// content is inset by them (underGlass), and every scroll it makes itself
+	// lands clear of them. Until the glass has measured, that's the bar alone.
+	const headerHeight = useHeaderHeight();
+	const navGlass = useSystemGlass();
+	const [headerPanel, setHeaderPanel] = useState({ height: 0, onGlass: false });
+	const underGlass = navGlass ? reservedUnderGlass(headerHeight, headerPanel, true) : 0;
 	// Search is bound only while the Board is in view (the plugin poll's
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
@@ -476,7 +488,12 @@ function Board({
 	};
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
-		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
+		// While the Board's own scroll is under way, scrollerOffset holds where
+		// it's headed, which a glass change re-targets; its progress would
+		// overwrite that.
+		if (list.state !== "appScrolling") scrollerOffset.current = contentOffset.y;
+		// What shows below the glass, in the Board's content.
+		viewport.current = { offset: contentOffset.y + underGlass, height: layoutMeasurement.height - underGlass };
 		scrolledFromTuck.current = true;
 		readMoreLiveIfNear();
 		readVisibleMore();
@@ -494,8 +511,12 @@ function Board({
 		tuckedHeight.current = searchFieldHeight;
 		if (searching) return;
 		if (scrolledFromTuck.current && Math.abs(viewport.current.offset - was) > 1) return;
-		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: false });
+		scroller.current?.scrollTo?.({ y: searchFieldHeight - underGlass, animated: false });
 	}, [searchFieldHeight, searching]);
+	// The scroller's own offset, which the glass's inset shifts from the
+	// content's: where it starts (contentOffset below), then each scroll, or
+	// where a scroll the Board makes itself is headed.
+	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -750,20 +771,35 @@ function Board({
 	// Every animated scroll the Board starts holds the list until it ends.
 	// Under Reduce Motion it jumps instead, and holds nothing. A test
 	// renderer's host ScrollView has no instance to scroll.
+	// `y` is where in the Board's content to show at its top, which on the
+	// glass is the glass's lower edge.
 	const scrollBoardTo = useCallback(
 		(y: number) => {
 			if (!reduceMotion) list.send("appScrollStart");
-			scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+			scrollerOffset.current = y - underGlass;
+			scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: !reduceMotion });
 		},
-		[list, reduceMotion],
+		[list, reduceMotion, underGlass],
 	);
+	// When the glass comes or goes, or grows or shrinks (the chips appear, or
+	// search hides them), the same content stays at the glass's lower edge.
+	// A scroll the Board is making (Search's reveal, which hides the chips as
+	// it starts) goes on to its content's new place instead of stopping.
+	const shownUnderGlass = useRef(underGlass);
+	useLayoutEffect(() => {
+		const change = underGlass - shownUnderGlass.current;
+		shownUnderGlass.current = underGlass;
+		if (change === 0) return;
+		scrollerOffset.current -= change;
+		scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: list.state === "appScrolling" });
+	}, [underGlass, list]);
 	// The field sits above the Board, scrolled out of view, so Search brings
 	// it down (spec 7.4).
 	const revealSearch = useCallback(() => {
 		scrollBoardTo(0);
 		searchInput.current?.focus?.();
 	}, [scrollBoardTo]);
-	useHeader(navigation, hubId, hubName, revealSearch);
+	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page);
 	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
 	// sheets are part of it, ruling 28), or the app leaving the foreground.
 	useEffect(() => {
@@ -1149,15 +1185,23 @@ function Board({
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{/* Fixed under the header; their sections aren't there while
-			    search results are. */}
-			{chips.length && !searching ? <Chips chips={chips} /> : null}
+			    search results are. On the glass the Board runs under them, and
+			    the panel's zIndex raises it over the scroller. */}
+			<GlassHeaderPanel
+				testID="board-header"
+				style={navGlass ? GLASS_PANEL : undefined}
+				glassTop={navGlass ? headerHeight : undefined}
+				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+			>
+				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
 					ref={scroller}
 					style={{ flex: 1 }}
 					// Starts just past the search field: pulling down reveals it
 					// (spec 7.3). iOS applies this once, when the scroller mounts.
-					contentOffset={{ x: 0, y: searchFieldHeight }}
+					contentOffset={{ x: 0, y: searchFieldHeight - underGlass }}
 					keyboardShouldPersistTaps="handled"
 					keyboardDismissMode="on-drag"
 					// iOS keeps that offset only while the content is taller than the
@@ -1169,11 +1213,13 @@ function Board({
 					}}
 					// The Board runs under its toolbar's glass, its end and its
 					// scroll indicator clear of the toolbar.
-					contentInset={boardUnderBar.contentInset}
-					scrollIndicatorInsets={boardUnderBar.scrollIndicatorInsets}
+					contentInset={navGlass ? { ...boardUnderBar.contentInset, top: underGlass } : boardUnderBar.contentInset}
+					scrollIndicatorInsets={
+						navGlass ? { ...boardUnderBar.scrollIndicatorInsets, top: underGlass } : boardUnderBar.scrollIndicatorInsets
+					}
 					onScroll={onScroll}
 					onLayout={(event) => {
-						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height - underGlass };
 						readMoreLiveIfNear();
 						readVisibleMore();
 					}}
@@ -1499,6 +1545,9 @@ function useSearch(client: ConversationClientLike | null) {
 	return { controller, snapshot };
 }
 
+/** The chips' panel on the glass: over the Board's top, which runs under it. */
+const GLASS_PANEL = { position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 } as const;
+
 /** The search field's row: an 8pt margin around a field that grows with the
  * text size, never shorter than the 44pt touch target. */
 const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
@@ -1735,7 +1784,14 @@ function useHubSeenMarks(
 	}, [hubMarks, loadedRows]);
 }
 
-function useHeader(navigation: Navigation, hubId: string, hubName: string, revealSearch: () => void) {
+function useHeader(
+	navigation: Navigation,
+	hubId: string,
+	hubName: string,
+	revealSearch: () => void,
+	glass: boolean,
+	page: string,
+) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const hubButton = (
@@ -1745,6 +1801,7 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, revea
 			/>
 		);
 		navigation.setOptions({
+			...navBarGlassOptions(glass, page),
 			title: "",
 			unstable_headerLeftItems: () => [{ type: "custom", element: hubButton }],
 			unstable_headerRightItems: () => [
@@ -1763,7 +1820,7 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, revea
 				</Action>
 			),
 		});
-	}, [navigation, hubId, hubName, revealSearch, fontScale]);
+	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
@@ -1814,13 +1871,15 @@ interface ChipProps {
 	onPress: () => void;
 }
 
-/** The section chips, fixed under the header (spec 7.1). The row fades at its
- * trailing edge, so a cut-off chip reads as "there's more". */
-function Chips({ chips }: { chips: ChipProps[] }) {
+/** The section chips, fixed under the header (spec 7.1). Off the glass the
+ * row fades at its trailing edge, so a cut-off chip reads as "there's more";
+ * the fade is into the page color, so on the glass the chips run under its
+ * edge instead. */
+function Chips({ chips, onGlass }: { chips: ChipProps[]; onGlass: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View testID="chips" style={{ backgroundColor: palette.page }}>
+		<View testID="chips" style={{ backgroundColor: headerRowFill(onGlass, palette) }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
@@ -1893,17 +1952,19 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 					</Pressable>
 				))}
 			</ScrollView>
-			<View
-				pointerEvents="none"
-				style={{
-					position: "absolute",
-					top: 0,
-					bottom: 0,
-					right: 0,
-					width: 28,
-					experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
-				}}
-			/>
+			{onGlass ? null : (
+				<View
+					pointerEvents="none"
+					style={{
+						position: "absolute",
+						top: 0,
+						bottom: 0,
+						right: 0,
+						width: 28,
+						experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
+					}}
+				/>
+			)}
 		</View>
 	);
 }

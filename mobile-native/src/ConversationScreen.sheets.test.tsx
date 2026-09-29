@@ -19,6 +19,7 @@ import type { Thread } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
@@ -786,8 +787,13 @@ function sessionList(tree: ReturnType<typeof render>) {
 	return {
 		block,
 		list,
-		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		/** The block's panel reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() =>
+				block()
+					.findByType(GlassHeaderPanel)
+					.props.onLayout({ nativeEvent: { layout: { height } } }),
+			),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
