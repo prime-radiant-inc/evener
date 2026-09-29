@@ -128,21 +128,10 @@ func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) 
 // A controller reads a remote host's task progress off its list row, so the
 // remote live row carries its task line like a local one (S13b).
 func TestNavigationRemoteLiveRowCarriesItsTaskProgress(t *testing.T) {
-	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{{
+	projection := remoteNavigationProjection(t, []appwire.Thread{{
 		ID: "planned", Source: "host-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Evener: appwire.EvenerThread{Tasks: &appwire.TaskAggregate{Total: 7, Done: 3, Remaining: 4, Current: &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"}}},
 	}})
-	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
-
-	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("Capture: %v", err)
-	}
-	projection, err := buildNavigationProjection(captured.Inputs)
-	if err != nil {
-		t.Fatalf("buildNavigationProjection: %v", err)
-	}
 	want := &hubapi.NavigationTaskProgress{Total: 7, Done: 3, CurrentID: 4, Current: "Fix the settle/drain race"}
 	if row := navigationProjectedSummary(t, projection, "host-a:planned"); !reflect.DeepEqual(row.Tasks, want) {
 		t.Fatalf("remote row tasks = %+v, want %+v", row.Tasks, want)
