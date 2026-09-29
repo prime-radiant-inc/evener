@@ -22,6 +22,12 @@ describe("atEnd", () => {
 		expect(atEnd(scrolled(4_000 - 600 - AT_END_PT - 1))).toBe(false);
 	});
 
+	it("counts a bottom content inset (a bar the list runs under) as part of the end", () => {
+		const underBar = { ...scrolled(4_000 - 600 + 180), contentInset: { bottom: 180 } };
+		expect(atEnd(underBar)).toBe(true);
+		expect(atEnd({ ...scrolled(4_000 - 600), contentInset: { bottom: 180 } })).toBe(false);
+	});
+
 	it("is true when everything fits in the viewport", () => {
 		expect(atEnd(scrolled(0, 300, 600))).toBe(true);
 	});

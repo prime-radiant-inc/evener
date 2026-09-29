@@ -92,11 +92,6 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-const flush = () =>
-	act(async () => {
-		await vi.advanceTimersByTimeAsync(0);
-	});
-
 async function mount(answers: Answers, options: { connected?: boolean; start?: boolean } = {}) {
 	const kit = boundary(answering(answers), PROVIDER);
 	flows.push(kit.flow);

@@ -18,13 +18,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import {
-	dropped,
-	nativeModuleMock,
-	render,
-	renderedText,
-	screenConnection as connection,
-} from "./renderNative.testkit";
+import { dropped, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,

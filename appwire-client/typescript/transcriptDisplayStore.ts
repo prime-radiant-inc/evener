@@ -725,6 +725,31 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     if (writeSerialAtStart !== fence.writeToken || saving || savingAtReadStart) return {};
     if (draft !== null && writeUncertain) {
       if (draft !== draftAtReadStart) return {};
+      // The read proves the uncertain write landed exactly what the draft
+      // proposed: the hub moved PAST the draft's base revision while holding
+      // the user's chosen value, so the draft is confirmed, not stale. Drop it
+      // and its checkpoint instead of marking the proposal for a review it
+      // does not need. An unchanged revision proves the write never landed -
+      // the proposal is still current and stays for review.
+      const confirmed = finalHub[draft.layout];
+      if (
+        confirmed !== undefined &&
+        confirmed.revision > draft.revision &&
+        configFingerprint(confirmed.config) === configFingerprint(draft.config)
+      ) {
+        let removed: boolean;
+        try {
+          removed = draftRepository.discardClassified();
+        } catch {
+          return { storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE };
+        }
+        // A refusal means another window replaced the checkpoint while the
+        // outcome was unknown: adopt whatever is actually on disk now,
+        // judged against the FINAL hub this publication is about to carry.
+        return removed
+          ? { writeUncertain: false, draft: null, draftConflict: false }
+          : restoreDraft({ loaded: true, hub: finalHub });
+      }
       let replaced: boolean;
       try {
         // A fresh id: settledWrite has no checkpoint reference to reuse one

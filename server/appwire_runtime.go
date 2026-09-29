@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -1480,21 +1481,7 @@ func transcriptHeader(path string, maxLineBytes int) (transcript.Header, error) 
 // transcriptHeaderFromReader reads source's leading header line and nothing
 // past its read buffer.
 func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.Header, error) {
-	reader := bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes)
-	for {
-		lineBytes, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
-		if err != nil {
-			return transcript.Header{}, err
-		}
-		if !complete {
-			return transcript.Header{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-		}
-		line := strings.TrimSpace(string(lineBytes))
-		if line == "" {
-			continue
-		}
-		return transcript.DecodeHeader([]byte(line))
-	}
+	return transcript.ReadHeader(context.Background(), bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes), maxLineBytes)
 }
 
 // handleAppThreadTurnsList pages backward (older) through the thread's
@@ -1502,6 +1489,10 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
+	}
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
 	}
 	if threadID == "" {
@@ -1512,7 +1503,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
 	}
 	epoch := history.Epoch()
-	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
+	turns, olderCursor, snapshot, err := history.before(history.ref, params)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}

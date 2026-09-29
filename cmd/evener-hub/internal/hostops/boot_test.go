@@ -31,8 +31,8 @@ func seedBootStore(t *testing.T) (*Store, string, [4]string, map[string]Record) 
 	running := createTestRecord(t, store, "h2")
 	if _, err := store.Transition(running.ID, StateRunning, func(r *Record) {
 		// The worker's fencing epoch is persisted before the first running
-		// probe (spec §4); its shape belongs to the crash-fencing spec, so the
-		// store carries it verbatim.
+		// probe (spec §4); the store carries it verbatim and never interprets
+		// the pair.
 		r.FencingEpoch = json.RawMessage(`{"bootId":"boot-1","opSeq":3}`)
 	}); err != nil {
 		t.Fatalf("Transition(running): %v", err)

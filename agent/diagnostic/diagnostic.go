@@ -66,7 +66,10 @@ func FromError(err error) Info {
 	if err == nil {
 		return evenerFailure()
 	}
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+	if ce, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		if errors.Is(ce, llm.ErrSignInRequired) {
+			return signInRequiredFailure()
+		}
 		return evenerConfiguration()
 	}
 	// The typed check comes first: an exhausted allowance is recognized from the
@@ -156,6 +159,18 @@ func evenerConfiguration() Info {
 		Source: SourceEvener,
 		Title:  "Evener configuration error",
 		Hint:   "Hub launched Evener with provider configuration this Evener runtime does not recognize. Check the model/provider passed by Hub and the Evener binary Hub is using.",
+	}
+}
+
+// signInRequiredFailure is the guidance for a provider instance whose stored
+// credential is absent or whose token endpoint refused to refresh it. The
+// remedy is to sign in again, not to check the hub's launch configuration. The
+// message on the underlying error names the instance and the login command.
+func signInRequiredFailure() Info {
+	return Info{
+		Source: SourceProvider,
+		Title:  "Sign-in required",
+		Hint:   "This provider instance's sign-in has expired or is missing. Sign in to that provider again, then retry the turn.",
 	}
 }
 

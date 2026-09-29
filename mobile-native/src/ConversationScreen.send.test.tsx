@@ -437,6 +437,10 @@ async function mount(
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
 		openedBy = undefined as "next" | undefined,
+		// The bottom bar lays out as it would on a device (0pt here, so it
+		// leaves the transcript's geometry as it was); a test of what waits
+		// for that layout says false.
+		barLaysOut = true,
 	} = {},
 ) {
 	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
@@ -455,6 +459,12 @@ async function mount(
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	mountedScreens.push(tree);
+	if (barLaysOut) {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
+	}
 	if (settled) await settle();
 	return { tree, hub, route };
 }
@@ -1066,6 +1076,42 @@ it("restores a reading position once, however its row's measured y moves after",
 	]);
 });
 
+it("waits for the bottom bar to lay out before restoring a reading position", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-waits": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-waits",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-waits"), { barLaysOut: false });
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")[3]
+		?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error("no reply cell");
+	flatListCalls.length = 0;
+	// 19,500 is past what the list reaches without the bar's inset (19,400).
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: 19_500, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+	// The bar lays out: its inset lets the list reach the row.
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 19_500, animated: false } },
+	]);
+});
+
 it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
@@ -1174,7 +1220,7 @@ describe("following the live end (spec 8.2)", () => {
 						turnId: "turn_2",
 						roundId: id,
 						streamId: id,
-						item: { id: key, type: "agentMessage", text: `streamed ${id}`, status: "inProgress" },
+						item: { id: key, type: "agentMessage", roundId: id, text: `streamed ${id}`, status: "inProgress" },
 					},
 				},
 			} as unknown as AnyNotification),
@@ -1204,6 +1250,67 @@ describe("following the live end (spec 8.2)", () => {
 		tree.root.findAll((node) =>
 			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
 		)[0];
+
+	it("keeps a streamed reply's row, and doesn't count it as new, once history records it", async () => {
+		// Recorded items carry their transcript positions, as a hub's do, so
+		// the recorded reply lands after them.
+		const served = working("ref-follow-recorded");
+		const at = (turnId: string, entry: number) => ({
+			turnId,
+			status: "completed",
+			transcriptKey: `${turnId}:${entry}:0`,
+			position: { entry, item: 0 },
+		});
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{ id: "u-turn_1", type: "userMessage", text: "ask turn_1", ...at("turn_1", 0) },
+					{ id: "a-turn_1", type: "agentMessage", text: "reply turn_1", ...at("turn_1", 1) },
+				],
+			},
+			{
+				id: "turn_2",
+				status: "inProgress",
+				itemsView: "default",
+				items: [{ id: "u-turn_2", type: "userMessage", text: "ask turn_2", ...at("turn_2", 2) }],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		stream(hub, served, "s1");
+		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
+		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
+		drag(tree, 100);
+		act(() =>
+			hub.notify({
+				method: "history/updated",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					...READ_HISTORY_IDENTITY,
+					items: [
+						{
+							id: "item_assistant_3_0",
+							turnId: "turn_2",
+							type: "agentMessage",
+							roundId: "s1",
+							transcriptKey: "turn_2:3:0",
+							position: { entry: 3, item: 0 },
+							status: "completed",
+							text: "streamed s1",
+						},
+					],
+				},
+			} as unknown as AnyNotification),
+		);
+		const rows = list(tree).props.data as { id: string }[];
+		expect(rows.map((row) => row.id)).toContain("item_assistant_3_0");
+		expect(rows.map((row) => row.id)).not.toContain("stream:s1:agentMessage");
+		expect(keyOf(rows.at(-1))).toBe(streamed);
+		expect(pill(tree)).toBeUndefined();
+	});
 
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
@@ -1411,6 +1518,32 @@ it("doesn't page older history for a reading position restored near the top befo
 	scrollTo(tree, 40);
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("keeps the transcript's first row when an older page lands above it", async () => {
+	// Timed turns, the older one ending five minutes before the next starts,
+	// so a whole history marks only the first.
+	const minute = 60_000;
+	const start = Date.parse("2026-09-28T12:00:00Z");
+	const timed = (id: string, from: number) => ({ ...askReplyTurn(id), startedAt: from, completedAt: from + minute });
+	const served = thread("ref-older-first-key", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		timed("turn_1", start + 6 * minute),
+		timed("turn_2", start + 8 * minute),
+	];
+	const { tree } = await mount(served, { olderCursor: "cursor-1", olderTurns: [timed("turn_0", start)] });
+	const ids = () => (transcriptList(tree).props.data as { id: string }[]).map((row) => row.id);
+	const first = ids()[0];
+	// No time marker leads while older history is still to load.
+	expect(first).toBe("u-turn_1");
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	expect(ids()).toContain("u-turn_0");
+	expect(ids()).toContain(first);
 });
 
 it("doesn't page older history while the hub is away", async () => {
@@ -2033,6 +2166,87 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+	});
+
+	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
+		const { tree } = await mount(thread("ref-bar-over", "active"));
+		expect(flatStyle(bar(tree))).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
+	});
+
+	const barLaysOut = (tree: ReactTestRenderer, height: number) =>
+		act(() => bar(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height } } }));
+	const transcript = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+	const moves = () => flatListCalls.filter((call) => call.method !== "scrollToIndex");
+
+	it("keeps the transcript's end clear of the bar as an inset, so its content size ignores the bar", async () => {
+		const { tree } = await mount(thread("ref-bar-end", "active"));
+		barLaysOut(tree, 180);
+		// iOS: the bar is a content inset past the 60pt end room, which stays
+		// the content's own padding.
+		expect(transcript(tree).props.contentInset).toEqual({ bottom: 180 });
+		expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(60);
+		expect(transcript(tree).props.scrollIndicatorInsets).toEqual({ bottom: 180 });
+		// Next, a toast and "↓ new" float 10pt above the bar.
+		expect(
+			flatStyle(tree.root.findByType(FloatingStack).findAll((node) => String(node.type) === "View")[0]),
+		).toMatchObject({ bottom: 180 + 10 });
+	});
+
+	it("keeps a follower at the end as the bar grows and shrinks, the keyboard's drop included", async () => {
+		const { tree } = await mount(thread("ref-bar-follow", "active"));
+		barLaysOut(tree, 180);
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		flatListCalls.length = 0;
+		// Keyboard up: the bar drops the home indicator's room.
+		act(() => keyboard.show());
+		barLaysOut(tree, 226);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		act(() => keyboard.hide());
+	});
+
+	it("pads the transcript's end by the bar on Android, and keeps a follower at the end as the bar changes", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-bar-follow-android", "active"));
+			barLaysOut(tree, 180);
+			expect(transcript(tree).props.contentInset).toBeUndefined();
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(180 + 60);
+			flatListCalls.length = 0;
+			barLaysOut(tree, 260);
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(260 + 60);
+			expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		} finally {
+			platform.OS = "ios";
+		}
+	});
+
+	it("never moves a reader mid-list, or one resting at the end without following, as the bar changes", async () => {
+		const { tree } = await mount(thread("ref-bar-reader", "active"));
+		barLaysOut(tree, 180);
+		const at = (y: number) => ({
+			nativeEvent: {
+				contentOffset: { y },
+				contentSize: { height: 4_000 },
+				layoutMeasurement: { height: 600 },
+				contentInset: { bottom: 180 },
+			},
+		});
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at(1_000)));
+		act(() => transcriptList(tree).props.onScroll(at(1_000)));
+		act(() => transcriptList(tree).props.onScrollEndDrag(at(1_000)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		barLaysOut(tree, 120);
+		expect(moves()).toEqual([]);
+		// The app lands the list at the end (a restore), with no finger: not following.
+		act(() => transcriptList(tree).props.onScroll(at(4_000 - 600 + 180)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves()).toEqual([]);
 	});
 
 	it("holds a question dock too", async () => {

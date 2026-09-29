@@ -41,6 +41,7 @@ import {
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
+	isSuppressedSteeringKind,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
@@ -48,7 +49,9 @@ import {
 	parseAskUserQuestions,
 	pendingTextJoined,
 	projectThread,
+	steeringKindLabel,
 	steeringNotificationFragments,
+	stripSystemReminder,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -61,6 +64,7 @@ import type {
 	TurnModel,
 } from "@evener/appwire-client";
 import { hubTime } from "./board/attention";
+import { CONTEXT_SUMMARY_LABEL, contextCompactedText, pluginLoadedText } from "./session/systemEventCopy";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -129,9 +133,11 @@ export interface ActivityMember {
 	turnId?: string;
 }
 
-// Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
-// notices, "warning" for loop detection / turn limit / provider failure, and
-// "system" for environment / prelude scaffold that is purely informational.
+// Tone of a steering/lifecycle notice row. "info" for every daemon steer
+// (a loop-detected or provider-failure steer included: the failure it answers
+// shows as the turn's own error), "warning" for the loop_detection, turn_limit
+// and error system events (WARNING_EVENT_KINDS), and "system" for every other
+// system event.
 export type NoticeTone = "info" | "warning" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -156,7 +162,9 @@ export type MobileTimelineItem =
 		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		// roundKey: the key a reply keeps from its first streamed frame through
+		// its recording (see withRoundKey), where it has one.
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
 		| {
 				kind: "activity";
 				id: string;
@@ -186,6 +194,11 @@ export type MobileTimelineItem =
 				family: NoticeFamily;
 				tone: NoticeTone;
 				text: string;
+				// Shown in place of the text, with a chevron, until opened: a
+				// daemon steer's kind, or a compaction's summary.
+				label?: string;
+				// The text is markdown, and opens rendered as markdown.
+				rendersMarkdown?: boolean;
 				// A steer that delivers <delegate-notification> or
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
@@ -374,7 +387,10 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 		};
 	}
 
-	if (it.type === "steering") return { ...steeringNotice(it), ...identity };
+	if (it.type === "steering") {
+		const notice = steeringNotice(it);
+		return notice === null ? null : { ...notice, ...identity };
+	}
 	if (it.type === "systemMessage") return { ...systemNotice(it), ...identity };
 
 	if (it.type === "warning") {
@@ -620,9 +636,11 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_STEERING_KINDS = new Set(["loop-detected", "turn-limit", "provider-failure"]);
+/** The systemMessage event kind of an error: a turn's failure, or a session
+ * error the live overlay shows. */
+export const ERROR_EVENT_KIND = "error";
 
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
+const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
@@ -653,23 +671,29 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone = it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
-	return {
-		kind: "notice",
-		id: it.id,
-		origin: "steering",
-		steeringKind: it.steeringKind,
-		family: tone === "warning" ? "warning" : "informational",
-		tone,
-		text: it.text,
-		...notificationsOf(it.text),
-	};
-}
+// A steer whose kind this build has no label for (a newer daemon, or none).
+const STEERED = "System steered";
 
-function notificationsOf(text: string): { notifications?: SteeringFragment[] } {
-	const notifications = steeringNotificationFragments(text);
-	return notifications ? { notifications } : {};
+// A daemon steer is instructions to the agent, never the conversation: it
+// folds to what it did, and opens to what it said (spec 8.2 "System event"),
+// with the label the web shows for its kind (steeringKindLabel). One the
+// daemon sends as notification markup reads as its cards instead. A
+// loop-detected or provider-failure steer is quiet too: the failure it answers
+// shows as the turn's own error. The current task and the task list are left
+// out, as the web leaves them: the tasks surfaces own them.
+function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
+	if (isSuppressedSteeringKind(it.steeringKind)) return null;
+	const notifications = steeringNotificationFragments(it.text);
+	const common = {
+		kind: "notice" as const,
+		id: it.id,
+		origin: "steering" as const,
+		steeringKind: it.steeringKind,
+		family: "informational" as const,
+		tone: "info" as const,
+	};
+	if (notifications) return { ...common, text: it.text, notifications };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringKindLabel(it.steeringKind) ?? STEERED };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
@@ -683,10 +707,27 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		origin: "system",
 		family,
 		tone,
-		text: it.text,
+		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
+}
+
+// What a system event says (spec 8.2 "System event"). A plugin load carries
+// its summary in the description and no text; a compaction pass's text is the
+// engine's "Layer/Turns/Estimated tokens" report; a compaction's summary is a
+// whole markdown document. Each reads from its structured detail instead.
+function systemEventWords(it: ItemModel): { text: string; label?: string; rendersMarkdown?: boolean } {
+	switch (it.eventKind) {
+		case "plugin_loaded":
+			return { text: pluginLoadedText(it.raw) };
+		case "context_compaction":
+			return { text: contextCompactedText(it.raw) };
+		case "compaction":
+			return { text: it.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
+		default:
+			return { text: it.text };
+	}
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web
@@ -863,13 +904,22 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
+	const keyedRounds = new Set<string>();
+	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
 	for (const entry of projected.entries) {
+		// A failed turn's error shows once, as the failure row at its end, which
+		// carries the one action (spec 8.2 "Error"). A reload also carries the
+		// failure as an error systemMessage (apptranscript's TurnFailure item),
+		// which would say it a second time. Only that echo goes: another error
+		// in the same turn is news of its own.
+		if (turnError && echoesTurnError(entry.item, turnError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const row = projectedRow(entry, { turnStatus: turn.status, asks });
-		if (row === null) continue;
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		if (plain === null) continue;
+		const row = withRoundKey(plain, entry.item, keyedRounds);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -887,10 +937,10 @@ function rowsForProjectedTurn(
 		}
 	}
 	// A turn error produces a failure item at the end of that turn's rows.
-	if (turn.error) {
+	if (turnError) {
 		entries.push({
 			type: "final",
-			item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+			item: failureItem(turnError, turn.id),
 		});
 	}
 	let slots = turnRowCache.get(turn);
@@ -904,6 +954,25 @@ function rowsForProjectedTurn(
 		if (oldest !== undefined) slots.delete(oldest);
 	}
 	return entries;
+}
+
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id and
+// a transcript key. Both carry the round's id, so the reply keys by its round
+// and keeps one key through the change: the list doesn't remount it, and a
+// reading position or a "new below" count taken on it still finds it. Only the
+// round's first reply takes the round's key, since a round can record two
+// replies (text before and after a tool call); the later one keeps its own. A
+// communicate preview carries the round too, but its message is recorded with
+// no round id, so it has nothing to share a key with and takes none. The key
+// is for display and reading positions only: timelineIdentity, which the
+// store's merges use, stays transcriptKey-first.
+function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
+	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
+	const key = `round:${item.roundId}:agentMessage`;
+	if (keyedRounds.has(key)) return row;
+	keyedRounds.add(key);
+	return { ...row, roundKey: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.
@@ -1007,6 +1076,13 @@ export function projectConversation(
 }
 
 // --- failure rows ----------------------------------------------------------------
+
+// The error systemMessage that says what turn.error says: apptranscript's
+// TurnFailure item carries the failure's message as its text (both fall back
+// to "The turn failed." when the failure has none).
+function echoesTurnError(it: ItemModel, error: NonNullable<Turn["error"]>): boolean {
+	return it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim();
+}
 
 function failureItem(
 	error: NonNullable<Turn["error"]>,

@@ -87,7 +87,7 @@ func TestHistoryReadLatestIsTheIndexWindowRegrouped(t *testing.T) {
 		t.Fatalf("overlay = %+v, want none", overlay)
 	}
 
-	page, pageOlder, pageSnapshot, err := hx.history.before("local:th_history", older, 3)
+	page, pageOlder, pageSnapshot, err := hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,10 +134,10 @@ func TestHistoryReadBeforeWithAnotherIncarnationsCursorIsStale(t *testing.T) {
 	if err != nil || older == "" {
 		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
 	}
-	if _, _, _, err := hx.history.before("local:th_history", older, 1); err != nil {
+	if _, _, _, err := hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 1}); err != nil {
 		t.Fatalf("before in the cursor's incarnation: %v", err)
 	}
-	if _, _, _, err := hx.history.before("local:th_other", older, 1); !isTranscriptItemCursorStale(err) {
+	if _, _, _, err := hx.history.before("local:th_other", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 1}); !isTranscriptItemCursorStale(err) {
 		t.Fatalf("before with another thread's cursor = %v, want stale", err)
 	}
 
@@ -150,7 +150,7 @@ func TestHistoryReadBeforeWithAnotherIncarnationsCursorIsStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := hx.history.before("local:th_history", older, 1); !isTranscriptItemCursorStale(err) {
+	if _, _, _, err := hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 1}); !isTranscriptItemCursorStale(err) {
 		t.Fatalf("before after a rebuild = %v, want stale", err)
 	}
 }
@@ -197,6 +197,6 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 	}
 	_, _, _, _, err = hx.history.latest(hx.history.capture(), "local:th_history", 10)
 	assertFailed("latest", err)
-	_, _, _, err = hx.history.before("local:th_history", older, 10)
+	_, _, _, err = hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 10})
 	assertFailed("before", err)
 }

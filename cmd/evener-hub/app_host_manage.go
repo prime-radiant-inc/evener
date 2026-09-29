@@ -184,9 +184,9 @@ type hostManagerConfig struct {
 	// try-acquires rather than proceeding ungated.
 	gate hostops.Gate
 	// bootID identifies this controller process incarnation for the durable
-	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2; crash-fencing
-	// spec §4). Empty refuses the probe: an epoch that cannot be bound to a boot
-	// is not a fencible epoch.
+	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2). Empty
+	// refuses the probe: an epoch that cannot be bound to a boot is not a
+	// usable epoch.
 	bootID string
 	// probeTimeout bounds one evener/host/running round trip in the plan's
 	// gated probe (§6 step 2's "explicit owner-adjustable probe timeout").
@@ -245,8 +245,8 @@ type hostManagerConfig struct {
 	// runningProbeMu serializes evener/host/running's admission-plus-probe
 	// window: the guard epoch row is hub-wide, so a concurrent call must not
 	// advance the admitted epoch while another call is still probing under the
-	// epoch it admitted (the fencing slice replaces this with the remote
-	// guard/lease protocol).
+	// epoch it admitted. (The remote guard/lease protocol an earlier revision
+	// named here was withdrawn with the crash-fencing program, comp08.)
 	runningProbeMu sync.Mutex
 	// state retains per-host attach state from the manager's lifecycle
 	// events plus the last-known facts of the last attached render, so

@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
+import { underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
@@ -105,6 +106,7 @@ import {
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
 	readerAnchorAt,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -178,7 +180,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -794,6 +796,11 @@ export function ConversationScreen({
 			Keyboard.dismiss();
 			const current = store.getState().conversation;
 			if (!current) return;
+			if (destination === "find") {
+				// The one place a find opens, whatever menu asked for it.
+				chooseSessionActionRef.current({ kind: "find" });
+				return;
+			}
 			if (destination === "delete") {
 				if (!canDeleteSavedSession(current)) return;
 				navigation.navigate("SessionDeletion", {
@@ -875,6 +882,19 @@ export function ConversationScreen({
 	);
 	// The room the transcript keeps at its end for what floats over it.
 	const transcriptEnd = transcriptEndRoomAt(useTextScale());
+	// How tall the bottom bar stands over the transcript's end, null until it
+	// lays out: the transcript runs under its glass (design/underBar).
+	const bottomBar = useBarHeight();
+	const barHeight = bottomBar.height ?? 0;
+	const listUnderBar = underBar(barHeight);
+	// The bar growing or shrinking (a dock, the tray, the keyboard) keeps a
+	// follower at the end in the same frame; a reader anywhere else stays put,
+	// since on iOS the bar is an inset the content size doesn't depend on.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new bar height re-pins.
+	useLayoutEffect(() => {
+		if (follow.state.current.following)
+			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+	}, [barHeight]);
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
@@ -1155,8 +1175,12 @@ export function ConversationScreen({
 	const timelineRows = useMemo(
 		() =>
 			// Your answers to a question show beneath the question itself.
-			hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [])),
-		[presentation.items, conversation?.turns],
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
+					olderToLoad: !!snapshot.olderCursor,
+				}),
+			),
+		[presentation.items, conversation?.turns, snapshot.olderCursor],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row opens the subagent's own session, under this session as
@@ -1403,7 +1427,10 @@ export function ConversationScreen({
 			!focused ||
 			readerHeader.current ||
 			follow.state.current.following ||
-			follow.state.current.touch !== "none"
+			follow.state.current.touch !== "none" ||
+			// Where the list can reach depends on the bar: restore once it has
+			// laid out, so a first restore is never clamped short of it.
+			bottomBar.height === null
 		)
 			return;
 		if (anchor.conversationInstance && snapshot.status !== "open") return;
@@ -1446,7 +1473,12 @@ export function ConversationScreen({
 			const measurement = readerMeasurements.current.get(currentKey);
 			if (!measurement) return;
 			const desired = measurement.y - command.viewOffset;
-			const scrollOffset = reachableReaderOffset(desired, readerContentHeight.current, readerViewportHeight.current);
+			// On iOS the bar's inset extends how far the list can scroll.
+			const scrollOffset = reachableReaderOffset(
+				desired,
+				readerContentHeight.current + (listUnderBar.contentInset?.bottom ?? 0),
+				readerViewportHeight.current,
+			);
 			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
 			appliedReaderRestore.current = {
 				key: currentKey,
@@ -1472,6 +1504,7 @@ export function ConversationScreen({
 		store,
 		connected,
 		focused,
+		bottomBar.height,
 	]);
 	useEffect(
 		() => () => {
@@ -2561,7 +2594,9 @@ export function ConversationScreen({
 							extraData={liveRun}
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
-							keyExtractor={(item) => item.id}
+							// A row keeps its reader key when history records it, so the
+							// list keeps its cell (a streamed reply's wire id changes).
+							keyExtractor={readerKey}
 							renderItem={renderItem}
 							// The end keeps a fixed room for what floats over it (spec 8.3),
 							// so Next never sits on the last line and nothing coming or
@@ -2569,12 +2604,14 @@ export function ConversationScreen({
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: transcriptEnd,
+								paddingBottom: listUnderBar.endPadding + transcriptEnd,
 							}}
+							contentInset={listUnderBar.contentInset}
 							// Dragging the transcript lowers the keyboard: following the finger
 							// as in Messages on iOS, and at the drag's start on Android, which
 							// has no interactive dismissal.
 							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+							scrollIndicatorInsets={listUnderBar.scrollIndicatorInsets}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
@@ -2602,10 +2639,7 @@ export function ConversationScreen({
 								if (follow.state.current.touch === "none" && !follow.state.current.following)
 									follow.dispatch({ type: "assistiveScroll" });
 								if (!follow.state.current.following) pageOlderNear(y);
-								const visible = timelineRows.find((item) => {
-									const measurement = readerMeasurements.current.get(readerKey(item));
-									return measurement && measurement.y + measurement.height > y;
-								});
+								const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
 								if (visible) {
 									readerAnchor.current = captureReaderAnchor(
 										route.params.hubId,
@@ -2779,11 +2813,17 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
+							barHeight={barHeight}
 						/>
 					</View>
-					{/* The bottom bar (spec 8.1): the tray or a dock and the composer, and
-					    the transcript keeps a fifth of the screen however much it holds. */}
-					<BarFrame testID="session-bottom-bar" style={{ flexShrink: 1, maxHeight: "80%", paddingTop: 8 }}>
+					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
+					    over the transcript's end so the transcript runs under its glass,
+					    and never taller than four fifths of the screen. */}
+					<BarFrame
+						testID="session-bottom-bar"
+						style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "80%", paddingTop: 8 }}
+						onLayout={bottomBar.onLayout}
+					>
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
@@ -2791,13 +2831,6 @@ export function ConversationScreen({
 							nestedScrollEnabled
 						>
 							{composerShown ? null : waitingForAgent}
-							{conversation?.goal ? (
-								<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-									<Action tone="quiet" onPress={() => openSessionDestination("session")}>
-										{`Goal · ${conversation.goal.status}`}
-									</Action>
-								</View>
-							) : null}
 							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||

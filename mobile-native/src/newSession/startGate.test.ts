@@ -12,6 +12,7 @@ const ready: StartInput = {
 	reach: "local",
 	pluginIssues: [],
 	unconfirmedModel: null,
+	startMayRepeat: false,
 };
 const row = (over: Partial<HostRow>): HostRow => hostRow("paradise-park", over);
 
@@ -85,5 +86,11 @@ describe("a chosen model the host couldn't list", () => {
 			field: "project",
 			message: null,
 		});
+	});
+});
+
+describe("a draft whose last start may have worked (#3104)", () => {
+	it("holds Start, leaving the store's own error as the one line that says why", () => {
+		expect(startBlock({ ...ready, startMayRepeat: true })).toEqual({ field: null, message: null });
 	});
 });

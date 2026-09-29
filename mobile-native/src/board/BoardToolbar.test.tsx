@@ -1,4 +1,5 @@
 import type { ConnectionState } from "@evener/appwire-client";
+import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
@@ -48,6 +49,14 @@ it("shows the status in the middle ink", () => {
 		(node) => node.type === ("Text" as never) && node.props.children === "Update needed",
 	)[0];
 	expect(status.props.style).toMatchObject({ fontSize: 13, color: palette.inkMid });
+});
+
+it("leaves the connection status unannounced: it is ambient and changes often (#2903)", () => {
+	const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+	announce.mockClear();
+	const tree = render(toolbar("closed", { fatal: true }));
+	act(() => tree.update(toolbar("ready")));
+	expect(announce).not.toHaveBeenCalled();
 });
 
 it("opens a new session from its trailing button, which is disabled when it can't act", () => {

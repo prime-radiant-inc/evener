@@ -7,7 +7,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Platform } from "react-native";
 import { useStore } from "zustand";
-import { createNewSessionService } from "../../../mobile/src/services/newSession";
+import { creationService } from "./creations";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { HubPaths } from "../hubPaths";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
@@ -49,7 +49,7 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 			// cmd/evener-hub/app_dirs.go); home is the one folder the phone can't
 			// name, so a folder made there goes under "~/".
 			const parent = dir ? childrenPrefix(dir) : "~/";
-			const made = await createNewSessionService(client).createDirectory(source, parent + name.trim());
+			const made = await creationService(client).createDirectory(source, parent + name.trim());
 			open(made);
 		} catch (error) {
 			setCreateError(friendlyErrorMessage(error));

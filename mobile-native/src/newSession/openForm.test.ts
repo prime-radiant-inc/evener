@@ -120,3 +120,13 @@ it("keeps a project chosen before the hub's recent projects arrive", async () =>
 	expect(store.getState().cwd).toBe("/home/jesse/git/docs");
 	stop();
 });
+
+it("leaves a form whose start is on its way as it is, even opened like a session (#3104)", () => {
+	const { store } = setup({ cwd: "/home/jesse/git/evener", prompt: "go" });
+	store.setState({ submitting: true });
+	openForm(store, [remembered("paradise-park", "/Users/jesse/git/evener", 1)], {
+		host: "paradise-park",
+		cwd: "/Users/jesse/git/docs",
+	});
+	expect(store.getState()).toMatchObject({ source: "local", cwd: "/home/jesse/git/evener", prompt: "go" });
+});

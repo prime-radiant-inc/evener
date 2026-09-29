@@ -2,13 +2,22 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
-import type { EvenerDelegateInfo, SteeringFragment } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, parseArgs, type SteeringFragment, str } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
 import { notificationLine, notificationText } from "./notificationLine";
 import { stepTarget } from "./transcriptRows";
 
 function stepText(step: RunStep): string {
-	return `${step.label}\n${step.detail.description ?? ""}\n${stepTarget(step.label, step.detail.arguments) ?? ""}`;
+	const args = parseArgs(step.detail.arguments);
+	return [
+		step.label,
+		step.detail.description ?? "",
+		stepTarget(step.label, step.detail.arguments, args) ?? "",
+		// A fetched page's URL and a search's query are what the step acted on,
+		// though stepTarget's display shows neither.
+		str(args, "url") ?? "",
+		str(args, "query") ?? "",
+	].join("\n");
 }
 
 // A notification reads as its card, not its markup.

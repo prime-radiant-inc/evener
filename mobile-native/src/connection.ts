@@ -6,6 +6,11 @@ export interface HubProfile {
 	name: string;
 	origin: string;
 }
+
+/** Whether `hubId` is still one of the phone's saved hubs. */
+export function hasHub(profiles: readonly Pick<HubProfile, "id">[], hubId: string): boolean {
+	return profiles.some((profile) => profile.id === hubId);
+}
 export interface HubInput {
 	name: string;
 	origin: string;
