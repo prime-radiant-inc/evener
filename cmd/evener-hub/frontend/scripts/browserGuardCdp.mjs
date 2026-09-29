@@ -626,19 +626,13 @@ export async function navigateTo(
     }
     if (!message?.params) return;
     if (message.method === "Page.frameNavigated" && message.params.frame) {
-      // A frame's loaderId is recorded at ITS OWN commit - a subframe's as
-      // well as the top document's. A subframe document never appears in a
-      // top-level Page.navigate response, so its own commit event is what maps
-      // its loaderId to the attempt whose navigation committed it; a late
-      // failure for an iframe resource then resolves to that attempt instead
-      // of the arrival counter. The TOP frame's commit is bound to the
-      // navigation that named its loaderId (navigationAttempts), so a commit
-      // delivered after the next retry began still names its own attempt; a
-      // subframe keeps the SEND-time attempt its own request already bound it
-      // to, because a frame id is stable across navigations and cannot name the
-      // document that committed this iframe. Only the TOP frame defines the
-      // live-document identity (currentLoaderId/currentAttempt) that loaderless
-      // requests and unseen failures anchor to.
+      // Only the TOP frame's commit records document identity, and it binds to
+      // the navigation whose Page.navigate response named its loaderId
+      // (navigationAttempts) - so a commit delivered after the next retry began
+      // still names its own attempt. Subframe loaderIds are instead bound at
+      // SEND time by the request that carries them (Network.requestWillBeSent),
+      // because a frame id is stable across navigations and cannot name the
+      // document that committed an iframe; see the parentId branch below.
       const { loaderId, parentId } = message.params.frame;
       if (parentId) {
         // A subframe's loaderId is bound at SEND time by its own request, and
