@@ -1,6 +1,7 @@
 // How a navigation header's text follows Dynamic Type: its buttons and its
 // title grow with the text size up to xxxLarge and stop there, since the bar's
 // height is fixed; a word never breaks across the header.
+import { useMemo } from "react";
 import { useTextScale } from "./ui";
 
 /** Body at xxxLarge, the largest size before the accessibility sizes: 23pt
@@ -15,5 +16,6 @@ export function useHeaderTextScale(): number {
 /** A native stack's header title in `color`: Headline, semibold 17
  * (spec 16.2), growing as useHeaderTextScale says. */
 export function useHeaderTitleStyle(color: string) {
-	return { color, fontSize: 17 * useHeaderTextScale(), fontWeight: "600" as const };
+	const scale = useHeaderTextScale();
+	return useMemo(() => ({ color, fontSize: 17 * scale, fontWeight: "600" as const }), [color, scale]);
 }
