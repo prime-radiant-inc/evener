@@ -43,6 +43,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	useFocusEffect(useCallback(() => hosts?.start(), [hosts]));
 	const hostRows = useOptionalSnapshot(hosts)?.rows ?? null;
 	const reach = hostReach(form.source, hostRows);
+	const model = creationModel(form.models, form.model, form.launchOverrides);
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
@@ -53,6 +54,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		// The plugin checklist's blocking problems join in PR 10; until then
 		// submit's own plugin check refuses them and says why.
 		pluginIssues: [],
+		// submit starts on a chosen model only once the host's list has it.
+		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 	});
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
@@ -101,7 +104,6 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	}, [navigation, cancel, start, blocked]);
 
 	const editable = form.storageLoaded && !form.submitting;
-	const model = creationModel(form.models, form.model, form.launchOverrides);
 	const levels = model?.reasoningEffortLevels ?? [];
 	const offline = reach === "offline";
 	const where = hostLabel(form.source);
@@ -194,6 +196,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				<Row
 					icon="cpu"
 					label="Model"
+					tone={block?.field === "model" ? "danger" : "normal"}
 					sub={model ? `via ${model.provider}` : undefined}
 					value={model ? model.displayName || model.model : "Hub default"}
 					chevron

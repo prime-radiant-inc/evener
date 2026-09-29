@@ -29,11 +29,14 @@ export interface StartInput {
 	reach: HostReach;
 	/** The plugin preview's blocking problems (pluginSelectionIssues). */
 	pluginIssues: readonly { name: string; reason: string }[];
+	/** A chosen model's name when the host's model list failed to load, so
+	 * the hub can't be asked for it (submit needs the list to start on it). */
+	unconfirmedModel: string | null;
 }
 
 export interface StartBlock {
 	/** The row the reason belongs to, or null when no row is to blame. */
-	field: "host" | "project" | "plugins" | null;
+	field: "host" | "project" | "model" | "plugins" | null;
 	/** The sentence to show, or null when the row or the status line already
 	 * says it. */
 	message: string | null;
@@ -46,6 +49,11 @@ export function startBlock(input: StartInput): StartBlock | null {
 	if (input.reach === "missing")
 		return { field: "host", message: `${input.hostLabel} is no longer a host on this hub. Choose another host.` };
 	if (!input.cwd.trim()) return { field: "project", message: null };
+	if (input.unconfirmedModel !== null)
+		return {
+			field: "model",
+			message: `Couldn't load this host's models, so ${input.unconfirmedModel} can't be used. Choose Hub default to start.`,
+		};
 	if (input.pluginIssues.length > 0)
 		return {
 			field: "plugins",

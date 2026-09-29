@@ -59,6 +59,8 @@ interface Options {
 	draft?: Partial<CreationDraft>;
 	/** How thread/start answers: a refusal, or the thread it made. */
 	refuseStart?: Error;
+	/** model/list fails. */
+	refuseModels?: boolean;
 	/** thread/start waits for the test's releaseStart. */
 	holdStart?: boolean;
 	/** How often the form's hosts controller reads the hub's hosts. */
@@ -78,7 +80,10 @@ async function mount(options: Options = {}) {
 			calls.push({ method, params });
 			const forwarded = method === "evener/host/request" ? (params as { method: string }).method : method;
 			if (forwarded === "evener/projects/recent") return { data: ["/home/jesse/git/evener"] };
-			if (forwarded === "model/list") return { data: [glm] };
+			if (forwarded === "model/list") {
+				if (options.refuseModels) throw new Error("models unavailable");
+				return { data: [glm] };
+			}
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
 			if (method === "thread/start") {
 				if (options.refuseStart) throw options.refuseStart;
@@ -434,4 +439,22 @@ it("reads the hub's hosts while the form is on screen, and stops when it leaves"
 		await new Promise((resolve) => setTimeout(resolve, 30));
 	});
 	expect(reads()).toBe(after);
+});
+
+it("holds Start, and says why, when a chosen model can't be checked against the host's models", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", model: { provider: "lunaroute", model: "glm-5.3-vision" } },
+		refuseModels: true,
+	});
+	expect(form.header("headerRight").props.disabled).toBe(true);
+	expect(form.text()).toContain(
+		"Couldn't load this host's models, so glm-5.3-vision can't be used. Choose Hub default to start.",
+	);
+	expect(form.row("Model")?.props.accessibilityLabel).toBe("Model, via lunaroute, glm-5.3-vision");
+	await act(async () => form.store.getState().selectModel(null));
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
+	form.dispose();
 });

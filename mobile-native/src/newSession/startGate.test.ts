@@ -11,6 +11,7 @@ const ready: StartInput = {
 	hostLabel: "magic-kingdom",
 	reach: "local",
 	pluginIssues: [],
+	unconfirmedModel: null,
 };
 const row = (over: Partial<HostRow>): HostRow => hostRow("paradise-park", over);
 
@@ -67,6 +68,22 @@ describe("what keeps Start disabled", () => {
 		).toEqual({
 			field: "plugins",
 			message: "superpowers-chrome: needs Chrome on this host\ngone: not present in current preview",
+		});
+	});
+});
+
+describe("a chosen model the host couldn't list", () => {
+	it("blames Model and says how to start anyway", () => {
+		expect(startBlock({ ...ready, unconfirmedModel: "GLM 5.3 Vision" })).toEqual({
+			field: "model",
+			message: "Couldn't load this host's models, so GLM 5.3 Vision can't be used. Choose Hub default to start.",
+		});
+	});
+
+	it("comes after the host and the project", () => {
+		expect(startBlock({ ...ready, cwd: "", unconfirmedModel: "GLM 5.3 Vision" })).toEqual({
+			field: "project",
+			message: null,
 		});
 	});
 });
