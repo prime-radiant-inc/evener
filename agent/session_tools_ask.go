@@ -90,6 +90,35 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 	return &question
 }
 
+// setAskPendingLocked REPLACES the pending-ask set — a clear (pending ==
+// nil) or a restore's re-derivation — keeping askPendingCallArgs in step so
+// the two can never independently drift. Every replacement also clears
+// askPendingCallArgs: pending's raw call arguments are never
+// reconstructible from it (parsed questions, not the calls' original
+// JSON — deriveRestoredAskPending recovers only the former), so a live-only
+// cache that no longer matches what is pending is worse than an absent
+// one. Two call sites used to assign s.askPending directly instead of
+// going through a clearer — the steering-carrier entry clear
+// (session_lifecycle.go's acceptSteeringCarrierInput) and the
+// restored-failure boundary (session_state.go's
+// finishProcessingAtRestoredFailureBoundary) — leaving askPendingCallArgs
+// stale after either ran; every replacement site now calls this instead.
+// Callers hold s.mu already.
+func (s *Session) setAskPendingLocked(pending []askQuestion) {
+	s.askPending = pending
+	s.askPendingCallArgs = nil
+}
+
+// appendAskPendingLocked is the live ask_user Exec's own mutation: it
+// appends this call's parsed questions to askPending and this call's own
+// (already normalized) arguments to askPendingCallArgs — one entry per
+// call, not per question, so the two slices generally differ in length.
+// Callers hold s.mu already.
+func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte) {
+	s.askPending = append(s.askPending, parsed...)
+	s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+}
+
 // clearAskPending empties the pending set. Callers: durable user-input
 // admission, the interrupt branch (session_lifecycle.go, directly), and
 // clearAskPendingForResolvingSteer below (a drained user-sourced steer,
@@ -98,8 +127,7 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.askPending = nil
-	s.askPendingCallArgs = nil
+	s.setAskPendingLocked(nil)
 }
 
 // PendingAskArguments returns each pending ask_user call's own arguments —
@@ -447,8 +475,7 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			}
 
 			s.mu.Lock()
-			s.askPending = append(s.askPending, parsed...)
-			s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+			s.appendAskPendingLocked(parsed, argsJSON)
 			s.mu.Unlock()
 
 			return askUserAckText, nil

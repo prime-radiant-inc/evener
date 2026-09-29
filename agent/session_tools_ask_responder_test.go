@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -154,6 +156,80 @@ func TestPendingAskArguments_OneEntryPerCallInOrder(t *testing.T) {
 	}
 }
 
+// TestPendingAskArguments_ClearedByAnsweringSteeringCarrierNotStale:
+// processOneInput's steering-carrier entry clear (session_lifecycle.go)
+// used to assign s.askPending = nil directly, bypassing the shared
+// setAskPendingLocked/clearAskPending path — leaving askPendingCallArgs
+// holding the PREVIOUS call's arguments after the clear. Driven through
+// the real steering-carrier entry point (AcceptClientMutationSteer,
+// claimSteeringCarrierTurn, acceptSteeringCarrierInput — the same
+// production path TestAskUser_RestoreResolvesAcrossUserSteer drives, minus
+// its restore/assert tail), a new ask_user call the carrier's own turn
+// posts must not sit alongside that stale entry.
+func TestPendingAskArguments_ClearedByAnsweringSteeringCarrierNotStale(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask1 := askUserCall("ask1", askUserArgsValid())
+	ask2 := askUserCall("ask2", askUserArgsTwoQuestions())
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask1) },
+			func(req llm.Request) llm.Response { return toolCallResponse(ask2) },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := len(sess.PendingAskArguments()); got != 1 {
+		t.Fatalf("pre-carrier PendingAskArguments = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("please hold", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	// Drive processOneInput's own steering-carrier entry clear directly: a
+	// context carrying "steer-1"'s identity (now a real journal record, so
+	// steeringCarrierClaimAnswersAsk resolves it as answering, not failing
+	// closed on an unknown id) through ProcessInputKind, the same context
+	// shape ProcessPendingUserInput/acceptUserInputWithSkillSelection build
+	// for a claimed carrier (session_client_mutation_queue.go's
+	// withQueuedClientMutation), without those callers' own additional
+	// clearing paths in between.
+	carrierCtx := withQueuedClientMutation(ctx, queuedInput{ClientMutationID: "steer-1", SteeringCarrier: true})
+	if _, err := sess.ProcessInputKind(carrierCtx, "", nil, EntryUserInput); err != nil {
+		t.Fatalf("ProcessInputKind (carrier turn): %v", err)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider saw %d requests, want 2 (test setup broken)", got)
+	}
+	pending := sess.PendingAskArguments()
+	if len(pending) != 1 {
+		t.Fatalf("PendingAskArguments after the new ask_user call = %d entries, want 1 (only the new call, no stale leftover)", len(pending))
+	}
+	questions, err := ParseAskUserCallArguments(pending[0])
+	if err != nil || len(questions) != 2 {
+		t.Fatalf("new call's questions = %+v, %v, want the two-question call (askUserArgsTwoQuestions)", questions, err)
+	}
+}
+
 // TestPendingAskArguments_ClearedWithAskPending: answering the question
 // clears PendingAskArguments the same moment it clears askPending, so a
 // caller reading it after the reply never sees stale questions.
@@ -184,5 +260,38 @@ func TestPendingAskArguments_ClearedWithAskPending(t *testing.T) {
 	}
 	if got := sess.PendingAskArguments(); len(got) != 0 {
 		t.Fatalf("PendingAskArguments after the reply = %+v, want empty", got)
+	}
+}
+
+// TestSetAskPendingLockedAlwaysClearsCallArgs pins setAskPendingLocked's own
+// invariant directly, isolated from any masking a later admission clear in
+// a full round might otherwise apply: every REPLACEMENT of the pending-ask
+// set — a clear (nil), or a restore re-derivation's rebuilt []askQuestion —
+// must also clear askPendingCallArgs. A rebuilt slice carries parsed
+// questions, never the calls' original JSON, so a live-only cache that no
+// longer matches what is pending is worse than an absent one. This is the
+// exact property session_lifecycle.go's steering-carrier entry clear and
+// session_state.go's restored-failure boundary used to violate by assigning
+// s.askPending directly.
+func TestSetAskPendingLockedAlwaysClearsCallArgs(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", askUserArgsValid()))
+	if res.IsError {
+		t.Fatalf("ask_user call errored: %s", res.Output)
+	}
+	if got := len(sess.PendingAskArguments()); got != 1 {
+		t.Fatalf("PendingAskArguments = %d, want 1 (test setup broken)", got)
+	}
+
+	sess.mu.Lock()
+	sess.setAskPendingLocked([]askQuestion{{Question: "rebuilt from history, no raw args"}})
+	sess.mu.Unlock()
+
+	if got := len(sess.PendingAskArguments()); got != 0 {
+		t.Fatalf("PendingAskArguments after setAskPendingLocked = %d entries, want 0 (stale call args from the previous call)", got)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("askPendingCount after setAskPendingLocked = %d, want 1 (the rebuilt question)", got)
 	}
 }

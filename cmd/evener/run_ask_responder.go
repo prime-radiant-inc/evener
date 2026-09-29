@@ -15,6 +15,31 @@ import (
 	"primeradiant.com/evener/execsupport/procgroup"
 )
 
+// rejectAskResponderWithResume rejects --ask-responder combined with
+// --resume or --resume-last, in the style of
+// rejectPluginSelectionWithResume (plugin_selection_flag.go): a restored
+// session keeps NonInteractive from its persisted snapshot
+// (RestoreSessionConfig, agent/session_init.go, carries no override), and a
+// restored session's pending ask_user calls, if any, carry no
+// askPendingCallArgs (askPendingCallArgs is live-only state, never
+// persisted or rebuilt from the transcript on restore) — so the combination
+// would silently do nothing rather than ever answer a question.
+// --resume-with is deliberately not rejected here, matching
+// rejectPluginSelectionWithResume's own scope: it builds a fresh child
+// session config rather than reusing a fixed one.
+func rejectAskResponderWithResume(askResponder, resume string, resumeLast bool) error {
+	if askResponder == "" {
+		return nil
+	}
+	if resume != "" {
+		return errors.New("--ask-responder cannot be used with --resume")
+	}
+	if resumeLast {
+		return errors.New("--ask-responder cannot be used with --resume-last")
+	}
+	return nil
+}
+
 // askResponderMaxRounds bounds how many times one `evener run` invocation
 // will shell out to --ask-responder for a single prompt: enough for a real
 // back-and-forth, not an unbounded loop if the model (or the responder)
@@ -37,10 +62,15 @@ const askResponderWaitDelay = time.Second
 // shelling out to cfg.askResponder, feeding it the pending questions as JSON
 // on stdin and submitting its stdout as the next user input, until the
 // session has no more pending questions or askResponderMaxRounds have run.
-// A responder that fails (non-zero exit, empty output, or unparseable
-// pending questions) stops the loop without failing the run: it ends exactly
-// as it would today, with the question left unanswered. Reaching the round
-// cap with a question still pending is logged the same way.
+// A responder that fails on its own (non-zero exit, empty output, or
+// unparseable pending questions) stops the loop without failing the run: it
+// ends exactly as it would today, with the question left unanswered. A
+// responder command that fails because ctx itself ended (--timeout expiry,
+// an interrupt) is different: that failure did not come from the responder,
+// so it is returned as the run's own error rather than swallowed as a quiet
+// stop — the caller asked this run to end, not to keep going unanswered.
+// Reaching the round cap with a question still pending is logged the same
+// way as an on-its-own responder failure.
 func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig, result string) (string, error) {
 	round := 0
 	for ; round < askResponderMaxRounds && sess.HasPendingAsk(); round++ {
@@ -51,6 +81,9 @@ func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig
 		}
 		answer, err := runAskResponderCommand(ctx, cfg.askResponder, payload, askResponderTimeout)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
 			fmt.Fprintf(cfg.stderr, "[ask-responder] %v\n", err) //nolint:errcheck
 			return result, nil
 		}

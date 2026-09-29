@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
 
@@ -245,5 +247,93 @@ func TestRunAskResponderStopsOnEmptyOutput(t *testing.T) {
 	}
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("provider saw %d requests, want 1 (no answer round after empty output)", len(adapter.Requests()))
+	}
+}
+
+// TestRunAskResponderLoopReturnsCancellationInsteadOfSwallowingIt: when the
+// responder command fails because the caller's context was cancelled
+// (--timeout expiry, an interrupt), the loop must return that cancellation
+// as the run's error, not silently succeed the way an ordinary responder
+// failure (non-zero exit, empty output) does.
+func TestRunAskResponderLoopReturnsCancellationInsteadOfSwallowingIt(t *testing.T) {
+	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return scriptedToolCalls(scriptedAskUserCall("ask1", "", "Ship today?", serveAskOption{Label: "Yes", Detail: "Yes"}, serveAskOption{Label: "No", Detail: "No"}))
+		},
+	}}
+	client := scriptedRegistryClient(t, adapter)
+	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), agent.SessionConfig{StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer setupCancel()
+	if _, err := sess.ProcessInput(setupCtx, "ship it", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !sess.HasPendingAsk() {
+		t.Fatal("want a pending ask_user question before exercising the responder loop")
+	}
+
+	dir := t.TempDir()
+	// A responder that blocks past the caller's own deadline.
+	responder := writeFakeResponder(t, dir, "responder.sh", "cat >/dev/null\nsleep 5\necho too-late\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, loopErr := runAskResponderLoop(ctx, sess, runConfig{askResponder: responder, stderr: &bytes.Buffer{}}, "")
+	<-ctx.Done() // the deadline has definitely passed by the time we assert below
+
+	if loopErr == nil {
+		t.Fatal("want the run's cancellation returned as an error, not swallowed as success")
+	}
+	if !errors.Is(loopErr, context.DeadlineExceeded) {
+		t.Fatalf("loop error = %v, want context.DeadlineExceeded (or wrapping it)", loopErr)
+	}
+}
+
+// TestRejectAskResponderWithResume mirrors
+// TestPluginSelectionResumeConflicts's table: --ask-responder combined with
+// --resume or --resume-last is rejected up front, because a restored
+// session keeps NonInteractive from its persisted snapshot
+// (RestoreSessionConfig carries no override) and its pending ask_user calls
+// (if any) carry no askPendingCallArgs — the flag would silently do
+// nothing rather than ever ask.
+func TestRejectAskResponderWithResume(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		resume     string
+		resumeLast bool
+		wantErr    bool
+	}{
+		{name: "resume", resume: "session", wantErr: true},
+		{name: "resume-last", resumeLast: true, wantErr: true},
+		{name: "neither", wantErr: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := rejectAskResponderWithResume("./responder.sh", test.resume, test.resumeLast)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+	if err := rejectAskResponderWithResume("", "session", true); err != nil {
+		t.Fatalf("omitted --ask-responder rejected: %v", err)
+	}
+}
+
+// TestRunRejectsAskResponderWithResume: run() itself refuses the
+// combination before doing anything else (no provider load, no session),
+// the same place it already refuses --enabled-plugins with --resume.
+func TestRunRejectsAskResponderWithResume(t *testing.T) {
+	err := run(context.Background(), runConfig{
+		askResponder: "./responder.sh", resume: "some-session-id",
+		workDir: t.TempDir(), stateDir: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "--ask-responder") {
+		t.Fatalf("run error = %v, want a clear --ask-responder/--resume rejection", err)
 	}
 }

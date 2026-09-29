@@ -102,6 +102,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
 	}
+	if err := rejectAskResponderWithResume(cfg.askResponder, cfg.resume, cfg.resumeLast); err != nil {
+		return err
+	}
 	if cfg.runTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)

@@ -2032,7 +2032,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// failed MaxTurns, environment, or transcript admission must leave the
 	// pending ask available for the next real reply and for restore.
 	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
-		s.askPending = nil
+		s.setAskPendingLocked(nil)
 	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
