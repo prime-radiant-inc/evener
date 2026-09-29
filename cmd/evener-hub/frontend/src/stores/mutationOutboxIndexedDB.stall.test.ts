@@ -313,12 +313,12 @@ test("a caller arriving during the probe window joins the in-flight recovery", a
   storage.close();
 });
 
-test("close() during a recovery closes the late connection and does not install it", async () => {
+test("close() during the recovery's reopen closes the late connection and does not install it", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "evener-mutation-outbox-close-mid-recovery";
   const open = indexedDB.open.bind(indexedDB);
-  const deleteDatabase = indexedDB.deleteDatabase.bind(indexedDB);
   let reopened: IDBDatabase | undefined;
+  let reopenHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let mainOpens = 0;
   vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
     if (name !== databaseName) return open(name, version);
@@ -329,13 +329,8 @@ test("close() during a recovery closes the late connection and does not install 
       request.addEventListener("success", () => {
         reopened = request.result;
       });
+      reopenHold = holdIndexedDBEvent(request, "success");
     }
-    return request;
-  });
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation((name: string) => {
-    const request = deleteDatabase(name);
-    if (name === databaseName) hold = holdIndexedDBEvent(request, "success");
     return request;
   });
   const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
@@ -346,10 +341,11 @@ test("close() during a recovery closes the late connection and does not install 
   );
   await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
   await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
-  await settleRealTasks(() => hold !== undefined);
-  if (!hold) throw new Error("recovery did not reach its delete");
+  // The probe+delete land, the reopen is issued, and its success is withheld:
+  // close() now happens while the reopen is in flight.
+  await settleRealTasks(() => reopened !== undefined);
   storage.close();
-  hold.release();
+  reopenHold?.release();
   const failure = await read;
   expect(failure).toBeInstanceOf(Error);
   expect((failure as Error).message).toMatch(/closed/);
@@ -357,6 +353,189 @@ test("close() during a recovery closes the late connection and does not install 
   expect(reopened).toBeDefined();
   expect(() => reopened?.transaction("outbox")).toThrow();
   storage.close();
+});
+
+test("a caller after close() does not join the pre-close recovery", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-close-then-call";
+  const open = indexedDB.open.bind(indexedDB);
+  const deleteDatabase = indexedDB.deleteDatabase.bind(indexedDB);
+  let mainOpens = 0;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    if (name === databaseName) {
+      mainOpens += 1;
+      if (mainOpens <= 2) return neverSettlingRequest();
+    }
+    return open(name, version);
+  });
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation((name: string) => {
+    const request = deleteDatabase(name);
+    // Park the stale recovery inside its delete.
+    if (name === databaseName) hold = holdIndexedDBEvent(request, "success");
+    return request;
+  });
+  const resets: number[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName,
+    onStorageReset: () => resets.push(1),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const first = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  await settleRealTasks(() => hold !== undefined);
+  if (!hold) throw new Error("recovery did not reach its delete");
+  await hold.reached;
+  storage.close();
+  // The stale recovery is anchored to the pre-close generation. This caller must
+  // start a fresh ladder - open its own connection and settle - not join it.
+  const second = storage.listOutbox();
+  await settleRealTasks(() => mainOpens >= 3);
+  hold.release();
+  expect(((await first) as Error).message).toMatch(/closed/);
+  expect(await second).toEqual([]);
+  // The cancelled recovery did not delete-notify: it was closed mid-flight.
+  expect(resets).toEqual([]);
+  storage.close();
+});
+
+test("a deletion that lands after DELETE_WAIT_MS still fires the reset notice, once", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-late-delete-notice";
+  const open = indexedDB.open.bind(indexedDB);
+  const deleteDatabase = indexedDB.deleteDatabase.bind(indexedDB);
+  let mainOpens = 0;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    if (name === databaseName) {
+      mainOpens += 1;
+      if (mainOpens <= 2) return neverSettlingRequest();
+    }
+    return open(name, version);
+  });
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation((name: string) => {
+    const request = deleteDatabase(name);
+    if (name === databaseName) hold = holdIndexedDBEvent(request, "success");
+    return request;
+  });
+  const resets: number[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName,
+    onStorageReset: () => resets.push(1),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const failure = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  await settleRealTasks(() => hold !== undefined);
+  if (!hold) throw new Error("recovery did not reach its delete");
+  await vi.advanceTimersByTimeAsync(5_000); // DELETE_WAIT_MS gives up first
+  expect(await failure).toBeInstanceOf(MutationStorageWedgedError);
+  expect(resets).toEqual([]);
+  // The deletion lands after the watchdog: the rows are gone, so the notice
+  // must fire now - exactly once.
+  hold.release();
+  await settleRealTasks(() => resets.length > 0);
+  expect(resets).toHaveLength(1);
+  storage.close();
+});
+
+test("the wedged latch stays true through a cooldown retry that re-wedges", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-cooldown-retry-stays-wedged";
+  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation(() => neverSettlingRequest());
+  let now = 0;
+  const states: boolean[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName,
+    now: () => now,
+    onStorageWedged: (value) => states.push(value),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const first = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  await vi.advanceTimersByTimeAsync(3_000); // the probe watchdog
+  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
+  expect(states).toEqual([true]);
+  // Cooldown elapses but the origin is still stuck: the attempt is allowed, the
+  // latch (and the banner) stays true throughout, and a re-wedge adds no flicker.
+  now = 15_000;
+  const second = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the cooldown attempt's watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // its recovery retry's watchdog
+  await vi.advanceTimersByTimeAsync(3_000); // its probe watchdog
+  expect(await second).toBeInstanceOf(MutationStorageWedgedError);
+  expect(states).toEqual([true]);
+  storage.close();
+});
+
+test("a stalled upgrade during recovery latches wedged rather than healing", async () => {
+  const indexedDB = new IDBFactory();
+  const createObjectStore = IDBDatabase.prototype.createObjectStore;
+  let keepAlive = true;
+  let upgraded: () => void = () => {};
+  const upgrading = new Promise<void>((resolve) => {
+    upgraded = resolve;
+  });
+  // Keep the versionchange transaction alive (never commits) with a count pulse
+  // so the upgrade path, not the plain open path, is what stalls.
+  vi.spyOn(IDBDatabase.prototype, "createObjectStore").mockImplementationOnce(function (this: IDBDatabase, ...args) {
+    const store = createObjectStore.apply(this, args);
+    const pulse = () => {
+      store.count().addEventListener("success", () => {
+        upgraded();
+        if (keepAlive) pulse();
+      });
+    };
+    pulse();
+    return store;
+  });
+  const wedged: boolean[] = [];
+  const resets: number[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    onStorageWedged: (value) => wedged.push(value),
+    onStorageReset: () => resets.push(1),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const failure = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await upgrading;
+    await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+    await nextRealTask();
+    await vi.advanceTimersByTimeAsync(10_000); // the recovery retry's watchdog
+    await nextRealTask();
+    await vi.advanceTimersByTimeAsync(5_000); // the delete watchdog, held by the upgrade
+    await settleRealTasks(() => wedged.length > 0);
+    expect(await failure).toBeInstanceOf(MutationStorageWedgedError);
+    expect(wedged).toEqual([true]);
+    // The delete never landed (the stalled upgrade holds it), so no notice.
+    expect(resets).toEqual([]);
+  } finally {
+    keepAlive = false;
+    storage.close();
+  }
 });
 
 test("the reset notice fires even when the post-delete reopen then fails", async () => {

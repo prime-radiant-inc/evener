@@ -185,6 +185,10 @@ export class MutationOutboxIndexedDB {
 
   close(): void {
     this.#generation += 1;
+    // Drop the in-flight recovery: it is anchored to the pre-close generation
+    // and will refuse its reopen. A caller after close() must start a fresh
+    // ladder, not join that stale one and fail with "closed".
+    this.#recoveryPromise = undefined;
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
@@ -782,12 +786,10 @@ export class MutationOutboxIndexedDB {
     // The wedged latch fails fast only for the cooldown: a stuck connection
     // coordinator never fires success, error, or blocked, so retrying
     // immediately can only repeat the same timeout. Once the cooldown elapses
-    // the latch clears and the normal ladder runs again, so a recovered origin
-    // or a released multi-tab hold self-heals instead of needing a reload.
-    if (this.#wedged) {
-      if (this.#now() < this.#wedgedRetryAt) throw new MutationStorageWedgedError();
-      this.#unwedge();
-    }
+    // an attempt is allowed, but the latch stays set - and the banner stays
+    // shown - until an open actually succeeds, so a retry that re-wedges cannot
+    // flicker the status false-then-true. Only a successful open unwedges.
+    if (this.#wedged && this.#now() < this.#wedgedRetryAt) throw new MutationStorageWedgedError();
     if (this.#database) return this.#database;
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
@@ -1016,14 +1018,13 @@ export class MutationOutboxIndexedDB {
     // no record can be read or exported before the delete - and the user's own
     // alternative, clearing the site's data, discards the same records. That is
     // why the delete is reported through onStorageReset rather than hidden.
-    if (!(await this.#resetWedgedDatabase())) {
+    if (!(await this.#resetWedgedDatabase(generation))) {
       this.#wedge();
       throw new MutationStorageWedgedError();
     }
-    // The delete already ran, so the queued rows are gone: report the
-    // destructive step NOW, before reopening, or a failed reopen would hide the
-    // exact loss this notice exists to surface.
-    this.#notifyQuietly(() => this.#onStorageReset?.());
+    // The notice fired from the deletion's own success listener (below), so it
+    // reports the moment the rows were actually removed - including a deletion
+    // that lands after DELETE_WAIT_MS and after this ladder has given up.
     try {
       // The successful #open already clears the latch; #wedged cannot be true
       // here, since a latched #open would have thrown before the retry above.
@@ -1048,12 +1049,21 @@ export class MutationOutboxIndexedDB {
   // IndexedDB is generally not answering - a throwaway probe open also
   // stalls - the wedge is not this database's alone, and deleting our own store
   // would neither help nor be safe to attempt.
-  async #resetWedgedDatabase(): Promise<boolean> {
+  async #resetWedgedDatabase(generation: number): Promise<boolean> {
     if (!(await this.#probeIndexedDBHealthy())) return false;
+    // A close() during the probe cancels this recovery: do not delete.
+    this.#assertNotClosedSince(generation);
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
-    return await this.#deleteWedgedDatabase();
+    const deleted = await this.#deleteWedgedDatabase(generation);
+    // A close() during the delete also cancels this ladder.
+    this.#assertNotClosedSince(generation);
+    return deleted;
+  }
+
+  #assertNotClosedSince(generation: number): void {
+    if (this.#generation !== generation) throw new Error("Mutation outbox connection was closed");
   }
 
   // Runs one IndexedDB request under a bounded wait: true on success (running
@@ -1119,7 +1129,7 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  #deleteWedgedDatabase(): Promise<boolean> {
+  #deleteWedgedDatabase(generation: number): Promise<boolean> {
     let request: IDBOpenDBRequest;
     try {
       request = this.#indexedDB.deleteDatabase(this.#databaseName);
@@ -1127,7 +1137,20 @@ export class MutationOutboxIndexedDB {
       return Promise.resolve(false);
     }
     // A "blocked" deletion can still settle later, so it is not a verdict by
-    // itself; the DELETE_WAIT_MS watchdog covers one that never does.
+    // itself; the DELETE_WAIT_MS watchdog covers one that never does. The
+    // deletion is destructive even when it lands AFTER the watchdog, so the
+    // notice is attached to the request itself, once, and only while this
+    // recovery's generation still holds.
+    let notified = false;
+    request.addEventListener(
+      "success",
+      () => {
+        if (notified) return;
+        notified = true;
+        if (this.#generation === generation) this.#notifyQuietly(() => this.#onStorageReset?.());
+      },
+      { once: true },
+    );
     return this.#boundedRequest(request, DELETE_WAIT_MS);
   }
 
