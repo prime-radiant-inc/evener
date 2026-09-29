@@ -507,14 +507,24 @@ func TestReleaseArchiveDoesNotCarryEvenerDev(t *testing.T) {
 // TestReleaseWorkflowDoesNotExpectEvenerDev guards the consumer side of the
 // same transition: the macOS signing job extracts the Darwin archive and signs
 // the binaries it expects, so it breaks the moment the archive stops carrying
-// evener-dev. It must name evener alone. The word boundary keeps the check from
-// matching unrelated names like the evener-developer-id signing certificate.
+// evener-dev. It must name evener alone. Comment lines are dropped first so a
+// note about the retired binary stays allowed; the word boundary keeps the
+// check from matching unrelated names like the evener-developer-id signing
+// certificate.
 func TestReleaseWorkflowDoesNotExpectEvenerDev(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/binaries.yml")
+	raw, err := os.ReadFile(".github/workflows/binaries.yml")
 	if err != nil {
 		t.Fatalf("read binaries.yml: %v", err)
 	}
-	if m := regexp.MustCompile(`evener-dev\b`).Find(data); m != nil {
+	var code strings.Builder
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteByte('\n')
+	}
+	if m := regexp.MustCompile(`evener-dev\b`).FindString(code.String()); m != "" {
 		t.Fatalf("binaries.yml still names evener-dev (%q); the Darwin archive carries evener alone", m)
 	}
 }

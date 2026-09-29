@@ -1489,7 +1489,9 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 }
 
 // assertNoEvenerDevInstalled fails if an install put evener-dev, the dev
-// tooling binary, into the managed dir or on PATH.
+// tooling binary, into the managed dir or on PATH. Install archives no longer
+// carry it, so the skip path is exercised with a legacy archive in
+// internal/remoteinstall/remoteinstall_test.go.
 func assertNoEvenerDevInstalled(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, dir := range dirs {

@@ -186,6 +186,33 @@ func TestUpgradeInstallsAnArchiveWithoutEvenerDev(t *testing.T) {
 	}
 }
 
+// A legacy archive can still carry evener-dev (older releases did). Extraction
+// installs only installBinaries — evener — and skips the rest, so the dev
+// binary never lands back in the managed dir.
+func TestUpgradeSkipsEvenerDevInALegacyArchive(t *testing.T) {
+	archive := releaseArchiveWith(t, "evener_linux_amd64", "evener", "evener-dev")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			sum := sha256.Sum256(archive)
+			_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+			return
+		}
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	prefix := filepath.Join(t.TempDir(), ".local")
+	if _, err := Upgrade(t.Context(), Options{CurrentChannel: "snapshot", Prefix: prefix, GOOS: "linux", GOARCH: "amd64", RepoURL: server.URL}); err != nil {
+		t.Fatalf("Upgrade from a legacy archive carrying evener-dev: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "share", "evener", "bin", "evener")); err != nil {
+		t.Fatalf("evener not installed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(prefix, "share", "evener", "bin", "evener-dev")); !os.IsNotExist(err) {
+		t.Fatalf("upgrade extracted evener-dev from a legacy archive (err=%v); it is not in installBinaries", err)
+	}
+}
+
 func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {
 	archive := releaseArchive(t, "evener_linux_amd64")
 	var gotPath string

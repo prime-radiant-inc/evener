@@ -170,10 +170,9 @@ func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 }
 
 // TestDeployRefusesARunTargetThatCannotServeAHub pins the round-22 decision that
-// the run target must be `evener`. Release archives carry both `evener` and
-// `evener-dev`, but `evener-dev` is the development/test tooling binary
-// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a host
-// configured to run it installs "successfully" and then fails preflight, health,
+// the run target must be `evener`. `evener-dev` is the development/test tooling
+// binary (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a
+// host configured to run it installs "successfully" and then fails preflight, health,
 // and restart, with the controller having already written to the host. Any other
 // basename is no better: the manager records this one path as the host's run
 // target and probes, restarts, and attaches the binary at it. The refusal is
