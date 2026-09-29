@@ -13,7 +13,7 @@ import (
 // path directly, which is the state a swap between the check and the open
 // leaves behind.
 func TestReadOutputImageInRoot_RefusesASymlinkLeadingOutOfTheRoot(t *testing.T) {
-	root := t.TempDir()
+	root := docTestRoot(t)
 	outside := t.TempDir()
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 	if err := os.WriteFile(filepath.Join(outside, "secret.png"), png, 0o644); err != nil {
@@ -31,7 +31,7 @@ func TestReadOutputImageInRoot_RefusesASymlinkLeadingOutOfTheRoot(t *testing.T) 
 // A symlink that stays inside the folder is still followed, so the confinement
 // refuses only what leaves the root.
 func TestReadOutputImageInRoot_FollowsASymlinkInsideTheRoot(t *testing.T) {
-	root := t.TempDir()
+	root := docTestRoot(t)
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 	if err := os.MkdirAll(filepath.Join(root, "shots"), 0o755); err != nil {
 		t.Fatal(err)

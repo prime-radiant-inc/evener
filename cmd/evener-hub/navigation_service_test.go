@@ -1866,6 +1866,28 @@ func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(
 	}
 }
 
+// TestNavigationServiceWaitFlightPrefersCallerCancellation pins the tie-break
+// that TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight
+// used to leave to the scheduler: once a caller's context is canceled, a
+// settled flight must not report success. Both select arms are ready in that
+// case, so without an explicit re-check the outcome is a coin flip.
+func TestNavigationServiceWaitFlightPrefersCallerCancellation(t *testing.T) {
+	service := &NavigationService{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 1000 {
+		flight := &navigationBuildFlight{done: closedNavigationDone()}
+		_, err := service.waitFlight(ctx, flight)
+		if err == nil {
+			t.Fatal("waitFlight reported success for a canceled caller whose flight had settled")
+		}
+		var status interface{ StatusCode() int }
+		if !errors.As(err, &status) || status.StatusCode() != 503 {
+			t.Fatalf("waitFlight error = %T %v, want 503", err, err)
+		}
+	}
+}
+
 func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
