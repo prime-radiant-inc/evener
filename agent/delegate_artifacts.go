@@ -114,11 +114,22 @@ func removeDelegateArtifacts(stateDir, childSessionID string) error {
 	if err != nil {
 		return err
 	}
+	parent := filepath.Dir(dir)
+	// Verify the shared sessions dir is a real directory before traversing it:
+	// a symlink planted there would send the lookup and the recursive delete
+	// through the link target, outside the delegation state.
+	if info, err := os.Lstat(filepath.Dir(parent)); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("delegate artifacts dir: inspect %s: %w", filepath.Dir(parent), err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("delegate artifacts dir: %s is not a real directory", filepath.Dir(parent))
+	}
 	// Verify the session dir is a real directory before recursing: a symlink
 	// planted there would make os.RemoveAll(dir) delete <target>/artifacts. When
 	// it is not a real directory, remove the entry itself (the link or file) and
 	// leave any target untouched.
-	parent := filepath.Dir(dir)
 	info, err := os.Lstat(parent)
 	switch {
 	case err != nil:
@@ -135,7 +146,15 @@ func removeDelegateArtifacts(stateDir, childSessionID string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	_ = os.Remove(parent)
+	// Drop the now-empty session dir; a populated one (the child's job store,
+	// transcript, or metadata) is expected to remain, so only an attempt on an
+	// empty directory is made, and a non-empty result is not an error. Any other
+	// removal failure is surfaced.
+	if entries, rerr := os.ReadDir(parent); rerr == nil && len(entries) == 0 {
+		if err := os.Remove(parent); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delegate artifacts dir: remove empty %s: %w", parent, err)
+		}
+	}
 	return nil
 }
 
