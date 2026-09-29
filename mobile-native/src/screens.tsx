@@ -87,8 +87,8 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { BarFrame } from "./design/BarFrame";
 import { ApprovalDock } from "./session/ApprovalDock";
-import { BottomBar } from "./session/BottomBar";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
@@ -2770,7 +2770,9 @@ export function ConversationScreen({
 							onHeight={setFloatingHeight}
 						/>
 					</View>
-					<BottomBar>
+					{/* The bottom bar (spec 8.1): the tray or a dock and the composer, and
+					    the transcript keeps a fifth of the screen however much it holds. */}
+					<BarFrame testID="session-bottom-bar" style={{ flexShrink: 1, maxHeight: "80%", paddingTop: 8 }}>
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
@@ -2922,7 +2924,7 @@ export function ConversationScreen({
 								}}
 							/>
 						) : null}
-					</BottomBar>
+					</BarFrame>
 				</View>
 			</KeyboardAvoidingView>
 		</SafeAreaView>
