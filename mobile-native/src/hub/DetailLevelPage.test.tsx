@@ -283,6 +283,15 @@ it("drops a failed save's line while the hub's setting is being checked", async 
 	expect(renderedText(tree)).not.toContain("The change couldn't be saved.");
 });
 
+it("drops a failed save's line when the phone can't keep the change, since nothing can be chosen again", async () => {
+	const { tree, fake, press, update } = mount(transcript());
+	fake.saveTranscript.mockRejectedValueOnce(new Error("disk full"));
+	await press("Full, Everything, including the agent's reasoning");
+	update(transcript({ error: "Could not save the transcript draft locally.", storageUnavailable: true }));
+	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
+	expect(renderedText(tree)).not.toContain("Choose it again");
+});
+
 it.each([
 	// nativePreferences' own message for a hub-side failure.
 	[
@@ -311,7 +320,7 @@ it.each([
 	expect(renderedText(tree)).toMatch(expected);
 });
 
-it("says a conflict happened even before the hub's value has loaded", () => {
+it("says a conflict happened while the hub keeps no phone setting to show", () => {
 	const { tree } = mount(transcript({ conflict: true, confirmed: null, draft: { revision: 3, config: PRESET } }));
 	expect(renderedText(tree)).toContain("The hub's setting changed while you were choosing.");
 });

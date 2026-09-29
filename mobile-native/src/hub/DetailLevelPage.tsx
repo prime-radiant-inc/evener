@@ -141,7 +141,10 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				// page says what happened in its own words.
 				<GroupFooter tone="danger">{state.error === HUB_UNCONFIRMED_MESSAGE ? NOT_LOADED : NOT_UPDATED}</GroupFooter>
 			) : null}
-			{failed && !writeUncertain && !conflict ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{/* The phone that can't keep a change holds every row, so there is nothing to choose again. */}
+			{failed && !writeUncertain && !conflict && !state.storageUnavailable ? (
+				<GroupFooter tone="danger">{NOT_SAVED}</GroupFooter>
+			) : null}
 			{config && state.support === "supported" ? (
 				<>
 					<GroupLabel>Default detail level</GroupLabel>
