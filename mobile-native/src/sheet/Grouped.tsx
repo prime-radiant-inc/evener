@@ -501,3 +501,55 @@ export function RowValue({
 		</View>
 	);
 }
+
+/** A filter field over a list, on the inset fill: a magnifying glass, the
+ * field, and a clear button once something is typed. `label` is both its
+ * VoiceOver label and its placeholder. */
+export function SearchField({
+	label,
+	query,
+	onChange,
+}: {
+	label: string;
+	query: string;
+	onChange(query: string): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			style={{
+				marginHorizontal: 16,
+				minHeight: 36,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 6,
+				paddingHorizontal: 10,
+				borderRadius: 10,
+				backgroundColor: palette.inset,
+			}}
+		>
+			<SymbolView name="magnifyingglass" size={15} tintColor={palette.inkLow} />
+			<TextInput
+				accessibilityLabel={label}
+				placeholder={label}
+				placeholderTextColor={palette.inkLow}
+				value={query}
+				onChangeText={onChange}
+				autoCorrect={false}
+				allowFontScaling={allowFontScaling}
+				style={{ flex: 1, color: palette.inkHi, fontSize: 17 * scale, paddingVertical: 8 }}
+			/>
+			{query ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Clear filter"
+					onPress={() => onChange("")}
+					hitSlop={10}
+				>
+					<SymbolView name="xmark.circle.fill" size={15} tintColor={palette.inkLow} />
+				</Pressable>
+			) : null}
+		</View>
+	);
+}

@@ -40,7 +40,17 @@ import {
 	type PluginMutationGate,
 } from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, Segmented, SwitchRow } from "../sheet/Grouped";
+import {
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	SearchField,
+	Segmented,
+	SwitchRow,
+} from "../sheet/Grouped";
 import { Connecting, SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { HubRoutes } from "./hubSheetContext";
@@ -378,6 +388,7 @@ function Plugins({
 	const [panel, setPanel] = useState<Segment>("installed");
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [selected, setSelected] = useState<PluginRefParams | null>(null);
+	const [query, setQuery] = useState("");
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const editorVersion = useRef(0);
@@ -476,6 +487,11 @@ function Plugins({
 		);
 	}
 	const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
+	// Today's filter, by plugin or marketplace name: useful on a hub with many.
+	const needle = query.trim().toLowerCase();
+	const visible = (state.plugins ?? []).filter(
+		(item) => item.plugin.toLowerCase().includes(needle) || item.marketplace.toLowerCase().includes(needle),
+	);
 	// A failed installed list reads again when the page comes back to the
 	// front, as evener/plugin/updated already does; nothing asks you to (no
 	// pull-to-refresh, no button: Task 15). Refs keep the effect's identity
@@ -503,8 +519,12 @@ function Plugins({
 					{state.plugins === null && state.pluginsLoading ? (
 						<ActivityIndicator accessibilityLabel="Loading installed plugins" />
 					) : null}
+					{state.plugins?.length ? (
+						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
+					) : null}
 					{state.plugins?.length === 0 ? <GroupFooter>No plugins installed on this hub.</GroupFooter> : null}
-					{byMarketplace(state.plugins ?? []).map(([marketplace, plugins]) => (
+					{state.plugins?.length && visible.length === 0 ? <GroupFooter>No matching plugins.</GroupFooter> : null}
+					{byMarketplace(visible).map(([marketplace, plugins]) => (
 						<Fragment key={marketplace}>
 							<GroupLabel machine>{marketplace}</GroupLabel>
 							<Group>

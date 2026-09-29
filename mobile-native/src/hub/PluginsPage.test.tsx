@@ -2902,6 +2902,27 @@ it("shows no upgrade result for a plugin the answering list no longer carries", 
 	expect(renderedText(tree)).not.toContain("Already up to date");
 });
 
+it("filters installed plugins by plugin or marketplace", async () => {
+	const hub = pageHub([
+		entry("demo-plugin", { marketplace: "core" }),
+		entry("linter", { marketplace: "core" }),
+		entry("tool", { marketplace: "acme" }),
+	]);
+	const { tree } = await mountPage(hub);
+	const field = () =>
+		tree.root.find(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Filter installed plugins",
+		);
+	act(() => field().props.onChangeText("lint"));
+	expect(renderedText(tree)).toContain("linter");
+	expect(renderedText(tree)).not.toContain("demo-plugin");
+	act(() => field().props.onChangeText("ACME"));
+	expect(renderedText(tree)).toContain("tool");
+	expect(renderedText(tree)).not.toContain("linter");
+	act(() => field().props.onChangeText("nothing-like-it"));
+	expect(renderedText(tree)).toContain("No matching plugins.");
+});
+
 it("reads the installed list again on coming back to the page after a read failed, with nothing to press", async () => {
 	const hub = pageHub([entry("demo-plugin")]);
 	let reads = 0;
