@@ -1212,6 +1212,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
+	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
 	// The notices read the same answers evener/auth/list and evener/plugin/list

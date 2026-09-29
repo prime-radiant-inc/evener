@@ -263,3 +263,19 @@ func navigationReadError(server *appserver.Server, err error) error {
 	server.Logf("navigation read failed: %v", err)
 	return appwire.InternalError("navigation read failed")
 }
+
+func registerArchivedListHandler(server *appserver.Server, navigation *NavigationService) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerArchivedList, func(ctx context.Context, params appwire.ArchivedListParams) (appwire.ArchivedListResponse, error) {
+		if navigation == nil {
+			return appwire.ArchivedListResponse{}, appwire.Unavailable("navigation unavailable")
+		}
+		response, err := navigation.ArchivedList(ctx, params)
+		if errors.Is(err, errArchivedListInvalid) {
+			return appwire.ArchivedListResponse{}, appwire.InvalidParams(err.Error())
+		}
+		if err != nil {
+			return appwire.ArchivedListResponse{}, navigationReadError(server, err)
+		}
+		return response, nil
+	})
+}

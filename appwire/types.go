@@ -91,6 +91,7 @@ const (
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
 	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerArchivedList             = "evener/archived/list"
 	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerNoticesList              = "evener/notices/list"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
@@ -672,6 +673,28 @@ type SessionSeenSetResponse struct {
 // SearchParams selects matching live and past sessions for the hub command
 // palette. An empty query returns the most recent past sessions and all live
 // sessions, matching the palette's initial result set.
+// ArchivedListParams names the project whose archived sessions to list: the
+// catalog its rail row came from ("projects", "archived_projects" or
+// "test_runs"; the same key can exist in two catalogs) and its key. Cursor is
+// the previous page's NextCursor; Limit defaults to 50.
+type ArchivedListParams struct {
+	Catalog    string `json:"catalog"`
+	ProjectKey string `json:"projectKey"`
+	Cursor     string `json:"cursor,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+// ArchivedListResponse is one page of a project's archived sessions, newest
+// first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
+// cannot import hubapi, so the rows travel as raw JSON the way a navigation
+// read's data does. NextCursor is empty on the last page. Total counts every
+// archived session of the project.
+type ArchivedListResponse struct {
+	Sessions   json.RawMessage `json:"sessions"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Total      int             `json:"total"`
+}
+
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
 	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
