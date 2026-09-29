@@ -1,0 +1,46 @@
+/* The inline diagram sits in the reading flow like a fenced code block, so it
+ * takes the same bottom rhythm as one. */
+.root {
+  margin: 0 0 var(--space-3);
+  /* The viewer-enabled variant renders this container as a real <button>;
+     strip the user-agent control chrome so it still reads as an inline block
+     of content. No effect on the plain <div> variant. */
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+/* Only the viewer-enabled variant is a click target (Task 7 wires onOpen); a
+ * plain inline diagram keeps the text cursor and stays inert. */
+.clickable {
+  cursor: pointer;
+}
+
+/* The svg never takes pointer events, so a click anywhere over the diagram
+ * reaches the container (the viewer's open handler), and no anchor that could
+ * survive a future sanitizer regression is ever clickable. The element is
+ * capped to the reading column and clipped rather than scrolled, so an
+ * over-wide diagram never introduces a horizontal scrollbar of its own. */
+.svg {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.svg > svg {
+  pointer-events: none;
+  max-width: 100%;
+  height: auto;
+}
+
+.error {
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
