@@ -4,9 +4,9 @@ import { memo, type Ref, useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { MermaidDiagram } from "../mermaid";
-import { markdownLexer } from "./lexer";
 import styles from "./markdown.module.css";
 import {
+  containsLinkDefinition,
   type LiveSegmentsCache,
   messageMayContainMermaid,
   splitLiveMarkdownSegments,
@@ -241,48 +241,6 @@ function splitLiveSource(source: string): { head: string; tail: string } | null 
   while (source.charAt(tailStart) === "\n" || source.charAt(tailStart) === "\r") tailStart += 1;
   if (tailStart >= source.length) return null;
   return { head: source.slice(0, blank + separator), tail: source.slice(tailStart) };
-}
-
-// Exact link-definition detection through the shared lexer: a definition on
-// either side of the split registers globally with marked and resolves
-// `[label]` uses anywhere in the whole - including across the split - that a
-// standalone tail parse would leave literal, so any `def` token, top level
-// or nested in a blockquote/list/table, falls back to the full parse. A
-// lexer failure fails closed to the full parse as well.
-function containsLinkDefinition(source: string): boolean {
-  let tokens: Token[];
-  try {
-    tokens = markdownLexer.lexer(source);
-  } catch {
-    return true;
-  }
-  return tokensContainDef(tokens);
-}
-
-function tokensContainDef(tokens: Token[]): boolean {
-  // Any unexpected shape (malformed tokens, a future marked token type with
-  // unguarded nesting) fails closed to the full parse: a missed `def` would
-  // resolve differently under the windowed halves, while a spurious fallback
-  // is exactly today's behavior.
-  try {
-    for (const token of tokens) {
-      if (token.type === "def") return true;
-      if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
-      if ("items" in token) {
-        for (const item of token.items ?? []) {
-          if (tokensContainDef(item?.tokens ?? [])) return true;
-        }
-      }
-      if (token.type === "table") {
-        for (const cell of [...(token.header ?? []), ...(token.rows ?? []).flat()]) {
-          if (tokensContainDef(cell?.tokens ?? [])) return true;
-        }
-      }
-    }
-    return false;
-  } catch {
-    return true;
-  }
 }
 
 // The head-side gate verdicts cached per exact head text: every one of them

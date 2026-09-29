@@ -1,8 +1,20 @@
-import { describe, expect, it } from "vitest";
+import type { Token } from "marked";
+import { describe, expect, it, vi } from "vitest";
+import { markdownLexer } from "./lexer";
 import type { LiveSegmentsCache } from "./segments";
 import { messageMayContainMermaid, splitMarkdownSegments } from "./segments";
 
 const MERMAID = "```mermaid\ngraph TD; A-->B\n```\n";
+
+// Every link href reachable in a token array, nested inline tokens included.
+function collectLinkHrefs(tokens: Token[]): string[] {
+  const hrefs: string[] = [];
+  for (const token of tokens) {
+    if (token.type === "link") hrefs.push((token as { href?: string }).href ?? "");
+    if ("tokens" in token) hrefs.push(...collectLinkHrefs(token.tokens ?? []));
+  }
+  return hrefs;
+}
 
 describe("splitMarkdownSegments", () => {
   it("splits a closed mermaid fence out of prose", () => {
@@ -108,6 +120,34 @@ describe("splitLiveMarkdownSegments", () => {
     // it. A frozen head here would lex as one list and the tail as a second.
     const streaming = "- item\n  ```mermaid\n  graph TD; A-->B\n  ```\n- second\n";
     expect(splitLiveMarkdownSegments(streaming, cache).map((s) => s.kind)).toEqual(["markdown"]);
+  });
+
+  it("falls back to a whole-source lex when a definition sits across a closed diagram", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const source = `See [the docs][d].\n\n${MERMAID}\n[d]: https://example.com\n`;
+    const segments = splitLiveMarkdownSegments(source, { current: null });
+    const markdown = segments.find((s) => s.kind === "markdown");
+    expect(markdown?.kind).toBe("markdown");
+    const hrefs = markdown?.kind === "markdown" ? collectLinkHrefs(markdown.tokens) : [];
+    // The use resolves only under a whole-source lex; separate head/tail lexes
+    // would leave it literal.
+    expect(hrefs).toContain("https://example.com");
+  });
+
+  it("does not re-lex the head on a cache hit", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    const head = `intro\n\n${MERMAID}`;
+    splitLiveMarkdownSegments(`${head}\nfirst tail\n`, cache);
+    const spy = vi.spyOn(markdownLexer, "lexer");
+    try {
+      // Same head, longer def-free tail: the head's text is unchanged, so no
+      // lex of the head text may run (the validation lex is a cache-miss cost).
+      splitLiveMarkdownSegments(`${head}\nfirst tail and more\n`, cache);
+      expect(spy.mock.calls.filter((call) => call[0] === head)).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -391,3 +391,26 @@ test("resolves a link definition used on the far side of a diagram", () => {
   const link = container.querySelector("a[href='https://example.com']");
   expect(link).not.toBeNull();
 });
+
+test("keeps an open mermaid fence a code block when settled", () => {
+  // Settled renders must not promote a truncated trailing fence (no closer):
+  // the live path demotes it, and the settled path must agree instead of
+  // flipping to a diagram (or its error fallback) at settle.
+  const { container } = render(<Markdown source={"before\n\n```mermaid\ngraph TD; A-->"} />);
+  expect(container.querySelector("[data-mermaid-diagram]")).toBeNull();
+  expect(container.textContent).toContain("graph TD; A-->");
+});
+
+test("resolves a far-side link definition while live (use before def)", () => {
+  const { container } = render(
+    <Markdown live source={"See [the docs][d].\n\n```mermaid\ngraph TD; A-->B\n```\n\n[d]: https://example.com\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});
+
+test("resolves a far-side link definition while live (def before use)", () => {
+  const { container } = render(
+    <Markdown live source={"[d]: https://example.com\n\n```mermaid\ngraph TD; A-->B\n```\n\nSee [the docs][d].\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});

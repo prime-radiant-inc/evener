@@ -118,6 +118,50 @@ function realSourceTailIsOpenMermaid(realSource: string): boolean {
   return false;
 }
 
+// Exact link-definition detection through the shared lexer: a definition on
+// either side of a split registers globally with marked and resolves `[label]`
+// uses anywhere in the whole - including across the split - that a standalone
+// slice parse would leave literal, so any `def` token, top level or nested in a
+// blockquote/list/table, forces a whole-source lex. A lexer failure fails
+// closed to the whole-source path as well. Shared by the windowed single-root
+// path (message-level def gates) and the segmented live path (Finding B: a def
+// on one side of a closed diagram must still resolve a use on the other).
+export function containsLinkDefinition(source: string): boolean {
+  let tokens: Token[];
+  try {
+    tokens = markdownLexer.lexer(source);
+  } catch {
+    return true;
+  }
+  return tokensContainDef(tokens);
+}
+
+function tokensContainDef(tokens: Token[]): boolean {
+  // Any unexpected shape (malformed tokens, a future marked token type with
+  // unguarded nesting) fails closed to the whole-source lex: a missed `def`
+  // would resolve differently under separate slices, while a spurious fallback
+  // is exactly the pre-throttle behavior.
+  try {
+    for (const token of tokens) {
+      if (token.type === "def") return true;
+      if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
+      if ("items" in token) {
+        for (const item of token.items ?? []) {
+          if (tokensContainDef(item?.tokens ?? [])) return true;
+        }
+      }
+      if (token.type === "table") {
+        for (const cell of [...(token.header ?? []), ...(token.rows ?? []).flat()]) {
+          if (tokensContainDef(cell?.tokens ?? [])) return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export function splitMarkdownSegments(closedSource: string, realSource: string | null): MarkdownSegment[] {
   const tokens = markdownLexer.lexer(closedSource);
   const segments: MarkdownSegment[] = [];
@@ -127,7 +171,12 @@ export function splitMarkdownSegments(closedSource: string, realSource: string |
     markdownRun = [];
   };
   for (const token of tokens) {
-    if (isMermaidCodeToken(token)) {
+    // A fence that never terminated in the source is NOT a diagram: the settled
+    // path (realSource null, so no demote) must leave it a code block, exactly
+    // as the live path and the native sibling do. On the live paths every
+    // closedSource fence is auto-closed and every frozen head ends at a
+    // terminated fence, so this gate is a no-op there.
+    if (isMermaidCodeToken(token) && fenceTokenTerminated((token as { raw?: string }).raw ?? "")) {
       flush();
       segments.push({ kind: "mermaid", text: mermaidText(token) });
     } else {
@@ -154,6 +203,10 @@ export function splitMarkdownSegments(closedSource: string, realSource: string |
 export interface LiveSegmentsCache {
   headSource: string;
   headSegments: MarkdownSegment[];
+  // Whether the head text carries a link definition, computed once per distinct
+  // head on the cache-miss path. A def on either side of a closed diagram must
+  // force a whole-source lex so its use on the other side still resolves live.
+  headHasDef: boolean;
 }
 
 // A top-level fence line (up to three leading spaces) and its info string.
@@ -170,12 +223,11 @@ const BARE_FENCE_CLOSER = /^ {0,3}(`{3,}|~{3,})$/;
 // depending on what follows it, which would make the same head boundary
 // alternate between 38 and 37 and defeat the cache. The scan tracks ALL top
 // fences, so a mermaid-looking line inside a non-mermaid fence is code, not an
-// opener. The candidate is then VALIDATED against the token stream
-// (headEndsAtTerminatedMermaid) before it is honored: a fence indented as a
-// list-item continuation line-matches the opener pattern but lexes inside the
-// list, not as a top-level code token, so it must not freeze a head. A rejected
-// candidate returns 0 (the uncached whole-source behavior for that shape). The
-// validation lex runs only on the cache-miss path (a changed head).
+// opener. The line scan is the only per-render cost; its candidate is validated
+// against the token stream by the caller (splitLiveMarkdownSegments) on the
+// cache-MISS path only, where a fence indented as a list-item continuation
+// line-matches the opener pattern but lexes inside the list, not as a top-level
+// code token, and is rejected.
 function lastClosedMermaidFenceEnd(source: string): number {
   const lines = source.split("\n");
   let offset = 0;
@@ -205,8 +257,7 @@ function lastClosedMermaidFenceEnd(source: string): number {
     }
     offset += line.length + (index < lines.length - 1 ? 1 : 0);
   }
-  if (end === 0) return 0;
-  return headEndsAtTerminatedMermaid(source.slice(0, end)) ? end : 0;
+  return end;
 }
 
 // Live segmentation with the frozen head cached on its exact text. The head
@@ -218,24 +269,42 @@ function lastClosedMermaidFenceEnd(source: string): number {
 // path did). A changed head is a cache miss and re-segments, never stale - the
 // same discipline as the windowed path's head cache. With no closed fence the
 // head is empty and the whole source is the tail: identical to splitMarkdownSegments.
+// The candidate head's token-stream validation (a list-continuation fence must
+// not freeze a head) and the head's def verdict run ONLY on that miss path, so
+// a steady stream pays just the per-render line scan plus the tail work. A
+// definition on either side of a closed diagram forces a whole-source lex so a
+// cross-diagram reference resolves live, exactly as it does at settle.
 export function splitLiveMarkdownSegments(
   realSource: string,
   cache: { current: LiveSegmentsCache | null },
 ): MarkdownSegment[] {
-  const headEnd = lastClosedMermaidFenceEnd(realSource);
-  const headSource = realSource.slice(0, headEnd);
-  const tailSource = realSource.slice(headEnd);
+  const end = lastClosedMermaidFenceEnd(realSource);
+  let headSource = realSource.slice(0, end);
+  let entry = cache.current;
+  if (entry === null || entry.headSource !== headSource) {
+    // Cache miss (a changed head): validation lex, head segmentation, and the
+    // head's def verdict all run only here, keyed on the head's exact text. A
+    // rejected candidate caches under "" with ([], false) - exactly the value a
+    // genuine no-fence-yet state produces, so the "" key is safe; validation is
+    // a pure function of headSource, so skipping it on a hit is sound.
+    if (headSource !== "" && !headEndsAtTerminatedMermaid(headSource)) headSource = "";
+    entry = {
+      headSource,
+      headSegments: headSource === "" ? [] : splitMarkdownSegments(headSource, null),
+      headHasDef: headSource !== "" && containsLinkDefinition(headSource),
+    };
+    cache.current = entry;
+  }
 
-  let headSegments: MarkdownSegment[];
-  const cached = cache.current;
-  if (cached !== null && cached.headSource === headSource) {
-    headSegments = cached.headSegments;
-  } else {
-    headSegments = headSource === "" ? [] : splitMarkdownSegments(headSource, null);
-    cache.current = { headSource, headSegments };
+  const tailSource = realSource.slice(entry.headSource.length);
+  // A definition on either side of a closed diagram resolves only under a
+  // whole-source lex (same gate the windowed path forces); take it, demote rule
+  // and all, rather than lex head and tail separately.
+  if (entry.headHasDef || containsLinkDefinition(tailSource)) {
+    return splitMarkdownSegments(closeOpenMarkdown(realSource), realSource);
   }
 
   const tailSegments = tailSource === "" ? [] : splitMarkdownSegments(closeOpenMarkdown(tailSource), tailSource);
-  if (headSegments.length === 0) return tailSegments;
-  return [...headSegments, ...tailSegments];
+  if (entry.headSegments.length === 0) return tailSegments;
+  return [...entry.headSegments, ...tailSegments];
 }
