@@ -62,7 +62,7 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
@@ -232,13 +232,16 @@ export interface ThreadsStoreState {
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   // Durably enqueues the human shared-note (an empty note clears it). Returns
   // the committed outbox record, not the daemon acknowledgment. Receipt
-  // responses and evener/notes/updated publish canonical note state.
+  // responses and evener/notes/updated publish canonical note state. Returns
+  // undefined when storage was unavailable and the note was dispatched
+  // directly instead (enqueueMutationIntent's fallback): there is no durable
+  // row for the caller, and evener/notes/updated still publishes the result.
   setHumanNote(
     ref: string,
     note: string,
     expectedInstanceId?: string,
     onCommitted?: (record: MutationOutboxRecord) => void,
-  ): Promise<MutationOutboxRecord>;
+  ): Promise<MutationOutboxRecord | undefined>;
   // Removes one session URL list entry by id. The response carries no
   // state; the evener/urls/updated push is the authority. Local list edits
   // on success are the push's business, not this response's — unlike
@@ -2172,7 +2175,7 @@ async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
-): Promise<MutationOutboxRecord> {
+): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
@@ -2224,26 +2227,94 @@ async function enqueueMutationIntent(
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  let record: MutationOutboxRecord;
   try {
-    // The click-time capture, awaited at the write it fences. A rejecting
-    // read (MutationStorageTimeoutError, VersionError, a retired connection)
-    // is a failed submission exactly like a failed enqueue: the catch below
-    // disarms the ref this click armed, so a transient read failure leaves no
-    // stale dispatch bookkeeping for later discovery passes to act on.
-    const barrier: MutationStopBarrier | undefined =
-      barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
-    record =
-      durableWrite === "interruptAndCancel"
+    // The click-time capture, awaited at the write it fences, and the durable
+    // enqueue behind it, retried once on a storage timeout (see
+    // enqueueDurableMutation).
+    const record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+    pinnedMutationRefs.add(ref);
+    notifyMutationPersistence([ref], { record });
+    return record;
+  } catch (error) {
+    // A failure that is not the storage-unavailable timeout is a submission
+    // failure exactly as before: disarm the ref this click armed so no later
+    // discovery pass dispatches work for a ref with no durable row, and
+    // propagate. The timeout case falls through to the direct fallback below.
+    if (!isStorageUnavailable(error)) {
+      if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+      throw error;
+    }
+  }
+  // Persistent storage failure: the durable write could not be made, so send
+  // the mutation as a plain RPC right now, exactly as the non-durable
+  // operations do (setModel, rename, compact, ...). The outbox row, the
+  // dispatcher, the receipt/settle machinery and the recovery list are all
+  // skipped - there is nothing durable to settle or replay. The click armed
+  // the ref's dispatch bookkeeping for a durable row that now does not exist,
+  // so disarm it first (a pin, if any, is not this click's to drop).
+  //
+  // The forfeited cross-tab Stop fence: this send carries no click-time stop
+  // epoch when the capture read itself timed out, so a Stop landing in another
+  // tab during that window cannot be honoured for it - there is no epoch this
+  // tab ever read to compare against. The composer's draft is untouched
+  // either way (it lives in localStorage). A send is retryable by hand, which
+  // is the trade the fallback makes against failing closed.
+  if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+  await dispatchMutationDirectly(client, intent);
+  return undefined;
+}
+
+// A durable write that timed out may mean only that storage is slow to
+// answer, so try it a second time before giving up. The click-time capture is
+// awaited ONCE here, before the ladder, and every attempt reuses that same
+// observation: re-reading it would let a Stop landing between attempts become
+// the retry's own baseline (the fence the capture exists to hold). A rejecting
+// capture (MutationStorageTimeoutError, VersionError, a retired connection)
+// propagates, and enqueueMutationIntent decides between the fallback and a
+// hard failure.
+const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
+const MUTATION_DURABLE_WRITE_RETRY_DELAY_MS = 50;
+
+async function enqueueDurableMutation(
+  runtime: MutationRuntime,
+  intent: MutationIntent,
+  onCommitted: ((record: MutationOutboxRecord) => void) | undefined,
+  durableWrite: "enqueue" | "interruptAndCancel",
+  barrierRead: Promise<number> | undefined,
+): Promise<MutationOutboxRecord> {
+  const barrier: MutationStopBarrier | undefined =
+    barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
         : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
-  } catch (error) {
-    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
-    throw error;
+    } catch (error) {
+      if (!isStorageUnavailable(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
+    }
   }
-  pinnedMutationRefs.add(ref);
-  notifyMutationPersistence([ref], { record });
-  return record;
+}
+
+// Whether an error is the storage-unavailable signal (the IndexedDB watchdog
+// gave up on an open or a transaction): the one failure the direct fallback
+// answers, because it does not prove the mutation's shape was rejected.
+function isStorageUnavailable(error: unknown): boolean {
+  return error instanceof MutationStorageTimeoutError;
+}
+
+// The imperative transport for a mutation whose durable write could not be
+// made: the same plain RPC the non-durable operations issue. The client mints
+// the clientMutationId exactly as those operations do, so the daemon still
+// dedups a replay; a rejection maps a conflict the same way they do.
+async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
+  const clientMutationId = createSecureUUID();
+  try {
+    const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+  } catch (err) {
+    throw mapConflict(err);
+  }
 }
 
 async function enqueueMutation(
@@ -4248,7 +4319,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async clearThread(ref) {
     const runtime = requireMutationRuntime();
     await runtime.start;
-    await enqueueMutationIntent(clearMutationIntent(ref));
+    const record = await enqueueMutationIntent(clearMutationIntent(ref));
+    // undefined: storage was unavailable and the clear went out as a plain RPC
+    // (enqueueMutationIntent's fallback). There is no durable row to dispatch
+    // or pin, and applyClearResponse was skipped, so the pane takes the
+    // replacement session on its next read.
+    if (record === undefined) return;
     // A clear is fenced by the model's instance id, so it can dispatch while
     // an older resync read is in flight. Its response is the newer cut and
     // retires that read in applyClearResponse.

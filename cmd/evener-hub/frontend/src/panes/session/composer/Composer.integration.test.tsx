@@ -520,7 +520,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   expect(consoleError).not.toHaveBeenCalled();
 });
 
-test("a cancelled storage stall keeps the draft, reports the problem, and allows one safe retry", async () => {
+test("a stalled capture read dispatches the steer directly and never fails closed", async () => {
   const fake = await mountComposer("ref_a");
   let deliveryObserved: (() => void) | undefined;
   const delivered = new Promise<void>((resolve) => {
@@ -565,20 +565,19 @@ test("a cancelled storage stall keeps the draft, reports the problem, and allows
       await reached;
       await vi.runOnlyPendingTimersAsync();
     });
-    expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBeTruthy();
-    expect(textarea()?.textContent).toBe("keep this draft");
-    expect(composerSteerButton().disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(0);
+    // The click-time capture read never answered, so this steer carries no
+    // click-time stop epoch - but it still went out as a plain RPC instead of
+    // failing closed and making the user retry.
+    expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
   } finally {
     keepAlive = false;
     hold?.release();
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
-  fireEvent.click(composerSteerButton());
-  await flushPendingTurnsProjectionForTests();
-  expect(textarea()?.textContent).toBe("");
   await act(async () => delivered);
+  // Releasing the stalled read after the fallback send must not send again.
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
 

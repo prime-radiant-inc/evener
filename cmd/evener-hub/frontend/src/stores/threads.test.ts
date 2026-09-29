@@ -50,7 +50,7 @@ import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -5184,6 +5184,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       // region through the persisted submitted draft is owned.
       const record = await act(async () => {
         const submitted = await threadsStore.getState().setHumanNote("ref_a", "B");
+        if (!submitted) throw new Error("expected a durable note record");
         await firstRequest;
         await waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
         return submitted;
@@ -5253,6 +5254,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       throw new RequestTimeoutError("lost note response");
     });
     const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
+    if (!record) throw new Error("expected a durable note record");
     syncHumanNote("ref_a", "A");
     // The mounted draft consumer implies a session pane in production; hold
     // the ref so the acknowledgment's eviction sweep keeps the record.
@@ -5302,6 +5304,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     const raw = " \tline one\nline two\u00a0e\u0301🙂  ";
     const record = await threadsStore.getState().setHumanNote("ref_a", raw);
+    if (!record) throw new Error("expected a durable note record");
     const first = await reached;
     const independent = new MutationOutboxIndexedDB();
     expect((await independent.getOutbox(record.clientMutationId))?.payload).toEqual(first);
@@ -12487,14 +12490,18 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
   // RoboRev PR #1873 Low, the fresh review: the click-time capture was
   // awaited OUTSIDE the try whose catch disarms the ref when the durable
-  // enqueue fails, so a capture that rejects - a stalled read's
-  // MutationStorageTimeoutError, a VersionError from a versionchange, a
-  // retired connection - aborted the submission AND left the ref armed in
-  // dispatchableMutationRefs with no durable row behind it. A later
-  // discovery pass that names the ref then ran its dispatch work anyway,
-  // for a ref with nothing of its own to dispatch. The failed capture must
-  // be treated exactly like the failed enqueue it precedes: disarmed on the
-  // way out.
+  // enqueue fails, so a capture that rejects - a VersionError from a
+  // versionchange, a retired connection - aborted the submission AND left the
+  // ref armed in dispatchableMutationRefs with no durable row behind it. A
+  // later discovery pass that names the ref then ran its dispatch work anyway,
+  // for a ref with nothing of its own to dispatch. The failed capture must be
+  // treated exactly like the failed enqueue it precedes: disarmed on the way
+  // out.
+  //
+  // A capture that instead fails with MutationStorageTimeoutError - storage
+  // not answering - no longer aborts: it takes the direct-dispatch fallback
+  // (pinned by "a send whose storage never answers still reaches the daemon").
+  // This test keeps the abort-and-disarm contract for every OTHER rejection.
   test("a rejecting stop-epoch capture aborts the submission without leaving the ref's dispatch bookkeeping armed", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -12512,14 +12519,14 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       await storage.cancelUnattempted("ref_a");
       expect((await storage.getOutbox(seeded.clientMutationId))?.state).toBe("canceled");
 
-      // The capture fails the way a stalled or retired connection does.
+      // The capture fails the way a versionchange or a retired connection does.
       storage.readStopEpoch = async () => {
-        throw new MutationStorageTimeoutError();
+        throw new Error("Mutation outbox upgrade is blocked");
       };
 
       // The submission aborts and leaves nothing durable behind.
-      await expect(threadsStore.getState().queue("ref_a", "past a stalled capture")).rejects.toThrow(
-        MutationStorageTimeoutError,
+      await expect(threadsStore.getState().queue("ref_a", "past a failed capture")).rejects.toThrow(
+        "Mutation outbox upgrade is blocked",
       );
       expect((await storage.listOutbox("ref_a")).filter((record) => record.state === "submitting")).toEqual([]);
 
@@ -12548,6 +12555,127 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The durable outbox exists so a send survives a reload, but it must not
+  // become a hard dependency: when storage never answers, the send goes out as
+  // a plain RPC (like setModel/rename/compact) with no durable row, instead of
+  // failing closed after the 10s watchdog and dispatching nothing. This is the
+  // adapter's open never answering - the wedged shape PR #2983 stopped
+  // aborting upgrades for.
+  test("a send whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on working storage first: the mutation runtime is created and its
+    // connection opened here, so it is the SEND that meets the wedge below
+    // rather than the hydration's own reconciliation reads.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Retire the connection, then make the factory's next open never answer:
+    // storage is wedged for every call the send makes.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "sent while storage is wedged");
+      // The click-time capture's open never answers; the watchdog is the only
+      // thing that ends it, and the send must survive it.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the wedged send never reached the daemon").toBeDefined();
+      const sentParams = sent?.params as { clientMutationId?: string; input?: unknown } | undefined;
+      expect(sentParams?.clientMutationId).toBeTruthy();
+      expect(sentParams?.input).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // No durable row was written for it: the durable store holds nothing.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // §4's stop barrier is the click's OWN storage observation. When the durable
+  // write times out, the enqueue retries it - but the retry must reuse the
+  // capture taken at the click, never re-read the epoch, or a Stop landing
+  // between attempts would become the retry's baseline and be silently lost.
+  test("a durable write that times out is retried once and the retry never re-reads the click-time capture", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+    let captureReads = 0;
+    storage.readStopEpoch = async (targetRef: string) => {
+      captureReads += 1;
+      return realReadStopEpoch(targetRef);
+    };
+    let writeAttempts = 0;
+    storage.enqueueIntent = async () => {
+      writeAttempts += 1;
+      throw new MutationStorageTimeoutError();
+    };
+
+    await threadsStore.getState().send("ref_a", "retried then fallen back");
+
+    // Two total attempts - the original and one retry - then the fallback.
+    expect(writeAttempts).toBe(2);
+    // The click-time capture was read exactly once across the ladder.
+    expect(captureReads).toBe(1);
+    // The write never committed, so the send went out as a plain RPC.
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+  });
+
+  // The fallback must not change the healthy path: a send with working storage
+  // is committed durably and dispatched by the outbox, so the id on the wire is
+  // the committed row's own id - not a fresh one minted by a direct dispatch.
+  test("storage healthy: a send takes the durable path and is dispatched by the outbox, not directly", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const committedIds: string[] = [];
+    const unsubscribe = subscribeMutationPersistence((refs, commit) => {
+      if (refs.includes("ref_a") && commit) committedIds.push(commit.record.clientMutationId);
+    });
+    try {
+      await threadsStore.getState().send("ref_a", "durable send");
+      await flushUntilArrived("the durable send to dispatch", () =>
+        fake.calls.some((call) => call.method === "turn/start"),
+      );
+    } finally {
+      unsubscribe();
+    }
+
+    const sent = fake.calls.find((call) => call.method === "turn/start");
+    const sentParams = sent?.params as { clientMutationId?: string } | undefined;
+    expect(committedIds).toContain(sentParams?.clientMutationId);
   });
 
   // RoboRev PR #1873 medium, the fresh review's Retry-path gap: the stop-epoch
