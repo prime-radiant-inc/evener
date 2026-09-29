@@ -44,7 +44,9 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 		live,
 	};
 	let options: NativeStackNavigationOptions = {};
+	const focus = { focused: true };
 	const navigation = {
+		isFocused: () => focus.focused,
 		goBack: vi.fn(),
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => {
 			options = { ...options, ...next };
@@ -70,7 +72,18 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 		await act(async () => header("headerRight").props.onPress());
 		await settle();
 	};
-	return { tree, navigation, hosts, field, type, header, save, options: () => options, dispose: () => hosts.dispose() };
+	return {
+		tree,
+		navigation,
+		focus,
+		hosts,
+		field,
+		type,
+		header,
+		save,
+		options: () => options,
+		dispose: () => hosts.dispose(),
+	};
 }
 
 const attic = hostRow("attic", {
@@ -217,5 +230,23 @@ it("goes back once when the host is removed elsewhere while its edit saves", asy
 	const page = await mount(fleet, "attic");
 	await page.save();
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	page.dispose();
+});
+
+it("leaves the stack alone when a save lands after the page was swiped away", async () => {
+	const fleet = scriptedFleet([attic]);
+	const answer = fleet.client.request;
+	let release = () => {};
+	fleet.client.request = (async (method: string, params: unknown) => {
+		if (method === "evener/host/update") await new Promise<void>((resolve) => (release = resolve));
+		return answer(method as never, params as never);
+	}) as never;
+	const page = await mount(fleet, "attic");
+	await act(async () => page.header("headerRight").props.onPress());
+	// The back gesture took the page off screen while the hub held the edit.
+	page.focus.focused = false;
+	await act(async () => release());
+	await settle();
+	expect(page.navigation.goBack).not.toHaveBeenCalled();
 	page.dispose();
 });

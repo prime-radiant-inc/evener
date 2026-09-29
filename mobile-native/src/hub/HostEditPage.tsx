@@ -78,9 +78,11 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 			setError(null);
 			try {
 				await hosts.update(name, entryFrom(fields));
-				// A host gone from the re-read is useLeavesWithHost's to leave with;
-				// going back here too would pop the page beneath.
-				if (hosts.getSnapshot().rows?.some((candidate) => candidate.name === name)) navigation.goBack();
+				// A host gone from the re-read is useLeavesWithHost's to leave with,
+				// and a page already swiped away has left: going back here too
+				// would pop the page beneath.
+				const listed = hosts.getSnapshot().rows?.some((candidate) => candidate.name === name);
+				if (listed && navigation.isFocused()) navigation.goBack();
 			} catch (refusal) {
 				const field = hostFieldError(refusal);
 				setError({

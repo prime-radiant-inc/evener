@@ -249,6 +249,24 @@ describe("editing and removing a host (spec 12)", () => {
 		await expect(edit).rejects.toThrow("missing ssh destination");
 	});
 
+	it("drops a removed host from its rows even when the read after it fails", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client, ids());
+		const read = hosts.read();
+		h.take("evener/host/list").resolve({ hosts: [row("attic"), row("studio")] });
+		await read;
+		const removal = hosts.remove("attic");
+		await settle();
+		h.take("evener/host/remove").resolve({
+			outcome: "committed",
+			host: { name: "attic", generation: 1, incarnationId: "incarnation-1" },
+		});
+		await settle();
+		h.take("evener/host/list").reject(new Error("connection lost"));
+		await removal;
+		expect(hosts.getSnapshot().rows?.map((candidate) => candidate.name)).toEqual(["studio"]);
+	});
+
 	it("removes the host it holds, then reads the hub's hosts again", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client, ids());

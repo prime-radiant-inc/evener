@@ -159,6 +159,9 @@ export class HostsController {
 	/** Removes a host (evener/host/remove), then re-reads the rows. */
 	async remove(name: string): Promise<void> {
 		await this.mutations.remove(name);
+		// The hub has forgotten it: the rows drop it now, so its page leaves
+		// even when the read after this fails.
+		this.publish({ rows: this.state.rows?.filter((row) => row.name !== name) ?? null });
 		await this.read();
 	}
 
