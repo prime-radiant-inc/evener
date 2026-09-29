@@ -1447,6 +1447,17 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toEqual([]);
 });
 
+// The composer rises and falls with the keyboard frame by frame, and follows
+// the finger while a drag lowers it (spec 8.5): the keyboard controller's
+// avoiding view, which React Native's own doesn't do.
+it("moves the Session with the keyboard through the keyboard controller", async () => {
+	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
+	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
+	expect(avoiding).toHaveLength(1);
+	expect(avoiding[0]?.props).toMatchObject({ behavior: "padding", keyboardVerticalOffset: 64 });
+	expect(tree.root.findAll((node) => String(node.type) === "KeyboardAvoidingView")).toEqual([]);
+});
+
 // A short transcript rests just above the composer (spec 8.5), not at the top
 // with the page's empty middle between it and the bar.
 it("rests a short transcript's end just above the composer", async () => {

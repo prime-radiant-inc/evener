@@ -57,15 +57,22 @@ vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
 }));
 
-it("roots the whole app in a full-screen GestureHandlerRootView", () => {
+// The keyboard controller reports the keyboard's frames to the screens
+// that move with it (the Session's composer), so it wraps the whole app.
+it("roots the whole app in a full-screen GestureHandlerRootView, under the keyboard controller", () => {
 	const root = render(<App />).toJSON();
 	expect(root).toMatchObject({
 		type: "GestureHandlerRootView",
 		props: { style: { flex: 1 } },
 		children: [
 			{
-				type: "View",
-				children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+				type: "KeyboardProvider",
+				children: [
+					{
+						type: "View",
+						children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+					},
+				],
 			},
 		],
 	});
