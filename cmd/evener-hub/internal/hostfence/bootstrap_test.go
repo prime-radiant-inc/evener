@@ -1220,3 +1220,47 @@ func TestDeliveryCommandUsesAnExclusiveTempFile(t *testing.T) {
 		t.Fatalf("delivery command = %q, want the write addressed at mktemp's returned path", command)
 	}
 }
+
+// convergingOnClaimStore answers the entry read with the plain fenced record and
+// the post-claim re-read with a converged one: the owner finalized while
+// recovery waited for its claim.
+type convergingOnClaimStore struct {
+	*scriptedStore
+	reads int
+}
+
+func (s *convergingOnClaimStore) Provisioning(host string) (Provisioning, error) {
+	s.reads++
+	if s.reads >= 2 {
+		return Provisioning{
+			AttemptFenced: true, AttemptEpoch: s.record.AttemptEpoch,
+			HelperInstalled: true, HelperVersion: HelperVersion,
+		}, nil
+	}
+	return s.scriptedStore.Provisioning(host)
+}
+
+// TestBootstrapRecoveryReplaysWhenTheOwnerFinalizedDuringTheClaim pins the
+// pre-probe window: recovery must not probe a record the owner converged while
+// recovery waited for its claim — it replays as provisioned, never an orphan or
+// absent posture for an attempt that already succeeded.
+func TestBootstrapRecoveryReplaysWhenTheOwnerFinalizedDuringTheClaim(t *testing.T) {
+	base := &scriptedStore{record: Provisioning{
+		AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}, AttemptToken: "tok-owner",
+	}}
+	store := &convergingOnClaimStore{scriptedStore: base}
+	probe := &scriptedProbe{live: true} // a live process would otherwise refuse as an orphan
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store,
+		Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
+	})
+	if err != nil {
+		t.Fatalf("recovery = %v", err)
+	}
+	if outcome.Kind != BootstrapProvisioned {
+		t.Fatalf("outcome = %v, want BootstrapProvisioned (the owner finalized during the claim)", outcome.Kind)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("recovery probed %d times against a converged record, want 0", probe.calls)
+	}
+}

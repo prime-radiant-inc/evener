@@ -506,6 +506,13 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 //     token on the verified-gone path (so a paused owner's own pre-delivery
 //     revalidation refuses), and releases on every path.
 //
+// Two convergence windows are closed explicitly: the record is re-read
+// immediately after the claim is won (the owner may have finalized while
+// recovery waited), and the invalidation step returns the record as it stands
+// (the owner may have finalized during the probe). Either way a converged record
+// replays as provisioned — recovery never probes or reports an orphan/absent
+// posture for an attempt that already succeeded.
+//
 // The probe names the fence's own attempt epoch, not the request's, so a restart
 // cannot make it miss the crashed attempt's process. A live process refuses with
 // AttemptOrphanError; an unverifiable one refuses as absent (the class §8:162
@@ -561,6 +568,21 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the host's claim-plus-quiesce primitive returned no held claim, so recovery cannot exclude an active attempt")
 	}
+	// The record read before the claim may be stale: the original attempt could
+	// have finalized while this recovery waited for the claim. Re-read under the
+	// held claim and replay as provisioned when it converged — never probe or
+	// report an orphan/absent posture for an attempt that already succeeded.
+	fresh, err := req.Store.Provisioning(req.Host)
+	if err != nil {
+		return BootstrapOutcome{}, err
+	}
+	if fresh.Provisioned() {
+		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: fresh}, nil
+	}
+	if !fresh.AttemptEpoch.IsZero() {
+		attempt = fresh.AttemptEpoch
+	}
+	token := fresh.AttemptToken
 	if req.Probe == nil {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the crashed bootstrap attempt's process cannot be verified: the host carries no read-only attempt probe; repair the host through the one-time migration path")
@@ -585,7 +607,7 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 	// own pre-delivery revalidation and refuses; the record it returns is the
 	// record as it stands, so a concurrent finalize replays as provisioned here
 	// rather than being reported as a stale fenced posture.
-	retired, err := req.Store.InvalidateAttemptFence(req.Host, attempt, record.AttemptToken)
+	retired, err := req.Store.InvalidateAttemptFence(req.Host, attempt, token)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
