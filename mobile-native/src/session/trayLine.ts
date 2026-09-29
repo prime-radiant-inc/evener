@@ -111,7 +111,10 @@ function currentStep(session: TraySource): Step | null {
 function stepFor(item: ItemModel): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
-		return { text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…", waitsOnSubagents: false };
+		return {
+			text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…",
+			waitsOnSubagents: false,
+		};
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;

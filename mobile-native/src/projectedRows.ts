@@ -1075,7 +1075,6 @@ export function projectConversation(
 
 // --- failure rows ----------------------------------------------------------------
 
-
 function failureItem(
 	error: NonNullable<Turn["error"]>,
 	turnID: string,
