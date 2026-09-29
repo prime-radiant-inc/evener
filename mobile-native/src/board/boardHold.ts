@@ -65,6 +65,30 @@ export function heldRef(action: HeldAction): string | null {
 	return action.ref;
 }
 
+const PROJECT_VERBS: Record<ProjectMenuAction, string> = {
+	pin: "Pin to top",
+	unpin: "Unpin",
+	archive: "Archive",
+	unarchive: "Unarchive",
+};
+
+/** A held action's name, as its row and menu say it: "Archive waits for
+ * the connection", "Cancel Archive". */
+export function heldVerb(action: HeldAction): string {
+	if (action.kind === "archive") return action.archived ? "Archive" : "Unarchive";
+	if (action.kind === "pin") return "Pin";
+	if (action.kind === "rename") return "Rename";
+	if (action.kind === "project") return PROJECT_VERBS[action.action];
+	return action.kind === "stop" ? "Stop" : "Shut down";
+}
+
+/** A row's second line while something waits for it: the latest held
+ * action (spec 14), or null when nothing does. */
+export function waitingLine(records: readonly HeldRecord[], ref: string): string | null {
+	const latest = heldFor(records, ref).at(-1);
+	return latest ? `${heldVerb(latest.action)} waits for the connection` : null;
+}
+
 /** What waits for one session, in the order held. */
 export function heldFor(records: readonly HeldRecord[], ref: string): HeldRecord[] {
 	return records.filter((record) => heldRef(record.action) === ref);

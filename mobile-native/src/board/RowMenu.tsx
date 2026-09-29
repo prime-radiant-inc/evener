@@ -39,6 +39,10 @@ export interface RowMenuHost {
 	actions(item: ClassifiedRow, archived: boolean): RowAction[];
 	hostLabel(hostId: string): string;
 	act(item: ClassifiedRow, action: RowAction): void;
+	/** What waits for the connection on this row, to cancel (phase 6 ruling
+	 * 18): each held action's id and its "Cancel …" label. */
+	held(item: ClassifiedRow): { id: string; label: string }[];
+	cancel(id: string): void;
 	openSession(item: ClassifiedRow): void;
 	/** The menu went away, however it closed. */
 	closed(): void;
@@ -153,6 +157,27 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 							style={{ fontSize: 17 * scale, color: action === "shutDown" ? palette.dangerInk : palette.inkHi }}
 						>
 							{ROW_ACTION_LABELS[action]}
+						</Text>
+					</Pressable>
+				))}
+				{host.held(item).map(({ id, label }) => (
+					<Pressable
+						key={id}
+						accessibilityRole="button"
+						accessibilityLabel={label}
+						onPress={() => leaveThen(() => host.cancel(id))}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							paddingHorizontal: 16,
+							flexDirection: "row",
+							alignItems: "center",
+							columnGap: 12,
+							backgroundColor: pressed ? palette.pressed : palette.canvas,
+						})}
+					>
+						<SymbolView name="xmark.circle" size={18 * scale} tintColor={palette.inkMid} />
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, color: palette.inkHi }}>
+							{label}
 						</Text>
 					</Pressable>
 				))}
