@@ -2602,8 +2602,10 @@ export function ConversationScreen({
 							// so Next never sits on the last line and nothing coming or
 							// going there moves the list.
 							contentContainerStyle={{
-								// A short transcript rests just above the composer (spec 8.5).
-								flexGrow: 1,
+								// A short transcript rests just above the composer (spec 8.5):
+								// it fills the viewport above the bar's inset, so at rest it is
+								// at its end with nothing under the bar.
+								minHeight: Math.max(0, readerViewportHeight.current - (listUnderBar.contentInset?.bottom ?? 0)),
 								justifyContent: "flex-end",
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,

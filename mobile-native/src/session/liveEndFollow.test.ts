@@ -30,6 +30,7 @@ describe("atEnd", () => {
 
 	it("is true when everything fits in the viewport", () => {
 		expect(atEnd(scrolled(0, 300, 600))).toBe(true);
+		expect(atEnd({ ...scrolled(0, 600 - 180, 600), contentInset: { bottom: 180 } })).toBe(true);
 	});
 });
 
