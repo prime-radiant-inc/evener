@@ -17,7 +17,7 @@
       "type": "steering",
       "id": "item_steering_1",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_2\"\u003e{\"kind\":\"terminal_error\",\"message\":\"go test exited 1 three times\",\"metadata\":{\"outcome\":\"failed\",\"reason\":\"failed\",\"error\":\"go test exited 1 three times\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:06:00Z\"}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_2\"\u003e{\"kind\":\"terminal_error\",\"message\":\"go test exited 1 three times\",\"metadata\":{\"outcome\":\"failed\",\"reason\":\"run_error\",\"error\":\"go test exited 1 three times\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:06:00Z\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },
