@@ -128,8 +128,13 @@ export interface ActivityDetail {
 	// A task_list step's task list as the call returned it (the item's raw
 	// state), read once here like summary. Absent for every other tool, and
 	// for a call from a daemon that didn't return one.
-	tasks?: readonly TaskRow[];
+	tasks?: readonly DetailTask[];
 }
+
+// A task as a step's detail carries it: only what the checklist draws. The
+// rest of a task (its prompt, notes and times) would ride every retained
+// task_list row, past the bound on what a row may cost.
+export type DetailTask = Pick<TaskRow, "id" | "status" | "description">;
 
 export interface ActivityMember {
 	id: string;
@@ -568,7 +573,10 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 /** A tool or reasoning item's expandable detail, read once from the item. */
 export function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
-	const tasks = it.toolName === "task_list" ? parseTaskListData(it.raw) : null;
+	const tasks =
+		it.toolName === "task_list"
+			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
+			: undefined;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,

@@ -55,6 +55,12 @@ const toolWireFixturePath = "testdata/toolwire/calls.json"
 // toolWireCwd is the fixed path the temp workspace is recorded as.
 const toolWireCwd = "/home/jesse/git/evener"
 
+// toolWireEarlierSession is the earlier session in the project's state bucket.
+const toolWireEarlierSession = "02wMz5Txv5aIxgf9yVdd0N"
+
+// toolWireCurrentSession is the id the recording session is recorded as.
+const toolWireCurrentSession = "02wMz5TxvEMoJEDTDGOTil"
+
 type toolWireCall struct {
 	id   string
 	tool string
@@ -97,12 +103,24 @@ func toolWireWorkspace(t *testing.T) (string, *Session) {
 	}
 	writeSkillMD(t, dir, "systematic-debugging",
 		"---\nname: systematic-debugging\ndescription: Find the root cause first\n---\n# Systematic debugging\n\nFind the root cause first.\n")
+	// The project's state bucket holds one earlier session, which the
+	// transcript tools read and search.
+	stateDir := newBucket(t)
+	writeFindSession(t, stateDir, findMetaSpec{
+		id:         toolWireEarlierSession,
+		name:       "Settle race in the tree",
+		model:      "gpt-5.2",
+		workingDir: toolWireCwd,
+		turnCount:  1,
+		updated:    wireFixtureStart.Add(-24 * time.Hour),
+	}, "The settle race comes from the drain running after settle reads the tree.")
 	// A short command timeout, so a long command's foreground wait ends inside
 	// the test (call_shell_timeout); every other command finishes well within it.
 	s := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth:        1,
 		DefaultCommandTimeoutMS: 2000,
 		AgentsDocPath:           filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		StateDir:                stateDir,
 	}))
 	skillDir := filepath.Join(dir, "skills", "systematic-debugging")
 	s.skills.Entries["systematic-debugging"] = skill.Descriptor{
@@ -156,6 +174,23 @@ var (
 	toolWireJobID       = regexp.MustCompile(`job_[A-Za-z0-9_]+`)
 	toolWireWaitElapsed = regexp.MustCompile(`the foreground wait ended after [\d.]+s`)
 )
+
+// The recording session lists itself among the project's sessions, with a
+// random id, an update time of now, and a project named for its temp
+// workspace.
+var toolWireCurrentRow = regexp.MustCompile(`updated \d{4}-\d{2}-\d{2} \d{2}:\d{2} · project \S+ · current`)
+
+// withFixedCurrentSession records a session listing with the recording
+// session's row fixed: its id toolWireCurrentSession, updated at the
+// fixture's start, in the project evener.
+func withFixedCurrentSession(id string) func(tool.ExecResult) tool.ExecResult {
+	return func(res tool.ExecResult) tool.ExecResult {
+		res.Output = strings.ReplaceAll(res.Output, id, toolWireCurrentSession)
+		res.Output = toolWireCurrentRow.ReplaceAllString(res.Output,
+			"updated "+wireFixtureStart.UTC().Format("2006-01-02 15:04")+" · project evener · current")
+		return res
+	}
+}
 
 // A task's created, updated and completed stamps are the store's clock.
 var toolWireTimestamp = regexp.MustCompile(`"\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})"`)
@@ -271,6 +306,27 @@ func TestToolCallWireFixtures(t *testing.T) {
 			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
 			args:      map[string]any{"command": "printf 'started\\n'; sleep 10"},
 			normalize: withFixedJob,
+		},
+		{
+			id: "call_read_transcript", tool: "read_transcript",
+			note: "An earlier session's transcript read as markdown (the default): its JSON envelope.",
+			args: map[string]any{"transcript_ref": "local:" + toolWireEarlierSession},
+		},
+		{
+			id: "call_read_transcript_outline", tool: "read_transcript",
+			note: "The same transcript read as an outline, whose envelope is flat.",
+			args: map[string]any{"transcript_ref": "local:" + toolWireEarlierSession, "format": "outline"},
+		},
+		{
+			id: "call_find_sessions", tool: "find_session_transcripts",
+			note: "A search of the project's sessions for a phrase the earlier one said.",
+			args: map[string]any{"query": "settle race"},
+		},
+		{
+			id: "call_find_sessions_catalog", tool: "find_session_transcripts",
+			note:      "The project's recent sessions, with no query: the earlier session and the recording one (its id, update time and project fixed).",
+			args:      map[string]any{},
+			normalize: withFixedCurrentSession(s.ID()),
 		},
 		{
 			id: "call_task_list_add", tool: "task_list",

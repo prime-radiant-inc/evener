@@ -24,7 +24,7 @@
 // "Switched to", and an `already_disposed` dispose never claims a
 // dirty-discard, because nothing was torn down to discard.
 
-import { clip, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
+import { findSessionsSummary, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -117,49 +117,6 @@ registerToolRenderer({
   // and complete in the meantime.
   body: HeadClippedOutputBody,
 });
-
-// find_session_transcripts is read-only, so its row carries far less risk —
-// but a bare tool name told a reader nothing about what was searched for
-// either. Its Exec returns human-formatted TEXT (not JSON), ending in either
-// "N match (scope: …)" or "No matching sessions (scope: …)", which is where
-// the count comes from.
-//
-// `children_of` leads when both are present, matching the tool's own
-// precedence: asking for one session's children is a different question from
-// a text search, and the parent ref is the more specific answer.
-const MATCH_COUNT = /(\d+)\s+match/;
-const NO_MATCHES = /No matching sessions/;
-
-function findSessionsCount(output: string | undefined): number | undefined {
-  if (output === undefined || output === "") return undefined;
-  if (NO_MATCHES.test(output)) return 0;
-  const found = output.match(MATCH_COUNT);
-  return found?.[1] === undefined ? undefined : Number(found[1]);
-}
-
-function findSessionsSummary(item: { argumentsJSON?: string; output?: string }): string {
-  const args = parseArgs(item.argumentsJSON);
-  const childrenOf = str(args, "children_of");
-  const query = str(args, "query");
-
-  let lead: string;
-  let noun: string;
-  if (childrenOf !== undefined && childrenOf !== "") {
-    lead = `Searched sessions spawned by ${childrenOf}`;
-    noun = "matches";
-  } else if (query !== undefined && query !== "") {
-    lead = `Searched sessions for "${clip(query, 60)}"`;
-    noun = "matches";
-  } else {
-    // No query and no parent: the tool's plain catalog listing, which reports
-    // sessions rather than matches — there was nothing to match against.
-    lead = "Listed recent sessions";
-    noun = "sessions";
-  }
-
-  const count = findSessionsCount(item.output);
-  return count === undefined ? lead : `${lead} · ${count} ${noun}`;
-}
 
 // The row's body composes the request arguments above the head-clipped
 // output (matching defaultToolBody's own arrangement in toolRenderers.ts) so

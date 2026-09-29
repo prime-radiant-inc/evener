@@ -36,6 +36,10 @@ export interface MutationOutboxIndexedDBOptions {
   onWriteStalled?: (waiting: boolean) => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
+  // Diagnostic sink for the outbox database's open/watchdog/upgrade/retire
+  // failure paths. Purely observational: a throwing reporter cannot change the
+  // storage outcome. Defaults to one console.warn line with a stable prefix.
+  onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
@@ -71,6 +75,44 @@ export class MutationStorageTimeoutError extends Error {
     this.name = "MutationStorageTimeoutError";
   }
 }
+
+// The four failure-prone paths on the outbox database. These are the open
+// failures that can precede the wedged Chromium connection coordinator
+// (crbug 40278488), where open() fires neither success, error, nor blocked, so
+// a later recurrence is only visible through what was recorded on the way in.
+// Observation only: nothing here changes the storage outcome.
+export type MutationOutboxOpenDiagnosticPath =
+  | "open-timeout"
+  | "open-blocked"
+  | "upgrade-abandoned"
+  | "versionchange-retire";
+
+export interface MutationOutboxOpenDiagnostic {
+  // The database the path ran against, and its schema version fence.
+  database: string;
+  version: number;
+  path: MutationOutboxOpenDiagnosticPath;
+  // True when an open's schema-upgrade (versionchange) transaction was live at
+  // the moment the record was made: always true for an upgradeneeded handler,
+  // true for a timeout that lands while the upgrade is still open, false once
+  // the upgrade has committed or for the blocked and retire paths.
+  versionchangeTransaction: boolean;
+}
+
+// The default sink: one console line with a stable prefix, greppable from a
+// device log. It is the only place that knows about the console, so tests
+// inject their own reporter and assert on records, not console text.
+export function warnOpenDiagnostic(diagnostic: MutationOutboxOpenDiagnostic): void {
+  console.warn("evener mutation outbox:", diagnostic);
+}
+
+// A real run - the dev server or a built bundle - gets the console line; the
+// unit-test process does not, because tests install their own reporter and the
+// shared console guard treats any unspied output as a failure. This is the same
+// test-aware branch AppShell and ConnectionBanner already use, and it changes
+// no storage behavior.
+export const DEFAULT_OPEN_DIAGNOSTIC: (diagnostic: MutationOutboxOpenDiagnostic) => void =
+  import.meta.env.MODE === "test" ? () => {} : warnOpenDiagnostic;
 
 interface TargetSequence {
   targetRef: string;
@@ -128,6 +170,7 @@ export class MutationOutboxIndexedDB {
   readonly #now: () => number;
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
+  readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
   #databasePromise: Promise<IDBDatabase> | undefined;
@@ -143,6 +186,7 @@ export class MutationOutboxIndexedDB {
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
+    this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
   }
 
   close(): void {
@@ -741,6 +785,7 @@ export class MutationOutboxIndexedDB {
       const timer = setTimeout(() => {
         // The watchdog fired: fail this one attempt with the actionable error.
         // A later call attempts the open again.
+        this.#reportOpenDiagnostic("open-timeout", Boolean(request.transaction));
         fail(new MutationStorageTimeoutError());
       }, STORAGE_WAIT_MS);
       request.addEventListener(
@@ -756,6 +801,14 @@ export class MutationOutboxIndexedDB {
           // installs its connection, never whether the upgrade commits; a
           // later call clears the abandoned promise and opens afresh, which is
           // what makes recovery after a stalled upgrade possible.
+          //
+          // An upgrade arriving for an abandoned or superseded attempt is
+          // exactly the path whose abort used to wedge the coordinator, so it
+          // is recorded (the upgrade still commits) even though nothing else
+          // here reacts to it.
+          if (abandoned || this.#databasePromise !== opening) {
+            this.#reportOpenDiagnostic("upgrade-abandoned", Boolean(request.transaction));
+          }
           const database = request.result;
           if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
             const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
@@ -786,7 +839,13 @@ export class MutationOutboxIndexedDB {
             return;
           }
           this.#database = database;
-          database.addEventListener("versionchange", () => this.#retire(database));
+          database.addEventListener("versionchange", () => {
+            // Another connection is taking the database to a new version, so
+            // this one must close. No versionchange transaction is in progress
+            // on it; the upgrade belongs to the other connection's request.
+            this.#reportOpenDiagnostic("versionchange-retire", false);
+            this.#retire(database);
+          });
           database.addEventListener("close", () => this.#retire(database));
           resolve(database);
         },
@@ -795,9 +854,14 @@ export class MutationOutboxIndexedDB {
       request.addEventListener("error", () => fail(request.error ?? new Error("Unable to open mutation outbox")), {
         once: true,
       });
-      request.addEventListener("blocked", () => fail(new Error("Mutation outbox upgrade is blocked")), {
-        once: true,
-      });
+      request.addEventListener(
+        "blocked",
+        () => {
+          this.#reportOpenDiagnostic("open-blocked", Boolean(request.transaction));
+          fail(new Error("Mutation outbox upgrade is blocked"));
+        },
+        { once: true },
+      );
     });
     this.#databasePromise = opening;
     try {
@@ -813,6 +877,21 @@ export class MutationOutboxIndexedDB {
     if (this.#database !== database) return;
     this.#database = undefined;
     this.#databasePromise = undefined;
+  }
+
+  // Record one open failure path. The try/catch is the whole contract: a
+  // throwing reporter cannot change the durable open or upgrade outcome.
+  #reportOpenDiagnostic(path: MutationOutboxOpenDiagnosticPath, versionchangeTransaction: boolean): void {
+    try {
+      this.#onOpenDiagnostic({
+        database: this.#databaseName,
+        version: DATABASE_VERSION,
+        path,
+        versionchangeTransaction,
+      });
+    } catch {
+      // A diagnostic sink cannot change the storage outcome.
+    }
   }
 
   async #read<T>(stores: string | string[], body: (transaction: IDBTransaction) => Promise<T>): Promise<T> {

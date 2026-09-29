@@ -10,7 +10,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group } from "../sheet/Grouped";
+import { Group, GroupFooter } from "../sheet/Grouped";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -469,10 +469,13 @@ it.each([
 ])("leads with the levels and says %s beneath them (audit M12)", (_name, over, line) => {
 	const hubs = { revision: 4, config: PRESET };
 	const { tree } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, confirmed: hubs, ...over }));
-	const text = renderedText(tree);
-	// The levels' own group, then the line about the choice made in it.
-	expect(text.indexOf("Custom")).toBeGreaterThan(-1);
-	expect(text.indexOf("Custom")).toBeLessThan(text.indexOf(line));
+	// In the page's own order: the levels' group, then the line about the
+	// choice made in it.
+	const nodes = tree.root.findAll(() => true);
+	const levels = nodes.findIndex((node) => node.type === Group && node.findAllByProps({ label: "Custom" }).length > 0);
+	const said = nodes.findIndex((node) => node.type === GroupFooter && node.props.children === line);
+	expect(levels).toBeGreaterThan(-1);
+	expect(said).toBeGreaterThan(levels);
 });
 
 it("lets the page's title name the setting, with no group label repeating it", () => {
