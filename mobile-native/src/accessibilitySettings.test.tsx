@@ -8,11 +8,12 @@ const accessibility = vi.hoisted(() => ({
 	event: null as string | null,
 	removed: 0,
 	read: null as Promise<boolean> | null,
+	transparencyRead: null as Promise<boolean> | null,
 }));
 vi.mock("react-native", () => ({
 	AccessibilityInfo: {
 		isReduceMotionEnabled: () => accessibility.read ?? Promise.resolve(true),
-		isReduceTransparencyEnabled: () => Promise.resolve(true),
+		isReduceTransparencyEnabled: () => accessibility.transparencyRead ?? Promise.resolve(true),
 		addEventListener: (event: string, listener: (value: boolean) => void) => {
 			accessibility.listener = listener;
 			accessibility.event = event;
@@ -59,4 +60,32 @@ it("reads Reduce Transparency at mount and follows it when it changes", async ()
 	act(() => accessibility.listener?.(false));
 	expect(hook.result.current).toBe(false);
 	hook.unmount();
+});
+
+it("says Reduce Transparency is unknown until its read answers, so glass waits for it", async () => {
+	let answer!: (value: boolean) => void;
+	accessibility.transparencyRead = new Promise((resolve) => {
+		answer = resolve;
+	});
+	try {
+		const hook = renderHook(() => useReduceTransparency());
+		expect(hook.result.current).toBeNull();
+		await act(async () => answer(false));
+		expect(hook.result.current).toBe(false);
+		hook.unmount();
+	} finally {
+		accessibility.transparencyRead = null;
+	}
+});
+
+it("stays unknown when the read fails, and says nothing of the failure", async () => {
+	accessibility.transparencyRead = Promise.reject(new Error("no accessibility manager"));
+	try {
+		const hook = renderHook(() => useReduceTransparency());
+		await act(async () => {});
+		expect(hook.result.current).toBeNull();
+		hook.unmount();
+	} finally {
+		accessibility.transparencyRead = null;
+	}
 });

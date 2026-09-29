@@ -43,7 +43,21 @@ import { shrinkingScroller } from "./session/dockCard";
 export const systemGlass = (() => {
 	const listeners = new Set<(value: boolean) => void>();
 	let reduceTransparency = false;
+	let pendingAnswer: (() => void) | null = null;
 	return {
+		/** The next Reduce Transparency read waits until answerRead(). */
+		readPending: false,
+		/** Answers a read readPending held, with the current setting. */
+		answerRead() {
+			pendingAnswer?.();
+			pendingAnswer = null;
+		},
+		read(): Promise<boolean> {
+			if (!this.readPending) return Promise.resolve(reduceTransparency);
+			return new Promise((resolve) => {
+				pendingAnswer = () => resolve(reduceTransparency);
+			});
+		},
 		/** "throws" stands for a binary without the native module, where
 		 * reading it throws. */
 		available: false as boolean | "throws",
@@ -60,6 +74,8 @@ export const systemGlass = (() => {
 		},
 		reset() {
 			this.available = false;
+			this.readPending = false;
+			pendingAnswer = null;
 			reduceTransparency = false;
 			listeners.clear();
 		},
@@ -229,7 +245,7 @@ export function nativeModuleMock() {
 			// Reduce Motion stays off and never changes here: a suite that
 			// needs it mocks AccessibilityInfo itself.
 			isReduceMotionEnabled: () => Promise.resolve(false),
-			isReduceTransparencyEnabled: () => Promise.resolve(systemGlass.reduceTransparency),
+			isReduceTransparencyEnabled: () => systemGlass.read(),
 			addEventListener: (event: string, listener: (value: boolean) => void) =>
 				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
 		},

@@ -46,7 +46,9 @@ export function BarFrame({
 	const { bottom } = useSafeAreaInsets();
 	const keyboardShown = useKeyboardShown();
 	const reduceTransparency = useReduceTransparency();
-	const glass = systemGlassAvailable() && !reduceTransparency;
+	// Glass waits for Reduce Transparency to be known to be off, so a reader
+	// with it on never sees a flash of glass.
+	const glass = systemGlassAvailable() && reduceTransparency === false;
 	// The screen's layout goes first, so it can't undo what the frame owns:
 	// the home indicator's room, the hairline and the fill.
 	const frame: StyleProp<ViewStyle> = [
@@ -55,13 +57,13 @@ export function BarFrame({
 			paddingBottom: keyboardShown ? 0 : bottom,
 			borderTopWidth: 0.5,
 			borderColor: palette.edge,
-			...(glass ? {} : { backgroundColor: palette.page }),
+			backgroundColor: glass ? "transparent" : palette.page,
 		},
 	];
 	return glass ? (
 		// The glass follows the window's appearance, which the app's own light or
 		// dark choice sets (Appearance.setColorScheme), as its colors do.
-		<GlassView testID={testID} glassEffectStyle="regular" style={frame} onLayout={onLayout}>
+		<GlassView testID={testID} glassEffectStyle="regular" colorScheme="auto" style={frame} onLayout={onLayout}>
 			{children}
 		</GlassView>
 	) : (

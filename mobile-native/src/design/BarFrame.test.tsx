@@ -98,9 +98,9 @@ describe("BarFrame", () => {
 		// "auto" follows the window's appearance, which the app's own light or
 		// dark choice sets (Appearance.setColorScheme).
 		expect(bar.props.glassEffectStyle).toBe("regular");
-		expect(bar.props.colorScheme ?? "auto").toBe("auto");
+		expect(bar.props.colorScheme).toBe("auto");
 		// The glass is the fill; the hairline and the home indicator's room stay.
-		expect(style(bar).backgroundColor).toBeUndefined();
+		expect(style(bar).backgroundColor).toBe("transparent");
 		expect(style(bar)).toMatchObject({ borderTopWidth: 0.5, paddingBottom: inset() });
 	});
 
@@ -142,5 +142,27 @@ describe("BarFrame", () => {
 		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
 		await act(async () => {});
 		expect(String(host(tree).type)).toBe("View");
+	});
+
+	it("stays opaque until Reduce Transparency is known to be off", async () => {
+		systemGlass.available = true;
+		systemGlass.readPending = true;
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("View");
+		await act(async () => systemGlass.answerRead());
+		expect(String(host(tree).type)).toBe("GlassView");
+	});
+
+	it("keeps the glass whatever fill a screen's style asks for", async () => {
+		systemGlass.available = true;
+		const tree = render(
+			<BarFrame testID="bar" style={{ backgroundColor: "red" }}>
+				{null}
+			</BarFrame>,
+		);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("GlassView");
+		expect(style(host(tree)).backgroundColor).toBe("transparent");
 	});
 });
