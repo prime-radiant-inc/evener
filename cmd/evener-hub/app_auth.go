@@ -1106,6 +1106,8 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 		UserCode:        dc.UserCode,
 		VerificationURL: dc.VerificationURL,
 		IntervalSeconds: int(dc.Interval / time.Second),
+		// The flow was just recorded, so its whole TTL remains.
+		ExpiresInSeconds: int(hubAuthFlowTTL / time.Second),
 	}, nil
 }
 

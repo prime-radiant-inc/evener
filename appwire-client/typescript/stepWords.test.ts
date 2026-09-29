@@ -49,6 +49,12 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   // The web read job_stop's whole footer ("· shell job_fixture_1 · cancelled ·
   // cancelled_by_request · stopped_by_parent"); the line now says the status.
   call_job_stop: "Stopped job_fixture_1 · cancelled",
+  // The web's job_watch descriptor's lines.
+  call_watch_timer: "Remind me in 5m · Check the deploy finished.",
+  call_watch_repeat: "Reminds every 10m · Look over the open PRs.",
+  call_watch_list: "Listed watches (2 active)",
+  call_watch_inspect: "Inspected watch_fixture_1 · watching",
+  call_watch_clear: "Cleared watch_fixture_1",
   call_web_fetch: "Fetched https://example.com/release-notes · 48213 bytes",
   call_web_search: 'Searched the web for "go race detector settle drain" · 2 results',
   call_use_skill: "Activated skill: systematic-debugging",
@@ -97,6 +103,13 @@ test.each<[ToolWireCall, StepWords]>([
   ["call_job_status", { verb: "Checked", target: "job_fixture_1", detail: "running" }],
   ["call_job_list", { verb: "Listed jobs" }],
   ["call_job_stop", { verb: "Stopped", target: "job_fixture_1", detail: "cancelled" }],
+  // A timer's note is what it found to say; a watch's id is what the step
+  // acted on.
+  ["call_watch_timer", { verb: "Remind me in 5m", detail: "Check the deploy finished." }],
+  ["call_watch_repeat", { verb: "Reminds every 10m", detail: "Look over the open PRs." }],
+  ["call_watch_list", { verb: "Listed watches", after: "(2 active)" }],
+  ["call_watch_inspect", { verb: "Inspected", target: "watch_fixture_1", detail: "watching" }],
+  ["call_watch_clear", { verb: "Cleared", target: "watch_fixture_1" }],
   // A line with nothing machine-shaped in it is its verb alone.
   ["call_task_list_add", { verb: "☐ Run the race detector again" }],
   ["call_task_list_view", { verb: "Checked the task list" }],

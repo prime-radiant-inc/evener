@@ -107,6 +107,19 @@ describe("a subagent's row (spec 8.2)", () => {
 		});
 	});
 
+	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
+	it("says a failed one's cause, else its reason code in words", () => {
+		const failed = (over: Partial<EvenerDelegateInfo>) =>
+			delegate({ status: "failed", outcome: "failed", terminal: true, runEndedAt: ago(60_000), ...over });
+		expect(
+			subagentLine(row({ state: "failed" }), [failed({ reason: "failed", error: "provider returned 500" })], NOW)
+				.activity,
+		).toBe("provider returned 500");
+		expect(subagentLine(row({ state: "failed" }), [failed({ reason: "runtime_lost" })], NOW).activity).toBe(
+			"runtime lost",
+		);
+	});
+
 	it("finds its subagent by the call that started it", () => {
 		const byCall = delegate({ originItemId: undefined, originToolCallId: "call-1" });
 		expect(subagentLine(row(), [byCall], NOW).ref).toBe("local:child-1");

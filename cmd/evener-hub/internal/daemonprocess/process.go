@@ -83,7 +83,11 @@ func judge(v identity, t Target) (Identity, error) {
 	if v.startedAt.After(t.StartedAt) {
 		return IdentityUnknown, errors.New("daemon process may have started after its rendezvous identity")
 	}
-	if len(v.argv) < 2 || v.argv[1] != "serve" {
+	// A retiring daemon mid-exit has released the memory its command line is
+	// read from; generation, owner and start still bind it, and its handle
+	// only waits (#3339). Any handle that may signal needs the command.
+	exitingRetiree := t.Retiring && v.exiting
+	if !exitingRetiree && (len(v.argv) < 2 || v.argv[1] != "serve") {
 		return IdentityUnknown, errors.New("daemon process is not a serve command")
 	}
 	if !v.ownsLog && !t.Retiring {
@@ -126,6 +130,10 @@ type identity struct {
 	startedAtLower time.Time
 	argv           []string
 	ownsLog        bool
+	// exiting: the process has begun exiting (Linux's PF_EXITING) but the OS
+	// does not yet report it gone. Its memory is released, so its command
+	// line reads empty, and its files are closing.
+	exiting bool
 }
 
 type processHandle interface {

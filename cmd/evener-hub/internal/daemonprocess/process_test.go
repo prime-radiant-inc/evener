@@ -316,3 +316,37 @@ func TestRetiringTargetConfirmsExitWithoutLogOwnership(t *testing.T) {
 		t.Fatalf("retiring daemon's exit not confirmed: %v", err)
 	}
 }
+
+// A retiring daemon that has begun exiting, before the OS reports it gone,
+// has already released its memory (its command line reads empty) and is
+// closing its files (#3339). Open still binds it by generation, owner and
+// start, marked exiting, and the handle waits for the exit it confirms.
+func TestRetiringTargetBindsAnExitingDaemon(t *testing.T) {
+	target := validTarget()
+	target.Retiring = true
+	k := &kernelProcess{facts: validIdentity()}
+	k.facts.argv = []string{""}
+	k.facts.exiting = true
+	p, err := testController(k).Open(target)
+	if err != nil {
+		t.Fatalf("Open refused a retiring daemon mid-exit: %v", err)
+	}
+	defer p.Close()
+	k.gone = true
+	if err := p.Wait(context.Background()); err != nil {
+		t.Fatalf("retiring daemon's exit not confirmed: %v", err)
+	}
+}
+
+// Only a retiring target waives the command line for an exiting process: a
+// handle that may signal still needs the command to bind the process.
+func TestNonRetiringTargetRefusesAnExitingProcessWithoutItsCommand(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	k.facts.argv = []string{""}
+	k.facts.exiting = true
+	p, err := testController(k).Open(validTarget())
+	if err == nil {
+		_ = p.Close()
+		t.Fatal("an exiting process with no command bound a signaling handle")
+	}
+}
