@@ -2154,8 +2154,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
-			reviewRef: "ref-chips",
-			reviewTitle: "Session",
+			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
 	});
@@ -2926,8 +2925,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race in tree settle",
+			sessionTitle: "Fix race in tree settle",
 		});
 	});
 
