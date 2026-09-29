@@ -65,7 +65,7 @@ func TestDelegateAttentionRestoreWarnsOncePerFailureEpisode(t *testing.T) {
 	}
 
 	var logLines []string
-	for _, line := range strings.Split(logged.String(), "\n") {
+	for line := range strings.SplitSeq(logged.String(), "\n") {
 		if strings.Contains(line, "restore delegate attention failed") {
 			logLines = append(logLines, line)
 		}
