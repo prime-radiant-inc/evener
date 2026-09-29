@@ -13,6 +13,7 @@ import type { Alert, Banner } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
 
 const COALESCED_LINE = "Tap to see them on the Board.";
+const STARTED_LINE = "Session started. Tap to open it.";
 
 /** What the banner's two lines say: the title, and the why line for one
  * session, the prototype's hint for several, or nothing for a notice or a
@@ -24,6 +25,7 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 	// joins held sessions only), never a notice or a finished result.
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
+	if (only.kind === "started") return { title: only.title, why: null, hint: STARTED_LINE };
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
 
@@ -59,7 +61,7 @@ function Mark({ banner }: { banner: Banner }) {
 		);
 	if (only.kind === "notice")
 		return <SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />;
-	return <StateMark state={only.kind} />;
+	return <StateMark state={only.kind === "started" ? "working" : only.kind} />;
 }
 
 export function AlertBanner({
@@ -77,7 +79,8 @@ export function AlertBanner({
 	const scale = useTextScale();
 	const { title, why, hint } = words(banner);
 	const label = bannerLabel(banner);
-	const finished = banner.alerts.every((alert: Alert) => alert.kind === "finished");
+	// News rather than a request: a finished result or a session you started.
+	const news = banner.alerts.every((alert: Alert) => alert.kind === "finished" || alert.kind === "started");
 
 	// The drop: this component mounts once per banner (the host keys it by
 	// id), so it drops in on mount and never again. Reduce Motion is read at
@@ -164,7 +167,7 @@ export function AlertBanner({
 						borderRadius: 18,
 						borderCurve: "continuous",
 						borderWidth: 1,
-						borderColor: finished ? palette.accentEdge : palette.attentionEdge,
+						borderColor: news ? palette.accentEdge : palette.attentionEdge,
 						backgroundColor: palette.surface,
 						// A floating element's shadow (spec 16.3), as the toast's.
 						shadowColor: "#000000",
