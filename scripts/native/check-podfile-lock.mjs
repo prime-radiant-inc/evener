@@ -62,7 +62,7 @@ const COMPANIONS = [
 	{
 		pod: "ExpoModulesWorkletsAdapter",
 		packageName: "expo-modules-core",
-		when: (config) => "react-native-worklets" in config.dependencies,
+		when: (config) => "react-native-worklets" in (config.dependencies ?? {}),
 	},
 ];
 
@@ -92,12 +92,16 @@ function options() {
 
 /** Runs one of Expo's autolinking commands the Podfile runs, as JSON. */
 function autolinking(...args) {
-	const out = execFileSync(
-		process.execPath,
-		["--no-warnings", "--eval", "require('expo/bin/autolinking')", "expo-modules-autolinking", ...args, "--json"],
-		{ cwd: nativeDir, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
-	);
-	return JSON.parse(out);
+	try {
+		const out = execFileSync(
+			process.execPath,
+			["--no-warnings", "--eval", "require('expo/bin/autolinking')", "expo-modules-autolinking", ...args, "--json"],
+			{ cwd: nativeDir, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
+		);
+		return JSON.parse(out);
+	} catch (error) {
+		fail(`expo-modules-autolinking ${args.join(" ")} failed: ${error.message}`);
+	}
 }
 
 /** A directory as the lock writes it: relative to ios/, POSIX, no trailing slash. */
@@ -118,7 +122,7 @@ function resolvedPods() {
 		}
 	}
 	const config = autolinking("react-native-config", "--platform", "ios");
-	for (const [name, dependency] of Object.entries(config.dependencies)) {
+	for (const [name, dependency] of Object.entries(config.dependencies ?? {})) {
 		const podspec = dependency.platforms?.ios?.podspecPath;
 		// A community module's pod is named for its podspec file, which is how
 		// CocoaPods finds it in the directory the Podfile points at.
@@ -133,7 +137,12 @@ function resolvedPods() {
 
 /** The lock's DEPENDENCIES that name a local path, as "Pod (dir)". */
 function lockedPods(lock) {
-	const text = readFileSync(lock, "utf8");
+	let text;
+	try {
+		text = readFileSync(lock, "utf8");
+	} catch (error) {
+		fail(`cannot read ${lock}: ${error.message}`);
+	}
 	const start = text.indexOf("\nDEPENDENCIES:\n");
 	const end = text.indexOf("\n\n", start + 1);
 	if (start < 0 || end < 0) fail(`${lock} has no DEPENDENCIES section; is it a Podfile.lock?`);

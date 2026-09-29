@@ -45,6 +45,20 @@ test("a lock missing a companion pod that shares its module's directory fails", 
 	assert.match(run.stderr, /missing: ExpoCameraBarcodeScanning \(\.\.\/node_modules\/expo-camera\/ios\)/);
 });
 
+test("a lock listing a pod nothing autolinks fails naming it as extra", () => {
+	const file = path.join(scratch, "with-extra.lock");
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - FakePod (from `../node_modules/react-native-fake`)\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 1);
+	assert.match(run.stderr, /extra: FakePod \(\.\.\/node_modules\/react-native-fake\)/);
+});
+
+test("a lock that does not exist exits 2 naming it", () => {
+	const run = check("--lock", path.join(scratch, "absent.lock"));
+	assert.equal(run.status, 2);
+	assert.match(run.stderr, /^check-podfile-lock: cannot read .*absent\.lock/);
+});
+
 test("--lock with no value exits 2", () => {
 	const run = check("--lock");
 	assert.equal(run.status, 2);
