@@ -99,7 +99,7 @@ describe("the hosts controller", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it("marks a host connecting until the hub answers, then re-reads", async () => {
+	it("marks a host connecting until the re-read after the hub's answer lands, so Connect never flashes back", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client);
 		const connecting = hosts.connect("paradise-park");
@@ -109,10 +109,19 @@ describe("the hosts controller", () => {
 		expect(attach.opts).toEqual({ timeoutMs: HOST_GATE_TIMEOUT_MS });
 		attach.resolve({ attached: true, host: "paradise-park" });
 		await settle();
-		expect(hosts.getSnapshot().connecting.size).toBe(0);
+		expect([...hosts.getSnapshot().connecting]).toEqual(["paradise-park"]);
 		h.take("evener/host/list").resolve({ hosts: [row("paradise-park", { attached: true })] });
 		await connecting;
+		expect(hosts.getSnapshot().connecting.size).toBe(0);
 		expect(hosts.getSnapshot().rows?.[0]?.attached).toBe(true);
+	});
+
+	it("asks the hub nothing once disposed", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client);
+		hosts.dispose();
+		await hosts.read();
+		expect(h.count("evener/host/list")).toBe(0);
 	});
 
 	it("keeps a refused Connect's message for that host until its next Connect", async () => {

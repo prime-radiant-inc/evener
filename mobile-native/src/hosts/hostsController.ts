@@ -81,6 +81,7 @@ export class HostsController {
 	/** One read. A read asked for while another is in flight runs once more
 	 * after it, so no answer is older than the request that asked for it. */
 	read(): Promise<void> {
+		if (this.disposed) return Promise.resolve();
 		if (this.inFlight) {
 			this.again = true;
 			return this.inFlight;
@@ -112,10 +113,11 @@ export class HostsController {
 			await this.client.request("evener/host/attach", { host: name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
 		} catch (error) {
 			this.publish({ connectErrors: new Map([...this.state.connectErrors, [name, friendlyErrorMessage(error)]]) });
-		} finally {
-			this.publish({ connecting: new Set([...this.state.connecting].filter((host) => host !== name)) });
 		}
+		// The host stays connecting until the rows say what the attach did;
+		// clearing it first would show Offline and Connect for a moment.
 		await this.read();
+		this.publish({ connecting: new Set([...this.state.connecting].filter((host) => host !== name)) });
 	}
 
 	dispose(): void {

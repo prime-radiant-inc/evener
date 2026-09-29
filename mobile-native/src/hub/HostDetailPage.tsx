@@ -8,14 +8,15 @@ import { useEffect, useRef } from "react";
 import { hostStatus, systemLabel, VERSION_DRIFT_FOOTER, versionDriftTag } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { SheetStatus } from "../sheet/SheetStatus";
+import { HostsNotListed } from "./HostsPage";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen } from "./useHostsOnScreen";
 
 export function HostDetailPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "HostDetail">) {
 	const { name } = route.params;
 	const { hubName, ready, hosts } = useHubSheet();
-	const { state, liveCount, hubVersion } = useHostsOnScreen();
+	const { state, loadError, liveCount, hubVersion } = useHostsOnScreen();
 	const row = state?.rows?.find((candidate) => candidate.name === name);
 	// A host removed elsewhere leaves the list: its page goes with it, once.
 	const left = useRef(false);
@@ -24,20 +25,14 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 		left.current = true;
 		navigation.goBack();
 	}, [state, row, navigation]);
-	if (!state || !row || !hosts) {
-		return (
-			<GroupedPage>
-				<SheetStatus />
-				<Connecting hubName={hubName} />
-			</GroupedPage>
-		);
-	}
+	if (!state || !row || !hosts) return <HostsNotListed hubName={hubName} error={loadError} />;
 	const connecting = state.connecting.has(name);
 	const status = hostStatus(row, connecting);
 	const drift = versionDriftTag(row, hubVersion);
 	const system = systemLabel(row);
 	const roots = row.roots ?? [];
-	const connectError = state.connectErrors.get(name);
+	// A refusal is moot once the hub has attached the host on its own.
+	const connectError = row.attached ? undefined : state.connectErrors.get(name);
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -49,7 +44,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				/>
 				<Row
 					label="Version"
-					value={<RowValue text={row.hubVersion} tag={drift ? { text: drift, tone: "gray" } : null} />}
+					value={<RowValue text={row.hubVersion ?? "Unknown"} tag={drift ? { text: drift, tone: "gray" } : null} />}
 					accessibilityLabel={["Version", row.hubVersion ?? "Unknown", drift].filter(Boolean).join(", ")}
 				/>
 				<Row label="System" value={system ?? "Unknown"} />

@@ -1,4 +1,4 @@
-import { createHubUpdateController } from "@evener/appwire-client";
+import { createHubUpdateController, WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -138,6 +138,16 @@ it("says where hosts come from, and never asks to reconnect", async () => {
 		"Hosts come from hub.toml or were added in the web app. Add hosts from the web app; they need an SSH address and a key.",
 	);
 	expect(renderedText(page.tree)).not.toMatch(/\bReconnect\b/);
+	page.dispose();
+});
+
+it("says why the hub's hosts didn't load when its first answer is a refusal", async () => {
+	const fleet = scriptedFleet([]);
+	fleet.client.request = (async () => {
+		throw new WireError("the hub is still starting", -32000);
+	}) as never;
+	const page = await mount(fleet);
+	expect(renderedText(page.tree)).toContain("Couldn't list this hub's hosts: the hub is still starting");
 	page.dispose();
 });
 

@@ -150,6 +150,26 @@ it("says why the hub refused to connect a host", async () => {
 	page.dispose();
 });
 
+it("drops a refused Connect's message once the hub attaches the host on its own", async () => {
+	const fleet = scriptedFleet([hostRow("attic", { attached: false })]);
+	fleet.attach.refuse = "host key mismatch";
+	const page = await mount(fleet, "attic");
+	await act(async () => page.button("Connect")?.props.onPress());
+	await settle();
+	fleet.hosts = [hostRow("attic")];
+	await act(async () => page.hosts.read());
+	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Connected");
+	expect(renderedText(page.tree)).not.toContain("host key mismatch");
+	page.dispose();
+});
+
+it("says a host's version is unknown when the hub doesn't know it", async () => {
+	const page = await mount(scriptedFleet([hostRow("attic", { os: "linux", arch: "x86_64" })]), "attic");
+	expect(page.labelled("Version")?.props.accessibilityLabel).toBe("Version, Unknown");
+	expect(renderedText(page.tree)).toContain("Unknown");
+	page.dispose();
+});
+
 it("holds Connect while the phone's connection is down", async () => {
 	const page = await mount(scriptedFleet([hostRow("attic", { attached: false })]), "attic", { ready: false });
 	expect(page.button("Connect")?.props.accessibilityState.disabled).toBe(true);

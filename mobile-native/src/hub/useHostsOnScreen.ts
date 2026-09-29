@@ -11,6 +11,8 @@ import { useHubSheet } from "./hubSheetContext";
 export interface HostsOnScreen {
 	/** Null until the hub has listed its hosts once. */
 	state: HostsState | null;
+	/** Why the hub hasn't listed its hosts yet, when it refused. */
+	loadError: string | null;
 	liveCount(host: string): number;
 	hubVersion: string | undefined;
 }
@@ -26,5 +28,10 @@ export function useHostsOnScreen(): HostsOnScreen {
 			return hosts?.start();
 		}, [hosts, live]),
 	);
-	return { state: state?.rows ? state : null, liveCount: (host) => counts.get(host) ?? 0, hubVersion };
+	return {
+		state: state?.rows ? state : null,
+		loadError: state?.rows ? null : (state?.error ?? null),
+		liveCount: (host) => counts.get(host) ?? 0,
+		hubVersion,
+	};
 }

@@ -2,7 +2,7 @@
 // named after the hub, then each host with its state in words, its system,
 // its live sessions, and its version with a gray tag when it differs from the
 // hub's. The page reads the hub's hosts every 2 seconds while it is on screen,
-// and keeps its last rows through a failed read or a dropped connection.
+// keeps its last rows through a failed read, and reads afresh on a new connection.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect } from "react";
 import { useConnectionStatusText } from "../board/connectionStatus";
@@ -18,7 +18,7 @@ const LOCAL_HOST = "local";
 export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "Hosts">) {
 	const { hubId, hubName, ready } = useHubSheet();
 	const connectionLine = useConnectionStatusText();
-	const { state, liveCount, hubVersion } = useHostsOnScreen();
+	const { state, loadError, liveCount, hubVersion } = useHostsOnScreen();
 	// A notice's Details opens the host it named, once (ruling 25).
 	const focus = route.params.focus;
 	useEffect(() => {
@@ -26,14 +26,7 @@ export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoute
 		navigation.navigate("HostDetail", { hubId, name: focus });
 		navigation.setParams({ focus: undefined });
 	}, [focus, hubId, navigation]);
-	if (!state?.rows) {
-		return (
-			<GroupedPage>
-				<SheetStatus />
-				<Connecting hubName={hubName} />
-			</GroupedPage>
-		);
-	}
+	if (!state?.rows) return <HostsNotListed hubName={hubName} error={loadError} />;
 	const ownLine = ready
 		? `Connected · ${liveSessionsText(liveCount(LOCAL_HOST), false)}`
 		: (connectionLine ?? "Connecting…");
@@ -66,6 +59,18 @@ export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoute
 				Hosts come from hub.toml or were added in the web app. Add hosts from the web app; they need an SSH address and
 				a key.
 			</GroupFooter>
+		</GroupedPage>
+	);
+}
+
+/** Before the hub's first list of hosts: connecting, and why a refused read
+ * failed. The page keeps asking every poll. */
+export function HostsNotListed({ hubName, error }: { hubName: string; error: string | null }) {
+	return (
+		<GroupedPage>
+			<SheetStatus />
+			<Connecting hubName={hubName} />
+			{error ? <GroupFooter tone="danger">{`Couldn't list this hub's hosts: ${error}`}</GroupFooter> : null}
 		</GroupedPage>
 	);
 }
