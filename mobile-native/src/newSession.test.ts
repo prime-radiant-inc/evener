@@ -478,7 +478,7 @@ it("uses the shared picker pipeline without attaching late results to an abandon
 	await choosing;
 	expect(store.getState().images).toEqual([]);
 	await selection.choose();
-	expect(document.imagePreviews()).toEqual([{ marker: 2, name: "photo.jpg", mediaType: "image/png", data: "AQID" }]);
+	expect(document.imagePreviews()).toEqual([{ marker: 2, name: "photo.jpg", mediaType: "image/jpeg", data: "AQID" }]);
 	expect(store.getState().prompt).toBe("[image 2]");
 	document.removeImage("photo");
 	expect(document.imagePreviews()).toEqual([]);

@@ -37,6 +37,21 @@ const photo = {
 	size: 10,
 };
 
+it("takes a photo bigger than the limit on disk when the phone's encoding of it fits", async () => {
+	// A camera photo is often over 8 MB as picked; the phone scales it down.
+	const source = { ...photo, size: MAX_ATTACHMENT_BYTES * 3 };
+	const { document, selection } = setup(
+		async () => [source],
+		async () => "AQID",
+	);
+
+	await selection.choose();
+
+	expect(selection.getSnapshot().error).toBeNull();
+	expect(document.getSnapshot().record.images).toHaveLength(1);
+	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
+});
+
 it("rejects an encoded PNG over the server byte limit without persisting it", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const valid = { ...source, name: "valid.png" };

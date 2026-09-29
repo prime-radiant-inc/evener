@@ -21,6 +21,8 @@ export interface ImagePicker {
 	/** One photo from the camera; rejects with CameraAccessDenied when the
 	 * person has turned camera access off. */
 	capture(): Promise<PickedImage[]>;
+	/** The image as base64 ENCODED_IMAGE_TYPE, scaled to fit the attachment
+	 * limit where it can be (imageFit.ts). */
 	encode(image: PickedImage): Promise<string>;
 	id(): string;
 }
@@ -33,7 +35,10 @@ export class CameraAccessDenied extends Error {
 	}
 }
 
-function base64ByteLength(data: string): number {
+/** What ImagePicker.encode returns: JPEG, scaled to fit (imageFit.ts). */
+export const ENCODED_IMAGE_TYPE = "image/jpeg";
+
+export function base64ByteLength(data: string): number {
 	const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
 	return (data.length * 3) / 4 - padding;
 }
@@ -95,10 +100,12 @@ export class ImageSelection {
 			let reserved = current.images?.length ?? 0;
 			const pending: PendingImage[] = [];
 			for (const image of picked) {
+				// The picked file's own size isn't the limit: the phone scales the
+				// photo down (imageFit.ts), and its encoding is checked below.
 				const reason =
 					!Number.isFinite(image.size) || image.size < 0
 						? `${image.name} (could not read file size)`
-						: rejectionReason(image, reserved);
+						: rejectionReason({ ...image, size: 0 }, reserved);
 				if (reason) {
 					errors.push(reason);
 					continue;
@@ -121,7 +128,7 @@ export class ImageSelection {
 					if (!this.snapshot.pending.some((item) => item.id === image.id)) continue;
 					const reason = rejectionReason(
 						{
-							type: "image/png",
+							type: ENCODED_IMAGE_TYPE,
 							size: base64ByteLength(data),
 							name: image.name,
 						},
@@ -132,7 +139,7 @@ export class ImageSelection {
 						this.document.addImage({
 							id: image.id,
 							marker: image.marker,
-							mediaType: "image/png",
+							mediaType: ENCODED_IMAGE_TYPE,
 							name: image.name,
 							data,
 						});
