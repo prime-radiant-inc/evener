@@ -95,6 +95,8 @@ export interface RowProps {
 	sub?: string;
 	/** The second line is a path or an id: Menlo. */
 	machineSub?: boolean;
+	/** "danger" for a second line that reports a problem ("1 need attention"). */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	/** The trailing value: text in ink-mid, or a node such as a tag. */
 	value?: ReactNode;
@@ -116,6 +118,7 @@ export function Row({
 	machineLabel = false,
 	sub,
 	machineSub = false,
+	subTone = "normal",
 	icon,
 	value,
 	chevron = false,
@@ -153,7 +156,11 @@ export function Row({
 					<Text
 						allowFontScaling={allowFontScaling}
 						style={[
-							{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale },
+							{
+								color: subTone === "danger" ? palette.dangerInk : palette.inkLow,
+								fontSize: 13 * scale,
+								lineHeight: 18 * scale,
+							},
 							machineSub ? { fontFamily: fonts.mono } : null,
 						]}
 					>
