@@ -20,6 +20,7 @@ import {
 	type TaskRow,
 	toolFamily,
 	webFetchResult,
+	worktreeMessage,
 } from "@evener/appwire-client";
 import type { ActivityDetail } from "../projectedRows";
 import type { RunStep } from "../timeline";
@@ -88,8 +89,8 @@ function shellNotes(run: ShellOutput): Evidence[] {
 
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
-// checklist, an MCP or other tool's JSON pretty-printed; anything else as the
-// tool printed it.
+// checklist, what a worktree operation says it did, an MCP or other tool's
+// JSON pretty-printed; anything else as the tool printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -125,6 +126,9 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			});
 			return [{ kind: "tasks", tasks }];
 		}
+		case "worktree":
+			// What the operation says it did, not the JSON around it.
+			return rawOutput(worktreeMessage(text) ?? text);
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;

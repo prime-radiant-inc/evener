@@ -124,6 +124,30 @@ describe("each tool's evidence, as the tools print it", () => {
 		}
 	});
 
+	it("shows what a worktree operation says it did, not its JSON", () => {
+		expect(real("call_worktree_create")).toEqual([
+			{
+				kind: "output",
+				text: 'Created and entered worktree "settle-fix" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix, base 5e5f1c3a9b7d). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.',
+				lines: 1,
+			},
+		]);
+		// The registry's repetition nudge follows this exit's JSON.
+		expect(real("call_worktree_exit_again")).toEqual([
+			{
+				kind: "output",
+				text: "Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.",
+				lines: 1,
+			},
+		]);
+	});
+
+	it("shows what a worktree operation printed when it isn't the tool's JSON", () => {
+		expect(stepEvidence({ label: "manage_worktree", detail: { output: "not json" } })).toEqual([
+			{ kind: "output", text: "not json", lines: 1 },
+		]);
+	});
+
 	it("shows a command's output without the shell tool's exit footer", () => {
 		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
 	});
