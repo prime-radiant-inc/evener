@@ -1,61 +1,167 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
-import { render } from "../renderNative.testkit";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { beforeEach, expect, it, vi } from "vitest";
+import type { HubProfile } from "../connection";
+import { render, renderedText } from "../renderNative.testkit";
 import { Row } from "../sheet/Grouped";
 import { HubsPage } from "./HubsPage";
 import type { HubRoutes } from "./hubSheetContext";
 
-// What useConnection answers with. vi.hoisted because vi.mock's factory is
-// hoisted above every module import and may not close over a module-level let.
 const connection = vi.hoisted(() => ({
-	current: {
-		profiles: [
-			{ id: "home", name: "magic-kingdom", origin: "http://100.113.28.18:9180" },
-			{ id: "work", name: "paradise-park", origin: "http://10.0.0.7:9180" },
-		],
-		activeProfile: { id: "home" },
-		selectHub: () => {},
-		state: "ready",
-		fatal: false,
-		downSince: null as number | null,
-		lastLiveAt: null as number | null,
-	},
+	profiles: [] as HubProfile[],
+	activeProfile: null as HubProfile | null,
+	selectHub: vi.fn(),
+	removeHub: vi.fn(),
+	updateHub: vi.fn(),
+	state: "ready",
+	fatal: false,
+	downSince: null as number | null,
+	lastLiveAt: null as number | null,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.current }));
-vi.mock("./hubSheetContext", () => ({ useHubSheet: () => ({ ready: connection.current.state === "ready" }) }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
+vi.mock("./hubSheetContext", () => ({ useHubSheet: () => ({ ready: connection.state === "ready" }) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-function subOf(tree: ReturnType<typeof render>, name: string): string | undefined {
-	return tree.root.findAll((node) => node.type === Row && node.props.label === name)[0]?.props.sub;
-}
+const MAGIC: HubProfile = { id: "hub-1", name: "magic-kingdom", origin: "https://magic-kingdom:9180" };
+const PARADISE: HubProfile = { id: "hub-2", name: "paradise-park", origin: "http://100.113.28.18:9180" };
+
+beforeEach(() => {
+	connection.profiles = [MAGIC, PARADISE];
+	connection.activeProfile = MAGIC;
+	connection.selectHub.mockReset();
+	connection.removeHub.mockReset();
+	connection.updateHub.mockReset();
+	connection.state = "ready";
+	connection.downSince = null;
+	connection.lastLiveAt = null;
+});
 
 function mount() {
-	const navigation = { navigate: vi.fn() };
-	return render(
+	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const route = { key: "Hubs", name: "Hubs", params: undefined } as const;
+	const tree = render(
 		<HubsPage
 			navigation={navigation as unknown as NativeStackScreenProps<HubRoutes, "Hubs">["navigation"]}
-			route={{ key: "Hubs", name: "Hubs", params: undefined } as NativeStackScreenProps<HubRoutes, "Hubs">["route"]}
+			route={route}
 		/>,
+	);
+	return { tree, navigation };
+}
+
+function hubRow(tree: ReactTestRenderer, name: string) {
+	return tree.root.find(
+		(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith(`${name},`),
 	);
 }
 
+function symbols(node: ReactTestInstance, name: string) {
+	return node.findAll((child) => String(child.type) === "SymbolView" && child.props.name === name);
+}
+
+function button(tree: ReactTestRenderer, label: string) {
+	return tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: label });
+}
+
+function press(tree: ReactTestRenderer, label: string) {
+	act(() => {
+		button(tree, label).props.onPress();
+	});
+}
+
+it("lists every saved hub with its address, and checks the selected one", () => {
+	const { tree } = mount();
+	const text = renderedText(tree);
+	expect(text).toContain("Hubs");
+	expect(text).toContain("magic-kingdom");
+	expect(text).toContain("https://magic-kingdom:9180");
+	expect(text).toContain("paradise-park");
+	expect(text).toContain("http://100.113.28.18:9180");
+	expect(symbols(tree.root, "checkmark")).toHaveLength(1);
+	expect(symbols(hubRow(tree, "magic-kingdom"), "checkmark")).toHaveLength(1);
+	expect(symbols(hubRow(tree, "paradise-park"), "checkmark")).toHaveLength(0);
+});
+
+it("shows each hub's address in Menlo", () => {
+	const { tree } = mount();
+	for (const line of ["https://magic-kingdom:9180 · Connected", "http://100.113.28.18:9180"]) {
+		const address = tree.root.find((node) => String(node.type) === "Text" && node.props.children === line);
+		expect(JSON.stringify(address.props.style)).toContain("Menlo");
+	}
+});
+
+it("selects another hub and leaves closing the sheet to the sheet", () => {
+	const { tree, navigation } = mount();
+	act(() => {
+		hubRow(tree, "paradise-park").props.onPress();
+	});
+	expect(connection.selectHub).toHaveBeenCalledWith("hub-2");
+	expect(navigation.navigate).not.toHaveBeenCalled();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+});
+
+it("offers nothing to press on the hub already selected, and tells VoiceOver it's the selected one", () => {
+	const { tree } = mount();
+	expect(hubRow(tree, "magic-kingdom").props.onPress).toBeUndefined();
+	expect(hubRow(tree, "magic-kingdom").props.accessibilityState).toMatchObject({ selected: true });
+	expect(hubRow(tree, "paradise-park").props.accessibilityState).toMatchObject({ selected: false });
+});
+
+it("opens a hub's details from its info button", () => {
+	const { tree, navigation } = mount();
+	const details = button(tree, "Details for paradise-park");
+	expect(details.props.style).toMatchObject({ width: 44, height: 44 });
+	expect(symbols(details, "info.circle")).toHaveLength(1);
+	press(tree, "Details for paradise-park");
+	expect(navigation.navigate).toHaveBeenCalledWith("HubDetails", { id: "hub-2" });
+	press(tree, "Details for magic-kingdom");
+	expect(navigation.navigate).toHaveBeenLastCalledWith("HubDetails", { id: "hub-1" });
+	expect(connection.selectHub).not.toHaveBeenCalled();
+});
+
+it("adds a hub by scanning, pasting or typing its address", () => {
+	const { tree, navigation } = mount();
+	expect(renderedText(tree)).toContain("Add a hub");
+	const ways: [string, string, string | undefined][] = [
+		["Scan pairing code", "scan", "qrcode.viewfinder"],
+		["Paste pairing link", "paste", "doc.on.clipboard"],
+		["Enter the address", "address", undefined],
+	];
+	for (const [label, how, icon] of ways) {
+		if (icon) expect(symbols(button(tree, label), icon)).toHaveLength(1);
+		press(tree, label);
+		expect(navigation.navigate).toHaveBeenLastCalledWith("AddHub", { how });
+	}
+});
+
+it("says where the pairing code lives, and never asks to reconnect", () => {
+	const { tree } = mount();
+	const text = renderedText(tree);
+	expect(text).toContain("In Evener on your computer, open Settings, then Mobile app, to show a pairing code.");
+	expect(text).not.toMatch(/\bReconnect\b/);
+});
+
+function subOf(tree: ReactTestRenderer, name: string): string | undefined {
+	return tree.root.findAll((node) => node.type === Row && node.props.label === name)[0]?.props.sub;
+}
+
 it("says the selected hub is connected beside its address, and gives the others their address alone", () => {
-	const tree = mount();
-	expect(subOf(tree, "magic-kingdom")).toBe("http://100.113.28.18:9180 · Connected");
-	expect(subOf(tree, "paradise-park")).toBe("http://10.0.0.7:9180");
+	const { tree } = mount();
+	expect(subOf(tree, "magic-kingdom")).toBe("https://magic-kingdom:9180 · Connected");
+	expect(subOf(tree, "paradise-park")).toBe("http://100.113.28.18:9180");
 });
 
 it("says the selected hub's connection state in the words the Hub's header uses", () => {
 	vi.useFakeTimers();
 	try {
 		const now = Date.now();
-		connection.current = { ...connection.current, state: "reconnecting", downSince: now - 5_000, lastLiveAt: now };
-		const tree = mount();
-		expect(subOf(tree, "magic-kingdom")).toBe("http://100.113.28.18:9180 · Reconnecting…");
+		connection.state = "reconnecting";
+		connection.downSince = now - 5_000;
+		connection.lastLiveAt = now;
+		const { tree } = mount();
+		expect(subOf(tree, "magic-kingdom")).toBe("https://magic-kingdom:9180 · Reconnecting…");
 		act(() => tree.unmount());
 	} finally {
 		vi.useRealTimers();
