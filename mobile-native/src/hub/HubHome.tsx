@@ -105,7 +105,12 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				<GroupFooter>{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
 			) : null}
 			{update.restartTimedOut ? (
-				<GroupFooter tone="danger">The hub restarted without the update. Check its logs.</GroupFooter>
+				<GroupFooter tone="danger">
+					{/* With no answer since the restart, the app can't say which version the hub runs. */}
+					{check
+						? "The hub restarted without the update. Check its logs."
+						: "Couldn't confirm the update. Check the hub's version."}
+				</GroupFooter>
 			) : null}
 			{updateProblem ? <GroupFooter tone="danger">{updateProblem}</GroupFooter> : null}
 		</GroupedPage>

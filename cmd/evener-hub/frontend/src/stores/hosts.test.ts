@@ -41,6 +41,80 @@ beforeEach(() => {
   hostsStore.getState().resetForTests();
 });
 
+describe("client replacement", () => {
+  test("a different client wired in after the store was cleared clears the published marker", async () => {
+    const a = connectFakeClient();
+    a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+    const revision = hostsStore.getState().revision;
+
+    // The store is cleared (a disconnect), then a DIFFERENT client is wired in.
+    // That is a replacement even though the two clients were never both present:
+    // the new hub's registry has published nothing.
+    connectionStore.setState({ client: null });
+    const b = new FakeClient("ready");
+    b.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    connectionStore.getState().connect(b);
+
+    expect(hostsStore.getState().publishedRevision).toBeNull();
+    expect(hostsStore.getState().load.phase).toBe("loading");
+    expect(hostsStore.getState().revision).toBeGreaterThan(revision);
+
+    // Its own registry answer is what republishes.
+    await hostsStore.getState().fetch();
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+  });
+
+  test("a reconnect of the same client does not clear the published marker", async () => {
+    const a = connectFakeClient();
+    a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+    const revision = hostsStore.getState().revision;
+
+    // Same client object, disconnected and wired back: not a replacement, so the
+    // rows it read still describe it and nothing is invalidated.
+    connectionStore.setState({ client: null });
+    connectionStore.getState().connect(a);
+
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+    expect(hostsStore.getState().revision).toBe(revision);
+  });
+
+  test("a replacement drops the old quiet-read slot without disturbing the new connection's reads", async () => {
+    const a = connectFakeClient();
+    let settleOld!: (value: HostListResponse) => void;
+    const oldRead = new Promise<HostListResponse>((resolve) => (settleOld = resolve));
+    a.on("evener/host/list", () => oldRead);
+    void hostsStore.getState().refresh();
+    await Promise.resolve();
+    expect(hostsStore.getState().reading).toBe(1);
+
+    // The replacement drops the old connection's quiet-read slot, so a refresh
+    // issues its OWN request on the new client rather than joining the old one.
+    const b = new FakeClient("ready");
+    let settleNew!: (value: HostListResponse) => void;
+    const newRead = new Promise<HostListResponse>((resolve) => (settleNew = resolve));
+    b.on("evener/host/list", () => newRead);
+    connectionStore.getState().connect(b);
+    const nextRefresh = hostsStore.getState().refresh();
+    await Promise.resolve();
+    expect(b.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
+    expect(hostsStore.getState().reading).toBe(2);
+
+    // The stale old read settles AFTER the new request started: it releases only
+    // its own slot, so the new connection's read still owns the gate.
+    settleOld({ hosts: [row("alpha")] });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(hostsStore.getState().reading).toBe(1);
+
+    settleNew({ hosts: [row("alpha")] });
+    await nextRefresh;
+    expect(hostsStore.getState().reading).toBe(0);
+    expect(hostsStore.getState().publishedRevision).not.toBeNull();
+  });
+});
+
 describe("refresh", () => {
   test("refresh without a connected client does not wedge the in-flight gate", async () => {
     // The quiet refresh swallows the no-client refusal (rows keep their last
