@@ -163,6 +163,19 @@ export interface RowProps {
 	accessibilityLabel?: string;
 }
 
+/** Between the label and a value that wrapped under it. */
+const WRAPPED_VALUE_GAP = 4;
+
+/** Whether a node draws anything: React renders nothing for null,
+ * undefined, booleans and the empty string. */
+function rendersSomething(node: ReactNode): boolean {
+	return node !== undefined && node !== null && typeof node !== "boolean" && node !== "";
+}
+
+/** A grouped row. The label and the value share one wrapping line, with the
+ * second line below it. The label is sized by its own text and grows into the
+ * free space, so a value that doesn't fit beside it moves under it: the
+ * label's words never break apart to make room ("paradise-/park"). */
 export function Row({
 	label,
 	machineLabel = false,
@@ -190,25 +203,23 @@ export function Row({
 			) : icon ? (
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
-			{/* The label and value share one wrapping line. The label is sized by
-			    its own text and grows into the free space, so a value that
-			    doesn't fit beside it moves under it: the label's words never
-			    break apart to make room ("paradise-/park"). */}
-			<View
-				testID="row-line"
-				style={{
-					flex: 1,
-					flexDirection: "row",
-					flexWrap: "wrap",
-					alignItems: "center",
-					columnGap: space.rowGap,
-					rowGap: 4,
-				}}
-			>
-				<View testID="row-label" style={{ flexGrow: 1, flexShrink: 1, gap: 2 }}>
+			<View style={{ flex: 1, gap: 2 }}>
+				<View
+					testID="row-line"
+					style={{
+						flexDirection: "row",
+						flexWrap: "wrap",
+						alignItems: "center",
+						columnGap: space.rowGap,
+						rowGap: WRAPPED_VALUE_GAP,
+					}}
+				>
 					<Text
+						testID="row-label"
 						allowFontScaling={allowFontScaling}
 						style={{
+							flexGrow: 1,
+							flexShrink: 1,
 							color: labelColor,
 							...scaledType(uiType.listRow, scale),
 							...(machineLabel ? { fontFamily: fonts.mono } : null),
@@ -216,26 +227,26 @@ export function Row({
 					>
 						{label}
 					</Text>
-					{sub ? (
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={[
-								{
-									color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
-									...scaledType(uiType.footnote, scale),
-								},
-								machineSub ? { fontFamily: fonts.mono } : null,
-							]}
-						>
-							{sub}
-						</Text>
+					{rendersSomething(value) ? (
+						<View testID="row-value" style={{ flexShrink: 1 }}>
+							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+						</View>
 					) : null}
 				</View>
-				{value === undefined || value === null ? null : (
-					<View testID="row-value" style={{ flexShrink: 1 }}>
-						{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
-					</View>
-				)}
+				{sub ? (
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={[
+							{
+								color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+								...scaledType(uiType.footnote, scale),
+							},
+							machineSub ? { fontFamily: fonts.mono } : null,
+						]}
+					>
+						{sub}
+					</Text>
+				) : null}
 			</View>
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
@@ -562,7 +573,7 @@ export function RowValue({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ flexShrink: 1, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+		<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
 			{text ? (
 				<Text
 					allowFontScaling={allowFontScaling}

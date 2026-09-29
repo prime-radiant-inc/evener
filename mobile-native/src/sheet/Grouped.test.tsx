@@ -280,11 +280,8 @@ describe("labels, footers and tags", () => {
 });
 
 describe("a row whose label and value can't share a line", () => {
-	// The test renderer has no layout engine, so these pin the flex rules that
-	// decide it on the device: the label and value sit in one wrapping line,
-	// the label sized by its own text and growing into the free space, so a
-	// value that doesn't fit beside it moves under it instead of squeezing the
-	// label's words apart ("paradise-/park").
+	// The test renderer has no layout engine, so these pin the flex rules
+	// Row's comment describes.
 	const hostRow = (
 		<Row
 			icon="server.rack"
@@ -312,6 +309,25 @@ describe("a row whose label and value can't share a line", () => {
 		expect(merged(tree.root.findByProps({ testID: "row-value" }).props.style).flexShrink).toBe(1);
 		const version = texts(tree).find((node) => node.props.children === "0.9.409");
 		expect(merged(version?.props.style).flexShrink).toBe(1);
+	});
+
+	it("keeps the second line out of the wrapping line, so a long one never pushes the value down", () => {
+		const tree = render(hostRow);
+		const line = tree.root.findByProps({ testID: "row-line" });
+		const lineText = line.findAll((node) => node.type === ("Text" as never)).map((node) => node.props.children);
+		expect(lineText).not.toContain("Connected · macOS · arm64 · 3 live");
+		expect(lineText).toContain("paradise-park");
+		expect(lineText).toContain("0.9.409");
+		expect(texts(tree).map((node) => node.props.children)).toContain("Connected · macOS · arm64 · 3 live");
+	});
+
+	it("shows a plain text or number value, and leaves no slot for one that renders nothing", () => {
+		expect(renderedText(render(<Row label="Hubs" value={1} />))).toContain("1");
+		expect(renderedText(render(<Row label="Display" value="System" />))).toContain("System");
+		for (const empty of [undefined, null, false, ""]) {
+			const tree = render(<Row label="In-app alerts" value={empty} />);
+			expect(tree.root.findAllByProps({ testID: "row-value" })).toHaveLength(0);
+		}
 	});
 
 	it("keeps the glyph and chevron outside the wrapping line", () => {
