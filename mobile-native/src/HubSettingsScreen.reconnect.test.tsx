@@ -16,6 +16,7 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
 import { HubSettingsScreen } from "./HubSettingsScreen";
 import {
 	dropped,
@@ -369,6 +370,15 @@ it("says it is connecting, with no wall and nothing to press, before the first l
 	const text = renderedText(tree);
 	expect(text).toContain("Connecting to Work hub…");
 	expect(text).not.toMatch(/\bReconnect\b|Connect to Work hub/);
+});
+
+it("says why when the hub's version doesn't match before anything loaded", async () => {
+	harness.connection = { ...connection(null, "closed"), client: null, fatal: true };
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(INCOMPATIBLE_VERSIONS);
+	expect(renderedText(tree)).not.toContain("Connecting to Work hub");
+	tree.unmount();
 });
 
 it("keeps the last hub information under the status line when the versions stop matching", async () => {
