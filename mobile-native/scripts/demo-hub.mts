@@ -37,7 +37,7 @@ import {
 	setHumanNote,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
-import { createDemoSetup } from "../src/dev/demoSetup.js";
+import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -322,6 +322,9 @@ export async function createDemoHub(
 						break;
 					case "ping":
 						result = {};
+						break;
+					case "evener/update/check":
+						result = demoUpdateCheck();
 						break;
 					case "evener/projects/recent":
 						result = { data: ["/demonstration"] };
