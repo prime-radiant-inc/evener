@@ -2,19 +2,21 @@
 # package-import-paths-check.sh fails if any file in the app trees names the
 # AppWire TypeScript package by path instead of by its package name.
 #
-# It is a line grep, not a parser. A quoted literal that follows a module-loading
-# keyword -- `from` (static import or re-export), a dynamic `import(` or
-# `require(`, a test's mocking call (`vi.mock(`/`vi.importActual(` and the rest
-# of the family the shared module-specifiers reader names), or a side-effect
-# `import "..."` -- and contains `appwire-client/typescript` (the package by
-# path) or `/protocol/` (the directory the package used to live behind) fails
-# the gate. The rewriter's TypeScript reader is precise about which quoted
-# strings are imports; this gate is deliberately broader, because the cost of
-# missing one is a path import that typechecks and that nothing else in the tree
-# notices. It cannot tell a live import from a commented-out one on the same
-# line, so a quoted path in a COMMENT -- a commented-out import, an example in a
-# doc comment -- is refused too. Ordinary string data -- a docs URL, a demo
-# path, a fixture label -- is not a module-loading line and passes. Spell the
+# It is a line grep, not a parser. A quoted literal that begins with a relative
+# path -- `./` or `../` -- and contains `appwire-client/typescript` (the package
+# by path) or `/protocol/` (the directory the package used to live behind) fails
+# the gate. The package is never a bare specifier -- it resolves by name through
+# tsconfig and Metro, not node_modules -- so every offending import is a
+# relative path, and that shape is what the gate keys on. Reading the literal
+# itself rather than the keyword before it also reaches a specifier wrapped onto
+# its own line inside a multiline `vi.mock(`/`require(` call, and every mocking
+# form, with no per-form list. Ordinary string data -- an absolute docs URL, a
+# fixture label, prose -- does not begin with `.` and passes. The rewriter's
+# TypeScript reader is precise about which quoted strings are imports; this gate
+# is deliberately broader, because the cost of missing one is a path import that
+# typechecks and that nothing else in the tree notices. It cannot tell a live
+# import from a commented-out one, so a quoted path in a COMMENT -- a
+# commented-out import, an example in a doc comment -- is refused too. Spell the
 # package name, or move the string out of the swept trees, or (for a config or a
 # test that legitimately names the path) add it to the exact-path exemptions
 # below.
@@ -74,13 +76,12 @@ exempt_configs=(
 seam='/protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
 
-# The module-loading constructs a specifier can follow, each ending just before
-# the opening quote. `from` covers static imports, re-exports, and a statement
-# wrapped so its specifier lands on a line with no `import` keyword on it; the
-# `.method(` half is the mocking family module-specifiers.mjs's MOCK_CALLS names
-# (vi.mock/doMock/unmock/importActual/importMock, and jest's). A quoted literal
-# with none of these ahead of it is string data, not an import.
-loader='((^|[^[:alnum:]_])(from[[:space:]]+|import[[:space:]]+|(require|import)[[:space:]]*\([[:space:]]*)|\.(mock|doMock|unmock|importActual|importMock)[[:space:]]*\([[:space:]]*)'
+# A quoted literal naming the package by path is a relative path: the package is
+# never a bare specifier, so every offending import begins with `./` or `../`.
+# Keying on the literal's own shape rather than the keyword that precedes it
+# reaches a specifier the formatter wrapped onto its own line, and needs no list
+# of the module-loading forms.
+relative='["'"'"'`]\.'
 
 status=0
 
@@ -115,7 +116,7 @@ for config in "${exempt_configs[@]}"; do
 	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
 	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
 done
-if found="$(grep "${sources[@]}" -rnE "${loader}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
+if found="$(grep "${sources[@]}" -rnE "${relative}[^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
 	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then

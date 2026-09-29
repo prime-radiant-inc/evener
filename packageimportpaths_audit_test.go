@@ -85,9 +85,9 @@ func TestPackageImportPathsCheckPassesACleanTree(t *testing.T) {
 }
 
 // Every path shape and quote style the gate has to catch, each in its own file
-// so one gate run over one tree checks the whole set. The gate is a substring
-// grep over quoted literals, so what varies is the path and the quote, not the
-// import syntax around it -- that is the whole point of dropping the parser.
+// so one gate run over one tree checks the whole set. The gate keys on the
+// quoted literal's own shape -- a relative path into the package -- not on the
+// import syntax around it, so what varies is the path and the quote.
 func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 	cases := []struct {
 		path    string
@@ -109,8 +109,11 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 		{"mobile-native/src/sideEffect.ts", "import \"../../appwire-client/typescript/errors\";\n", "by path"},
 		{"mobile-native/src/reExport.ts", "export { errorText } from \"../../appwire-client/typescript/errors\";\n", "by path"},
 		// A wrapped statement puts the specifier on a line with no `import`
-		// keyword on it, so the rule has to read the `from` too.
+		// keyword on it; the rule reads the literal, not the keyword.
 		{"mobile-native/src/multiline.ts", "import {\n\terrorText,\n} from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		// A wrapped mocking call puts the specifier on its own line inside the
+		// call's parentheses, where no keyword is on the specifier's line.
+		{"mobile-native/src/multilineMock.test.ts", "vi.mock(\n\t\"../../appwire-client/typescript/errors\",\n\t() => ({}),\n);\n", "by path"},
 	}
 	files := cleanPackageImportTree()
 	for _, c := range cases {
@@ -173,6 +176,7 @@ func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
 		"// a docs URL and a demo label: neither is an import specifier",
 		"export const demoDoc = \"/home/jesse/sites/docs/reference/appwire/protocol/v6/index.html\";",
 		"export const label = \"appwire-client/typescript state/navigation\";",
+		"export const hint = \"loaded from 'appwire-client/typescript/errors'\";",
 		"",
 	}, "\n")
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
