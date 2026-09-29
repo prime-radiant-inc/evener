@@ -25,6 +25,7 @@ import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets"
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
+import { useNearTopLoadOlder } from "../session/transcript/flow/useNearTopLoadOlder";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
@@ -79,9 +80,10 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
     };
   }, [ref]);
 
-  // Older-turn paging is automatic here too (LoadOlderRow's own sentinel), and
-  // reports a failed page inline with a Retry rather than as a toast - see
-  // Session.tsx's own comment on the same wiring.
+  // Older-turn paging is automatic here too, and reports a failed page inline
+  // with a Retry rather than as a toast - see Session.tsx's own comment on the
+  // same wiring. LoadOlderRow fills a page too short to scroll; the near-top
+  // hook below is this surface's own trigger for one that overflows.
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
@@ -103,6 +105,11 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
       listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
     }
   }, [turnCount]);
+
+  // The live pane gets the near-top rule from useTranscriptScroll; this pane
+  // mounts no scroll coordinator, so it registers the same rule (and the same
+  // distance from the top) through the shared hook.
+  useNearTopLoadOlder({ listRef, loadOlder: loadOlderReportingError, enabled: turnCount > 0 });
 
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);

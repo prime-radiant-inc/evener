@@ -17,7 +17,9 @@ class StubResizeObserver {
   observe(el: Element): void {
     this.observed.push(el);
   }
-  unobserve(): void {}
+  unobserve(el: Element): void {
+    this.observed = this.observed.filter((target) => target !== el);
+  }
   disconnect(): void {
     this.disconnected = true;
   }
@@ -51,6 +53,10 @@ function scrollPort(scrollHeight: number, clientHeight: number) {
   return { el, set };
 }
 
+// The row always has a port in production; these tests give one a scrollHeight
+// that overflows by default so the render-only cases below never auto-load.
+const OVERFLOWING = () => scrollPort(5000, 500);
+
 beforeEach(() => {
   StubResizeObserver.instances = [];
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
@@ -59,10 +65,11 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 test("watches the transcript's scroll port and its content, not a sentinel of its own", () => {
-  const port = scrollPort(5000, 500);
+  const port = OVERFLOWING();
   render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />);
 
   const observer = latestObserver();
@@ -74,8 +81,8 @@ test("loads older turns when the port is not full", () => {
   const onLoad = vi.fn();
   render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
 
-  latestObserver().resize();
-
+  // The mount check (a browser's ResizeObserver delivers this same one as its
+  // initial notification for the observed targets).
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
@@ -84,7 +91,7 @@ test("loads older turns when the port is not full", () => {
 // and loaded a page on every open, however far the reader was from the top of
 // history.
 test("does not load while the transcript already overflows its port", () => {
-  const port = scrollPort(5000, 500);
+  const port = OVERFLOWING();
   const onLoad = vi.fn();
   render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
 
@@ -98,7 +105,7 @@ test("does not load while the transcript already overflows its port", () => {
 // - there is no scroll event to drive the near-top trigger - so the re-check
 // is what keeps the older history reachable.
 test("re-checks on a later geometry change and loads once the port is no longer full", () => {
-  const port = scrollPort(5000, 500);
+  const port = OVERFLOWING();
   const onLoad = vi.fn();
   render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
 
@@ -111,31 +118,63 @@ test("re-checks on a later geometry change and loads once the port is no longer 
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
-test("with no scroll element accessor it observes nothing and never auto-loads", () => {
+test("a null scroll element never loads", () => {
   const onLoad = vi.fn();
-  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} />);
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => null} />);
 
-  expect(StubResizeObserver.instances).toHaveLength(0);
+  latestObserver().resize();
+
   expect(onLoad).not.toHaveBeenCalled();
 });
 
+// The list normally mounts in the same commit as this row; a give-up on the
+// first null read would silently disable paging for the pane's whole life.
+test("keeps looking across frames for a port that has not mounted yet", async () => {
+  vi.useFakeTimers();
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  let mounted = false;
+  render(
+    <LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => (mounted ? port.el : null)} />,
+  );
+  expect(latestObserver().observed).toEqual([]);
+  expect(onLoad).not.toHaveBeenCalled();
+
+  mounted = true;
+  await vi.advanceTimersByTimeAsync(100);
+
+  expect(latestObserver().observed).toEqual([port.el, port.el.firstElementChild]);
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
 test("there is no 'load more' button to press - paging is automatic", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
+  const port = OVERFLOWING();
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />);
   expect(screen.queryByRole("button")).toBeNull();
 });
 
 test("shows a quiet loading state while a page is in flight", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={true} error={null} />);
+  const port = OVERFLOWING();
+  render(<LoadOlderRow onLoad={() => {}} loading={true} error={null} scrollElement={() => port.el} />);
   expect(screen.getByTestId("load-older-row").textContent).toMatch(/loading older turns/i);
 });
 
 test("idle with more history to fetch, it shows no banner at all", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
+  const port = OVERFLOWING();
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />);
   expect(screen.queryByText(/older turns/i)).toBeNull();
 });
 
 test("a failed fetch surfaces inline, announced, with a Retry - never silently", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't load older turns: network error" />);
+  const port = OVERFLOWING();
+  render(
+    <LoadOlderRow
+      onLoad={() => {}}
+      loading={false}
+      error="Couldn't load older turns: network error"
+      scrollElement={() => port.el}
+    />,
+  );
   const alert = screen.getByRole("alert");
   expect(alert.textContent).toMatch(/couldn't load older turns/i);
   expect(alert.textContent).toMatch(/network error/i);
@@ -147,13 +186,22 @@ test("a failed fetch surfaces inline, announced, with a Retry - never silently",
 // failed page fetch from the failed session resume behind it. A label re-added
 // here would talk over that.
 test("the row shows the caller's own sentence verbatim, adding no label of its own", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't start this session: fork/exec evener" />);
+  const port = OVERFLOWING();
+  render(
+    <LoadOlderRow
+      onLoad={() => {}}
+      loading={false}
+      error="Couldn't start this session: fork/exec evener"
+      scrollElement={() => port.el}
+    />,
+  );
   expect(screen.getByRole("alert").textContent).toBe("Couldn't start this session: fork/exec evener");
 });
 
 test("Retry calls onLoad", () => {
+  const port = OVERFLOWING();
   const onLoad = vi.fn();
-  render(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" />);
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" scrollElement={() => port.el} />);
 
   fireEvent.click(screen.getByTestId("load-older-retry"));
 
@@ -165,16 +213,10 @@ test("Retry calls onLoad", () => {
 test("while an error is showing, the geometry check stops auto-loading", () => {
   const port = scrollPort(300, 500);
   const onLoad = vi.fn();
-  const { rerender } = render(
-    <LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />,
-  );
-  latestObserver().resize();
-  expect(onLoad).toHaveBeenCalledTimes(1);
-
-  rerender(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" scrollElement={() => port.el} />);
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error="network error" scrollElement={() => port.el} />);
   latestObserver().resize();
 
-  expect(onLoad).toHaveBeenCalledTimes(1); // still just the first, pre-failure call
+  expect(onLoad).not.toHaveBeenCalled();
 });
 
 test("clearing the error re-arms the automatic trigger", () => {
@@ -205,19 +247,16 @@ test("the observer is torn down on unmount", () => {
   expect(observer.disconnected).toBe(true);
 });
 
-test("renders (without observing) in an environment that has no ResizeObserver", () => {
+// jsdom's shape: no ResizeObserver, so the one geometry check is all there is.
+// This is what makes the pane suites page on their own.
+test("checks once and still renders in an environment that has no ResizeObserver", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
   vi.unstubAllGlobals();
   vi.stubGlobal("ResizeObserver", undefined);
 
-  expect(() =>
-    render(
-      <LoadOlderRow
-        onLoad={() => {}}
-        loading={false}
-        error={null}
-        scrollElement={() => document.createElement("div")}
-      />,
-    ),
-  ).not.toThrow();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
   expect(screen.getByTestId("load-older-row")).toBeTruthy();
+  expect(onLoad).toHaveBeenCalledTimes(1);
 });

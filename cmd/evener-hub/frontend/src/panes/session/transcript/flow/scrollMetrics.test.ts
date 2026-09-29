@@ -163,8 +163,11 @@ test("shouldAutoLoadOlder: true when the content exactly fills the port (still u
   expect(shouldAutoLoadOlder(el)).toBe(true);
 });
 
-test("shouldAutoLoadOlder: true with no element yet, matching the pre-guard behavior", () => {
-  expect(shouldAutoLoadOlder(null)).toBe(true);
+test("shouldAutoLoadOlder: false once the content exceeds the port by a single pixel", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 501 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
 });
 
 test("isEndBelowFold: false for content that does not scroll at all", () => {

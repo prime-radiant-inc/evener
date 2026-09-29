@@ -1,0 +1,45 @@
+// useNearTopLoadOlder: the near-top half of automatic paging, for a surface
+// that mounts no scroll coordinator of its own.
+//
+// The live session pane's useTranscriptScroll owns this rule inline, next to
+// the gesture, pill and re-anchor bookkeeping that share its one scroll
+// listener. The read-only transcript pane mounts none of that, so it registers
+// the same rule here rather than reading the port's geometry only: without it
+// an already-overflowing first page's older history is unreachable there,
+// because the geometry fill fires only while the port is UNDER-filled.
+//
+// The rule itself (isNearTop, with NEAR_TOP_THRESHOLD_PX) lives in
+// scrollMetrics, so both surfaces page at the same distance from the top.
+import { type RefObject, useEffect, useRef } from "react";
+import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { isNearTop } from "./scrollMetrics";
+
+export interface UseNearTopLoadOlderOptions {
+  listRef: RefObject<VirtualListHandle | null>;
+  loadOlder: () => void;
+  /**
+   * False until the transcript's list is mounted and has turns to page: the
+   * scroll element does not exist before then, and a listener attached to
+   * nothing would never re-arm.
+   */
+  enabled: boolean;
+}
+
+export function useNearTopLoadOlder({ listRef, loadOlder, enabled }: UseNearTopLoadOlderOptions): void {
+  // Latest-ref so the listener - attached once per mount - never calls a stale
+  // loadOlder. Its identity changes on every loadingOlder flip
+  // (useTranscript.ts), and a stale closure would read a stale guard.
+  const loadOlderRef = useRef(loadOlder);
+  loadOlderRef.current = loadOlder;
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const el = listRef.current?.getScrollElement();
+    if (!el) return undefined;
+    const onScroll = () => {
+      if (isNearTop(el.scrollTop)) loadOlderRef.current();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [enabled, listRef]);
+}
