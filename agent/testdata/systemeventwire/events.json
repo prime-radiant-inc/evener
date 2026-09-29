@@ -271,7 +271,7 @@
       }
     }
   ],
-  "failedTurn": {
+  "failed_turn": {
     "id": "turn_2",
     "items": [
       {

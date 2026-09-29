@@ -182,7 +182,7 @@ func TestSystemEventWireFixtures(t *testing.T) {
 	checkWireFixture(t, systemEventWireFixturePath, struct {
 		Note       string                `json:"note"`
 		Items      []systemEventWireCase `json:"items"`
-		FailedTurn appwire.Turn          `json:"failedTurn"`
+		FailedTurn appwire.Turn          `json:"failed_turn"`
 	}{
 		Note:       "System events and daemon steers, each projected the way history (or the live overlay, for plugin_loaded and context_compaction) reaches the wire, and a failed turn as a reload groups it.",
 		Items:      cases,

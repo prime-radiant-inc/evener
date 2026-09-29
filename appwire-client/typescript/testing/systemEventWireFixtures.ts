@@ -37,7 +37,7 @@ export type SystemEventWireCase =
 
 interface SystemEventWireFixture {
   items: Array<{ case: SystemEventWireCase; note: string; item: ThreadItem }>;
-  failedTurn: Turn;
+  failed_turn: Turn;
 }
 
 const fixture = (): SystemEventWireFixture => JSON.parse(systemEvents) as SystemEventWireFixture;
@@ -56,5 +56,5 @@ export function systemEventWireItems(): ThreadItem[] {
 
 /** systemEventWireFailedTurn returns the failed turn as a reload carries it. */
 export function systemEventWireFailedTurn(): Turn {
-  return fixture().failedTurn;
+  return fixture().failed_turn;
 }
