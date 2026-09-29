@@ -407,6 +407,19 @@ it("titles the header with the session's state, and opens its info on a press", 
 	tree.unmount();
 });
 
+it("opens New session like this one: its host, folder, model and effort", async () => {
+	const { tree } = mount({ ...thread, evener: { ...thread.evener, reasoningEffort: "high" } });
+	await flush();
+
+	act(() => menuAction("New session like this").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
+		hubId: "hub-1",
+		hubName: expect.any(String),
+		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
+	});
+	tree.unmount();
+});
+
 it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
 	const { tree } = mount();
 	await flush();

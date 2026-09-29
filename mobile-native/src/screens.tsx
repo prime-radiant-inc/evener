@@ -73,10 +73,10 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import type { SessionSeed } from "./newSession/launchSetup";
+import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
-import { documentReferences, fileWrites } from "./reader/documentReferences";
+import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
 import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
@@ -1040,6 +1040,16 @@ export function ConversationScreen({
 			case "archive":
 				void runSessionAction(action.kind).then(showSessionToast);
 				return;
+			case "like":
+				// Ruling 24: the sheet opens on this session's host, folder, model
+				// and effort; the menu shows only once the session has loaded.
+				if (!conversation) return;
+				navigation.navigate("NewSession", {
+					hubId: route.params.hubId,
+					hubName: activeProfile?.name ?? "Hub",
+					like: seedFromSession(route.params.ref, conversation),
+				});
+				return;
 			case "shutDown":
 				if (!controls) return;
 				confirmShutDown(() => void runSessionAction("shutDown").then(showSessionToast));
@@ -1184,6 +1194,10 @@ export function ConversationScreen({
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
+	// The paths the session wrote, with or without a time, so a bare file name
+	// it wrote becomes a chip even when the write carried no time.
+	const writtenKey = useMemo(() => JSON.stringify([...writtenPaths(turns ?? [], documentCwd)]), [turns, documentCwd]);
+	const written = useMemo(() => new Set<string>(JSON.parse(writtenKey) as string[]), [writtenKey]);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) =>
 			navigation.navigate("Reader", {
@@ -1206,10 +1220,11 @@ export function ConversationScreen({
 					markdown={message.markdown}
 					cwd={documentCwd}
 					writes={writes}
+					written={written}
 					open={openDocument}
 				/>
 			),
-		[route.params.hubId, route.params.ref, documentCwd, writes, openDocument],
+		[route.params.hubId, route.params.ref, documentCwd, writes, written, openDocument],
 	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.

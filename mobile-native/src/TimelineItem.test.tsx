@@ -217,7 +217,10 @@ describe("your message", () => {
 			const [target] = tree.root.findAll((node) => typeof node.props.onLongPress === "function");
 			act(() => target.props.onLongPress());
 			const request = alertRequests.at(-1);
-			expect(request?.message).toBe("Ship it now");
+			// The preview is the alert's title now, as NotesSheet's link menu
+			// shows it, rather than a "Message" heading over the words.
+			expect(request?.title).toBe("Ship it now");
+			expect(request?.message).toBeUndefined();
 			expect(request?.buttons?.map((button) => button.text)).toEqual(["Copy", "Fork from here", "Quote"]);
 			expect(request?.options).toEqual({ cancelable: true });
 		} finally {
