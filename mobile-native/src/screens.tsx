@@ -2590,10 +2590,15 @@ export function ConversationScreen({
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
 								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2), while you
-								// move the list; the drag and coast events check too, since a
-								// short flick or an overscroll may report no scroll between them.
-								if (follow.state.current.touch !== "none") pageOlderNear(y);
+								// Older history loads as you near the top (spec 8.2) once you
+								// move the list. With no finger on it, and the app neither
+								// following the end nor restoring (which returns above), the
+								// list moved for an assistive scroll. The drag and coast events
+								// check too, since a short flick or an overscroll may report no
+								// scroll between them.
+								if (follow.state.current.touch === "none" && !follow.state.current.following)
+									follow.dispatch({ type: "assistiveScroll" });
+								if (!follow.state.current.following) pageOlderNear(y);
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(readerKey(item));
 									return measurement && measurement.y + measurement.height > y;

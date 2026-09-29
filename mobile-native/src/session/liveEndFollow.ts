@@ -30,9 +30,10 @@ export interface LiveEndFollow {
 	touch: "none" | "dragging" | "momentum";
 	/** The rows there when you left the end, or null at the end. */
 	away: ReadonlySet<string> | null;
-	/** You have moved this session's list yourself, by a drag or its coast.
-	 * A VoiceOver scroll sends neither, so it doesn't count; a reading
-	 * position above the loaded rows still pages on its own. */
+	/** You have moved this session's list yourself: by a drag, its coast, or
+	 * an assistive scroll (VoiceOver, Switch Control, a keyboard), which sends
+	 * neither but moves the list with no finger while the app neither follows
+	 * the end nor restores a position. */
 	dragged: boolean;
 }
 
@@ -40,6 +41,9 @@ export type FollowEvent =
 	| { type: "dragBegin" }
 	| { type: "dragEnd"; atEnd: boolean }
 	| { type: "momentumBegin" }
+	/** The list moved with no finger on it while the app was neither
+	 * following the end nor restoring a position: an assistive scroll. */
+	| { type: "assistiveScroll" }
 	| { type: "momentumEnd"; atEnd: boolean }
 	/** Any scroll, yours or the app's; `keys` names the rows on screen now. */
 	| { type: "scroll"; atEnd: boolean; keys: () => ReadonlySet<string> }
@@ -64,6 +68,8 @@ export function nextFollow(state: LiveEndFollow, event: FollowEvent): LiveEndFol
 	switch (event.type) {
 		case "dragBegin":
 			return { ...state, following: false, touch: "dragging", dragged: true };
+		case "assistiveScroll":
+			return state.dragged ? state : { ...state, dragged: true };
 		case "momentumBegin":
 			// A release inside the end band may still coast away from it: follow
 			// only once the momentum settles there.

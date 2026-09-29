@@ -157,6 +157,12 @@ describe("pagesOlder", () => {
 		expect(pagesOlder(state, 0)).toBe(true);
 	});
 
+	it("counts the list moving with no finger and no app scroll, as VoiceOver moves it", () => {
+		const moved = nextFollow(reading, { type: "assistiveScroll" });
+		expect(moved.dragged).toBe(true);
+		expect(pagesOlder(moved, 0)).toBe(true);
+	});
+
 	it("counts a coast as moving the list, as a flick's momentum is", () => {
 		expect(nextFollow(reading, { type: "momentumBegin" }).dragged).toBe(true);
 	});

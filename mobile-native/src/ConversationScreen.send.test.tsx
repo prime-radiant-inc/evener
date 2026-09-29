@@ -1370,6 +1370,24 @@ it("pages older history on a flick near the top that reports no scroll mid-drag"
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
 });
 
+it("pages older history when the list moves near the top with no drag, as a VoiceOver scroll moves it", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-assistive"), { olderCursor: "cursor-1" });
+	// Away from the live end with no finger: the app scrolls only to follow
+	// the end or to restore (which suppresses capture), so this is the reader.
+	act(() => transcriptList(tree).props.onScrollBeginDrag());
+	act(() =>
+		transcriptList(tree).props.onScrollEndDrag({
+			nativeEvent: { contentOffset: { y: 2_000 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+	scrollTo(tree, 1_400);
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
 it("doesn't page older history for a reading position restored near the top before you scroll", async () => {
 	harness.kv.set(
 		"evener.reader-positions",

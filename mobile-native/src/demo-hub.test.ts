@@ -1503,6 +1503,22 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("says an unknown session is unknown, with or without EVENER_DEMO_FLEET_OLDER", async () => {
+		for (const options of [{}, { olderHistory: true }]) {
+			const hub = await createDemoHub(0, undefined, options);
+			const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+			try {
+				await client.connect();
+				await expect(
+					client.request("thread/read", { ref: "local:nobody", includeTurns: true, itemLimit: 40 }),
+				).rejects.toThrow("Unknown demonstration session");
+			} finally {
+				client.close();
+				await hub.close();
+			}
+		}
+	});
+
 	it("serves the whole history, with no cursor, without EVENER_DEMO_FLEET_OLDER", async () => {
 		const hub = await createDemoHub(0, undefined, {});
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
