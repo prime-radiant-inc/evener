@@ -15,15 +15,25 @@
 //     routing stays content-driven, since structured markup can't
 //     false-positive the way a prose pattern could, so it still fires for a
 //     steer projected before the wire carried a kind. Everything else keeps
-//     the collapsible divider, labeled from KIND_LABELS - an unrecognized or
-//     absent kind renders unlabelled rather than inventing a label from a
-//     raw slug.
+//     the collapsible divider, labeled by the shared steeringLabel - an
+//     unrecognized or absent kind reads a bare "System steered" rather than
+//     inventing a label from a raw slug.
+//
+// The label table and the suppression (@evener/appwire-client steeringLabels)
+// are the phone's too. The table is exhaustive over the generated SteeringKind
+// union, so adding a kind in Go and regenerating fails the build until it is
+// given a label.
 //
 // Daemon-sourced steering images are never rendered as thumbnails - only ever as
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
-import { type SteeringKind, steeringNotificationFragments, stripSystemReminder } from "@evener/appwire-client";
+import {
+  isSuppressedSteeringKind,
+  steeringLabel,
+  steeringNotificationFragments,
+  stripSystemReminder,
+} from "@evener/appwire-client";
 import { memo, useMemo } from "react";
 import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -42,54 +52,6 @@ const CLASS = {
   chevron: requireClass(styles.chevron, "steeringitem.module.css", "chevron"),
   body: requireClass(styles.body, "steeringitem.module.css", "body"),
 };
-
-const STEERED = "System steered";
-
-// Labels for the wire's steering kinds (events.SteeringKind* on the Go side,
-// generated onto SteeringKind in protocol/types.gen.ts). current-task and
-// task-list are suppressed (the tasks panel owns them - SUPPRESSED below) and
-// notification routes to a card, so those three carry no label. Every OTHER
-// kind the daemon can emit must have one: this Record is exhaustive over the
-// generated union, so adding a kind in Go and regenerating fails the build
-// here until it is given a label. That is the point - the frontend's idea of
-// what the daemon sends cannot drift from what it sends.
-type LabelledKind = Exclude<SteeringKind, "current-task" | "task-list" | "notification">;
-
-const KIND_LABELS: Record<LabelledKind, string> = {
-  interrupted: "Interrupted",
-  "interrupted-salvage": "Interrupted draft",
-  "agent-message": "Message sent",
-  "hook-context": "Hook context",
-  "precompact-hook": "Pre-compact hook",
-  "compact-nudge": "Compaction nudge",
-  "image-description": "Image description",
-  "no-tool-calls": "No tool calls",
-  "loop-detected": "Loop detection",
-  "tasks-done": "Tasks done",
-  "task-nudge": "Task nudge",
-  "task-inactive": "Task list idle",
-  "note-handoff": "Note to self",
-  "goal-objective": "Goal objective",
-  "human-note": "Human note",
-  "transcript-pointer": "Transcript pointer",
-  "provider-failure": "Provider failure",
-};
-
-// item.steeringKind is a plain string | undefined on the wire (a running
-// frontend can meet a kind newer than its own build, or none at all), never
-// the generated SteeringKind union itself, so the lookup stays tolerant of a
-// miss instead of an indexed access that would silently type as string: an
-// unrecognized kind renders unlabelled rather than inventing a label from a
-// raw slug.
-function labelFor(kind: string): string | undefined {
-  return Object.hasOwn(KIND_LABELS, kind) ? KIND_LABELS[kind as LabelledKind] : undefined;
-}
-
-// The tasks panel and the task-update card already own these surfaces
-// (parity-m4 §8:209-217), so they render nothing inline. Typed against the
-// generated union so a typo here (unlike a typo in KIND_LABELS' keys, which
-// TypeScript already rejects since it targets an exact Record) fails too.
-const SUPPRESSED: ReadonlySet<SteeringKind> = new Set(["current-task", "task-list"]);
 
 // The quiet collapsed-by-default steering divider (parity-m4 §8:
 // appendSteeringDivider) - summary is the glyph, the kind label (or the bare
@@ -155,14 +117,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Every other user-sourced steer still renders as a user message below.
   if (item.steeringKind === "human-note") {
     if (!item.text) return null; // no text, no images path here - nothing to show
-    const humanLabel = labelFor("human-note");
     return (
-      <SteeringDivider
-        id={item.id}
-        label={humanLabel ? `${STEERED}: ${humanLabel}` : STEERED}
-        text={item.text}
-        sessionRef={sessionRef}
-      />
+      <SteeringDivider id={item.id} label={steeringLabel("human-note")} text={item.text} sessionRef={sessionRef} />
     );
   }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
@@ -170,13 +126,12 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // like a prompt without claiming the boundary a prompt marks.
   if (item.source === "user") return <UserMessageView item={item} opensExchange={false} />;
   if (!item.text) return null; // no text, no images path here - nothing to show
-  const kind = item.steeringKind ?? "";
-  if ((SUPPRESSED as ReadonlySet<string>).has(kind)) return null;
+  if (isSuppressedSteeringKind(item.steeringKind)) return null;
 
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
-  const label = labelFor(kind);
+  const label = steeringLabel(item.steeringKind);
   if (fragments) {
     return (
       <>
@@ -215,7 +170,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
               key={index}
               id={`${item.id}:${index}`}
-              label={label ? `${STEERED}: ${label}` : STEERED}
+              label={label}
               text={fragment.text}
               sessionRef={sessionRef}
             />
@@ -225,14 +180,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  return (
-    <SteeringDivider
-      id={item.id}
-      label={label ? `${STEERED}: ${label}` : STEERED}
-      text={stripSystemReminder(item.text)}
-      sessionRef={sessionRef}
-    />
-  );
+  return <SteeringDivider id={item.id} label={label} text={stripSystemReminder(item.text)} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

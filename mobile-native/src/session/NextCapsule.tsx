@@ -7,6 +7,13 @@ import { Pressable, Text, useWindowDimensions } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { floatingCapsule } from "./FloatingStack";
 
+/** How wide the capsule may grow on a window this wide: small, at the
+ * trailing edge (spec 8.3), so the leading side of the transcript stays free
+ * to drag: 60% of a phone's width, and never past 320pt on a wide window. */
+export function nextCapsuleMaxWidth(windowWidth: number): number {
+	return Math.min(Math.round(windowWidth * 0.6), 320);
+}
+
 export function NextCapsule({
 	target,
 	onOpen,
@@ -28,6 +35,7 @@ export function NextCapsule({
 			onLongPress={onHold}
 			style={({ pressed }) => ({
 				...floatingCapsule(palette),
+				maxWidth: nextCapsuleMaxWidth(width),
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
@@ -41,7 +49,7 @@ export function NextCapsule({
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				ellipsizeMode="tail"
-				style={{ ...text, color: palette.inkHi, maxWidth: width * 0.6 }}
+				style={{ ...text, color: palette.inkHi, flexShrink: 1 }}
 			>
 				{target.title}
 			</Text>

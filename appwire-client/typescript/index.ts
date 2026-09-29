@@ -72,8 +72,14 @@ export type {
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
-export type { RejectableFile } from "./attachmentLimits";
-export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
+export {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
@@ -446,6 +452,12 @@ export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export {
+  isSuppressedSteeringKind,
+  type LabelledSteeringKind,
+  STEERING_KIND_LABELS,
+  steeringLabel,
+} from "./steeringLabels";
+export {
   decodeNotificationEntities,
   escapeNotificationEntities,
   isNotificationRemnant,
@@ -479,6 +491,7 @@ export {
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
+export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";

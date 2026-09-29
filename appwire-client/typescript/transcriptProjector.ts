@@ -8,6 +8,7 @@ import {
 } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions, hasWarningText } from "./reducer";
+import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
   type HookExitDetail,
@@ -186,7 +187,7 @@ function itemSummary(item: ItemModel): string {
   if (warningTitle) return warningTitle;
   const text = item.text.trim();
   if (text) return text;
-  if (item.eventKind === "error") return "Turn failed";
+  if (item.eventKind === ERROR_EVENT_KIND) return "Turn failed";
   if (item.type === "systemMessage") return "System event";
   return ACTION_SUMMARY_UNAVAILABLE;
 }

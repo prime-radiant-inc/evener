@@ -1,6 +1,7 @@
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { whyLine } from "../board/attention";
+import { StateMark } from "../board/StateMark";
 import { paletteFor } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import type { Alert, Banner } from "./alertCenter";
@@ -200,4 +201,22 @@ it("announces a banner once, and again only when what it says changes", () => {
 		"Session a, Question, waiting for your answer",
 		"2 sessions need you, Tap to see them on the Board.",
 	]);
+});
+
+it("says a start failed on its hub in one short line, and that a tap opens New session, marked as a failure (#3104)", () => {
+	const failed: Alert = { kind: "startFailed", hubId: "hub-a", hubName: "magic-kingdom", uncertain: false };
+	const { tree, card } = mount(banner(failed));
+	expect(renderedText(tree)).toContain("Couldn't start the new session");
+	expect(bannerLabel(banner(failed))).toBe(
+		"Couldn't start the new session, On magic-kingdom. Your draft is kept. Tap to open New session.",
+	);
+	expect(tree.root.findByType(StateMark).props.state).toBe("failed");
+	expect(card.props.style).toMatchObject({ borderColor: palette.attentionEdge });
+});
+
+it("says a start that may have begun couldn't be confirmed, without claiming either way (#3104)", () => {
+	const uncertain: Alert = { kind: "startFailed", hubId: "hub-a", hubName: "magic-kingdom", uncertain: true };
+	expect(bannerLabel(banner(uncertain))).toBe(
+		"Couldn't confirm the new session started, On magic-kingdom. It may have started. Tap to open New session.",
+	);
 });

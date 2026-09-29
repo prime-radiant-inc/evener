@@ -127,3 +127,94 @@ func TestTranscriptItemCursorError(t *testing.T) {
 		t.Fatalf("serialized-byte assertion is not mutation-sensitive: %s", mutated)
 	}
 }
+
+// A refusal marked not accepted keeps its code, message and category, and says
+// the request wasn't carried out and isn't to be retried.
+func TestNotAcceptedMarksARefusalKeepingWhatItSaid(t *testing.T) {
+	marked := InvalidParams("cwd is not a directory").NotAccepted("mutation-1")
+	data, ok := marked.Data.(ErrorData)
+	if !ok {
+		t.Fatalf("data = %#v, want ErrorData", marked.Data)
+	}
+	if marked.Code != CodeInvalidParams || marked.Message != "cwd is not a directory" || data.EvenerErrorInfo != ErrorInvalidParams {
+		t.Fatalf("marked = %+v, want the refusal's own code, message and category", marked)
+	}
+	want := ErrorData{
+		EvenerErrorInfo:  ErrorInvalidParams,
+		ClientMutationID: "mutation-1",
+		MutationOutcome:  MutationOutcomeNotAccepted,
+		RetryDisposition: RetryDispositionNone,
+	}
+	if data != want {
+		t.Fatalf("data = %+v, want %+v", data, want)
+	}
+	// Data of another shape gives way to the standard data, so the outcome is
+	// always readable.
+	other := WireError{Code: CodeInternalError, Message: "boom", Data: map[string]string{"x": "y"}}.NotAccepted("")
+	if data, _ := other.Data.(ErrorData); data.MutationOutcome != MutationOutcomeNotAccepted {
+		t.Fatalf("data = %#v, want the not-accepted outcome", other.Data)
+	}
+}
+
+// A refusal whose data wraps the standard data keeps the wrapper: its
+// category and its own fields stay, with the outcome marked on the data it
+// embeds.
+func TestNotAcceptedKeepsWrappedData(t *testing.T) {
+	marked := InvalidHostField("hostname", "hostname is taken").NotAccepted("mutation-2")
+	data, ok := marked.Data.(HostFieldErrorData)
+	if !ok {
+		t.Fatalf("data = %#v, want HostFieldErrorData kept", marked.Data)
+	}
+	want := HostFieldErrorData{
+		EvenerErrorInfo:  ErrorInvalidHostField,
+		ClientMutationID: "mutation-2",
+		MutationOutcome:  MutationOutcomeNotAccepted,
+		RetryDisposition: RetryDispositionNone,
+		Field:            "hostname",
+	}
+	if data != want {
+		t.Fatalf("data = %+v, want %+v", data, want)
+	}
+	// On the wire the fields sit side by side, as a client reads them.
+	raw, err := json.Marshal(marked.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{`"evenerErrorInfo":"invalidHostField"`, `"field":"hostname"`, `"mutationOutcome":"notAccepted"`} {
+		if !bytes.Contains(raw, []byte(part)) {
+			t.Fatalf("wire data %s lacks %s", raw, part)
+		}
+	}
+	// The error it was marked from is left as it was.
+	original := InvalidHostField("hostname", "hostname is taken")
+	_ = original.NotAccepted("x")
+	if data := original.Data.(HostFieldErrorData); data.MutationOutcome != "" {
+		t.Fatalf("original data = %+v, want it unmarked", data)
+	}
+
+	lifecycle := WireError{Code: CodeUnavailable, Message: "stopping", Data: LifecycleErrorData{
+		ErrorData:       ErrorData{EvenerErrorInfo: ErrorSessionUnavailable},
+		LifecycleReason: "stopping",
+		Retryable:       true,
+	}}.NotAccepted("")
+	if data, ok := lifecycle.Data.(LifecycleErrorData); !ok || data.LifecycleReason != "stopping" ||
+		data.EvenerErrorInfo != ErrorSessionUnavailable || data.MutationOutcome != MutationOutcomeNotAccepted {
+		t.Fatalf("data = %#v, want the lifecycle data kept and marked", lifecycle.Data)
+	}
+}
+
+// The standard data is read from plain or wrapped error data alike, and from
+// nothing else.
+func TestErrorDataOfReadsPlainAndWrappedData(t *testing.T) {
+	if data, ok := ErrorDataOf(InvalidParams("bad").Data); !ok || data.EvenerErrorInfo != ErrorInvalidParams {
+		t.Fatalf("plain = %+v, %v; want its ErrorData", data, ok)
+	}
+	if data, ok := ErrorDataOf(InvalidHostField("hostname", "taken").Data); !ok || data.EvenerErrorInfo != ErrorInvalidHostField {
+		t.Fatalf("wrapped = %+v, %v; want the ErrorData it embeds", data, ok)
+	}
+	for _, other := range []any{nil, map[string]any{"evenerErrorInfo": "x"}, struct{ Name string }{"x"}} {
+		if data, ok := ErrorDataOf(other); ok {
+			t.Fatalf("ErrorDataOf(%#v) = %+v, want none", other, data)
+		}
+	}
+}

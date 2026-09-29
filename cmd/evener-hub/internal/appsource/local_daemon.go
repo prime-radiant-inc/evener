@@ -1040,11 +1040,7 @@ func localDaemonMutationEntryError(clientMutationID string, err error) error {
 	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		return err
 	}
-	data.ClientMutationID = clientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
-	wire.Data = data
-	return wire
+	return wire.NotAccepted(clientMutationID)
 }
 
 // DaemonInitializeError identifies failures before a daemon accepts session RPCs.
@@ -1211,13 +1207,14 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
-		// A restart-required session cannot act, but its saved notes are still
-		// readable: advertise the read capability alone and let the write gate
+		// A restart-required session cannot act, but its saved notes and its
+		// saved transcript (the hub pages it from a before position itself) are
+		// still readable: advertise the read capabilities alone and let the write gate
 		// (and the daemon's admission fence) refuse every mutation. The alias
 		// guard is redundant with the alias gate below, which clears every
 		// capability; it is here so this advertisement never depends on that
 		// branch running after it.
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias, PageBefore: !item.ReadOnlyAlias}
 	}
 	if item.ReadOnlyAlias {
 		// A read-only descendant alias still carries its own live watches: they

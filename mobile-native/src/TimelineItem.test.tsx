@@ -727,8 +727,26 @@ describe("a system event", () => {
 		expect(target.props.style).toMatchObject({ minHeight: 44 });
 	});
 
+	// A long label ("System steered: Where to find the full transcript") keeps
+	// its chevron in view: it truncates to one line, and VoiceOver reads it whole.
+	it("keeps a long label to one line beside its chevron, spoken in full", () => {
+		const label = "System steered: Where to find the full transcript";
+		const event = notice({ origin: "steering", steeringKind: "transcript-pointer", text: "Read it.", label });
+		const tree = render(<TimelineItem item={event} hubId="hub" sessionRef="event-long" />);
+		const text = tree.root.findAll((node) => String(node.type) === "Text").find((node) => textOf(node) === label);
+		expect(text?.props.numberOfLines).toBe(1);
+		expect(text?.props.style).toMatchObject({ flexShrink: 1 });
+		const button = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(button?.props.accessibilityLabel).toBe(label);
+	});
+
 	it("opens a labelled steering notice's text", () => {
-		const reminder = notice({ origin: "steering", steeringKind: "task-nudge", text: "Remember the open task." });
+		const reminder = notice({
+			origin: "steering",
+			steeringKind: "task-nudge",
+			text: "Remember the open task.",
+			label: "Task reminder",
+		});
 		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
 		expect(renderedText(tree)).toContain("Task reminder");
 		expect(renderedText(tree)).not.toContain("Remember the open task.");
