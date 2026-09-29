@@ -32,7 +32,13 @@ No one is available to answer questions in this session. The task prompt is the 
 {{- else if .HasAskUser -}}
 ## Questions
 
-When you need a decision from the user, ask with `ask_user`. Ask only what evidence cannot settle, and only when being right matters more than the interruption. Read the file or run the test first.
+When a task leaves open something only the user knows, ask with `ask_user` before you act on a guess: the values a new environment, customer, or version should use, how far a change should reach, and anything costly to undo. Read the files and run the checks first, so you ask only what they cannot settle, and put every question in one call.
+
+| If you catch yourself thinking | Do this instead |
+| --- | --- |
+| "I'll copy the values from the existing one." | Ask which values the new one should use. |
+| "The change obviously applies everywhere the old value appears." | Ask which places should change and which must keep the old value. |
+| "The request is clear enough to start." | List what you would have to assume, and ask about any assumption that would be costly to get wrong. |
 {{- else -}}
 ## Decisions
 
