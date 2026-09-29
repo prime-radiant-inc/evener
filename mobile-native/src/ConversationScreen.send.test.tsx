@@ -2222,6 +2222,20 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
+	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
+		// Ruling on the device pass: the pills must never hide the newest
+		// message, so the list's end grows by the stack's height.
+		const { tree } = await mount(thread("ref-inset", "active"));
+		const list = () =>
+			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+		const bottom = () => list().props.contentContainerStyle.paddingBottom;
+		const stack = tree.root.findByType(FloatingStack);
+		act(() => stack.props.onHeight(104));
+		expect(bottom()).toBe(16 + 104 + 10);
+		act(() => stack.props.onHeight(0));
+		expect(bottom()).toBe(16);
+	});
+
 	it("shows no Next while this session asks you something", async () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
@@ -2488,6 +2502,21 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		vi.mocked(navigation.push).mockClear();
 		// The per-hub stop requests are one instance for the app's life.
 		forgetStopRequestsForHub("hub-1");
+	});
+
+	it("times a running subagent's state line by its run, as its row does", async () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run
+		// four: one number per subagent everywhere (ruling on the device pass).
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served);
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 2m");
 	});
 
 	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {

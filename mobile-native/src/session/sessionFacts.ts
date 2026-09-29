@@ -109,11 +109,11 @@ export function effortName(level: string): string {
 }
 
 /** A model as the catalog names it (a model is called one way everywhere
- * people read it). Before the catalog loads, the model id stands in. */
-/** The model's name: the catalog's, else the one the hub's session row
- * carries (S17's model_name, the same name model/list gives), else its id.
- * The catalog clears while it reloads and after a failed load, and the row
- * keeps the chip from flipping to the raw id meanwhile. */
+ * people read it). While the catalog is away (it clears while it reloads and
+ * after a failed load) the hub's session row names it (S17's model_name, the
+ * same name model/list gives), and only then the id. Right after a switch the
+ * row may lag until the fleet re-reads it; that only shows while the catalog
+ * is away too. */
 function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined, rowName?: string): string {
 	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider);
 	return match?.displayName || rowName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";

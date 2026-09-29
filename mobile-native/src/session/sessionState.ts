@@ -21,7 +21,10 @@ export type StateSource = Pick<
  * session can't be shut down FROM again, since it already is. */
 export const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
 
-export function sessionStateLine(session: StateSource, now: number): SessionStateLine {
+/** `runMs` is a subagent's time in its run, as its Subagents row shows it:
+ * its screen says "Working" with that number rather than its current turn's,
+ * so a subagent has one time everywhere. */
+export function sessionStateLine(session: StateSource, now: number, runMs?: number | null): SessionStateLine {
 	const type = session.status.type;
 	// This follows the Board's own attention order (board/attention.ts's
 	// boardState, which matches the hub's NeedsYouBand) exactly, so the two
@@ -36,6 +39,7 @@ export function sessionStateLine(session: StateSource, now: number): SessionStat
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
 	if (type === "active") {
+		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);
 		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}

@@ -324,12 +324,17 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 				delegate.runStartedAt,
 			]),
 		);
-		for (const thread of running) {
+		// Get PR 2138 Test Clean's running subagents, each in all three places.
+		const compared = running.filter((thread) => started.has(thread.evener.ref));
+		expect(compared.length).toBeGreaterThan(20);
+		expect(transcript.size).toBeGreaterThan(0);
+		for (const thread of compared) {
 			const listed = started.get(thread.evener.ref);
-			if (!listed) continue;
 			expect(new Date(thread.evener.activeTurnStartedAt ?? 0).toISOString()).toBe(listed);
 			if (transcript.has(thread.evener.ref)) expect(transcript.get(thread.evener.ref)).toBe(listed);
 		}
+		const inTranscript = compared.filter((thread) => transcript.has(thread.evener.ref));
+		expect(inTranscript.length).toBeGreaterThan(0);
 	});
 
 	it("advertises only readable notes on a session that needs a restart", () => {

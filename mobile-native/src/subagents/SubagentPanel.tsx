@@ -36,6 +36,9 @@ export interface SubagentPanelProps {
 	/** The hub takes no message for the subagent: the bar takes the composer's place. */
 	barShown: boolean;
 	showToast(text: string): void;
+	/** This subagent's row in its coordinator's tree, as the tree reads it, for
+	 * the screen's state line to time its run as the row does. */
+	onRow?(row: SubagentRow | null): void;
 	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
 }
 
@@ -49,6 +52,7 @@ export function SubagentPanel({
 	inFront,
 	barShown,
 	showToast,
+	onRow,
 	navigation,
 }: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
@@ -56,6 +60,9 @@ export function SubagentPanel({
 	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
+	useEffect(() => {
+		onRow?.(row);
+	}, [onRow, row]);
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 

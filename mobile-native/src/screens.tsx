@@ -167,6 +167,7 @@ import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -863,7 +864,14 @@ export function ConversationScreen({
 		return () => clearInterval(clock);
 	}, [focused]);
 	const conversation = snapshot.conversation;
-	const stateLine = conversation ? sessionStateLine(conversation, Date.now()) : null;
+	// A subagent's screen times its run as its Subagents row does, from the
+	// row its panel reads (one number per subagent everywhere).
+	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	// How tall the toast, Next and "↓ new" stand over the transcript's end.
+	const [floatingHeight, setFloatingHeight] = useState(0);
+	const stateLine = conversation
+		? sessionStateLine(conversation, Date.now(), subagentRow ? timeInState(subagentRow, Date.now()) : null)
+		: null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
@@ -1857,11 +1865,9 @@ export function ConversationScreen({
 		[fleet.sources, hubName],
 	);
 	// The Board row names the model too (S17), for while the catalog is away.
-	const rowModelName = useMemo(
-		() => live.find((row) => row.ref === route.params.ref)?.model_name,
-		[live, route.params.ref],
-	);
-	const modelLabel = conversation ? modelChipLabel(conversation, controlsState?.catalog?.data, rowModelName) : "";
+	const modelLabel = conversation
+		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
+		: "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
 			// Provided while the screen lives, with or without controls, so a
@@ -2528,11 +2534,12 @@ export function ConversationScreen({
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
 							renderItem={renderItem}
-							// Room at the end for the Next capsule (spec 8.3).
+							// The end stays clear of what floats over it (the toast, Next
+							// and "↓ new"), so they never hide the newest message.
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: 60,
+								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -2722,6 +2729,7 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
+							onHeight={setFloatingHeight}
 						/>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
@@ -2815,6 +2823,7 @@ export function ConversationScreen({
 									inFront={focused}
 									barShown={subagentBar}
 									showToast={showSubagentToast}
+									onRow={setSubagentRow}
 									navigation={navigation as never}
 								/>
 							) : null}

@@ -39,6 +39,12 @@ const delegate = (status: string, n: number, outcome?: string): EvenerDelegateIn
 });
 
 describe("the nav bar's state line (spec 8.1, 13.1)", () => {
+	it("times a subagent by its run when given one, not its current turn", () => {
+		const running = session("active", { activeTurnStartedAt: ago(2 * 60_000) });
+		expect(sessionStateLine(running, NOW, 4 * 60_000).text).toBe("Working · 4m");
+		expect(sessionStateLine(running, NOW, null).text).toBe("Working · 2m");
+	});
+
 	it.each([
 		[session("active", { activeTurnStartedAt: ago(38 * 60_000) }), "working", "Working · 38m"],
 		[session("active"), "working", "Working"],
