@@ -955,8 +955,9 @@ CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
 predates issue #172's switch to package wall time, so the ratios stay warn-only
 even under `CHECK=1` until `make test-rebaseline` rewrites them under the new
 metric (#141): a budget whose numbers were blessed under a different metric is
-never enforced, and a rebaseline records the metric marker that re-enables
-enforcement.
+never enforced, and a full rebaseline records the metric marker that re-enables
+enforcement (a narrowed `--modules`/`--no-web` rebaseline leaves it off until a
+full one lands).
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never

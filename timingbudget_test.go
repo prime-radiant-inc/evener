@@ -101,3 +101,60 @@ func TestTimingParseHelperEmitsTheRatchetsRows(t *testing.T) {
 		}
 	}
 }
+
+// runBless runs the real runner's bless path over budgetJSON with extra
+// flags and returns the budget it wrote. The caller names a module list that
+// matches nothing, so no producer runs: the bless only rewrites and preserves
+// entries, which is exactly the marker decision under test, with no test suite
+// to wait on and nothing faked.
+func runBless(t *testing.T, budgetJSON string, args ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	budget := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budget, budgetJSON)
+	tmpDir := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", tmpDir, err)
+	}
+	cmd := exec.Command("bash", append([]string{
+		timingBudgetScript, "--budget", budget, "--no-web", "--bless",
+	}, args...)...)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bless failed: %v\n%s", err, out)
+	}
+	got, err := os.ReadFile(budget)
+	if err != nil {
+		t.Fatalf("read blessed budget: %v", err)
+	}
+	return string(got)
+}
+
+// TestTimingBudgetBlessKeepsAWallTimeMarker pins the marker rule for a narrowed
+// bless. A file already blessed under the wall-time metric keeps its marker when
+// a run refreshes only part of it: the preserved entries are still wall time, so
+// enforcement stays safe, and dropping the marker would silently disable the
+// ratchet (issue #172 review).
+func TestTimingBudgetBlessKeepsAWallTimeMarker(t *testing.T) {
+	got := runBless(t,
+		`{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/other":1}}`,
+		"--modules", "no-such-module")
+	if !strings.Contains(got, `"metric": "package-wall-seconds"`) {
+		t.Fatalf("a narrowed bless of an already wall-time file dropped the marker:\n%s", got)
+	}
+	if !strings.Contains(got, `"example.com/other": 1`) {
+		t.Fatalf("the preserved, unmeasured entry was not kept:\n%s", got)
+	}
+}
+
+// TestTimingBudgetBlessDoesNotStampAStaleFile is the other half: a narrowed
+// bless of a file still in the old sum units must NOT add the wall-time marker,
+// or it would enforce ratios against the old-unit entries it preserved.
+func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
+	got := runBless(t,
+		`{"perTestCeilingSeconds":3,"packages":{"example.com/other":1}}`,
+		"--modules", "no-such-module")
+	if strings.Contains(got, `"metric"`) {
+		t.Fatalf("a narrowed bless of a stale file stamped the wall-time marker:\n%s", got)
+	}
+}

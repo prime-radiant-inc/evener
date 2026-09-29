@@ -87,6 +87,7 @@ budget_file="${repo_root}/testing-budget.json"
 modules=". agent llm auth envvars invariant identifier execsupport"
 web_dir="${repo_root}/cmd/evener-hub/frontend"
 web=true
+modules_overridden=0
 check=false
 bless=false
 strict_override=""
@@ -94,7 +95,7 @@ measured_override=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--modules) modules="$2"; shift 2 ;;
+		--modules) modules="$2"; modules_overridden=1; shift 2 ;;
 		--budget) budget_file="$2"; shift 2 ;;
 		--web-dir) web_dir="$2"; shift 2 ;;
 		--no-web) web=false; shift ;;
@@ -120,6 +121,16 @@ fi
 # surface no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
+
+# bless_full records whether THIS run measured the whole budgeted surface: the
+# default module list (no --modules), the frontend included, and a real
+# measurement rather than a --measured replay. A bless needs it to decide
+# whether every number left in the file is in the metric this run just measured
+# — see the metric-marker logic in compare.py below.
+bless_full=false
+if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && $web && [ -d "$web_dir" ]; then
+	bless_full=true
+fi
 
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
@@ -292,13 +303,14 @@ fi
 # --budget/--modules/measured.tsv, with no go test or vitest run involved —
 # the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
-python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" <<'PY'
+python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
 import json, sys
 
-measured_path, budget_path, bless, check, strict, out_path = sys.argv[1:7]
+measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
 bless = bless == "true"
 check = check == "true"
 strict = strict == "true"
+bless_full = bless_full == "true"
 
 DEFAULT_CEILING = 2.0
 FAIL_RATIO = 1.5
@@ -342,7 +354,8 @@ except (FileNotFoundError, ValueError):
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 no_baseline = len(packages) == 0
-stale_units = not no_baseline and budget.get("metric") != WALL_METRIC
+had_metric = budget.get("metric") == WALL_METRIC
+stale_units = not no_baseline and not had_metric
 
 lines = []
 worst = "ok"  # ok < warn < fail
@@ -411,17 +424,15 @@ if bless:
 		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
 	}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
-	# The metric marker is only honest when EVERY recorded package was measured
-	# this run. A narrowed bless (--modules, --no-web, a frontend not checked out)
-	# preserves entries it did not measure, so stamping the marker there would
-	# re-enable ratio enforcement against old-unit numbers for exactly those
-	# packages. Only a full rebaseline records that the whole file is comparable
-	# to what the gate now reports and enforcement resumes; otherwise the marker
-	# stays absent so the stale-units warn path still holds.
-	if set(packages) <= set(sums):
+	# The marker says every number in the file is package wall time. That holds
+	# when the file already carried it (a narrowed bless refreshes a subset and
+	# preserves the rest, all still wall time) or when this run measured the
+	# whole surface (bless_full), so no old-unit entry is left behind. A narrowed
+	# bless of a file that is NOT yet wall time must not add the marker: that
+	# would enable enforcement against the old-unit entries it preserved, the
+	# incomparability the stale-units warn path exists for (issue #172 review).
+	if had_metric or bless_full:
 		budget["metric"] = WALL_METRIC
-	else:
-		budget.pop("metric", None)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
 		# does not reformat all ~130 lines and bury the real change in
