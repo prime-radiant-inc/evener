@@ -283,4 +283,41 @@ describe("createMutationProjectionFence", () => {
     fence.reset();
     expect(fence.epoch()).toBe(before + 1);
   });
+
+  // stillOwns is the live ownership query a caller reads at the moment it
+  // decides whether a resolved read is still this target's current word -
+  // unlike a cached apply() result, it answers at call time, so a live commit
+  // or a newer refresh landing after the read resolved is still seen.
+  test("stillOwns is true for a target this refresh is still the current word on", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    expect(result.stillOwns("ref-a")).toBe(true);
+  });
+
+  test("stillOwns is false once a newer specific refresh for the target has started", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    // A newer refresh of the same target starts but never resolves: the older
+    // read is no longer the current word for the target the moment it starts.
+    void fence.refresh({ read: () => new Promise(() => {}) }, "ref-a");
+    expect(result.stillOwns("ref-a")).toBe(false);
+  });
+
+  test("stillOwns is false once advance lands for the target", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    fence.advance("ref-a");
+    expect(result.stillOwns("ref-a")).toBe(false);
+  });
+
+  test("stillOwns is false after reset()", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    fence.reset();
+    expect(result.stillOwns("ref-a")).toBe(false);
+  });
 });

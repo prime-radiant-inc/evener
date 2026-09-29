@@ -6,7 +6,8 @@
     "autolinking": {
       "ios": {
         "buildFromSource": [
-          "expo-modules-core"
+          "expo-modules-core",
+          "expo-camera"
         ]
       }
     }
@@ -20,6 +21,7 @@
     "expo": "~57.0.20",
     "expo-application": "~57.0.3",
     "expo-build-properties": "~57.0.17",
+    "expo-camera": "~57.0.5",
     "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.2",
     "expo-file-system": "~57.0.6",

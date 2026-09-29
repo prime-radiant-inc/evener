@@ -71,6 +71,12 @@ export function Group({ children }: { children: ReactNode }) {
 	);
 }
 
+/** The space above a group that has no label: an action's group under the
+ * fields it acts on, or a page's first group. */
+export function GroupGap() {
+	return <View style={{ height: 20 }} />;
+}
+
 /** A row's leading slot: a bare symbol, or the empty space an unchecked
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
@@ -147,16 +153,7 @@ export function Row({
 					</Text>
 				) : null}
 			</View>
-			{plainValue !== undefined ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkMid, fontSize: 17 * scale, fontVariant: ["tabular-nums"] }}
-				>
-					{plainValue}
-				</Text>
-			) : (
-				(value ?? null)
-			)}
+			{plainValue !== undefined ? <RowValue text={plainValue} /> : (value ?? null)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
@@ -169,9 +166,10 @@ export function Row({
 		paddingVertical: 11,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
+	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	if (!onPress)
 		return (
-			<View accessible accessibilityLabel={reading} style={style}>
+			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
 				{body}
 			</View>
 		);
@@ -179,7 +177,7 @@ export function Row({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
-			accessibilityState={checked === undefined ? { disabled } : { disabled, selected: checked }}
+			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
@@ -257,9 +255,12 @@ export function SwitchRow({
 export function GroupFooter({
 	children,
 	tone = "normal",
+	machine = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** Text the machine wrote, such as an error the hub reported: Menlo. */
+	machine?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -267,14 +268,17 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{
-				color,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
-				paddingHorizontal: 32,
-				paddingTop: 6,
-				paddingBottom: 8,
-			}}
+			style={[
+				{
+					color,
+					fontSize: 13 * scale,
+					lineHeight: 18 * scale,
+					paddingHorizontal: 32,
+					paddingTop: 6,
+					paddingBottom: 8,
+				},
+				machine ? { fontFamily: fonts.mono } : null,
+			]}
 		>
 			{children}
 		</Text>
@@ -381,5 +385,38 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 		>
 			{text}
 		</Text>
+	);
+}
+
+/** A row's trailing value with a tag beside it: a host's version and its gray
+ * "Hub runs 0.9.412", or the Hosts count and its amber "1 offline". */
+export function RowValue({
+	text,
+	tag,
+	tone = "normal",
+}: {
+	text?: string;
+	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
+	/** "attention" for a value that may need a human, such as Offline. */
+	tone?: "normal" | "attention";
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+			{text ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
+						fontSize: 17 * scale,
+						fontVariant: ["tabular-nums"],
+					}}
+				>
+					{text}
+				</Text>
+			) : null}
+			{tag ? <Tag text={tag.text} tone={tag.tone} /> : null}
+		</View>
 	);
 }

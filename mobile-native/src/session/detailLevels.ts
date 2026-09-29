@@ -49,11 +49,15 @@ export function configForLevel(
 	chosen: ContentLevel | null,
 	hubConfig: TranscriptDisplayConfigV1 | null,
 ): TranscriptDisplayConfigV1 | null {
-	// Nothing chosen here: the session shows exactly what it shows today.
-	if (!chosen) return hubConfig;
+	// Chat means just the conversation on the phone whether this session or
+	// the hub's default chose it (ruling 8).
+	const hubChat = hubConfig?.content.kind === "preset" && hubConfig.content.level === "chat";
+	const level = chosen ?? (hubChat ? "chat" : null);
+	// Nothing chosen here: the session shows exactly what the hub says.
+	if (!level) return hubConfig;
 	const base = hubConfig ?? shippedConfig("mobile");
 	return makeTranscriptDisplayConfig(
-		chosen === "chat" ? JUST_THE_CONVERSATION : { kind: "preset", level: chosen },
+		level === "chat" ? JUST_THE_CONVERSATION : { kind: "preset", level },
 		base.advanced,
 	);
 }

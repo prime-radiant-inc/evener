@@ -3,6 +3,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { HostsController } from "../hosts/hostsController";
+import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
@@ -12,12 +14,26 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
-vi.mock("@react-navigation/native", () => ({
-	StackActions: {
-		replace: (name: string, params: unknown) => ({ type: "REPLACE", payload: { name, params } }),
-	},
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({
+		state: "ready",
+		fatal: false,
+		profiles: [
+			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
+			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
+		],
+	}),
 }));
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return {
+		// Runs again only when its callback changes, as on a real focus.
+		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]),
+		StackActions: {
+			replace: (name: string, params: unknown) => ({ type: "REPLACE", payload: { name, params } }),
+		},
+	};
+});
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
@@ -54,7 +70,7 @@ function hub(check: UpdateCheckResponse | Error) {
 let updates: PhoneHubUpdates;
 let context: HubSheetContextValue;
 
-async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean } = {}) {
+async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet } = {}) {
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
@@ -67,10 +83,13 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		ready: options.ready ?? true,
 		canUseConnection: () => live.usable,
 		updates: updates.controller,
+		hosts: options.fleet ? new HostsController(options.fleet.client) : null,
+		live: null,
 	};
 	if (options.check) await updates.controller.runCheck();
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const navigation = { getParent: () => root } as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
+	const sheet = { getParent: () => root, navigate: vi.fn() };
+	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -83,16 +102,58 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		act(() => {
 			find(label)?.props.onPress();
 		});
-	return { tree, root, find, press, calls: fake.calls, script: fake.script, readiness, live };
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	return { tree, root, sheet, find, press, calls: fake.calls, script: fake.script, readiness, live };
 }
 
-const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Keyboard shortcuts", "Launch defaults", "Hub settings"];
+const ROWS = [
+	"Hosts",
+	"Providers",
+	"Plugins",
+	"Display, System",
+	"Hubs, 2",
+	"Keyboard shortcuts",
+	"Launch defaults",
+	"Hub settings",
+];
 
 beforeEach(() => {
 	status.line = null;
 	alertRequests.length = 0;
 });
-afterEach(() => updates.dispose());
+afterEach(() => {
+	updates.dispose();
+	context.hosts?.dispose();
+});
+
+it("opens Hosts inside the sheet, counting the hub's own machine and tagging the offline ones (spec 12)", async () => {
+	const fleet = scriptedFleet([
+		hostRow("paradise-park"),
+		hostRow("attic", { attached: false }),
+		hostRow("studio", { attached: false, midAttach: true }),
+	]);
+	const { find, press, sheet } = await mount({ check: UP_TO_DATE, fleet });
+	expect(find("Hosts, 4, 2 offline")).not.toBeNull();
+	press("Hosts, 4, 2 offline");
+	expect(sheet.navigate).toHaveBeenCalledWith("Hosts", { hubId: "hub-1" });
+	expect(fleet.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
+});
+
+it("tags hosts on another version when none is offline", async () => {
+	const fleet = scriptedFleet([
+		hostRow("paradise-park", { hubVersion: "0.9.409" }),
+		hostRow("attic", { hubVersion: "0.9.412" }),
+	]);
+	const { find } = await mount({ check: UP_TO_DATE, fleet });
+	expect(find("Hosts, 3, 1 on another version")).not.toBeNull();
+});
+
+it("shows Hosts without a count or tag before the hub has listed its hosts", async () => {
+	const { find } = await mount();
+	expect(find("Hosts")).not.toBeNull();
+});
 
 it("says the hub is connected and lists its pages", async () => {
 	const { tree, find } = await mount();
@@ -101,11 +162,10 @@ it("says the hub is connected and lists its pages", async () => {
 });
 
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
-	const { root, press } = await mount();
+	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
-		["Display", "TranscriptPreferences"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -117,8 +177,17 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 			payload: { name: screen, params: { hubId: "hub-1" } },
 		});
 	}
-	press("Hubs");
-	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {
+	const { tree, root, sheet, press } = await mount();
+	expect(renderedText(tree)).toContain("2");
+	press("Hubs, 2");
+	expect(sheet.navigate).toHaveBeenCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(root.dispatch).not.toHaveBeenCalled();
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
@@ -204,6 +273,13 @@ it("says so when the hub restarts without the update", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
+});
+
+it("opens Display inside the sheet, valued with this phone's appearance", async () => {
+	const { sheet, press, find } = await mount();
+	expect(find("Display, System")).not.toBeNull();
+	press("Display, System");
+	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });
 
 it("says the update couldn't be confirmed when the hub's first answer after the restart fails", async () => {
