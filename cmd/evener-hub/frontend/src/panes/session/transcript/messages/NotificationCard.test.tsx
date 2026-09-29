@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
-import { buildEntityView, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { buildEntityView, makeTranscriptDisplayConfig, type ParsedNotification } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,7 +15,6 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
-import type { ParsedNotification } from "./steeringClassify";
 
 beforeAll(async () => {
   await import("../../");

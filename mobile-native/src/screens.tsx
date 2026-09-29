@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { ApprovalDock } from "./session/ApprovalDock";
+import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
@@ -1310,7 +1311,10 @@ export function ConversationScreen({
 			});
 	}
 	const findQuery = find?.query ?? "";
-	const findHits = useMemo(() => findMatches(timelineRows, findQuery), [timelineRows, findQuery]);
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery, conversation?.delegates),
+		[timelineRows, findQuery, conversation?.delegates],
+	);
 	const findKey = find?.key ?? null;
 	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
 	const findCurrent = findIndex < 0 ? null : findIndex;
@@ -2257,8 +2261,17 @@ export function ConversationScreen({
 			return null;
 		}
 		if (origin.kind === "draft") {
-			if (action === "discard") document.dismiss();
-			else if (action === "edit") document.restore();
+			if (action === "discard") {
+				document.dismiss();
+				// The ghost stands in for a lost send the outbox still holds (the
+				// draft's `sameSend` match): Discard clears that row too, or it
+				// returns as its own "Couldn't confirm this was sent" ghost.
+				if (origin.clientMutationId !== undefined)
+					await getNativeMutationRuntime().discardUndelivered(
+						origin.clientMutationId,
+						nativeMutationTargetKey(route.params.hubId, route.params.ref),
+					);
+			} else if (action === "edit") document.restore();
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -2756,9 +2769,9 @@ export function ConversationScreen({
 							onHeight={setFloatingHeight}
 						/>
 					</View>
-					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
+					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8 }}>
 						<ScrollView
-							style={{ flexGrow: 0, flexShrink: 1 }}
+							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
@@ -2785,7 +2798,10 @@ export function ConversationScreen({
 								) : null}
 							</View>
 						</ScrollView>
-						<View>
+						{/* Only the dock's slot gives up height, so a dock taller than the
+						    room left scrolls its body and keeps its answer controls on
+						    screen (spec 8.4); the tray and the composer keep theirs. */}
+						<View style={{ flexShrink: 1 }}>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.
@@ -2826,84 +2842,84 @@ export function ConversationScreen({
 									error={answerError}
 								/>
 							) : null}
-							{bottom.tray ? (
-								<LiveStatusTray
-									session={conversation}
-									frames={frames}
-									connected={connected}
-									canStop={!!permitted?.stop}
-									stopping={stopping || pending}
-									onStop={() => {
-										void stop();
-									}}
-									onJumpToLive={jumpToLive}
-								/>
-							) : null}
-							{subagentOf ? (
-								<SubagentPanel
-									hubId={route.params.hubId}
-									ref={route.params.ref}
-									coordinator={subagentOf}
-									inFront={focused}
-									barShown={subagentBar}
-									showToast={showSubagentToast}
-									onRow={setSubagentRow}
-									navigation={navigation as never}
-								/>
-							) : null}
-							{composerShown ? (
-								<Composer
-									value={draft.record.draft}
-									editable={draft.loaded}
-									onChangeText={(text) => {
-										// A "/" that starts an empty draft opens Commands and
-										// skills in its place (spec 8.5).
-										if (text === "/" && draft.record.draft === "" && commandsHost) {
-											openCommands();
-											return;
-										}
-										document.edit(text);
-									}}
-									inputRef={composerInput}
-									placeholder={composerPlaceholder(onlineAction, answering)}
-									// Under an open dock, whose own button reads "Send answer",
-									// this Send says it sends what you typed.
-									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
-									sendEnabled={sendEnabled}
-									onSend={() => {
-										void send();
-									}}
-									onPhotoLibrary={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose();
-									}}
-									onCamera={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose("camera");
-									}}
-									onCommands={commandsHost ? openCommands : undefined}
-									settings={bottom.modelChip ? composerSettings : null}
-									above={
-										<>
-											{waitingForAgent}
-											<ImageAttachments document={document} selection={imageSelection} />
-											<ErrorMessage message={imageState.error} />
-										</>
-									}
-								/>
-							) : notice ? (
-								<SessionNotice
-									kind={notice}
-									busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
-									disabled={!controls}
-									error={notice === "restartNeeded" ? restart.error : null}
-									onPress={() => {
-										if (notice === "paused") void controls?.resume();
-										else void restart.restart();
-									}}
-								/>
-							) : null}
 						</View>
+						{bottom.tray ? (
+							<LiveStatusTray
+								session={conversation}
+								frames={frames}
+								connected={connected}
+								canStop={!!permitted?.stop}
+								stopping={stopping || pending}
+								onStop={() => {
+									void stop();
+								}}
+								onJumpToLive={jumpToLive}
+							/>
+						) : null}
+						{subagentOf ? (
+							<SubagentPanel
+								hubId={route.params.hubId}
+								ref={route.params.ref}
+								coordinator={subagentOf}
+								inFront={focused}
+								barShown={subagentBar}
+								showToast={showSubagentToast}
+								onRow={setSubagentRow}
+								navigation={navigation as never}
+							/>
+						) : null}
+						{composerShown ? (
+							<Composer
+								value={draft.record.draft}
+								editable={draft.loaded}
+								onChangeText={(text) => {
+									// A "/" that starts an empty draft opens Commands and
+									// skills in its place (spec 8.5).
+									if (text === "/" && draft.record.draft === "" && commandsHost) {
+										openCommands();
+										return;
+									}
+									document.edit(text);
+								}}
+								inputRef={composerInput}
+								placeholder={composerPlaceholder(onlineAction, answering)}
+								// Under an open dock, whose own button reads "Send answer",
+								// this Send says it sends what you typed.
+								sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
+								sendEnabled={sendEnabled}
+								onSend={() => {
+									void send();
+								}}
+								onPhotoLibrary={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose();
+								}}
+								onCamera={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose("camera");
+								}}
+								onCommands={commandsHost ? openCommands : undefined}
+								settings={bottom.modelChip ? composerSettings : null}
+								above={
+									<>
+										{waitingForAgent}
+										<ImageAttachments document={document} selection={imageSelection} />
+										<ErrorMessage message={imageState.error} />
+									</>
+								}
+							/>
+						) : notice ? (
+							<SessionNotice
+								kind={notice}
+								busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
+								disabled={!controls}
+								error={notice === "restartNeeded" ? restart.error : null}
+								onPress={() => {
+									if (notice === "paused") void controls?.resume();
+									else void restart.restart();
+								}}
+							/>
+						) : null}
 					</View>
 				</View>
 			</KeyboardAvoidingView>

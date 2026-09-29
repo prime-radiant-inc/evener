@@ -203,6 +203,8 @@ function answer(host: string, method: string, params: unknown): unknown {
     }
     case "evener/spawn/slashCatalog":
       return { commands: [], skills: [] };
+    case "evener/command/list":
+      return { commands: [] };
     case "evener/git/head":
       return { head: world?.branch ?? "" };
     case "evener/plugin/preview":
@@ -359,6 +361,7 @@ for (const method of [
   "evener/instance/list",
   "evener/projects/recent",
   "evener/spawn/slashCatalog",
+  "evener/command/list",
   "evener/plugin/preview",
   "evener/git/head",
 ] as const satisfies readonly MethodName[]) {

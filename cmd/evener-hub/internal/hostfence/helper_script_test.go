@@ -26,6 +26,9 @@ type fenceRemote struct {
 	t      *testing.T
 	script string
 	state  string
+	// clockDir holds the shifted-clock `date` shim, empty where the host has no
+	// /proc and so no nonce scan for a clock to bound.
+	clockDir string
 }
 
 // newFenceRemote installs the embedded helper bytes into a temp dir the way
@@ -41,14 +44,71 @@ func newFenceRemote(t *testing.T) *fenceRemote {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatalf("create state root: %v", err)
 	}
-	return &fenceRemote{t: t, script: script, state: state}
+	return &fenceRemote{t: t, script: script, state: state, clockDir: installShiftedClock(t, dir)}
+}
+
+// registrationClockShift is how far ahead of the host the helper's registration
+// and exit stamps read.
+const registrationClockShift = time.Hour
+
+// registrationAheadOfHost is the registration time of a hand-written running
+// entry: ahead of every process the host runs, as the wrapper's own entries are.
+func registrationAheadOfHost() time.Time {
+	return time.Now().Add(registrationClockShift)
+}
+
+// installShiftedClock puts a `date` in front of the helper's PATH that reads the
+// stamp format the helper writes (`date -u +%Y-%m-%dT%H:%M:%SZ`) an hour ahead,
+// and forwards every other call to the real date. The nonce scan treats a
+// same-uid process whose environment it cannot read, and that started at or
+// after the entry's registration, as a possible descendant and fails closed.
+// With registration at the host's own clock, any such process the host happens
+// to run beside the test, such as another package's non-dumpable child on a
+// shared CI runner, perturbs the scan. Registering ahead of every running
+// process holds them all out, whatever the host runs; a test that needs a
+// process counted starts it after registration by registering an entry
+// explicitly (writeLeaseEntryRegisteredAt). It returns "" on a host without
+// /proc, where no scan exists.
+func installShiftedClock(t *testing.T, dir string) string {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		return ""
+	}
+	realDate, err := exec.LookPath("date")
+	if err != nil {
+		t.Fatalf("find date: %v", err)
+	}
+	clockDir := filepath.Join(dir, "clock")
+	if err := os.MkdirAll(clockDir, 0o700); err != nil {
+		t.Fatalf("create clock shim dir: %v", err)
+	}
+	const stampFormat = "+%Y-%m-%dT%H:%M:%SZ"
+	shim := fmt.Sprintf("#!/bin/sh\n"+
+		"if [ \"$*\" = '-u %[2]s' ]; then\n"+
+		"\texec '%[1]s' -u -d \"@$(( $('%[1]s' +%%s) + %[3]d ))\" '%[2]s'\n"+
+		"fi\n"+
+		"exec '%[1]s' \"$@\"\n", realDate, stampFormat, int(registrationClockShift/time.Second))
+	if err := os.WriteFile(filepath.Join(clockDir, "date"), []byte(shim), 0o700); err != nil {
+		t.Fatalf("install clock shim: %v", err)
+	}
+	return clockDir
+}
+
+// env is the environment one helper invocation runs in: the state root, the
+// shifted clock ahead on PATH, then any extra entries.
+func (f *fenceRemote) env(extraEnv ...string) []string {
+	env := append(os.Environ(), "EVENER_FENCE_STATE="+f.state)
+	if f.clockDir != "" {
+		env = append(env, "PATH="+f.clockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	return append(env, extraEnv...)
 }
 
 // helperCommand builds one helper invocation through a POSIX shell, exactly as
 // the remote exec seam will. Extra environment entries are appended last.
 func (f *fenceRemote) helperCommand(extraEnv []string, args ...string) *exec.Cmd {
 	cmd := exec.Command("sh", append([]string{f.script}, args...)...)
-	cmd.Env = append(append(os.Environ(), "EVENER_FENCE_STATE="+f.state), extraEnv...)
+	cmd.Env = f.env(extraEnv...)
 	return cmd
 }
 
@@ -907,9 +967,10 @@ func TestScriptPostSpawnFailureKillsDescendants(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("sleep 60 & echo $! > %s/descendant; sleep 60", work)
+	env, ready := faultAfterSpawnEnv(t)
+	command := fmt.Sprintf("sleep 0.3; sleep 60 & echo $! > %s/descendant; touch %s; sleep 60", work, ready)
 	start := time.Now()
-	_, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1"}, "perform", epoch.BootID, "1", command)
+	_, stderr, code := remote.run(env, "perform", epoch.BootID, "1", command)
 	if code != 69 {
 		t.Fatalf("faulted perform exited %d, want 69: %s", code, stderr)
 	}
@@ -932,6 +993,19 @@ func TestScriptPostSpawnFailureKillsDescendants(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// faultAfterSpawnEnv fails the wrapper's post-spawn entry write once the wrapped
+// command has created the returned ready marker. The wrapper reaches that write
+// within milliseconds of the spawn, and a command's setup runs on its own
+// schedule: without the barrier a slow start finds the command killed before it
+// did anything the test then reads. The command's setup delay is the forced
+// interleaving: it always outlasts the wrapper's own path to the write.
+func faultAfterSpawnEnv(t *testing.T, extra ...string) (env []string, ready string) {
+	t.Helper()
+	ready = filepath.Join(t.TempDir(), "ready")
+	env = append([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1", "EVENER_FENCE_FAULT_AFTER_SPAWN_READY=" + ready}, extra...)
+	return env, ready
 }
 
 // processAlive reports whether pid names live work, through kill -0 so the test
@@ -1017,9 +1091,9 @@ func zombieEnvironReadable(pid int) bool {
 // writeLeaseEntryWithDescendants writes one running, pid-owned lease entry
 // directly, with the given recorded owner pid and start token and a raw
 // descendants value ("" for none). It is the schema the wrapper writes, so
-// recheck reads a real record. The registration is now, as a running entry's
-// registration is its own spawn second and the nonce scan's
-// uninspectable-process bound reads it.
+// recheck reads a real record. The registration is ahead of every host process
+// (registrationAheadOfHost): the nonce scan's uninspectable-process bound reads
+// it.
 func writeLeaseEntryWithDescendants(t *testing.T, remote *fenceRemote, id string, pid int, startToken, descendants string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(remote.state, "leases"), 0o700); err != nil {
@@ -1028,7 +1102,7 @@ func writeLeaseEntryWithDescendants(t *testing.T, remote *fenceRemote, id string
 	entry := strings.Join([]string{
 		"id\t" + id,
 		"command\tsleep 300",
-		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339),
+		"registeredAt\t" + registrationAheadOfHost().UTC().Format(time.RFC3339),
 		"state\trunning",
 		"ownershipKind\tpid",
 		fmt.Sprintf("pid\t%d", pid),
@@ -1270,10 +1344,9 @@ func TestScriptDescendantIdentityRevalidated(t *testing.T) {
 	entryPath := filepath.Join(remote.state, "leases", entry.ID)
 	body := "id\t" + entry.ID + "\n" +
 		"command\tsleep 30\n" +
-		// A running entry's registration is its own spawn second, and the nonce
-		// scan's uninspectable-process bound reads it: a fixed past date would
-		// let unrelated host processes stand in for possible descendants.
-		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339) + "\n" +
+		// Ahead of every host process: the nonce scan's uninspectable-process
+		// bound reads the registration.
+		"registeredAt\t" + registrationAheadOfHost().UTC().Format(time.RFC3339) + "\n" +
 		"state\trunning\n" +
 		"ownershipKind\tpid\n" +
 		fmt.Sprintf("pid\t%d\n", unrelated.Process.Pid) +
@@ -1907,9 +1980,10 @@ func TestScriptPostSpawnWriteFailureKillsChild(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("touch %s/started; exec sleep 30", work)
+	env, ready := faultAfterSpawnEnv(t)
+	command := fmt.Sprintf("sleep 0.3; touch %s/started %s; exec sleep 30", work, ready)
 	start := time.Now()
-	_, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1"}, "perform", epoch.BootID, "1", command)
+	_, stderr, code := remote.run(env, "perform", epoch.BootID, "1", command)
 	if code != 69 {
 		t.Fatalf("faulted perform exited %d, want 69: %s", code, stderr)
 	}
