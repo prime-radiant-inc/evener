@@ -230,10 +230,10 @@ export class AlertCenter {
 		if (this.dropAlerts((alert) => aboutSession(alert, ref))) this.publish();
 	}
 
-	/** New session is open: it shows why its start failed itself, so the
-	 * alert saying so goes. */
-	startFailureSeen(): void {
-		if (this.dropAlerts((alert) => alert.kind === "startFailed")) this.publish();
+	/** A hub's New session is open: it shows why its start failed itself, so
+	 * the alert saying so goes. Another hub's stays. */
+	startFailureSeen(hubId: string): void {
+		if (this.dropAlerts((alert) => alert.kind === "startFailed" && alert.hubId === hubId)) this.publish();
 	}
 
 	setPreferences(preferences: AlertPreferences): void {

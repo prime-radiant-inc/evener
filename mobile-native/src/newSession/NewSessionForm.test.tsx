@@ -910,3 +910,21 @@ it("never loses a failed start on a hub you switched away from (#3104)", async (
 	await act(async () => form.alerts.reset());
 	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-1", hubName: "magic-kingdom" });
 });
+
+it("retires only its own hub's failed-start alert when it comes into focus (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" } });
+	screen.focused = false;
+	await form.rerender();
+	await act(async () => {
+		form.alerts.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false });
+		form.alerts.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false });
+	});
+	screen.focused = true;
+	await form.rerender();
+	// This form is hub-1's: hub-2's alert stays.
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false },
+	]);
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-2", hubName: "paradise-park" });
+	form.dispose();
+});

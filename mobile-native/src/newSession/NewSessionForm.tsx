@@ -83,7 +83,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		startMayRepeat: form.startMayRepeat(),
 	});
 	const offerAlert = useOfferAlert();
-	const startFailureSeen = useStartFailureSeen();
+	const startFailureSeen = useStartFailureSeen(hubId);
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
 	useEffect(() => showForm(store, { navigation, latest }), [store, navigation]);

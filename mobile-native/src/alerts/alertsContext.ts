@@ -47,11 +47,12 @@ export function useOfferAlert(): (alert: Alert) => void {
 	return useCallback((alert: Alert) => center?.offer(alert), [center]);
 }
 
-/** Tells alerts New session is open, so an alert that a start failed, which
- * the form now shows itself, goes: nothing outside an AlertsProvider. */
-export function useStartFailureSeen(): () => void {
+/** Tells alerts this hub's New session is open, so an alert that its start
+ * failed, which the form now shows itself, goes: nothing outside an
+ * AlertsProvider. */
+export function useStartFailureSeen(hubId: string): () => void {
 	const center = useContext(AlertsContext)?.center;
-	return useCallback(() => center?.startFailureSeen(), [center]);
+	return useCallback(() => center?.startFailureSeen(hubId), [center, hubId]);
 }
 
 const noSubscription = () => () => {};
