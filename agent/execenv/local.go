@@ -1934,9 +1934,11 @@ var listDirChunk = 512
 
 // maxListDirScanEntries caps how many entries a chunked listing may scan for one
 // directory before it stops and reports the listing incomplete, so a finite page
-// cannot drive an unbounded scan of a pathological directory. It is far above
-// any real directory, so an ordinary listing still scans to EOF and returns the
-// true sorted prefix. A var, not a const, so a test can shrink it.
+// cannot drive an unbounded scan of a pathological directory. The read bound is
+// this many entries plus at most one boundary probe that tells a directory
+// ending exactly at the cap from one with more. It is far above any real
+// directory, so an ordinary listing still scans to EOF and returns the true
+// sorted prefix. A var, not a const, so a test can shrink it.
 var maxListDirScanEntries = 200_000
 
 // listDirReadPrefix opens dir and returns the lexically smallest limit of its
@@ -2004,6 +2006,9 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 			}
 			batch, rerr := read(f, 1)
 			if len(batch) > 0 {
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return false, false, rerr
+				}
 				if keep == nil || keep(batch[0]) {
 					return true, false, nil
 				}
@@ -2032,18 +2037,28 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 		}
 		if scanCap >= 0 && scanned >= scanCap {
 			// We stopped with entries read. A directory that ended exactly at the
-			// cap is complete, not incomplete: probe for a kept entry to tell EOF
-			// from "there is more", applying the same filter as the main loop.
-			found, ended, err := nextKept(scanCap)
-			if err != nil {
-				return dirPrefixResult{}, err
-			}
-			if found || !ended {
+			// cap is complete, not incomplete, so spend one more raw read to tell
+			// EOF from "there is more". That single entry bounds the total work at
+			// scanCap+1 reads; a filtered entry at the boundary is reported
+			// incomplete rather than stepped over, because proving the visible
+			// listing complete can require reading a masked run past the bound.
+			batch, rerr := read(f, 1)
+			if len(batch) > 0 {
 				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
+			}
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return dirPrefixResult{}, rerr
 			}
 			return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
 		}
-		batch, rerr := read(f, listDirChunk)
+		// Never read past the scan cap: bound the chunk to what is left.
+		want := listDirChunk
+		if scanCap >= 0 {
+			if rem := scanCap - scanned; rem < want {
+				want = max(rem, 1)
+			}
+		}
+		batch, rerr := read(f, want)
 		for _, ent := range batch {
 			scanned++
 			if keep != nil && !keep(ent) {

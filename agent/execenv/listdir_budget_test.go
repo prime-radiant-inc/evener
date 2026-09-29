@@ -289,8 +289,8 @@ func TestListDirectoryBudget_ScanCapBoundsScan(t *testing.T) {
 	if scanned >= 10 {
 		t.Fatalf("scan-capped walk read the whole 10-entry directory despite a %d-entry cap", maxListDirScanEntries)
 	}
-	if scanned > maxListDirScanEntries+listDirChunk {
-		t.Fatalf("scan-capped walk read %d entries, want at most the cap %d plus one chunk", scanned, maxListDirScanEntries)
+	if scanned > maxListDirScanEntries+1 {
+		t.Fatalf("scan-capped walk read %d entries, want at most the cap %d plus the one boundary probe", scanned, maxListDirScanEntries)
 	}
 	if len(got) == 0 {
 		t.Fatal("scan-capped walk returned no entries though the directory had some")
