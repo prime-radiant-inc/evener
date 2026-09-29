@@ -24,88 +24,11 @@
 // "Switched to", and an `already_disposed` dispose never claims a
 // dirty-discard, because nothing was torn down to discard.
 
-import { clip, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
+import { clip, parseArgs, str, worktreeSummary } from "@evener/appwire-client";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
-
-// Only force_dirty earns the phrase. A plain `force` overrides merge-safety
-// gating (an unmerged branch, an unmanaged sidecar) and explicitly "does NOT
-// discard uncommitted changes" per the tool's own parameter description —
-// claiming otherwise on the row would be the same dishonesty in the other
-// direction.
-const DISCARD_NOTE = " · discarded uncommitted changes";
-
-// Parsed core of a manage_worktree call's arguments: which operation it
-// requested, and whether force_dirty was set. This is deliberately narrower
-// than the full args object worktreeSummary below needs (it also reads
-// name/path/base_ref for display text) - it's exactly the "read-vs-mutate"
-// shape a caller that only cares about consequence, not display, needs.
-// Exported so callers that need the "read-vs-mutate" shape can reuse this
-// instead of re-deriving the same two fields from item.argumentsJSON itself.
-export interface WorktreeCallArgs {
-  operation: string;
-  forceDirty: boolean;
-}
-
-export function parseWorktreeCallArgs(argumentsJSON: string | undefined): WorktreeCallArgs {
-  const args = parseArgs(argumentsJSON);
-  return { operation: str(args, "operation") ?? "", forceDirty: args.force_dirty === true };
-}
-
-function countOf(result: Record<string, unknown> | undefined, key: string): number | undefined {
-  const value = result?.[key];
-  return Array.isArray(value) ? value.length : undefined;
-}
-
-function worktreeSummary(item: { argumentsJSON?: string; output?: string }): string {
-  const args = parseArgs(item.argumentsJSON);
-  const { operation, forceDirty } = parseWorktreeCallArgs(item.argumentsJSON);
-  const result = parseJSONObject(item.output);
-  const status = result ? str(result, "status") : undefined;
-  // `name` is the handle for create/remove/switch; `path` is switch's other
-  // accepted form (the schema takes exactly one of the two).
-  const target = str(args, "name") ?? str(args, "path") ?? "";
-  const dirty = forceDirty ? DISCARD_NOTE : "";
-
-  switch (operation) {
-    case "create": {
-      const base = str(args, "base_ref");
-      return `Created worktree ${target}${base ? ` (from ${base})` : ""}`;
-    }
-    case "list": {
-      const found = countOf(result, "entries");
-      return `Listed worktrees${found === undefined ? "" : ` · ${found} found`}`;
-    }
-    case "switch":
-      // The daemon reports `unchanged` when the session was already there.
-      return status === "unchanged" ? `Already in worktree ${target}` : `Switched to worktree ${target}`;
-    case "exit": {
-      const left = result ? str(result, "left_path") : undefined;
-      return `Exited worktree${left ? ` at ${left}` : ""}`;
-    }
-    case "remove":
-      return `Removed worktree ${target}${dirty}`;
-    case "prune": {
-      const removed = countOf(result, "removed");
-      const skipped = countOf(result, "skipped");
-      if (removed === undefined && skipped === undefined) return "Pruned worktrees";
-      return `Pruned worktrees · ${removed ?? 0} removed, ${skipped ?? 0} skipped`;
-    }
-    case "dispose": {
-      const id = str(args, "id") ?? "";
-      // Idempotent no-op: the lane was already gone, so no work was discarded
-      // however the call was flagged.
-      if (status === "already_disposed") return `Already disposed ${id}`;
-      return `Disposed ${id}${dirty}`;
-    }
-    default:
-      // A future operation this build has never heard of still says which one
-      // it was, rather than collapsing back to the bare tool name.
-      return `manage_worktree: ${operation}`;
-  }
-}
 
 registerToolRenderer({
   match: "manage_worktree",

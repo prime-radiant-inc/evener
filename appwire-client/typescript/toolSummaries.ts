@@ -12,6 +12,7 @@ import type { ItemModel } from "./model";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
+import { worktreeProgress, worktreeSummary } from "./worktreeSteps";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -32,6 +33,7 @@ export type ToolFamily =
   | "shell"
   | "skill"
   | "tasks"
+  | "worktree"
   | "mcp"
   | "tool";
 
@@ -390,6 +392,8 @@ function progressFor(
     }
     case "tasks":
       return taskListChanges(step) ? "Updating the task list" : "Checking the task list";
+    case "worktree":
+      return worktreeProgress(step);
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -421,6 +425,7 @@ const TOOLS: Record<string, ToolEntry> = {
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
   task_list: { family: "tasks", summary: taskListSummary },
+  manage_worktree: { family: "worktree", summary: worktreeSummary },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {

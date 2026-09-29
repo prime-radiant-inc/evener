@@ -32,6 +32,23 @@ test.each<[ToolWireCall, string]>([
   ["call_task_list_start", "→ Reproduce the settle race"],
   ["call_task_list_done", "→ Order the drain before settle"],
   ["call_task_list_view", "Checked the task list"],
+  // A worktree step says what the settled result says it did: a switch to
+  // the worktree the session is in already changed nothing.
+  ["call_worktree_create", "Created worktree settle-fix"],
+  ["call_worktree_list", "Listed worktrees · 1 found"],
+  [
+    "call_worktree_exit",
+    "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",
+  ],
+  ["call_worktree_switch", "Switched to worktree settle-fix"],
+  ["call_worktree_switch_again", "Already in worktree settle-fix"],
+  // The registry's repetition nudge follows this exit's JSON.
+  [
+    "call_worktree_exit_again",
+    "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",
+  ],
+  ["call_worktree_remove", "Removed worktree settle-fix"],
+  ["call_worktree_prune", "Pruned worktrees · 0 removed, 1 skipped"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
@@ -66,6 +83,26 @@ test("says a historical task_list action changed the list only when it carried a
   expect(called({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] })).toBe("Updated the task list");
 });
 
+test("says what a worktree adopt or dispose did, and an operation it doesn't know in words", () => {
+  const worktree = (args: Record<string, unknown>, result?: Record<string, unknown>) =>
+    toolStepSummary({
+      toolName: "manage_worktree",
+      argumentsJSON: JSON.stringify(args),
+      output: result ? JSON.stringify(result) : undefined,
+    });
+  expect(
+    worktree({ operation: "adopt", path: "/src/lane" }, { status: "adopted", name: "lane", path: "/src/lane" }),
+  ).toBe("Adopted worktree lane");
+  expect(worktree({ operation: "adopt", path: "/src/lane" })).toBe("Adopted worktree /src/lane");
+  expect(worktree({ operation: "dispose", id: "dlg_1", force_dirty: true })).toBe(
+    "Disposed dlg_1 · discarded uncommitted changes",
+  );
+  expect(worktree({ operation: "dispose", id: "dlg_1", force_dirty: true }, { status: "already_disposed" })).toBe(
+    "Already disposed dlg_1",
+  );
+  expect(worktree({ operation: "reticulate" })).toBe("Used manage worktree: reticulate");
+});
+
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
     "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
@@ -82,6 +119,7 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   for (const name of ["shell", "exec_command", "run_shell_command"]) expect(toolFamily(name)).toBe("shell");
   expect(toolFamily("use_skill")).toBe("skill");
   expect(toolFamily("task_list")).toBe("tasks");
+  expect(toolFamily("manage_worktree")).toBe("worktree");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -145,6 +183,15 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["use_skill", { skill_name: "brainstorming" }, "Activating skill: brainstorming"],
   ["task_list", { update: [{ id: 1, status: "done" }] }, "Updating the task list"],
   ["task_list", {}, "Checking the task list"],
+  ["manage_worktree", { operation: "create", name: "settle-fix" }, "Creating worktree settle-fix"],
+  ["manage_worktree", { operation: "switch", name: "settle-fix" }, "Switching to worktree settle-fix"],
+  ["manage_worktree", { operation: "list" }, "Listing worktrees"],
+  ["manage_worktree", { operation: "exit" }, "Leaving the worktree"],
+  ["manage_worktree", { operation: "remove", name: "settle-fix" }, "Removing worktree settle-fix"],
+  ["manage_worktree", { operation: "prune" }, "Pruning worktrees"],
+  ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
+  ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
+  ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {

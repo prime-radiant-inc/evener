@@ -41,6 +41,7 @@
     "systemEventCopy.ts",
     "toolEvidence.ts",
     "toolSummaries.ts",
+    "worktreeSteps.ts",
     "steeringNotifications.ts",
     "activityList.ts",
     "activityMerge.ts",

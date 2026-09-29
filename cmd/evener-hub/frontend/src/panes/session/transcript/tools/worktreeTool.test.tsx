@@ -182,10 +182,12 @@ test("dispose: an already-disposed result never claims a dirty-discard even if f
 
 // --- defensive fallback ------------------------------------------------
 
-test("an unrecognized operation still renders a non-crashing, tool-name-prefixed summary", () => {
+test("an unrecognized operation still says which one it was, in words, never the raw tool name", () => {
   const d = toolRendererFor("manage_worktree");
   const args = JSON.stringify({ operation: "reticulate" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("manage_worktree: reticulate");
+  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe(
+    "Used manage worktree: reticulate",
+  );
 });
 
 // --- shared body: manage_worktree's own output is real JSON (its Exec

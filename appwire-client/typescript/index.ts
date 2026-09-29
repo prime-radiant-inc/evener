@@ -682,3 +682,4 @@ export {
   watchNextFireLabel,
   watchTitle,
 } from "./watchText";
+export { type WorktreeStep, worktreeMessage, worktreeSummary } from "./worktreeSteps";
