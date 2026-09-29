@@ -258,7 +258,7 @@ export function createNewSessionStore(
 			} catch {
 				if (generation === connection && get().source === host)
 					set({
-						metadataError: "Could not load projects. Retry options or use hub defaults.",
+						metadataError: "Couldn't load this host's recent projects.",
 					});
 			}
 		},
@@ -300,7 +300,7 @@ export function createNewSessionStore(
 			} catch {
 				if (generation === catalog)
 					set({
-						modelError: "Could not load models. Retry options or use the hub default.",
+						modelError: "Couldn't load this host's models. The hub's default model still works.",
 					});
 			} finally {
 				if (generation === catalog) {

@@ -192,7 +192,7 @@ it("retains metadata failure across model success and clears it only after metad
 	const metadata = store.getState().loadMetadata();
 	calls[0]?.response.reject(new Error("projects unavailable"));
 	await metadata;
-	expect(store.getState().metadataError).toBeTruthy();
+	expect(store.getState().metadataError).toBe("Couldn't load this host's recent projects.");
 	const models = store.getState().loadModels();
 	calls[1]?.response.resolve({ data: [model] });
 	await models;
@@ -209,7 +209,7 @@ it("retains model failure across metadata success until model recovery", async (
 	const models = store.getState().loadModels();
 	calls[0]?.response.reject(new Error("models unavailable"));
 	await models;
-	expect(store.getState().modelError).toBeTruthy();
+	expect(store.getState().modelError).toBe("Couldn't load this host's models. The hub's default model still works.");
 	const metadata = store.getState().loadMetadata();
 	calls[1]?.response.resolve({ data: [] });
 	await metadata;
