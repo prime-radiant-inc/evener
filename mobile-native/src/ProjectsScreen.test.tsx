@@ -12,7 +12,7 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
-import { ProjectsScreen } from "./ProjectsScreen";
+import { ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
 import { render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
@@ -80,5 +80,48 @@ it("announces that more of the list is loading, since iOS ignores accessibilityL
 	expect(list).toBeDefined();
 	act(() => list.props.onEndReached());
 	expect(announce).toHaveBeenCalledWith("Loading more…");
+	tree.unmount();
+});
+
+it("renders a live tally's chip in the shared list and none without one", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) =>
+		wireV2(params as never, {
+			sessions: [
+				{ ref: "local:a", title: "Alpha", live: true, subagents: { running: 2, failed: 0, done: 0 } },
+				{ ref: "local:b", title: "Beta" },
+			],
+		}),
+	);
+	harness.connection = screenConnection(hub, "ready");
+	const screenProps = {
+		route: {
+			params: {
+				hubId: "hub-1",
+				location: {
+					ref: "local:a",
+					revealRef: "local:a",
+					title: "Project",
+					params: { resource: "project_page", projectKey: "p", tier: "current" },
+				},
+			},
+		},
+		navigation: { navigate: () => {}, setParams: () => {} },
+	} as unknown as ComponentProps<typeof SessionLocationScreen>;
+	const tree = render(<SessionLocationScreen {...screenProps} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	expect(renderedText(tree)).toContain("2 running");
+	// Only the row with a tally gets a chip, not the one without.
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	// The row's own label speaks it too: a Pressable override hides the chip's
+	// text from VoiceOver.
+	const labels = tree.root
+		.findAll(
+			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("Open "),
+		)
+		.map((node) => node.props.accessibilityLabel);
+	expect(labels).toContain("Open Alpha, 2 running");
+	expect(labels).toContain("Open Beta");
 	tree.unmount();
 });

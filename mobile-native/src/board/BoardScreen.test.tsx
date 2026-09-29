@@ -2265,9 +2265,7 @@ const migrating = session("local:migrate", { title: "Migrate schema", state: "ac
 const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
 const busyFleet: Fleet = {
 	...fleet,
-	live: [
-		[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished],
-	],
+	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, finished]],
 };
 const workingTitles = (tree: ReactTestRenderer) =>
 	tree.root

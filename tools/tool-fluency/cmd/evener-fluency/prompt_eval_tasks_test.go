@@ -284,6 +284,165 @@ func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 	}
 }
 
+// checkNamed returns the check named name from probe's expectations, or
+// fails the test if the task carries no such check.
+func checkNamed(t *testing.T, probe probeFile, name string) checkSpec {
+	t.Helper()
+	for _, c := range probe.Expect.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("task has no %q check", name)
+	return checkSpec{}
+}
+
+// TestVendorReviewCinderCheckCatchesAnUnamendedAnswer: Cinder's data-deletion
+// period is also 30 days, so a check that only looks for the digit "30"
+// passes an answer that never noticed the amendment and kept the
+// pre-amendment 90-day termination notice. The "cites the amendment" check
+// must fail that answer.
+func TestVendorReviewCinderCheckCatchesAnUnamendedAnswer(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "vendor-review.yaml"))
+	check := checkNamed(t, probe, "cinder row cites the amendment")
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrong := "| Vendor | Termination notice | Auto-renews | Data retention after termination | Section |\n" +
+		"| --- | --- | --- | --- | --- |\n" +
+		"| Cinder Analytics | 90 days | Yes, successive 1-year terms | 30 days | Sections 4, 6, 11 |\n"
+	mustWrite(t, filepath.Join(work, "REVIEW.md"), wrong)
+	if ok, _ := runCheck(work, check, checkTimeout); ok {
+		t.Error("check passed a Cinder row with the unamended 90-day notice and no mention of the amendment")
+	}
+}
+
+// TestVendorReviewShapeChecksCatchProseAnswers: the task asks for a markdown
+// table with a Section column, not just the right facts somewhere in the
+// file. An answer with every fact correct but written as prose bullets, no
+// table at all, must fail the shape checks.
+func TestVendorReviewShapeChecksCatchProseAnswers(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "vendor-review.yaml"))
+	headerCheck := checkNamed(t, probe, "table header names the Section column")
+	rowCheck := checkNamed(t, probe, "each vendor is a table row")
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrong := "# Vendor contract review\n\n" +
+		"Arbor Storage: 60 days notice, auto-renews, 45 days retention (Section 5).\n" +
+		"Beacon Mail: 45 days notice, auto-renews, 60 days retention (Section 9).\n" +
+		"Cinder Analytics: 30 days notice (amended), auto-renews, 30 days retention (Section 6, amended).\n" +
+		"Delta Payments: 30 days notice, no renewal, 30 days retention except legal holds (Section 8).\n" +
+		"Ember Search: 15 days notice, auto-renews, 14 days retention (Section 9).\n"
+	mustWrite(t, filepath.Join(work, "REVIEW.md"), wrong)
+	if ok, _ := runCheck(work, headerCheck, checkTimeout); ok {
+		t.Error("the Section-column header check passed a prose answer with no markdown table")
+	}
+	if ok, _ := runCheck(work, rowCheck, checkTimeout); ok {
+		t.Error("the table-row check passed a prose answer with no markdown table")
+	}
+
+	// A table whose header never names a Section column, but whose data
+	// cells happen to say "Section 5", must still fail the header check: a
+	// header check that matches any line starting with '|' would wrongly
+	// accept a data row's cell text instead of checking the header itself.
+	noSectionHeader := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(noSectionHeader, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrongHeader := "| Vendor | Termination notice | Auto-renews | Data retention |\n" +
+		"| --- | --- | --- | --- |\n" +
+		"| Arbor Storage | 60 days (Section 5) | Yes | 45 days |\n" +
+		"| Beacon Mail | 45 days (Section 9) | Yes | 60 days |\n" +
+		"| Cinder Analytics | 30 days (Section 6, amended) | Yes | 30 days |\n" +
+		"| Delta Payments | 30 days (Section 5) | No | 30 days |\n" +
+		"| Ember Search | 15 days (Section 9) | Yes | 14 days |\n"
+	mustWrite(t, filepath.Join(noSectionHeader, "REVIEW.md"), wrongHeader)
+	if ok, _ := runCheck(noSectionHeader, headerCheck, checkTimeout); ok {
+		t.Error("the header check passed a table whose header has no Section column, only a data cell saying \"Section 5\"")
+	}
+}
+
+// TestNotesNewsletterSectionChecksCatchWeakAnswers: sections can be empty,
+// and the Cold start note can be summarized without saying it was
+// superseded (the point of the note). Both new checks must catch those
+// weak answers.
+func TestNotesNewsletterSectionChecksCatchWeakAnswers(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "notes-newsletter.yaml"))
+	emptySectionCheck := checkNamed(t, probe, "every section has text")
+	coldStartCheck := checkNamed(t, probe, "cold start section notes it was superseded")
+
+	emptyWork := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(emptyWork, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	empty := "# Design notes\n\n" +
+		"## Retry budget\n\n" +
+		"## Shard map\n\n" +
+		"The shard layout moves into a small replicated store services watch.\n\n" +
+		"## Cold start\n\n" +
+		"Superseded by the shard map, so we are not building it.\n\n" +
+		"## Audit trail\n\n" +
+		"Every admin action now writes an append-only log entry.\n"
+	mustWrite(t, filepath.Join(emptyWork, "NEWSLETTER.md"), empty)
+	if ok, _ := runCheck(emptyWork, emptySectionCheck, checkTimeout); ok {
+		t.Error("check passed a NEWSLETTER.md with an empty Retry budget section")
+	}
+
+	noMentionWork := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(noMentionWork, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	noMention := "# Design notes\n\n" +
+		"## Retry budget\n\n" +
+		"Clients now get a retry budget capping retries at 10% of calls per minute.\n\n" +
+		"## Shard map\n\n" +
+		"The shard layout moves into a small replicated store services watch.\n\n" +
+		"## Cold start\n\n" +
+		"New instances took about four minutes to reach full speed before this change.\n\n" +
+		"## Audit trail\n\n" +
+		"Every admin action now writes an append-only log entry.\n"
+	mustWrite(t, filepath.Join(noMentionWork, "NEWSLETTER.md"), noMention)
+	if ok, _ := runCheck(noMentionWork, coldStartCheck, checkTimeout); ok {
+		t.Error("check passed a Cold start section that never says it was superseded")
+	}
+
+	// The check must find the section the same tolerant way the "sections
+	// in index order" check does: a heading line starting with "## " that
+	// contains "cold start" anywhere, not only a heading anchored exactly
+	// at "## cold start".
+	looseHeadingSuperseded := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(looseHeadingSuperseded, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(looseHeadingSuperseded, "NEWSLETTER.md"), "# Design notes\n\n"+
+		"## Retry budget\n\nClients now get a retry budget.\n\n"+
+		"## Shard map\n\nThe shard layout moves into a replicated store.\n\n"+
+		"## Note 3: Cold start\n\nSuperseded by the shard map, so we are not building it.\n\n"+
+		"## Audit trail\n\nEvery admin action is logged.\n")
+	if ok, detail := runCheck(looseHeadingSuperseded, coldStartCheck, checkTimeout); !ok {
+		t.Errorf("check failed a Cold start section under a loosely worded heading that does say it was superseded: %s", detail)
+	}
+
+	looseHeadingNoMention := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(looseHeadingNoMention, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(looseHeadingNoMention, "NEWSLETTER.md"), "# Design notes\n\n"+
+		"## Retry budget\n\nClients now get a retry budget.\n\n"+
+		"## Shard map\n\nThe shard layout moves into a replicated store.\n\n"+
+		"## Note 3: Cold start\n\nNew instances took about four minutes to reach full speed.\n\n"+
+		"## Audit trail\n\nEvery admin action is logged.\n")
+	if ok, _ := runCheck(looseHeadingNoMention, coldStartCheck, checkTimeout); ok {
+		t.Error("check passed a loosely headed Cold start section that never says it was superseded")
+	}
+}
+
 func failingChecks(workDir string, checks []checkSpec) []string {
 	var names []string
 	for _, c := range checks {

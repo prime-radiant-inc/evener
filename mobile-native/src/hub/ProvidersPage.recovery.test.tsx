@@ -177,7 +177,7 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
 		.find((node) => node.props.accessibilityLabel === "API key");
 	if (!input) throw new Error("no API key input");
 	act(() => input.props.onChangeText("fixture-key"));
-	pressLabel(tree, "Save key");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 	expect(renderedText(tree)).toContain("so nothing was saved");
@@ -200,7 +200,7 @@ it("refuses a credential-JSON save for a destination the hub cannot fingerprint"
 		.find((node) => node.props.accessibilityLabel === "Google credential JSON");
 	if (!input) throw new Error("no credential JSON input");
 	act(() => input.props.onChangeText("{}"));
-	pressLabel(tree, "Save credential JSON");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("so nothing was saved");
 	expect(scripted.methods).not.toContain("evener/auth/credentialJson/set");
@@ -290,7 +290,7 @@ it("clears the credential editor when another instance is selected", async () =>
 	// The alpha draft must not carry over to beta.
 	pressRow(tree, "beta");
 	await act(async () => {});
-	expect(pressables(tree).find((node) => node.props.accessibilityLabel === "Save key")).toBeUndefined();
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "API key")).toHaveLength(0);
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 });
 
@@ -403,7 +403,7 @@ it("re-anchors the credential editor when the endpoint moves under it", async ()
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(300);
 	});
-	expect(pressables(tree).find((node) => node.props.accessibilityLabel === "Save key")).toBeUndefined();
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "API key")).toHaveLength(0);
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 });
 
@@ -439,7 +439,7 @@ it("names a changed endpoint and re-reads when a credential save is refused", as
 	if (!input) throw new Error("no API key input");
 	act(() => input.props.onChangeText("fixture-key"));
 	const listsBefore = lists;
-	pressLabel(tree, "Save key");
+	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("now points somewhere else");
 	expect(lists).toBeGreaterThan(listsBefore);

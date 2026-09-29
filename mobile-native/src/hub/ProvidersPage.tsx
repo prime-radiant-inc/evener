@@ -35,13 +35,14 @@ import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
+import { CredentialPasteSheet } from "./CredentialPasteSheet";
 import { useAuthStatuses } from "./useAuthStatuses";
 import {
 	appliedButFailed,
@@ -278,6 +279,27 @@ function Providers({
 			fingerprint: target.endpointFingerprint,
 		});
 		setKey("");
+	}
+	function saveCredential() {
+		if (!instance || !editingCredential) return;
+		// A destination the hub cannot fingerprint has no endpoint to assert, so
+		// the save is refused here rather than stored without an assertion; and
+		// the clear happens on act()'s own success path, never here - clearing
+		// before knowing whether the request could even be sent would lose input
+		// act() is about to refuse to send.
+		if (fingerprintUnavailable(instance)) {
+			setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
+			return;
+		}
+		const value = key.trim();
+		const name = instance.name;
+		void act(
+			() =>
+				editingCredential === "credentialJson"
+					? surface.setCredentialJson(name, value, credentialTarget?.fingerprint)
+					: surface.setApiKey(name, value, credentialTarget?.fingerprint),
+			{ secret: true, endpointAsserted: true },
+		);
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
 	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
@@ -532,208 +554,156 @@ function Providers({
 							{instance ? (
 								<>
 									<ProviderFacts instance={instance} auth={auth} />
-									{editingCredential ? (
-										<>
-											<Group>
-												<TextFieldRow
-													label={editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}
-													placeholder={
-														editingCredential === "credentialJson" ? "Paste the credential JSON" : "Paste the API key"
-													}
-													multiline={editingCredential === "credentialJson"}
-													secure={editingCredential === "apiKey"}
-													value={key}
-													onChangeText={setKey}
-													disabled={surface.busy}
-												/>
-												<Row
-													label="Save"
-													accessibilityLabel={
-														editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"
-													}
-													tone="accent"
-													disabled={surface.busy || stale || !key.trim() || !ready}
-													onPress={() => {
-														// A destination the hub cannot fingerprint has no
-														// endpoint to assert, so the save is refused here
-														// rather than stored without an assertion; and the
-														// clear happens on act()'s own success path
-														// (below), never here - clearing before knowing
-														// whether the request could even be sent would
-														// lose input act() is about to refuse to send.
-														if (fingerprintUnavailable(instance)) {
-															setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
-															return;
-														}
-														const value = key.trim();
-														void act(
-															() =>
-																editingCredential === "credentialJson"
-																	? surface.setCredentialJson(instance.name, value, credentialTarget?.fingerprint)
-																	: surface.setApiKey(instance.name, value, credentialTarget?.fingerprint),
-															{ secret: true, endpointAsserted: true },
-														);
-													}}
-												/>
-												<Row
-													label="Cancel"
-													tone="accent"
-													disabled={surface.busy}
-													onPress={() => {
-														leaveKey(() => {
-															setEditingCredential(null);
-															setKey("");
-														});
-													}}
-												/>
-											</Group>
-											<GroupFooter>
-												{editingCredential === "credentialJson"
-													? "Paste a service-account key or application_default_credentials.json. The hub validates and stores it."
-													: "The key is stored on the hub, not on this phone."}
-											</GroupFooter>
-										</>
-									) : (
-										<>
-											<Group>
-												{instance.authModes?.includes("oauth") && (
-													<Row
-														label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
-														tone="accent"
-														disabled={surface.busy || stale}
-														onPress={() => {
-															const name = instance.name;
-															close();
-															onSignIn(name);
-														}}
-													/>
-												)}
-												{instance.authModes?.includes("apiKey") && (
-													<Row
-														label={instance.hasStoredFile ? "Replace key" : "Set key"}
-														tone="accent"
-														disabled={surface.busy || stale || !ready}
-														onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
-													/>
-												)}
-												{instance.authModes?.includes("credentialJson") && (
-													<Row
-														label={instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
-														tone="accent"
-														disabled={surface.busy || stale || !ready}
-														onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
-													/>
-												)}
-												<Row
-													label={
-														surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
-															? "Testing…"
-															: "Test connection"
-													}
-													accessibilityLabel="Test connection"
-													tone="accent"
-													disabled={
-														surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready
-													}
-													onPress={whenReady(canUseConnection, () => {
-														probeCredentials(instance.name);
-													})}
-												/>
-											</Group>
-											{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
-												surface.credentialTest.result.status === "success" ? (
-													<GroupFooter>Works</GroupFooter>
-												) : (
-													<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
-												)
-											) : null}
-										</>
-									)}
-									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+									<Group>
+										{instance.authModes?.includes("oauth") && (
+											<Row
+												label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
+												tone="accent"
+												disabled={surface.busy || stale}
+												onPress={() => {
+													const name = instance.name;
+													close();
+													onSignIn(name);
+												}}
+											/>
+										)}
+										{instance.authModes?.includes("apiKey") && (
+											<Row
+												label={credentialTitle("apiKey", instance)}
+												tone="accent"
+												disabled={surface.busy || stale || !ready}
+												onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
+											/>
+										)}
+										{instance.authModes?.includes("credentialJson") && (
+											<Row
+												label={credentialTitle("credentialJson", instance)}
+												tone="accent"
+												disabled={surface.busy || stale || !ready}
+												onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
+											/>
+										)}
+										<Row
+											label={
+												surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
+													? "Testing…"
+													: "Test connection"
+											}
+											accessibilityLabel="Test connection"
+											tone="accent"
+											disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
+											onPress={whenReady(canUseConnection, () => {
+												probeCredentials(instance.name);
+											})}
+										/>
+									</Group>
+									{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
+										surface.credentialTest.result.status === "success" ? (
+											<GroupFooter>Works</GroupFooter>
+										) : (
+											<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
+										)
+									) : null}
+									{/* An open paste sheet says its own save's error. */}
+									{actionError && !editingCredential ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
 									{surface.busy && <Spinner label="Updating provider" />}
-									{editingCredential ? null : (
-										<>
-											<Group label="Manage">
-												<Row
-													label="Edit"
-													tone="accent"
-													disabled={surface.busy || core.writesRefused || stale || !ready}
-													onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
-												/>
-												{!instance.isDefault && (
-													<Row
-														label="Make default"
-														tone="accent"
-														disabled={surface.busy || core.writesRefused || stale || !ready}
-														onPress={() => {
-															void act(() => surface.setDefault(instance.name));
-														}}
-													/>
-												)}
-												{instance.hasStoredFile && instance.activeSource !== "store" && (
-													<Row
-														label={json ? "Clear stored credential JSON" : "Clear stored key"}
-														tone="danger"
-														disabled={surface.busy || stale || !ready}
-														onPress={() => {
-															// A destination the hub cannot fingerprint has
-															// no endpoint to assert: refuse with a reason
-															// rather than grey the control out silently.
-															if (fingerprintUnavailable(instance)) {
-																setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-																return;
-															}
-															confirm(
-																json ? "Clear stored credential JSON?" : "Clear stored key?",
-																json ? "Clear JSON" : "Clear key",
-																() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
-																{ endpointAsserted: true },
-															);
-														}}
-													/>
-												)}
-												{["store", "oauth"].includes(instance.activeSource) && (
-													<Row
-														label="Clear credentials"
-														tone="danger"
-														disabled={surface.busy || stale || !ready}
-														onPress={() => {
-															if (fingerprintUnavailable(instance)) {
-																setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-																return;
-															}
-															confirm(
-																"Clear credentials?",
-																"Clear credentials",
-																() => surface.logout(instance.name, instance.endpointFingerprint),
-																{ endpointAsserted: true },
-															);
-														}}
-													/>
-												)}
-												{!fromEnvironment(instance) && (
-													<Row
-														label="Remove"
-														tone="danger"
-														disabled={surface.busy || core.writesRefused || stale || !ready}
-														onPress={() => {
-															if (fingerprintUnavailable(instance)) {
-																setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-																return;
-															}
-															confirm(
-																"Remove provider?",
-																"Remove",
-																() => surface.remove(instance.name, instance.endpointFingerprint),
-																{ endpointAsserted: true },
-															);
-														}}
-													/>
-												)}
-											</Group>
-										</>
-									)}
+									<Group label="Manage">
+										<Row
+											label="Edit"
+											tone="accent"
+											disabled={surface.busy || core.writesRefused || stale || !ready}
+											onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
+										/>
+										{!instance.isDefault && (
+											<Row
+												label="Make default"
+												tone="accent"
+												disabled={surface.busy || core.writesRefused || stale || !ready}
+												onPress={() => {
+													void act(() => surface.setDefault(instance.name));
+												}}
+											/>
+										)}
+										{instance.hasStoredFile && instance.activeSource !== "store" && (
+											<Row
+												label={json ? "Clear stored credential JSON" : "Clear stored key"}
+												tone="danger"
+												disabled={surface.busy || stale || !ready}
+												onPress={() => {
+													// A destination the hub cannot fingerprint has
+													// no endpoint to assert: refuse with a reason
+													// rather than grey the control out silently.
+													if (fingerprintUnavailable(instance)) {
+														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+														return;
+													}
+													confirm(
+														json ? "Clear stored credential JSON?" : "Clear stored key?",
+														json ? "Clear JSON" : "Clear key",
+														() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
+														{ endpointAsserted: true },
+													);
+												}}
+											/>
+										)}
+										{["store", "oauth"].includes(instance.activeSource) && (
+											<Row
+												label="Clear credentials"
+												tone="danger"
+												disabled={surface.busy || stale || !ready}
+												onPress={() => {
+													if (fingerprintUnavailable(instance)) {
+														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+														return;
+													}
+													confirm(
+														"Clear credentials?",
+														"Clear credentials",
+														() => surface.logout(instance.name, instance.endpointFingerprint),
+														{ endpointAsserted: true },
+													);
+												}}
+											/>
+										)}
+										{!fromEnvironment(instance) && (
+											<Row
+												label="Remove"
+												tone="danger"
+												disabled={surface.busy || core.writesRefused || stale || !ready}
+												onPress={() => {
+													if (fingerprintUnavailable(instance)) {
+														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+														return;
+													}
+													confirm(
+														"Remove provider?",
+														"Remove",
+														() => surface.remove(instance.name, instance.endpointFingerprint),
+														{ endpointAsserted: true },
+													);
+												}}
+											/>
+										)}
+									</Group>
+									{editingCredential ? (
+										<CredentialPasteSheet
+											title={credentialTitle(editingCredential, instance)}
+											kind={editingCredential}
+											value={key}
+											onChangeText={setKey}
+											busy={surface.busy}
+											canSave={!stale && !!key.trim() && ready}
+											error={actionError}
+											onSave={saveCredential}
+											onCancel={() =>
+												leaveKey(() => {
+													setEditingCredential(null);
+													setKey("");
+												})
+											}
+										/>
+									) : null}
 								</>
 							) : null}
 						</GroupedPage>
@@ -807,4 +777,10 @@ function ProviderFacts({
 			)}
 		</>
 	);
+}
+
+/** The action that pastes a credential, which also titles its sheet. */
+function credentialTitle(kind: "apiKey" | "credentialJson", instance: InstanceEntry): string {
+	const what = kind === "credentialJson" ? "credential JSON" : "key";
+	return `${instance.hasStoredFile ? "Replace" : "Set"} ${what}`;
 }
