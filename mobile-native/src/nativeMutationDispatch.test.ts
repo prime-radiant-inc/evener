@@ -302,7 +302,7 @@ test("the durable submitter refuses while no host is live and delegates once one
 	// happened, never asks the person to reconnect - the app does that on its
 	// own - so the exact text is pinned here.
 	const refused = createDurableSubmitter(() => null);
-	await expect(refused.submit(request)).rejects.toThrow(new Error("Durable sending is unavailable right now."));
+	await expect(refused.submit(request)).rejects.toThrow(new Error("Couldn't save this on the phone. Try again."));
 
 	// A live host delegates to the runtime and enqueues durably.
 	const { runtime, host, targetKey } = compose();
