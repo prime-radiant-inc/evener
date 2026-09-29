@@ -143,6 +143,7 @@ import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
@@ -601,6 +602,10 @@ export function ConversationScreen({
 		return () => {
 			if (mutationHostRef.current === host) mutationHostRef.current = null;
 			host.dispose();
+			// Letting go writes nothing to storage, so ask the flush to look: a
+			// message still waiting here would otherwise wait for the next
+			// connection.
+			void outboxFlush.flush();
 		};
 	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
