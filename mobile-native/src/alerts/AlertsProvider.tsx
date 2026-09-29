@@ -96,7 +96,11 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 			const { live, needsYou } = snapshot;
 			const rows = [...live.rows, ...needsYou.rows];
 			// A Needs you section still paging is never observed, so its later
-			// pages never alert old news.
+			// pages never alert old news. Live is read to its first page only,
+			// by design (ruling 1): every session that needs you is in the
+			// complete Needs you section anyway, and a session that moves onto
+			// Live's first page in any other state is no news, since only
+			// entering a needs-you state or finishing from Working alerts.
 			if (live.loaded && needsYou.loaded && needsYou.remaining === 0)
 				feed.observeSessions(
 					liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)),

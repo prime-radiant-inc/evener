@@ -108,6 +108,28 @@ it("takes the first reads as a baseline, and alerts a question a later read find
 	expect(shownRefs()).toEqual(["new"]);
 });
 
+it("reads Live's first page only, where a session moving up is no news unless it needs you", async () => {
+	const hub = boundary();
+	connect(hub.client);
+	mount();
+	await act(async () => {
+		answer(hub, "live", { sessions: [session("top")], remaining: 40 });
+		answer(hub, "needs_you", { sessions: [], remaining: 0 });
+		answer(hub, "manifest", manifest({ sources }));
+		answerAuth(hub, []);
+		await tick();
+	});
+	expect(requestsFor(hub, "live")).toHaveLength(1);
+	// A session from a later page, never read, moves onto the first one.
+	await act(async () => {
+		invalidate(hub, 1, [{ kind: "section", section: "live", revision: 2 }]);
+		answer(hub, "live", { sessions: [session("moved-up"), session("top")], remaining: 40 }, 2);
+		await tick();
+	});
+	expect(probe.snapshot?.banner).toBeNull();
+	expect(requestsFor(hub, "live")).toHaveLength(2);
+});
+
 it("waits for every Needs you page before its baseline, so a second page alerts nothing", async () => {
 	const hub = boundary();
 	connect(hub.client);
