@@ -814,7 +814,9 @@ if (
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
 	if (process.argv.includes("--help") || process.argv.includes("-h")) {
-		process.stdout.write(USAGE);
+		// Exit only once the help has drained: into a pipe, stdout is
+		// asynchronous, and exiting at once can cut it short.
+		await new Promise((resolve) => process.stdout.write(USAGE, resolve));
 		process.exit(0);
 	}
 	const hub = await createDemoHub(

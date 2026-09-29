@@ -1663,6 +1663,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1676,6 +1677,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
