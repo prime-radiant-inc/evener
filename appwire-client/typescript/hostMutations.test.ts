@@ -238,7 +238,7 @@ describe("the editable host fields", () => {
       evenerPath: "evener on PATH",
       configPath: "The default hub.toml",
       addr: "The default address",
-      roots: "No project roots",
+      roots: "No project roots. One per line.",
     });
   });
 

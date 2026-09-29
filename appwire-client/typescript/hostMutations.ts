@@ -232,7 +232,8 @@ export const HOST_ENTRY_FIELD_WHEN_EMPTY: Readonly<Partial<Record<EditableHostFi
   evenerPath: "evener on PATH",
   configPath: "The default hub.toml",
   addr: "The default address",
-  roots: "No project roots",
+  // Multiline: the placeholder also says how to enter several.
+  roots: "No project roots. One per line.",
 };
 
 // rootsFromText parses a host's roots field: one root per line, trimmed, with

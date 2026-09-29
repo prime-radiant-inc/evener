@@ -141,7 +141,7 @@ it("says once that only the SSH address is required, and what each empty field m
 	expect(page.field("Evener path").props.placeholder).toBe("evener on PATH");
 	expect(page.field("Hub config path").props.placeholder).toBe("The default hub.toml");
 	expect(page.field("Hub address").props.placeholder).toBe("The default address");
-	expect(page.field("Roots").props.placeholder).toBe("No project roots");
+	expect(page.field("Roots").props.placeholder).toBe("No project roots. One per line.");
 	page.dispose();
 });
 
