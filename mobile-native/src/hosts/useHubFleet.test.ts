@@ -92,7 +92,7 @@ it("edits hosts with the mutation ids the sheet hands it", async () => {
 	const hook = renderHook(() => useHubFleet(fleet.client, fleet.newMutationId));
 	const hosts = hook.result.current.hosts;
 	await hosts?.read();
-	await hosts?.update("attic", { address: "attic.lan" });
+	await hosts?.update("attic", { address: "attic.lan" }, { generation: 1, incarnationId: "attic-1" });
 	expect(fleet.calls.find((call) => call.method === "evener/host/update")?.params).toMatchObject({
 		mutationId: "mutation-1",
 	});
