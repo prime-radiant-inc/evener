@@ -41,7 +41,19 @@ import (
 
 var exitProcess = os.Exit
 
+// hermeticRunEnv hides the operator's personal skills from every run: it sets
+// EVENER_NO_USER_SKILLS so neither an in-process live session nor a spawned
+// evener child advertises the operator's home skills, user config skills, or
+// installed plugins' skills. A round that measures skill use then depends only
+// on the revision under test, not on who runs it (#3227). main calls it once,
+// before any subcommand runs, so concurrent matrix suites share one setting
+// instead of racing on a per-suite set/restore.
+func hermeticRunEnv() {
+	_ = envvars.EVENERNoUserSkills.Setenv("1")
+}
+
 func main() {
+	hermeticRunEnv()
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "evener-fluency:", err)
 		exitProcess(1)
