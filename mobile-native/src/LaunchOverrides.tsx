@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, TextInput, View } from "react-native";
 import { inactivePromptDependent, perLaunchEvenerOptions } from "@evener/appwire-client";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption } from "@evener/appwire-client";
+import { hostRequest } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
@@ -9,6 +10,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function LaunchOverrides({
 	client,
+	host,
 	cwd,
 	value,
 	onChange,
@@ -16,6 +18,8 @@ export function LaunchOverrides({
 	defaultOpen = false,
 }: {
 	client: ConversationClientLike | null;
+	/** The host the session starts on; its options and defaults are read there. */
+	host?: string;
 	cwd: string;
 	value: LaunchConfigLayer;
 	onChange(value: LaunchConfigLayer): void;
@@ -44,8 +48,8 @@ export function LaunchOverrides({
 		setLoading(true);
 		setError(null);
 		Promise.all([
-			client.request("evener/launch/schema", {}),
-			client.request("evener/launch/resolve", { cwd, launchOverrides: value }).catch(() => null),
+			hostRequest(client, host, "evener/launch/schema", {}),
+			hostRequest(client, host, "evener/launch/resolve", { cwd, launchOverrides: value }).catch(() => null),
 		])
 			.then(([schema, effective]) => {
 				if (!active) return;
@@ -66,7 +70,7 @@ export function LaunchOverrides({
 		return () => {
 			active = false;
 		};
-	}, [client, cwd, value, open, revision]);
+	}, [client, host, cwd, value, open, revision]);
 	const count = Object.keys(value).length;
 	const visible = options.filter(
 		(option) =>

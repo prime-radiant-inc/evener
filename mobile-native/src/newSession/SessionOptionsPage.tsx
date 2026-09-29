@@ -16,8 +16,9 @@ export function SessionOptionsPage() {
 			<SheetStatus />
 			<View style={{ padding: 16 }}>
 				<LaunchOverrides
-					key={JSON.stringify([hubId, cwd])}
+					key={JSON.stringify([hubId, form.source, cwd])}
 					client={ready ? client : null}
+					host={form.source}
 					cwd={cwd}
 					value={form.launchOverrides}
 					onChange={form.setLaunchOverrides}
