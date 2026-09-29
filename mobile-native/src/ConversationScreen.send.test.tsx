@@ -1467,6 +1467,9 @@ it("pages the rows the cap trimmed back as you drag near the top", async () => {
 	(served as unknown as { turns: unknown[] }).turns = [
 		{ id: "turn_1", status: "completed", itemsView: "default", items },
 	];
+	// The hub's read says it pages this thread from a before position.
+	const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+	evener.capabilities = { ...evener.capabilities, pageBefore: true };
 	const { tree, hub } = await mount(served);
 	const at = {
 		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },

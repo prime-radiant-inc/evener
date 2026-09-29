@@ -2,8 +2,18 @@
 // whether new rows scroll into view, whether a finger or its momentum is
 // moving the list, and the rows that were there when you left the end (what
 // "↓ N new" counts against).
-import { describe, expect, it } from "vitest";
-import { AT_END_PT, atEnd, type LiveEndFollow, nextFollow, PAGE_OLDER_PT, pagesOlder } from "./liveEndFollow";
+import { act } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { renderHook } from "../renderNative.testkit";
+import {
+	AT_END_PT,
+	atEnd,
+	type LiveEndFollow,
+	nextFollow,
+	PAGE_OLDER_PT,
+	pagesOlder,
+	useLiveEndFollow,
+} from "./liveEndFollow";
 
 const scrolled = (y: number, content = 4_000, viewport = 600) => ({
 	contentOffset: { y },
@@ -171,5 +181,19 @@ describe("pagesOlder", () => {
 
 	it("counts a coast as moving the list, as a flick's momentum is", () => {
 		expect(nextFollow(reading, { type: "momentumBegin" }).dragged).toBe(true);
+	});
+});
+
+// The store trims the 500-row cap only while the reader follows the end, so it
+// hears whether they do: on the first event, and whenever it changes.
+describe("reporting whether the reader follows", () => {
+	it("reports the first event and each change, not repeats", () => {
+		const onFollowing = vi.fn();
+		const follow = renderHook(() => useLiveEndFollow(onFollowing));
+		act(() => follow.result.current.dispatch({ type: "reset", following: true }));
+		act(() => follow.result.current.dispatch({ type: "reset", following: true }));
+		act(() => follow.result.current.dispatch({ type: "dragBegin" }));
+		act(() => follow.result.current.dispatch({ type: "reset", following: false }));
+		expect(onFollowing.mock.calls).toEqual([[true], [false]]);
 	});
 });

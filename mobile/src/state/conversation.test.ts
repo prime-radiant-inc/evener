@@ -100,6 +100,8 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
 	queue: true,
 	goal: true,
 	rename: true,
+	// The hub pages the thread from a before position, so the cap may trim.
+	pageBefore: true,
 };
 
 // The hub refusing a mutation whose capability moved on without a status frame
@@ -3063,15 +3065,56 @@ describe("ConversationStore", () => {
 			expect(store.getState().trimmedAbove).toBe(true);
 		});
 
-		// Its hub can't page trimmed rows back yet (#3176), so a thread on
-		// another host keeps every row.
-		it("never trims a thread on another host", async () => {
+		// Trimmed rows could never come back from a hub that doesn't page
+		// from a before position (an older hub, or a thread on another host
+		// until #3176), so its threads keep every row.
+		it("never trims a thread whose read doesn't say pageBefore", async () => {
 			const service = new FakeConversationService();
-			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			service.openConv = makeConversation({
+				items: positionedRows(0, 600),
+				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
+			});
 			const store = createConversationStore();
 			await store.getState().open(service, "host:thread-1");
 			expect(store.getState().conversation?.items).toHaveLength(600);
 			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		// A status frame carries the daemon's capability set, which never names
+		// pageBefore; the hub's answer on the read stands.
+		it("keeps trimming after a status frame that doesn't name pageBefore", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			const { pageBefore: _dropped, ...daemonCaps } = ALL_TRUE_CAPS;
+			store.getState().applyNotification({
+				method: "thread/status/changed",
+				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" }, capabilities: daemonCaps },
+			} as unknown as AnyNotification);
+			store.getState().setFollowingLiveEnd(false);
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+		});
+
+		// The page before the oldest row kept is stale when that row is the
+		// transcript's first: there is nothing older, and nothing to re-read.
+		it("takes a stale page above the trimmed rows as nothing older", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+			const reads = service.readProjectionCalls.length;
+			service.olderItems = Promise.reject(
+				new WireError("stale transcript cursor", -32020, { evenerErrorInfo: "transcriptItemCursorStale" }),
+			) as never;
+			await store.getState().loadOlder(service);
+			expect(service.readProjectionCalls).toHaveLength(reads);
+			expect(store.getState().trimmedAbove).toBe(false);
+			expect(store.getState().olderCursor).toBeNull();
+			expect(store.getState().error).toBeNull();
+			expect(store.getState().loadingOlder).toBe(false);
 		});
 
 		// A before page carries no fence from the phone: the hub mints its
