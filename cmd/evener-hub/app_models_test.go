@@ -880,6 +880,37 @@ func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
 	}
 }
 
+// TestLoadLaunchModelsReusesAFreshEntry: the loader re-checks the cache inside
+// the shared flight. A caller whose cache snapshot predates a concurrent load's
+// store reaches the flight only after that load published its entry — the store
+// runs inside the flight, before it clears — so the re-check hands it the entry
+// instead of spawning a second launch check. This drives the loader directly,
+// since a real fetch caller would have hit the entry at its own snapshot.
+func TestLoadLaunchModelsReusesAFreshEntry(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	web := newLaunchModelsTestWeb(t, spawner, true)
+	gen, ok := liveModelsGeneration(web)
+	if !ok {
+		t.Fatal("the test server has no holder generation")
+	}
+
+	// The first load fills the unscoped entry.
+	if _, err := web.loadLaunchModels(context.Background(), "", gen); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	// A second reader that arrived with a stale snapshot is served the entry the
+	// first load published rather than running the launch check again.
+	if _, err := web.loadLaunchModels(context.Background(), "", gen); err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if got := spawner.callCount(); got != 1 {
+		t.Fatalf("launch contract called %d times, want 1 (second reader served the filled entry)", got)
+	}
+}
+
 // waitFor polls cond until it holds or five seconds pass.
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
