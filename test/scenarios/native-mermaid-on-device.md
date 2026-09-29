@@ -105,7 +105,8 @@ same revision), and the two OS versions at the top of the run.
 7. **The fullscreen viewer: zoom, source toggle, copy.**
    In the open viewer:
    - the diagram fills the screen and pinch-to-zoom changes its scale
-     (the page posts `mode: "zoom"`, whose viewport meta allows scaling);
+     (the host posts the `mode: "zoom"` render message, and the page
+     rewrites its viewport meta in response to allow scaling);
    - *Show source* reveals the mermaid source in a code font; *Show
      diagram* returns to the diagram;
    - *Copy source* puts the exact mermaid source on the clipboard (paste
