@@ -36,6 +36,7 @@ import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -533,13 +534,17 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// A node's style flattened, as React Native flattens a style array.
+const flatStyle = (node: ReactTestInstance): Record<string, unknown> =>
+	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+
 // The views between `node` and the screen's capped bottom area (the view
 // with a maxHeight), each with its flattened style.
 function viewsUpToBottomArea(node: ReactTestInstance) {
 	const views: Record<string, unknown>[] = [];
 	for (let at = node.parent; at; at = at.parent) {
 		if (String(at.type) !== "View") continue;
-		const style = Object.assign({}, ...[at.props.style].flat(Number.POSITIVE_INFINITY));
+		const style = flatStyle(at);
 		if (style.maxHeight !== undefined) return views;
 		views.push(style);
 	}
@@ -2002,6 +2007,40 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	});
 });
 
+describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
+	// The bar's own host view, not the BarFrame element that carries its props.
+	const bar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const homeIndicator = () => useSafeAreaInsets().bottom;
+
+	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
+		const { tree } = await mount(thread("ref-bar", "active"));
+		// The screen leaves the bottom safe area to the bar, which paints it.
+		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
+		expect(screen?.props.edges).not.toContain("bottom");
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		// The tray and the composer ride in it, so the bar's padding lifts them
+		// clear of the home indicator.
+		expect(
+			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
+		).toHaveLength(1);
+		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
+	});
+
+	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
+		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
+		act(() => keyboard.show());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
+		act(() => keyboard.hide());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+	});
+
+	it("holds a question dock too", async () => {
+		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
+		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
+	});
+});
+
 describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 	function withApproval(ref: string): Thread {
 		const served = thread(ref, "active");
@@ -2699,18 +2738,51 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
-	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
-		// Ruling on the device pass: the pills must never hide the newest
-		// message, so the list's end grows by the stack's height.
-		const { tree } = await mount(thread("ref-inset", "active"));
+	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+		const served = thread("ref-inset", "active");
+		const { tree, hub } = await mount(served);
 		const list = () =>
 			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
 		const bottom = () => list().props.contentContainerStyle.paddingBottom;
-		const stack = tree.root.findByType(FloatingStack);
-		act(() => stack.props.onHeight(104));
-		expect(bottom()).toBe(16 + 104 + 10);
-		act(() => stack.props.onHeight(0));
-		expect(bottom()).toBe(16);
+		// Who needs you changes, as fleet polling finds: Next goes, then comes.
+		let sequence = 0;
+		async function needsYou(sessions: typeof fleet.needsYou) {
+			fleet.needsYou = sessions;
+			fleet.live = sessions;
+			sequence += 1;
+			fleet.revision = sequence + 1;
+			act(() =>
+				hub.notify({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "generation-test",
+						sequence,
+						targets: [
+							{ kind: "section", section: "needs_you", revision: sequence + 1 },
+							{ kind: "section", section: "live", revision: sequence + 1 },
+						],
+					},
+				} as AnyNotification),
+			);
+			await settle();
+		}
+		await needsYou([]);
+		expect(capsule(tree)).toBeUndefined();
+		expect(bottom()).toBe(60);
+		await needsYou([failing]);
+		expect(capsule(tree)).toBeDefined();
+		expect(bottom()).toBe(60);
+		// A toast joins it.
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(bottom()).toBe(60);
+		// Away from the end, with rows the list didn't hold then, the pill joins too.
+		act(() =>
+			list().props.onScroll({
+				nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			}),
+		);
+		expect(bottom()).toBe(60);
 	});
 
 	it("shows no Next while this session asks you something", async () => {
