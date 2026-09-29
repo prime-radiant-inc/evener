@@ -84,11 +84,10 @@ export function notificationLine(
 				.trim();
 			return { headline: notification.title, failed, ...(note ? { detail: note } : {}) };
 		}
-		default:
-			return {
-				headline: notification.title,
-				failed,
-				...(notification.secondary ? { detail: notification.secondary } : {}),
-			};
+		default: {
+			// A watch delivery's secondary, or a replayed observer callback's body.
+			const detail = notification.secondary || notification.message || decodeNotificationEntities(notification.excerpt);
+			return { headline: notification.title, failed, ...(detail ? { detail } : {}) };
+		}
 	}
 }

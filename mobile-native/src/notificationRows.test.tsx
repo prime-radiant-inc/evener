@@ -237,6 +237,18 @@ ${envelope.replaceAll('"', "&quot;")}
 		expect(renderedText(tree)).not.toContain('"data"');
 	});
 
+	// No producer writes this header any more, but durable transcripts recorded
+	// while one did still replay it (steeringNotifications.ts, parseObserverCallback).
+	it("reads a replayed observer callback with its message", () => {
+		const { tree } = showItem({
+			...notificationWireItem("delegate-quiet"),
+			id: "item_observer",
+			text: "Observer callback:\nmessage: The build went green.",
+		});
+		expect(renderedText(tree)).toContain("Observer callback");
+		expect(renderedText(tree)).toContain("The build went green.");
+	});
+
 	it("says a subagent reported when its outcome is one the phone doesn't know", () => {
 		const packet = JSON.stringify({
 			kind: "terminal_error",
