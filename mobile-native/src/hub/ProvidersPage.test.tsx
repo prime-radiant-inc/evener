@@ -22,7 +22,10 @@ import { ProviderSignIn } from "../providerSignIn";
 import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { ProviderEditor } from "../ProviderEditor";
+import { HeaderButton } from "../sheet/HeaderButton";
+import { Sheet } from "../sheet/Sheet";
 import { Tag } from "../sheet/Grouped";
 import { ProvidersPage } from "./ProvidersPage";
 import {
@@ -274,6 +277,22 @@ it("keeps the list away through a fatal retry until the replacement is ready", a
 	expect(replacement.methods.length).toBeGreaterThan(0);
 	expect(instanceCalls(replacement.methods).length).toBeGreaterThan(0);
 	expect(instanceCalls(replacement.methods).every((method) => method === "evener/instance/list")).toBe(true);
+});
+
+it("heads a provider's detail with the shared sheet header: its name, and Done on the right", async () => {
+	providersHub([instance({ name: "lunaroute", authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("lunaroute,"));
+	await act(async () => {});
+	const sheet = tree.root.findByType(Sheet);
+	expect(sheet.props.title).toBe("lunaroute");
+	expect(sheet.props.onCancel).toBeUndefined();
+	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Done"]);
+	await act(async () => {
+		sheet.findByType(HeaderButton).props.onPress();
+	});
+	expect(tree.root.findByType(HoldingModal).props.visible).toBe(false);
 });
 
 it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {

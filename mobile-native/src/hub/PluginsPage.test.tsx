@@ -27,6 +27,8 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { createPluginMutationGate } from "../pluginMutationGate";
 import { PluginsPage } from "./PluginsPage";
+import { HeaderButton } from "../sheet/HeaderButton";
+import { Sheet } from "../sheet/Sheet";
 import { alertRequests, nativeModuleMock, render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -2666,6 +2668,30 @@ it("keeps the marketplace draft through a flap, with no Reconnect anywhere", asy
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
+it("heads Add marketplace with the shared sheet header: its title and Cancel, and no second title in the body", () => {
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={async () => {}}
+		/>,
+	);
+	const sheet = tree.root.findByType(Sheet);
+	expect(sheet.props.title).toBe("Add marketplace");
+	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Cancel"]);
+	act(() => sheet.findByType(HeaderButton).props.onPress());
+	expect(onClose).toHaveBeenCalledOnce();
+	// The header's title and the body's submit button, with no body title.
+	const titles = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Add marketplace");
+	expect(titles).toHaveLength(2);
+});
+
 it("keeps Add marketplace open when readiness is lost during submit", async () => {
 	const hub = pluginsClient([]);
 	const onAdd = vi.fn(async () => {});
@@ -3000,6 +3026,19 @@ it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is
 	expect(alertRequests.at(-1)?.message).toBe("cracked from core on Work hub");
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});
+
+it("heads a plugin's detail with the shared sheet header: its name, and Done on the right", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked")]));
+	const detail = await openDetail(tree, "cracked");
+	const sheet = detail.findByType(Sheet);
+	expect(sheet.props.title).toBe("cracked");
+	expect(sheet.props.onCancel).toBeUndefined();
+	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Done"]);
+	await act(async () => {
+		sheet.findByType(HeaderButton).props.onPress();
 	});
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
 });

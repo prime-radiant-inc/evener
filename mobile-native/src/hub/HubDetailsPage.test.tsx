@@ -4,6 +4,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { palettes } from "../design/tokens";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { HeaderButton } from "../sheet/HeaderButton";
+import { Sheet } from "../sheet/Sheet";
 import { HubDetailsPage } from "./HubDetailsPage";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -19,6 +21,9 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+// The modal's header is the shared Sheet chrome, whose module also holds
+// useSheet; the chrome itself calls no navigation hook.
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}), usePreventRemove: () => {} }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const MAGIC: HubProfile = { id: "hub-1", name: "magic-kingdom", origin: "https://magic-kingdom:9180" };
@@ -93,6 +98,34 @@ it("edits the name and token in today's hub editor", async () => {
 	});
 	await press(tree, "Save changes");
 	expect(connection.updateHub).toHaveBeenCalledWith("hub-2", { name: "Paradise" });
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
+it("heads the hub editor with the shared header: Edit hub and Cancel, titled once", async () => {
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	const sheet = tree.root.findByType(Sheet);
+	expect(sheet.props.title).toBe("Edit hub");
+	expect(sheet.findAllByType(HeaderButton).map((button) => button.props.label)).toEqual(["Cancel"]);
+	const titles = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Edit hub");
+	expect(titles).toHaveLength(1);
+	await act(async () => {
+		sheet.findByType(HeaderButton).props.onPress();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
+it("keeps the hub editor open on Cancel while a save is in flight", async () => {
+	let finish = () => {};
+	connection.updateHub.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	await press(tree, "Save changes");
+	await act(async () => {
+		tree.root.findByType(Sheet).findByType(HeaderButton).props.onPress();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
+	await act(async () => finish());
 	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
 });
 
