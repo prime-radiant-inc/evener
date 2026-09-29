@@ -65,6 +65,49 @@ func rollupContribution(state string, isSubagent bool) string {
 	return state
 }
 
+// dashboardGroupState folds a project's session rows into its rollup state, the
+// way buildDashboardRows seeds and raises each group's state — the highest
+// attention contribution wins (a subagent's non-active state never raises it,
+// rollupContribution). Reading it from the rows, not a cached project state,
+// lets a live approval change recompute the group without a tree fetch.
+func dashboardGroupState(sessions []hubRow) string {
+	state := ""
+	for _, row := range sessions {
+		if row.kind != hubRowSession {
+			continue
+		}
+		contribution := stateLabel(rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent))
+		if attentionRankLabel(contribution) > attentionRankLabel(state) {
+			state = contribution
+		}
+	}
+	return state
+}
+
+// refreshDashboardGroup recomputes a project row's rollup state from its
+// session rows and re-sorts them, so a live approval change that flipped a
+// row's flag also updates the group's summary and the row's sort position
+// without waiting for a tree fetch (the dashboard has no periodic refresh).
+func (m *hubModel) refreshDashboardGroup(groupKey string) {
+	start := -1
+	for i := range m.rows {
+		if m.rows[i].kind == hubRowProject && dashboardGroupKey(m.rows[i]) == groupKey {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		return
+	}
+	end := start + 1
+	for end < len(m.rows) && m.rows[end].kind == hubRowSession && dashboardGroupKey(m.rows[end]) == groupKey {
+		end++
+	}
+	sessions := m.rows[start+1 : end]
+	sort.SliceStable(sessions, func(i, j int) bool { return dashboardRowLess(sessions[i], sessions[j]) })
+	m.rows[start].state = dashboardGroupState(sessions)
+}
+
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
 		key        string
@@ -80,7 +123,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	groups := map[string]*dashboardGroup{}
 	var projectOrder []string
 
-	ensureGroup := func(groupKey, projectKey, name, state string) *dashboardGroup {
+	ensureGroup := func(groupKey, projectKey, name string) *dashboardGroup {
 		if name == "" {
 			name = "(no project)"
 		}
@@ -93,7 +136,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			}
 			return group
 		}
-		group := &dashboardGroup{key: groupKey, projectKey: projectKey, name: name, state: state, order: len(projectOrder)}
+		group := &dashboardGroup{key: groupKey, projectKey: projectKey, name: name, order: len(projectOrder)}
 		groups[groupKey] = group
 		projectOrder = append(projectOrder, groupKey)
 		return group
@@ -141,12 +184,8 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			createdAt:       n.CreatedAt,
 			updatedAt:       n.UpdatedAt,
 		}
-		contribution := rollupContribution(attentionState(n.State, n.ApprovalPending), n.IsSubagent)
-		group := ensureGroup(groupKey, projectKey, project, contribution)
+		group := ensureGroup(groupKey, projectKey, project)
 		group.sessions = append(group.sessions, row)
-		if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
-			group.state = stateLabel(contribution)
-		}
 		if recency := rowRecency(row); recency > group.updatedAt {
 			group.updatedAt = recency
 		}
@@ -161,7 +200,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if groupKey == "" {
 			groupKey = presentationProjectGroupKey(p)
 		}
-		ensureGroup(groupKey, projectKey, p.Name, p.RollupState)
+		ensureGroup(groupKey, projectKey, p.Name)
 		for _, n := range p.Sessions {
 			addSession(groupKey, projectKey, p.Name, n)
 			for _, child := range n.Children {
@@ -187,6 +226,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		if len(group.sessions) == 0 {
 			continue
 		}
+		group.state = dashboardGroupState(group.sessions)
 		sort.SliceStable(group.sessions, func(i, j int) bool {
 			return dashboardRowLess(group.sessions[i], group.sessions[j])
 		})

@@ -184,3 +184,65 @@ func TestHandleEscalationResolved_ClearsDashboardRowLive(t *testing.T) {
 		t.Fatal("answering the escalation must clear the row's approval flag")
 	}
 }
+
+func TestMergeSnapshotEscalations_FlagsDashboardRow(t *testing.T) {
+	ref, err := appwire.ParseRef("local:th_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active"}}}
+	m.mergeSnapshotEscalations(hubSessionDetail{
+		Ref:                "local:th_1",
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}},
+	})
+	if !m.rows[0].approvalPending {
+		t.Fatal("a snapshot/reconnect escalation must flag the session's dashboard row")
+	}
+}
+
+// Clearing an approval must also recompute the project's rollup and re-sort the
+// group, so the cached dashboard rows do not keep a stale "Your move" or a
+// resolved session sorted above its working siblings (roborev #3129 round 3).
+func TestSetDashboardRowApproval_RecomputesGroupAndOrder(t *testing.T) {
+	tree := hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "proj", Name: "evener",
+		Sessions: []hubTreeNode{
+			{Ref: "local:s1", State: appwire.ThreadStatusActive, Live: true, ApprovalPending: true, UpdatedAt: 1000},
+			{Ref: "local:s2", State: appwire.ThreadStatusActive, Live: true, UpdatedAt: 2000},
+		},
+	}}}
+	m := hubModel{tree: tree, rows: buildDashboardRows(tree)}
+	if got := projectRowState(m.rows); got != "awaiting" {
+		t.Fatalf("before clearing, project state = %q, want awaiting", got)
+	}
+	if sessionRowIndex(m.rows, "local:s1") > sessionRowIndex(m.rows, "local:s2") {
+		t.Fatal("the approval row should sort first before it is cleared")
+	}
+
+	m.setDashboardRowApproval("local:s1", false)
+
+	if got := projectRowState(m.rows); got != "active" {
+		t.Fatalf("after clearing, project state = %q, want active (summary must not stay Your move)", got)
+	}
+	if sessionRowIndex(m.rows, "local:s1") < sessionRowIndex(m.rows, "local:s2") {
+		t.Fatal("after clearing, the more recent working row should sort first")
+	}
+}
+
+func projectRowState(rows []hubRow) string {
+	for _, row := range rows {
+		if row.kind == hubRowProject {
+			return row.state
+		}
+	}
+	return "<none>"
+}
+
+func sessionRowIndex(rows []hubRow, ref string) int {
+	for i, row := range rows {
+		if row.kind == hubRowSession && row.ref.String() == ref {
+			return i
+		}
+	}
+	return -1
+}

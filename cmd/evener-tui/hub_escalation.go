@@ -74,18 +74,27 @@ func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationReques
 }
 
 // setDashboardRowApproval flips the approval flag on any cached dashboard row
-// for ref, so the live escalation path (raise / answer) keeps the row's ◆
-// marker, needs-you count and sort band honest without a tree refetch (the
+// for ref and recomputes that row's project group, so the live escalation path
+// (raise / answer / snapshot merge) keeps the row's ◆ marker, needs-you count,
+// sort position and project summary honest without a tree refetch (the
 // dashboard has no periodic refresh). No-op when no row matches.
 func (m *hubModel) setDashboardRowApproval(ref string, pending bool) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return
 	}
+	groups := map[string]bool{}
 	for i := range m.rows {
 		if m.rows[i].ref.String() == ref {
 			m.rows[i].approvalPending = pending
+			groups[dashboardGroupKey(m.rows[i])] = true
 		}
+	}
+	for groupKey := range groups {
+		m.refreshDashboardGroup(groupKey)
+	}
+	if len(groups) > 0 {
+		m.clampSelection()
 	}
 }
 
@@ -136,6 +145,7 @@ func (m *hubModel) mergeSnapshotEscalations(detail hubSessionDetail) {
 			id: p.EscalationID, tool: p.Tool, path: p.DeniedPath, mode: p.Mode, ref: ref,
 		})
 	}
+	m.setDashboardRowApproval(ref, len(m.escalationsByRef[ref]) > 0)
 }
 
 // promptHeadEscalation surfaces the approval prompt for the viewed session's head
