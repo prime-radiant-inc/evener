@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, FlatList, Platform, Pressable, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AppwireClient,
@@ -15,6 +14,7 @@ import {
 	withPluginSelection,
 } from "@evener/appwire-client";
 import { usePluginPreview } from "../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CreationPlugins({

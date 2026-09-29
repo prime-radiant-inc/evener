@@ -51,8 +51,8 @@ import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
-import { ApprovalControls } from "./approvalControls";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
+import { ApprovalControls } from "./approvalControls";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { useConnection } from "./ConnectionProvider";

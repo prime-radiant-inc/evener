@@ -1,8 +1,8 @@
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, AppState, Linking, Platform, ScrollView, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import type { ProviderSignIn } from "./providerSignIn";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";

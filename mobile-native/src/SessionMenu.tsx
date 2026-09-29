@@ -1,6 +1,6 @@
 import { Pressable, ScrollView, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { Action, Copy, styles, useColors } from "./ui";
 
 export type SessionDestination = "session" | "tasks" | "notes" | "subagents" | "pin" | "delete";

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Switch, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import type { HubProfile, HubUpdate } from "./connection";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 

@@ -1,8 +1,8 @@
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import type { AttachmentRef } from "./projectedRows";
 import { useConnection } from "./ConnectionProvider";
 import { HubProfiles } from "./connection";

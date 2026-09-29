@@ -2,9 +2,9 @@
 // lines sit in a virtualized list, so a 10,000-line test run scrolls smoothly.
 import { useMemo } from "react";
 import { FlatList, View } from "react-native";
-import { HoldingModal } from "../alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MAX_ITEM_BYTES, TRUNCATION_MARKER } from "../projectedRows";
 import { Action, Copy, styles, useColors } from "../ui";

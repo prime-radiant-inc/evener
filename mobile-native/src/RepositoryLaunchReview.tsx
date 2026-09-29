@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RepoLaunchConfigStatus } from "@evener/appwire-client";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const descriptions: Record<string, string> = {

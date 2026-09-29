@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { addEnvironmentVariable, assertEnvironmentCurrent, collectEnvironment } from "./launchEnvironment";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 

@@ -11,7 +11,6 @@ import {
 	TextInput,
 	View,
 } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
 	AnyNotification,
@@ -23,6 +22,7 @@ import type {
 } from "@evener/appwire-client";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "./MarketplaceBrowser";

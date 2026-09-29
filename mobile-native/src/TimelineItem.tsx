@@ -1,8 +1,8 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";

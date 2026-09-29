@@ -5,11 +5,11 @@
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, type RefObject, useState } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { useHoldAlerts } from "../alerts/alertsContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
-import { useHoldAlerts } from "../alerts/alertsContext";
 
 /** The field grows to this many lines, then scrolls. */
 const MAX_LINES = 6;

@@ -1,8 +1,8 @@
 // The composer's full-screen editor (spec 8.5): the same draft in a field
 // with room to read it, for a message that has outgrown six lines.
 import { Platform, TextInput, useWindowDimensions, View } from "react-native";
-import { HoldingModal } from "../alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { Action, allowFontScaling, styles, useColors } from "../ui";
 
 export function ExpandedEditor({

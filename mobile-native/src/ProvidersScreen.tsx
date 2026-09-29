@@ -11,7 +11,6 @@ import {
 	TextInput,
 	View,
 } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ConnectionState, InstanceEntry } from "@evener/appwire-client";
 import {
@@ -32,6 +31,7 @@ import {
 	isStaleListingRefusal,
 	staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { appliedInstanceWrite } from "./appliedInstanceWrite";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";

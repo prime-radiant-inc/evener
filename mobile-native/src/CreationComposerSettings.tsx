@@ -9,9 +9,9 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchConfigLayer, ModelDescriptor } from "@evener/appwire-client";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { creationModel } from "./newSession";
 import { Action, allowFontScaling, Choice, Copy, styles, useColors } from "./ui";
 

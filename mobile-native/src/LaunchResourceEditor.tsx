@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption, MCPServerSpec } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchResourceRow } from "./LaunchResourceRow";
 import { assertLaunchListCurrent } from "./launchLists";
