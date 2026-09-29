@@ -154,6 +154,7 @@ export function nativeModuleMock() {
 		},
 		ActivityIndicator: "ActivityIndicator",
 		Animated,
+		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert },
 		FlatList,
 		KeyboardAvoidingView,
