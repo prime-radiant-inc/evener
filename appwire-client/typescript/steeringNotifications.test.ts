@@ -1242,6 +1242,19 @@ test("a parent's stop that cancelled a run carrying its own packet reads as stop
   ]);
 });
 
+// The fold's own bare stop packet (agent/internal/delegatestore/fold.go's
+// stopping branch, kept bare so old events replay unchanged, #3114) carries no
+// metadata: the parser falls back to what its kind implies.
+test("a terminal_error packet with no metadata reads as a failure", () => {
+  const frame = `<delegate-notification delegate_id="dlg_9" name="Tail the hub log">${JSON.stringify({
+    kind: "terminal_error",
+    message: "stopped by parent",
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))).toMatchObject([
+    { type: "delegate", title: "Delegate failed", outcome: "failed", message: "stopped by parent" },
+  ]);
+});
+
 test("a parent's stop reads as stopped", () => {
   const [n] = wireNotifications("delegate-stopped-by-parent");
   expect(n).toMatchObject({
