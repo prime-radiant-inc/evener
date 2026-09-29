@@ -28,19 +28,18 @@ vi.mock("../board/perHub", async (importOriginal) => {
 	};
 });
 
-it("keeps its per-hub memory through the shared perHub helper", async () => {
-	const { launchMemory } = await import("./nativeLaunchMemory");
-	expect(launchMemory("hub-a")).toBe(launchMemory("hub-a"));
-	expect(launchMemory("hub-b")).not.toBe(launchMemory("hub-a"));
+it("keeps its per-hub requests through the shared perHub helper", async () => {
+	const { stopRequests } = await import("./nativeStopRequests");
+	expect(stopRequests("hub-a")).toBe(stopRequests("hub-a"));
+	expect(stopRequests("hub-b")).not.toBe(stopRequests("hub-a"));
 	expect(perHub.makers).toBe(1);
 });
 
-it("forgets a removed hub's cached memory even when the phone can't delete its keys", async () => {
-	const { forgetLaunchMemoryForHub, launchMemory } = await import("./nativeLaunchMemory");
-	const before = launchMemory("hub-a");
-	expect(launchMemory("hub-a")).toBe(before);
+it("forgets a removed hub's cached requests even when the phone can't delete its keys", async () => {
+	const { forgetStopRequestsForHub, stopRequests } = await import("./nativeStopRequests");
+	const before = stopRequests("hub-c");
 	failure.remove = true;
-	expect(() => forgetLaunchMemoryForHub("hub-a")).toThrow();
+	expect(() => forgetStopRequestsForHub("hub-c")).toThrow();
 	failure.remove = false;
-	expect(launchMemory("hub-a")).not.toBe(before);
+	expect(stopRequests("hub-c")).not.toBe(before);
 });

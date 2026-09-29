@@ -180,17 +180,18 @@ describe("system events (G7, G9)", () => {
 	});
 });
 
-// The engineering labels get plain words (spec 5); the rest keep the web's.
+// Each steer says it is the system's, then what it did: the engineering
+// labels in plain words (spec 5), the rest in the web's.
 const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
-	["steer-hook-context", "Hook context"],
-	["steer-precompact-hook", "Hook context before compacting"],
-	["steer-compact-nudge", "Running low on context"],
-	["steer-no-tool-calls", "Reminded to keep working"],
-	["steer-loop-detected", "Loop detected"],
-	["steer-provider-failure", "Provider failed"],
-	["steer-transcript-pointer", "Where to find the full transcript"],
-	["steer-task-nudge", "Task reminder"],
-	["steer-note-handoff", "Note to self"],
+	["steer-hook-context", "System steered: Hook context"],
+	["steer-precompact-hook", "System steered: Hook context before compacting"],
+	["steer-compact-nudge", "System steered: Running low on context"],
+	["steer-no-tool-calls", "System steered: Reminded to keep working"],
+	["steer-loop-detected", "System steered: Loop detected"],
+	["steer-provider-failure", "System steered: Provider failed"],
+	["steer-transcript-pointer", "System steered: Where to find the full transcript"],
+	["steer-task-nudge", "System steered: Task reminder"],
+	["steer-note-handoff", "System steered: Note to self"],
 ];
 
 describe("the daemon's steers (G8)", () => {

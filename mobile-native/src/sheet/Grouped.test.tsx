@@ -195,6 +195,16 @@ describe("a switch row", () => {
 		expect(merged(texts(tree)[1]?.props.style).color).toBe(light.inkMid);
 	});
 
+	it("draws its label and second line with the shared RowText, as a plain row does", () => {
+		const drawn = (tree: ReturnType<typeof render>) => ({
+			label: tree.root.findByProps({ testID: "row-label" }).props.children,
+			sub: tree.root.findByProps({ testID: "row-sub" }).props.children,
+		});
+		const row = render(<Row label="Haptics" sub="A tap when a banner arrives" />);
+		const sw = render(<SwitchRow label="Haptics" sub="A tap when a banner arrives" value onChange={() => {}} />);
+		expect(drawn(sw)).toEqual(drawn(row));
+	});
+
 	it("dims while disabled, and gives iOS the off track's color", () => {
 		const tree = render(<SwitchRow label="Network" value={false} disabled onChange={() => {}} />);
 		const toggle = tree.root.findByType("Switch" as never);

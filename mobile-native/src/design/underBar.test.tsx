@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";
 import { renderHook } from "../renderNative.testkit";
-import { underBar, useBarHeight } from "./underBar";
+import { listContentMinHeight, underBar, useBarHeight } from "./underBar";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
@@ -25,6 +25,21 @@ describe("underBar", () => {
 	it("pads the list's end by the bar on Android, which has no content inset", () => {
 		platform.OS = "android";
 		expect(underBar(180)).toEqual({ scrollIndicatorInsets: { bottom: 180 }, endPadding: 180 });
+	});
+});
+
+describe("listContentMinHeight", () => {
+	it("is the viewport above the bar's inset on iOS", () => {
+		expect(listContentMinHeight(600, underBar(150))).toBe(450);
+	});
+
+	it("is the whole viewport on Android, whose content pads its own end by the bar", () => {
+		platform.OS = "android";
+		expect(listContentMinHeight(600, underBar(150))).toBe(600);
+	});
+
+	it("is never negative, before the viewport has laid out", () => {
+		expect(listContentMinHeight(0, underBar(150))).toBe(0);
 	});
 });
 

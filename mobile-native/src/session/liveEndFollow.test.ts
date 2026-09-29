@@ -30,6 +30,10 @@ describe("atEnd", () => {
 
 	it("is true when everything fits in the viewport", () => {
 		expect(atEnd(scrolled(0, 300, 600))).toBe(true);
+		expect(atEnd({ ...scrolled(0, 420, 600), contentInset: { bottom: 180 } })).toBe(true);
+		// It would fit without the inset; the inset leaves it scrolled short of its end.
+		expect(atEnd(scrolled(0, 500, 600))).toBe(true);
+		expect(atEnd({ ...scrolled(0, 500, 600), contentInset: { bottom: 180 } })).toBe(false);
 	});
 });
 

@@ -9,7 +9,7 @@ import styles from "./contextcard.module.css";
 export interface ContextCardProps {
   source: string;
   snippet: string;
-  /** e.g. "1.2k chars" - shown as a trailing caption when given. */
+  /** e.g. "1.2K chars" - shown as a trailing caption when given. */
   meta?: string;
   /** When given, the whole card renders as a link to it. */
   href?: string;
