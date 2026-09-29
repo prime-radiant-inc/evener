@@ -30,7 +30,6 @@ vi.mock("@react-navigation/native", () => ({
 }));
 
 const props = {
-	route: { params: { hubId: "hub-1" } },
 	navigation: { dispatch: () => {} },
 } as unknown as ComponentProps<typeof LaunchSettingsScreen>;
 
@@ -82,13 +81,13 @@ function launchHub() {
 	};
 }
 
-async function mount(hub: FakeClient) {
+async function mount(hub: FakeClient, params: Record<string, unknown> = { hubId: "hub-1" }) {
 	harness.connection = {
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client: hub as unknown as ConversationClientLike,
 		state: "ready",
 	};
-	const tree = render(<LaunchSettingsScreen {...props} />);
+	const tree = render(<LaunchSettingsScreen {...props} route={{ params } as unknown as typeof props.route} />);
 	await act(async () => {});
 	return tree;
 }
@@ -206,4 +205,21 @@ it("offers Discard changes only while an edit sits over a change made elsewhere,
 	await editModel(tree, "gpt-5.7");
 	expect(discard()).toHaveLength(0);
 	expect(renderedText(tree)).not.toContain("changed elsewhere");
+});
+
+// The LaunchSettings route no longer carries a project cwd (the only way in
+// is the Hub's "Launch defaults" row, which passes { hubId } alone), so a
+// stray projectCwd must not pick the project layer: this page is always the
+// hub's global defaults.
+it("edits the hub's global defaults, ignoring any project cwd on the route", async () => {
+	const launch = launchHub();
+	const tree = await mount(launch.hub, { hubId: "hub-1", projectCwd: "/repo" });
+	expect(renderedText(tree)).toContain(
+		"Defaults for new Evener sessions. Project and per-launch settings can override these values.",
+	);
+	expect(renderedText(tree)).not.toContain("/repo");
+	const read = launch.hub.calls.find((call) => call.method === "evener/launch/getLayer")?.params as
+		| { cwd: string; layer: string }
+		| undefined;
+	expect(read).toEqual({ cwd: "/", layer: "global" });
 });

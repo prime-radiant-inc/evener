@@ -430,12 +430,14 @@ func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
 func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
+	// The provider's body echoes the user's request, as real ones can.
+	const body = "context length exceeded: messages[1].content began \"user-private-prompt\""
 	adapter := &fakeErrAdapter{name: "provider-warning", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
-			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, "context length exceeded", nil, nil)
+			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
-			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, "context length exceeded", nil, nil)
+			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
 	}}
 	client.Register(adapter)
@@ -465,6 +467,11 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 		if !strings.Contains(message, want) {
 			t.Fatalf("provider warning message %q missing %q", message, want)
 		}
+	}
+	// The warning reaches Notification hooks, so the provider's body stays
+	// out of it (#3386).
+	if strings.Contains(message, "user-private-prompt") {
+		t.Fatalf("provider warning message %q carries the provider's body", message)
 	}
 	assertWarningPrecedesCompaction(t, captured)
 }

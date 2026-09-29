@@ -33,7 +33,7 @@ export type HubRoutes = {
 	/** Today's settings screens, pushed inside the sheet until their grouped
 	 * pages land (#2539). */
 	KeybindingPreferences: { hubId: string; editor?: { actionId: string; chord: string } };
-	LaunchSettings: { hubId: string; projectCwd?: string };
+	LaunchSettings: { hubId: string };
 	HubSettings: { hubId: string };
 };
 
