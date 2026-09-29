@@ -18,7 +18,11 @@ const rows: TimelineRow[] = [
 				label: "shell",
 				family: "tool",
 				state: "failed",
-				detail: { description: "Run the tests", arguments: JSON.stringify({ command: "go test ./agent/..." }) },
+				detail: {
+					description: "Run the tests",
+					arguments: JSON.stringify({ command: "go test ./agent/..." }),
+					summary: "Ran go test ./agent/...",
+				},
 			},
 		],
 	},
@@ -37,7 +41,8 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 		expect(rowText(rows[0] as TimelineRow)).toBe("");
 	});
 
-	it("matches a fetched page or a search by its argument, not just its target", () => {
+	// A step's words name what it acted on: a page's URL, a search's query.
+	it("matches a fetched page by its URL and a web search by its query", () => {
 		const web: TimelineRow[] = [
 			{
 				kind: "run",
@@ -52,6 +57,7 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 						detail: {
 							description: "Read the docs",
 							arguments: JSON.stringify({ url: "https://example.com/guide" }),
+							summary: "Fetched https://example.com/guide",
 						},
 					},
 					{
@@ -63,6 +69,7 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 						detail: {
 							description: "Look it up",
 							arguments: JSON.stringify({ query: "rust lifetimes" }),
+							summary: 'Searched the web for "rust lifetimes"',
 						},
 					},
 				],
@@ -70,6 +77,30 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 		];
 		expect(findMatches(web, "example.com/guide")).toEqual([0]);
 		expect(findMatches(web, "rust lifetimes")).toEqual([0]);
+	});
+
+	// A settled step with an intent of its own keeps its words but not its
+	// summary (projectedRows' intentRow), and its line sets their target in
+	// Menlo: the target is on screen, so it's findable.
+	it("matches an intent row by the target its words name", () => {
+		const intent: TimelineRow[] = [
+			{
+				kind: "run",
+				id: "run:i",
+				steps: [
+					{
+						kind: "activity",
+						id: "i",
+						label: "read_file",
+						family: "tool",
+						state: "completed",
+						summaryOnly: true,
+						detail: { description: "Read the settle pass", words: { verb: "Read", target: "agent/tree.go" } },
+					},
+				],
+			},
+		];
+		expect(findMatches(intent, "agent/tree.go")).toEqual([0]);
 	});
 
 	it("starts at the newest match and steps both ways", () => {
