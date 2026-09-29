@@ -13124,10 +13124,13 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     // Park the refresh's OWN read after A's row settles, then let it reject on
-    // demand. listOptimistic is also read by the projection
-    // (readMutationPersistence) and the dispatcher's listTargetRefs, whose
-    // rejections are swallowed elsewhere, so the stub matches the refresh's
-    // frame to make sure the parked read is the one the guarded catch owns.
+    // demand - an explicit wrapper, not a stack sniff. listOptimistic is also
+    // read by the projection (readMutationPersistence), which the settle's own
+    // notify kicks off first, and by the dispatcher's listTargetRefs. The
+    // pins refresh reads only the outbox and optimistic stores, while the
+    // projection's read also reads recovery rows, so arming the hold on the
+    // recovery read lets the projection's optimistic read through and parks
+    // the refresh's.
     let rejectRead: (error: unknown) => void = () => {};
     const readGate = new Promise<never>((_resolve, reject) => {
       rejectRead = reject;
@@ -13139,8 +13142,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const realListOptimistic = storage.listOptimistic.bind(storage);
     let holdNextRead = false;
     storage.listOptimistic = (ref) => {
-      const fromRefresh = (new Error().stack ?? "").includes("refreshMutationPins");
-      if (holdNextRead && fromRefresh) {
+      if (holdNextRead) {
         holdNextRead = false;
         readReached();
         return readGate;
@@ -13149,11 +13151,20 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     };
 
     let settled = false;
+    const realListRecovery = storage.listRecovery.bind(storage);
+    let recoveryArmed = false;
+    storage.listRecovery = (ref) => {
+      const read = realListRecovery(ref);
+      if (settled && !recoveryArmed) {
+        recoveryArmed = true;
+        holdNextRead = true;
+      }
+      return read;
+    };
     const realSettle = storage.settleReceipt.bind(storage);
     storage.settleReceipt = async (id, state) => {
       const result = await realSettle(id, state);
       settled = true;
-      holdNextRead = true;
       return result;
     };
 
@@ -13172,9 +13183,10 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     for (let i = 0; i < 10; i += 1) await probe.listOutbox();
 
     // The parked, now-stale read rejects (the same failure a wedged storage
-    // produces). It must NOT clear the marker B's commit wrote.
+    // produces). It must NOT clear the marker B's commit wrote, and the wedge
+    // follows before any later successful read could mask a clear.
     rejectRead(new MutationStorageTimeoutError());
-    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+    await nextMacrotask();
     probe.close();
 
     // Storage wedges; B is still undelivered, so C must fail closed rather
@@ -13194,6 +13206,123 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       await rejection;
       // A's settled turn/start only: C refused, so it dispatched nothing.
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Reviewers' Medium, PR #3397, direction one. The failed-read clear may fail
+  // a marker open only where no evidence backs it. scheduleMutationDispatch
+  // refreshes after dispatchTargets resolves even when the row was only
+  // ATTEMPTED (a turn/queue or turn/start with no receipt), so the commit
+  // generation is unchanged while a genuinely undelivered row stands - the old
+  // unconditional clear dropped the marker there, and a later storage-timeout
+  // send then dispatched directly, ahead of the committed row, inverting the
+  // user's order once storage recovered.
+  test("a failed refresh read retains the marker for a committed but undelivered row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-general-refresh";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // Arm the failing reads at the drain's own attempt: the drain's remaining
+    // work needs no list read, and the post-attempt clearing refresh is the
+    // first read after this point. Both halves fail, so nothing this read can
+    // observe backs the marker - only the commit that awaits its delivery does.
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      storage.listOutbox = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return marked;
+    };
+
+    // A's durable queued row: committed, attempted, and never delivered (no
+    // turn/queue handler), so it stays undelivered work.
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    expect((await probe.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+
+    // Storage wedges; the next send must fail closed rather than reach the
+    // daemon ahead of A.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Reviewers' Medium, PR #3397, direction two: a read that fails one half but
+  // sees undelivered work in the other keeps that observation. Only the
+  // optimistic half fails here (the marker evidence), so the outbox half's row
+  // is the evidence that must outrank it.
+  test("a refresh that fails one read but observed undelivered work in the other retains the marker", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-partial-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      // Only the optimistic half of the post-attempt refresh fails; the outbox
+      // half still reads A's undelivered row.
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return marked;
+    };
+
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    expect((await probe.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
     } finally {
       vi.useRealTimers();
       openSpy.mockRestore();
