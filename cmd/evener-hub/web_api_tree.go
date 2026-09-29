@@ -238,7 +238,7 @@ func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, ap
 		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 		// This authority serves alias lookup, which falls back to the id's own
 		// spellings, so it carries no session facts: the stores are not read.
-		authority, _ := s.favoriteAuthorityForReferences(snapshot, t, nil)
+		authority, _ := s.favoriteAuthorityForReferences(snapshot, nil)
 		return hubcore.TreeCacheValue{
 			Tree:              t,
 			AttentionSummary:  sum,
@@ -1231,12 +1231,11 @@ func (s *WebServer) localSessionIndex() localSessionIndex {
 // stores reference, not for every session the hub holds. The second result is
 // the set of referenced canonical ids that are known subagents: no favorite or
 // pin may target one, so navigation drops them.
-func (s *WebServer) favoriteAuthorityForReferences(snapshot navigationSnapshot, tree hubcore.Tree, ids []string) (hubcore.FavoriteAuthority, map[string]bool) {
+func (s *WebServer) favoriteAuthorityForReferences(snapshot navigationSnapshot, ids []string) (hubcore.FavoriteAuthority, map[string]bool) {
 	sessions, subagents := referencedSessionAuthorities(ids, snapshot, s.localSessionIndex())
 	return hubcore.FavoriteAuthority{
 		Sessions: sessions,
 		Projects: favoriteProjectAuthorities(snapshot),
-		Nodes:    tree.FavoriteNodeAuthorities(),
 	}, subagents
 }
 

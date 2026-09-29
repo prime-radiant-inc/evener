@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { FLOAT_GAP } from "../design/underBar";
+import { useComposerTyping } from "../useKeyboardShown";
 
 /** The capsule every floating control wears, so Next and "↓ 3 new" read as
  * one family and restyle together. */
@@ -41,14 +42,19 @@ export function FloatingStack({
 	next,
 	pill,
 	barHeight = 0,
+	composerKeyboard = false,
 }: {
 	toast: ReactNode;
 	next: ReactNode;
 	pill: ReactNode;
+	/** Whether a keyboard up would be the composer's (useComposerTyping): then
+	 * Next steps aside. */
+	composerKeyboard?: boolean;
 	/** How tall the bar under the transcript's end stands; the stack floats
 	 * FLOAT_GAP above it. */
 	barHeight?: number;
 }) {
+	const typing = useComposerTyping(composerKeyboard);
 	return (
 		<View
 			pointerEvents="box-none"
@@ -59,7 +65,7 @@ export function FloatingStack({
 					{toast}
 				</View>
 			) : null}
-			{next ? (
+			{next && !typing ? (
 				<View pointerEvents="box-none" style={{ alignItems: "flex-end", paddingHorizontal: 16 }}>
 					{next}
 				</View>

@@ -20,21 +20,7 @@ export interface HostFacts {
 }
 
 /** What placing a row under a host reads from it. */
-export type HostPlacedRow = Pick<NavigationSessionSummary, "kind" | "host_id"> & {
-  readonly children: readonly Pick<NavigationSessionSummary, "host_id">[];
-};
-
-/** The host a row groups under. A cluster row's own host_id is synthetic:
- * "cluster", the scope prefix of its id, because the hub names no host for a
- * row it folded out of repeated titles (navigationNodeRef falls back to the
- * node ID, so the wire carries "cluster:<hex>"). It groups under its
- * most-recent member's host, the member the cluster itself carries recency
- * from; a memberless cluster (the hub never builds one) falls back to this
- * hub so the row still renders somewhere. */
-export function sessionGroupHostId(row: HostPlacedRow): string {
-  if (row.kind !== "cluster") return row.host_id;
-  return row.children[0]?.host_id ?? CONTROLLER_SOURCE_ID;
-}
+export type HostPlacedRow = Pick<NavigationSessionSummary, "host_id">;
 
 /** The manifest's id to Source lookup, single-slot memoized on the sources
  * array's identity: a client hands back the manifest's own array, so every
@@ -79,7 +65,7 @@ export function orderedHosts(hostIds: Iterable<string>, sources: readonly Source
  * which the wire means as the controller's own) is this hub's. */
 export function projectHostIds(sources: readonly string[] | undefined, rows: readonly HostPlacedRow[]): string[] {
   const hosts = new Set<string>(sources ?? []);
-  for (const row of rows) hosts.add(sessionGroupHostId(row));
+  for (const row of rows) hosts.add(row.host_id);
   if (hosts.size === 0) hosts.add(CONTROLLER_SOURCE_ID);
   return [...hosts];
 }
@@ -96,6 +82,6 @@ export function canonicalHostId(
   sources: readonly Source[],
 ): string {
   const ordered = orderedHosts(hostIds, sources);
-  const withRows = ordered.find(({ id }) => rows.some((row) => sessionGroupHostId(row) === id));
+  const withRows = ordered.find(({ id }) => rows.some((row) => row.host_id === id));
   return (withRows ?? ordered[0])?.id ?? CONTROLLER_SOURCE_ID;
 }

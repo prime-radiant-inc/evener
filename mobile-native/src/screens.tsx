@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -183,7 +184,6 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
-import { useKeyboardShown } from "./useKeyboardShown";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -354,6 +354,17 @@ export function ConversationScreen({
 	// remembered by its row's reader key, since older pages prepend rows.
 	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
+	// Where the device has Liquid Glass, the nav bar is the system's glass
+	// over the transcript (spec 16.3): the screen starts under it, and the
+	// header's own glass spans the bar and the rows under it.
+	const navGlass = useSystemGlass();
+	const underNavBar = navGlass ? headerHeight : 0;
+	// Before paint, so a session never opens with an opaque bar that turns to
+	// glass; Reduce Transparency's last known value (accessibilitySettings)
+	// is there on the first render of every screen after the first.
+	useLayoutEffect(() => {
+		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
+	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's
@@ -918,7 +929,6 @@ export function ConversationScreen({
 	// follows every re-layout of the room: a percentage cap could keep a height
 	// from before a push's header inset landed (#3248).
 	const bottomBarRoom = useBarHeight();
-	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
 	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
@@ -950,16 +960,25 @@ export function ConversationScreen({
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
-	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	// The block's measured height, and whether it was measured on the glass,
+	// where it includes the nav bar's room.
+	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
+	// What the list's top keeps clear: the bar where the screen runs under it,
+	// and the rows.
+	const reservedTop = reservedUnderGlass(headerHeight, sessionHeader, navGlass);
+	// The block's rows (the connection line, the chips, the note).
+	const headerRows = reservedTop - underNavBar;
 	const listOffset = useRef(0);
-	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes), the
+	const reservedRows = useRef(0);
+	// When the rows grow or shrink (the connection line comes or goes), the
 	// list's top padding moves by the same amount; scrolling the list by it
 	// too keeps every row where it was on screen. At the top the list stays
-	// at the top, and the rows make room for the block.
+	// at the top, and the rows make room. The bar turning glass or opaque
+	// asks for no scroll: it moves the list's frame by the bar's height as
+	// the padding moves by the same, so the rows stay where they are.
 	useLayoutEffect(() => {
-		const change = sessionHeaderHeight - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = sessionHeaderHeight;
+		const change = headerRows - reservedRows.current;
+		reservedRows.current = headerRows;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -968,7 +987,7 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [sessionHeaderHeight]);
+	}, [headerRows]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
@@ -2479,19 +2498,17 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Typing in the composer: Next and the header's chips and note step aside,
-	// and the queue folds to one line, so the transcript keeps its room; all of
-	// it returns when the keyboard lowers.
-	// A keyboard up for a dock's field or the find bar is not this: the find
-	// bar's own field raises it with the composer still mounted. (The header
-	// keeps the find bar in place itself, whatever hides the chips.)
-	const typing = keyboardShown && composerShown && find === null;
+	// Whether a keyboard up would be the composer's (useComposerTyping). The
+	// find bar's own field raises it with the composer still mounted, so find
+	// open means it isn't. (The header keeps the find bar in place, whatever
+	// hides the chips.)
+	const composerKeyboard = composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
-	// something, you are finding in it (spec 8.3), or you are typing.
-	const nextTarget =
-		approval === null && questionBatch === null && find === null && !typing ? (queue[0] ?? null) : null;
+	// something, or you are finding in it (spec 8.3); FloatingStack steps it
+	// aside while you type.
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2516,7 +2533,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				typing={typing}
+				composerKeyboard={composerKeyboard}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
@@ -2644,7 +2661,7 @@ export function ConversationScreen({
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
+				keyboardVerticalOffset={headerHeight - underNavBar}
 			>
 				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
@@ -2663,9 +2680,13 @@ export function ConversationScreen({
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							data={timelineRows}
-							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to show or hide its fold control.
-							extraData={liveRun}
+							// Cells re-render only for a new renderItem or new rows, and
+							// renderItem changes with everything a row reads (the live run
+							// included): a screen render that changes nothing a row reads
+							// (the bottom bar re-laying out as the keyboard folds the queue)
+							// leaves them alone, where FlatList otherwise rebuilds its
+							// renderer, and so every visible cell, on every render (#3247).
+							strictMode
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
 							// A row keeps its reader key when history records it, so the
@@ -2683,7 +2704,7 @@ export function ConversationScreen({
 								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
 								justifyContent: "flex-end",
 								padding: 16,
-								paddingTop: 16 + sessionHeaderHeight,
+								paddingTop: 16 + reservedTop,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
 							}}
 							contentInset={listUnderBar.contentInset}
@@ -2842,52 +2863,51 @@ export function ConversationScreen({
 							// the composer's placeholder invites.
 							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
-						<View
-							pointerEvents="box-none"
-							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
-						>
-							<SessionHeader
-								status={connectionText}
-								chips={chips}
-								find={
-									find ? (
-										<FindBar
-											query={find.query}
-											label={
-												find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
-											}
-											searchingOlder={find.seeking && snapshot.loadingOlder}
-											settled={!find.seeking}
-											onQuery={(query) => setFind(newFind(query))}
-											onStep={stepFind}
-											onDone={() => {
-												Keyboard.dismiss();
-												setFind(null);
-											}}
-										/>
-									) : undefined
-								}
-								hidden={headerHiding.hidden || typing}
-								onChip={openChip}
-								notes={
-									notesPreview ? (
-										<NotesBar
-											preview={notesPreview}
-											onPress={() => {
-												Keyboard.dismiss();
-												// Showing your note, the editor opens with the caret at its end.
-												navigation.navigate("NotesSheet", {
-													hubId: route.params.hubId,
-													ref: route.params.ref,
-													focusEditor: notesPreview.glyph === "person",
-												});
-											}}
-										/>
-									) : undefined
-								}
-							/>
-						</View>
+						<SessionHeader
+							glassTop={navGlass ? headerHeight : undefined}
+							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+							status={connectionText}
+							chips={chips}
+							find={
+								find ? (
+									<FindBar
+										query={find.query}
+										label={
+											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
+										}
+										searchingOlder={find.seeking && snapshot.loadingOlder}
+										settled={!find.seeking}
+										onQuery={(query) => setFind(newFind(query))}
+										onStep={stepFind}
+										onDone={() => {
+											Keyboard.dismiss();
+											setFind(null);
+										}}
+										onGlass={navGlass}
+									/>
+								) : undefined
+							}
+							hidden={headerHiding.hidden}
+							composerKeyboard={composerKeyboard}
+							onChip={openChip}
+							notes={
+								notesPreview ? (
+									<NotesBar
+										onGlass={navGlass}
+										preview={notesPreview}
+										onPress={() => {
+											Keyboard.dismiss();
+											// Showing your note, the editor opens with the caret at its end.
+											navigation.navigate("NotesSheet", {
+												hubId: route.params.hubId,
+												ref: route.params.ref,
+												focusEditor: notesPreview.glyph === "person",
+											});
+										}}
+									/>
+								) : undefined
+							}
+						/>
 						<FloatingStack
 							toast={toaster.toast ? <Toast toast={toaster.toast} dismiss={toaster.dismiss} /> : null}
 							next={
@@ -2897,6 +2917,7 @@ export function ConversationScreen({
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
+							composerKeyboard={composerKeyboard}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
@@ -2980,7 +3001,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerShown}
+									composerUp={composerKeyboard}
 								/>
 							) : null}
 						</View>

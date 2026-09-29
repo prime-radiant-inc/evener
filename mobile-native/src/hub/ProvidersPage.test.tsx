@@ -24,6 +24,7 @@ import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
 import { Tag } from "../sheet/Grouped";
+import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProvidersPage } from "./ProvidersPage";
 import {
 	alertRequests,
@@ -416,8 +417,8 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("The instance was removed on the hub");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("The provider was removed, but a later step failed. Check the list.");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's own text can echo submitted credentials, so the
 	// warning above must never carry it.
 	expect(text).not.toContain("the hub left work's stored key behind");
@@ -448,7 +449,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/remove"]);
 	const text = renderedText(tree);
-	expect(text).toContain("The operation could not be confirmed");
+	expect(text).toContain("The hub didn't confirm the change.");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
 	expect(hasControl(tree, "Remove")).toBe(true);
@@ -540,7 +541,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	});
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
 	expect(text).not.toContain("Base URL");
@@ -584,8 +585,8 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("now points somewhere else");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's text can echo submitted values and never renders.
 	expect(text).not.toContain("work no longer resolves");
 	// Cleared like a completed removal: the detail and its actions are gone.
@@ -632,8 +633,8 @@ it("keeps the create form for a name-collision conflict", async () => {
 	expect(create).toHaveBeenCalledTimes(1);
 	expect(onEndpointConflict).not.toHaveBeenCalled();
 	const text = renderedText(tree);
-	expect(text).toContain("Save could not be confirmed");
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).toContain("The hub didn't confirm the change.");
+	expect(text).not.toContain("now points somewhere else");
 	// The form survives for the correction.
 	expect(text).toContain("Base URL");
 });
@@ -711,7 +712,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 
@@ -765,7 +766,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	// completed write.
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).not.toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 
@@ -1101,14 +1102,14 @@ it("reads the listing again on coming back to the page after a read failed, with
 	const { tree } = mountPage();
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Could not load providers");
+	expect(renderedText(tree)).toContain("Couldn't load the providers");
 	expect(renderedText(tree)).not.toMatch(/\bRetry\b|\bReconnect\b/);
 	await act(async () => {
 		refocus();
 	});
 	await act(async () => {});
 	expect(reads).toBe(2);
-	expect(renderedText(tree)).not.toContain("Could not load providers");
+	expect(renderedText(tree)).not.toContain("Couldn't load the providers");
 });
 
 it('calls no account sign-in "Signed in" before the hub\'s statuses are read', async () => {
@@ -1261,10 +1262,11 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	};
 	await open("codex");
 	expect(hasControl(tree, "Status, Signed in")).toBe(true);
-	expect(hasControl(tree, "Type, openai-codex")).toBe(true);
+	expect(hasControl(tree, "Type, openai-codex, Default")).toBe(true);
 	expect(hasControl(tree, "Sign-in, Account")).toBe(true);
 	expect(hasControl(tree, "gpt-5.6")).toBe(true);
-	expect(hasControl(tree, "gpt-5.5")).toBe(false);
+	// A disabled model is listed too, with its switch off.
+	expect(hasControl(tree, "gpt-5.5")).toBe(true);
 	expect(hasControl(tree, "Sign in again")).toBe(true);
 	expect(hasControl(tree, "Set key")).toBe(false);
 	expect(hasControl(tree, "Replace key")).toBe(false);
@@ -1273,7 +1275,7 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	expect(hasControl(tree, "Replace key")).toBe(true);
 	expect(hasControl(tree, "Sign in")).toBe(false);
 	expect(hasControl(tree, "Make default")).toBe(true);
-	expect(renderedText(tree)).toContain("No models listed");
+	expect(renderedText(tree)).toContain("No models listed.");
 	await open("vertex");
 	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
 	expect(hasControl(tree, "Set credential JSON")).toBe(true);
@@ -1293,7 +1295,7 @@ it("replaces a key in place, saving it against the endpoint the row was read fro
 	expect(input.props.placeholder).toBe("Paste the API key");
 	expect(input.props.secureTextEntry).toBe(true);
 	act(() => input.props.onChangeText(" sk-fixture "));
-	press(tree, (label) => label === "Save key");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 	const save = fake.calls.find((call) => call.method === "evener/auth/apiKey/set");
@@ -1374,28 +1376,19 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 	expect(hasControl(tree, "API key")).toBe(false);
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	// A swipe on the key's own sheet (the innermost modal) asks.
+	act(() =>
+		tree.root
+			.findAllByType("Modal" as never)
+			.at(-1)
+			?.props.onRequestClose(),
+	);
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	choose("Keep editing");
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
 	press(tree, (label) => label === "Cancel");
 	choose("Discard");
 	expect(hasControl(tree, "API key")).toBe(false);
-});
-
-it("asks before Done throws away a pasted key", async () => {
-	alertRequests.length = 0;
-	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
-	const { tree } = mountPage();
-	await act(async () => {});
-	await openWork(tree);
-	press(tree, (label) => label === "Replace key");
-	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	press(tree, (label) => label === "Done");
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
-	choose("Discard");
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
 });
 
 it("holds a swipe down while a pasted key is being saved, without asking", async () => {
@@ -1407,11 +1400,17 @@ it("holds a swipe down while a pasted key is being saved, without asking", async
 	await openWork(tree);
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	press(tree, (label) => label === "Save key");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	// The key's own sheet takes the swipe; it stays while its save runs.
+	act(() =>
+		tree.root
+			.findAllByType("Modal" as never)
+			.at(-1)
+			?.props.onRequestClose(),
+	);
 	expect(alertRequests).toHaveLength(0);
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 });
 
 it("closes the editor without asking once its save lands", async () => {
@@ -1442,4 +1441,420 @@ it("closes the detail with Done while an unrelated write is in flight, with no k
 	await act(async () => {});
 	press(tree, (label) => label === "Done");
 	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
+async function openDetail(tree: ReactTestRenderer, name: string) {
+	press(tree, (label) => label.startsWith(`${name},`));
+	await act(async () => {});
+}
+
+it("names each confirmation's action on its button, and the provider in its message (spec 5)", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "store", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const asked = () => {
+		const request = alertRequests.at(-1);
+		return [request?.title, request?.message, request?.buttons?.map((button) => button.text)];
+	};
+	const styles = () => alertRequests.at(-1)?.buttons?.map((button) => button.style);
+	press(tree, (label) => label === "Remove");
+	expect(asked()).toEqual(["Remove provider?", "work on Work hub", ["Cancel", "Remove"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
+	press(tree, (label) => label === "Clear credentials");
+	expect(asked()).toEqual(["Clear credentials?", "work on Work hub", ["Cancel", "Clear credentials"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
+});
+
+it("names the key it clears on the button", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "env:WORK_KEY", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored key");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Cancel", "Clear key"]);
+	expect(alertRequests.at(-1)?.buttons?.at(-1)?.style).toBe("destructive");
+});
+
+it("names a Google provider's stored credential JSON, not a key, when it clears it", async () => {
+	alertRequests.length = 0;
+	providersHub([
+		instance({ auth: "gcp-adc", authModes: ["credentialJson"], activeSource: "adc", hasStoredFile: true }),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored credential JSON");
+	const request = alertRequests.at(-1);
+	expect(request?.title).toBe("Clear stored credential JSON?");
+	expect(request?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Clear JSON", "destructive"],
+	]);
+});
+
+it("leaves the Type row untagged for a provider that isn't the default, and keeps warnings under the group", async () => {
+	providersHub([instance({ isDefault: false, warnings: ["The key expires soon."] })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(hasControl(tree, "Type, anthropic")).toBe(true);
+	const modal = tree.root.findByType("Modal" as never);
+	expect(modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
+	expect(subtreeText(modal)).toContain("The key expires soon.");
+});
+
+it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {
+	providersHub([
+		instance({
+			isDefault: true,
+			implicit: true,
+			activeSource: "env:WORK_KEY",
+			hasStoredFile: true,
+			authModes: ["apiKey"],
+		}),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const modal = tree.root.findByType("Modal" as never);
+	const text = subtreeText(modal);
+	expect(text).not.toContain("The default provider.");
+	expect(text).not.toContain("From the environment.");
+	expect(text).not.toContain("Shadowed");
+	const tags = modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
+	expect(tags).not.toHaveLength(0);
+	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
+	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
+	expect(hasControl(tree, "Also stored, Configured via stored API key, Not used")).toBe(true);
+});
+
+it("calls a shadowed environment variable what it is, never a stored credential", async () => {
+	providersHub([instance({ activeSource: "api_key", shadowedEnvVar: "WORK_KEY", hasStoredFile: false })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
+	expect(hasControl(tree, shadowed)).toBe(true);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
+});
+
+it("pastes a key in its own sheet: the action as its title, Cancel and Save, and where the key is kept", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => ({ provider: "work", activeSource: "store" }) as never);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	press(tree, (label) => label === "Replace key");
+	const modals = tree.root.findAllByType("Modal" as never);
+	expect(modals).toHaveLength(2);
+	const sheet = modals[1];
+	if (!sheet) throw new Error("no key sheet");
+	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Replace key");
+	expect(subtreeText(sheet)).toContain("The key is stored on the hub, not on this phone.");
+	const save = () => sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save" });
+	expect(save().props.disabled).toBe(true);
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	expect(save().props.disabled).toBe(false);
+	await act(async () => {
+		save().props.onPress();
+	});
+	await act(async () => {});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(fake.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true);
+});
+
+it("says why a key didn't save in its own sheet, which stays open with the key", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => {
+		throw new Error("provider said no");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no key sheet");
+	expect(subtreeText(sheet)).toContain("The hub didn't confirm the credential was saved.");
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+});
+
+it("titles a Google provider's paste sheet for its credential JSON", async () => {
+	providersHub([instance({ auth: "gcp-adc", authModes: ["credentialJson"], hasStoredFile: false })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Set credential JSON");
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no credential sheet");
+	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Set credential JSON");
+	expect(control(tree, "Google credential JSON").props.multiline).toBe(true);
+});
+
+it("saves a key from the keyboard's Done only when Save could, never twice", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	const submit = () => act(() => control(tree, "API key").props.onSubmitEditing());
+	act(() => control(tree, "API key").props.onChangeText("   "));
+	submit();
+	await act(async () => {});
+	expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	submit();
+	await act(async () => {});
+	submit();
+	await act(async () => {});
+	expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+it("says Saving, busy, and holds Cancel while a pasted key saves", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no key sheet");
+	const saving = sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Saving…" });
+	expect(saving.props.accessibilityState).toEqual({ disabled: true, busy: true });
+	expect(sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.disabled).toBe(true);
+});
+
+const withModels = () =>
+	instance({
+		authModes: ["apiKey"],
+		models: [{ id: "gpt-5.6" }, { id: "gpt-5.5", disabled: true }],
+	});
+
+it("lists every model with a switch, off for one that's disabled, in SF Pro (spec 16.2)", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	// VoiceOver reads the model's name, then the switch's own state.
+	expect(control(tree, "gpt-5.6").props.value).toBe(true);
+	expect(control(tree, "gpt-5.5").props.value).toBe(false);
+	const label = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "gpt-5.5");
+	expect(JSON.stringify(label.props.style)).not.toContain("Menlo");
+});
+
+it("turns a model on or off through the hub", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({
+		instances: [
+			{
+				...withModels(),
+				models: [
+					{ id: "gpt-5.6", disabled: params.disabled },
+					{ id: "gpt-5.5", disabled: true },
+				],
+			},
+		],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => {
+		control(tree, "gpt-5.6").props.onValueChange(false);
+	});
+	await act(async () => {});
+	const call = fake.calls.find((entry) => entry.method === "evener/instance/setModelDisabled");
+	expect(call?.params).toMatchObject({ name: "work", model: "gpt-5.6", disabled: true });
+	expect(control(tree, "gpt-5.6").props.value).toBe(false);
+});
+
+it("asks the provider for new models, and the list takes them in as they land", async () => {
+	const fake = providersHub([withModels()]);
+	let answer: (value: InstanceListResponse) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
+	await act(async () =>
+		answer({
+			instances: [{ ...withModels(), models: [{ id: "gpt-5.6" }, { id: "gpt-5.5", disabled: true }, { id: "gpt-6" }] }],
+			availableProviders: [],
+		}),
+	);
+	await act(async () => {});
+	expect(control(tree, "gpt-6").props.value).toBe(true);
+	expect(hasControl(tree, "Check for new models")).toBe(true);
+});
+
+it("says plainly when it couldn't check for new models", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/refreshModels", () => {
+		throw new Error("upstream 502");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	const text = subtreeText(tree.root.findByType("Modal" as never));
+	expect(text).toContain("The hub couldn't check for new models. Try again in a moment.");
+	expect(text).not.toContain("upstream 502");
+});
+
+it("holds the model switches while a write runs, and takes the next flip once it lands", async () => {
+	const fake = providersHub([withModels()]);
+	const answers: ((value: InstanceListResponse) => void)[] = [];
+	fake.on(
+		"evener/instance/setModelDisabled",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answers.push(resolve);
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => control(tree, "gpt-5.6").props.onValueChange(false));
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+	expect(control(tree, "gpt-5.5").props.disabled).toBe(true);
+	await act(async () =>
+		answers[0]?.({
+			instances: [
+				{
+					...withModels(),
+					models: [
+						{ id: "gpt-5.6", disabled: true },
+						{ id: "gpt-5.5", disabled: true },
+					],
+				},
+			],
+			availableProviders: [],
+		}),
+	);
+	await act(async () => {});
+	expect(control(tree, "gpt-5.5").props.disabled).toBe(false);
+	await act(async () => control(tree, "gpt-5.5").props.onValueChange(true));
+	const flips = fake.calls
+		.filter((call) => call.method === "evener/instance/setModelDisabled")
+		.map((call) => call.params);
+	expect(flips).toEqual([
+		expect.objectContaining({ model: "gpt-5.6", disabled: true }),
+		expect.objectContaining({ model: "gpt-5.5", disabled: false }),
+	]);
+});
+
+it("holds the model switches when the hub refuses writes", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/list", () => ({ instances: [withModels()], availableProviders: [], writesRefused: true }));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+});
+
+it("holds the model switches while the connection is down", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(false);
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersPage {...props} />);
+	});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+});
+
+it("holds the model switches on a replaced connection's rows until its own listing lands", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	let resolveListing: (value: InstanceListResponse) => void = () => {};
+	const second = new FakeClient("ready");
+	second.on(
+		"evener/instance/list",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				resolveListing = resolve;
+			}),
+	);
+	second.on("evener/auth/list", () => ({ providers: [] }));
+	harness.connection = {
+		...harness.connection,
+		client: second as unknown as ConversationClientLike,
+		state: "connecting",
+	};
+	await act(async () => tree.update(<ProvidersPage {...props} />));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<ProvidersPage {...props} />));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+	await act(async () => resolveListing({ instances: [withModels()], availableProviders: [] }));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(false);
+});
+
+it("snaps a switch back and says so when the hub doesn't take the flip", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/setModelDisabled", () => {
+		throw new Error("config write failed: /home/jesse/.evener/providers.toml");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => control(tree, "gpt-5.6").props.onValueChange(false));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.value).toBe(true);
+	const text = subtreeText(tree.root.findByType("Modal" as never));
+	expect(text).toContain(UNCONFIRMED_CHANGE);
+	expect(text).not.toContain("providers.toml");
+});
+
+it("forgets a check for new models when the detail closes, and never reports it elsewhere", async () => {
+	const fake = providersHub([withModels()]);
+	let fail: (reason: Error) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(hasControl(tree, "Check for new models")).toBe(true);
+	// The check left behind fails while the detail is open again.
+	await act(async () => fail(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });

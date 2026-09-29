@@ -73,6 +73,19 @@ export interface ArchiveResponse {
   navigation: NavigationMutation;
 }
 
+export interface ArchivedListParams {
+  catalog: string;
+  projectKey: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ArchivedListResponse {
+  sessions: unknown;
+  nextCursor?: string;
+  total: number;
+}
+
 export interface AttentionChanged {
   threadId: string;
   title: string;
@@ -2395,7 +2408,6 @@ export interface NavigationSessionSummary {
   state: string;
   kind: string;
   branch?: string;
-  cluster_count?: number;
   favorite?: boolean;
   rename?: boolean;
   live: boolean;
@@ -4359,6 +4371,7 @@ export const METHOD_NAMES = [
   "evener/session-pin/unpin",
   "evener/session/seen/set",
   "evener/search",
+  "evener/archived/list",
   "evener/activity/read",
   "evener/notices/list",
   "evener/harnesses/list",
@@ -4583,6 +4596,7 @@ export interface MethodTypes {
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
   "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
+  "evener/archived/list": { params: ArchivedListParams; result: ArchivedListResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
   "evener/notices/list": { params: EmptyParams; result: NoticesListResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };

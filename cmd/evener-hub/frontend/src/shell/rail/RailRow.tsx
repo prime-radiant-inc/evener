@@ -49,7 +49,7 @@ import {
   watchGloss,
   watchTitle,
 } from "@evener/appwire-client";
-import { sessionGroupHostId, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -641,12 +641,8 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const { session } = node;
   // A non-local row names its host on the title line (a LABEL, not a tree
   // re-layout); reachability comes from the manifest's sources, not from the
-  // row. A CLUSTER row names its members' host - its own host_id is the
-  // synthetic scope prefix of its id ("cluster"), which names no machine -
-  // the same resolver the grouping uses, so the chip cannot contradict the
-  // group the row sits under. Dormant keeps its own "never run" meaning -
-  // see useHostOnline.
-  const hostId = sessionGroupHostId(session);
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
   const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);

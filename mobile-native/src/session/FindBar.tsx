@@ -6,6 +6,7 @@ import { SymbolView } from "expo-symbols";
 import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
+import { headerRowFill } from "../design/systemGlass";
 import { SymbolButton } from "./SymbolButton";
 
 export function FindBar({
@@ -16,6 +17,7 @@ export function FindBar({
 	onQuery,
 	onStep,
 	onDone,
+	onGlass = false,
 }: {
 	query: string;
 	/** Where you are among the matches: "2 of 3", "No matches". */
@@ -27,6 +29,8 @@ export function FindBar({
 	onQuery(query: string): void;
 	onStep(direction: 1 | -1): void;
 	onDone(): void;
+	/** It sits on the header's glass, and draws clear on it. */
+	onGlass?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -51,7 +55,7 @@ export function FindBar({
 				paddingLeft: 16,
 				paddingRight: 8,
 				paddingVertical: 4,
-				backgroundColor: palette.page,
+				backgroundColor: headerRowFill(onGlass, palette),
 			}}
 		>
 			<TextInput

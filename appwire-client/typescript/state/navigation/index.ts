@@ -43,7 +43,6 @@ export {
   canonicalHostId,
   orderedHosts,
   projectHostIds,
-  sessionGroupHostId,
 } from "./hostGrouping";
 export { cloneAndDeepFreezeJSON, equalJSON } from "./immutable";
 export { isSequenceGap, matchesTarget, matchingTargets, requiredRevision } from "./invalidation";

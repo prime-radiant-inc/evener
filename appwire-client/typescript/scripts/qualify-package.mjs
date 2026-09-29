@@ -551,7 +551,7 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
       // sources and no needs-you rows, and the row age formatter is pure),
-      // hostGrouping (a cluster sits under its newest member's host).
+      // hostGrouping (a project's hosts come from its rows).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -585,7 +585,7 @@ assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
-assert.equal(client.sessionGroupHostId({ kind: "cluster", host_id: "cluster", children: [{ host_id: "devbox" }] }), "devbox");
+assert.deepEqual(client.projectHostIds(undefined, [{ host_id: "devbox" }]), ["devbox"]);
 `,
     },
     // The credentials state layer: the listing core each app's Providers &

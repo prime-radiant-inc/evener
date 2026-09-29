@@ -2097,7 +2097,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// Version auto-match still converges a host that can be converged: with a deploy
 	// path configured, deployRequired above installs this controller's build and the
 	// judgement right after the write (above) proves the result, while the installer
-	// path keeps its own terminal ErrVersionMismatch for a moved channel tag. What
+	// path keeps its own terminal ErrVersionMismatch for a moved channel. What
 	// is left here attaches on the host's own build, and reports the difference
 	// where it accepts it — at the attach, so a passed-over bootstrap cannot leave a
 	// notice for an attach that never happened.

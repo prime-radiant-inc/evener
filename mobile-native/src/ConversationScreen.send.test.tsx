@@ -22,6 +22,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	systemGlass,
 	textOf,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -30,6 +31,9 @@ import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure"
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { FindBar } from "./session/FindBar";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
@@ -331,6 +335,7 @@ afterEach(() => {
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
+	systemGlass.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -349,6 +354,7 @@ function hubClient(
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
 	olderPage: Promise<void> = Promise.resolve(),
+	compacting: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -384,6 +390,7 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
+			if (method === "thread/compact/start") await compacting;
 			if (method === "thread/turns/list") {
 				await olderPage;
 				return { data: olderTurns };
@@ -446,6 +453,9 @@ async function mount(
 		// Holds the older page until the promise settles, for what happens
 		// while one is on its way.
 		olderPage = Promise.resolve(),
+		// Holds a compact until the promise settles, so a session control stays
+		// pending.
+		compacting = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -453,7 +463,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage, compacting);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -690,6 +700,19 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		act(() => keyboard.hide());
 		expect(options()).not.toHaveLength(0);
 		expect(pressable(tree, "Send answer")).toBeDefined();
+	});
+
+	// The dock follows the same typing rule as the rest (useComposerTyping):
+	// a keyboard up for the find bar's field isn't the composer's.
+	it("keeps the options while the keyboard is up for the find bar", async () => {
+		const { tree } = await mount(thread("ref-question-find", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.hide());
 	});
 
 	it("brings the options back from Show options, which lowers the keyboard", async () => {
@@ -1510,6 +1533,94 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toEqual([]);
 });
 
+// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
+// system's glass over the transcript (spec 16.3), and the header's glass runs
+// on under the chips and note: the transcript runs under both, and its top
+// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
+// is opaque and the screen starts below it.
+describe("the nav bar's glass (spec 16.3)", () => {
+	// The bar's options: transparent, and clear, since react-native-screens
+	// draws a transparent bar's background only when its color is itself
+	// clear; and no system edge effect where the header's own glass is drawn.
+	const lastBar = () => {
+		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+			.map(([options]) => options)
+			.findLast((options) => "headerTransparent" in options);
+		if (options?.headerTransparent === undefined) return undefined;
+		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
+		expect(background === "transparent").toBe(options.headerTransparent);
+		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
+	};
+	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
+	const layout = (tree: ReactTestRenderer) => ({
+		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
+		glassTop: header(tree).props.glassTop,
+		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
+		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
+			.keyboardVerticalOffset,
+	});
+	const measureHeader = (tree: ReactTestRenderer, height: number) =>
+		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+
+	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass"));
+		await act(async () => {});
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		// Before the header has measured, the list keeps the bar's room.
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		// The header's height covers the bar's room and the rows under it.
+		measureHeader(tree, 64 + 48);
+		expect(layout(tree).listTop).toBe(16 + 64 + 48);
+		// The find bar, in the chips' place, draws clear on the glass too.
+		chooseMenu("Find in session");
+		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
+	});
+
+	// Turning the bar glass or opaque moves the list's frame by the bar's
+	// height and its top padding by the same, so the rows stay where they are
+	// with no scroll of the list's own; only the rows block growing or
+	// shrinking asks for one.
+	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass-flip"));
+		await act(async () => {});
+		measureHeader(tree, 64 + 48);
+		scrollTo(tree, 500);
+		flatListCalls.length = 0;
+		act(() => systemGlass.setReduceTransparency(true));
+		measureHeader(tree, 48);
+		act(() => systemGlass.setReduceTransparency(false));
+		measureHeader(tree, 64 + 48);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+		// The rows block itself growing (the connection line arriving) still does.
+		measureHeader(tree, 64 + 48 + 24);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
+		]);
+	});
+
+	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
+		const { tree } = await mount(twoTurns("ref-no-glass"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+	});
+
+	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
+});
+
 it("moves the Session with the keyboard through the keyboard controller", async () => {
 	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
 	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
@@ -1727,6 +1838,35 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+// Retry shows only while a press would send, which a session control going
+// pending (a compact) changes without changing the rows: the row still
+// follows it.
+it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
+	const served = thread("ref-retry-pending", "idle");
+	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	let settleCompact = () => {};
+	const compacting = new Promise<void>((resolve) => {
+		settleCompact = resolve;
+	});
+	const { tree } = await mount(served, { compacting });
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await type(tree, "/compact");
+	await press(tree, "Compact transcript");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	await act(async () => settleCompact());
+	await settle();
+	expect(pressable(tree, "Retry")).toBeDefined();
 });
 
 it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {

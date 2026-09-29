@@ -19,6 +19,7 @@ import type { Thread } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
@@ -787,8 +788,13 @@ function sessionList(tree: ReturnType<typeof render>) {
 	return {
 		block,
 		list,
-		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		/** The block's panel reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() =>
+				block()
+					.findByType(GlassHeaderPanel)
+					.props.onLayout({ nativeEvent: { layout: { height } } }),
+			),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
@@ -934,15 +940,22 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 
 // While you type in the composer, the chips and the note row step aside so
 // the transcript keeps its room; the nav bar stays (spec 8.1).
+// Whether the header's chips-and-note row is slid away behind the nav bar
+// (out of VoiceOver's reach while it is), whatever slid it: a downward scroll
+// or typing, which the header reads from the keyboard itself.
+const slidAway = (block: ReturnType<ReturnType<typeof sessionList>["block"]>) =>
+	block.findAll((node) => String(node.type) === "Animated.View")[0]?.props.accessibilityElementsHidden;
+
 it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
 	const { tree } = mount(busy);
 	await flush();
 	const session = sessionList(tree);
-	expect(session.block().props.hidden).toBe(false);
+	expect(session.block().props.composerKeyboard).toBe(true);
+	expect(slidAway(session.block())).toBe(false);
 	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
-	expect(session.block().props.hidden).toBe(false);
+	expect(slidAway(session.block())).toBe(false);
 	tree.unmount();
 });
 
@@ -963,7 +976,8 @@ it("keeps the find bar in place while you type in it", async () => {
 	const session = sessionList(tree);
 	act(() => menuAction("Find in session").onPress());
 	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(false);
+	expect(session.block().props.composerKeyboard).toBe(false);
+	expect(slidAway(session.block())).toBe(false);
 	expect(session.block().props.find).toBeDefined();
 	act(() => keyboard.hide());
 	tree.unmount();
@@ -975,11 +989,11 @@ it("stays hidden after the keyboard lowers when a downward scroll hid the chips"
 	const session = sessionList(tree);
 	act(() => session.list().props.onScrollBeginDrag());
 	session.scroll(40);
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
 	tree.unmount();
 });
 

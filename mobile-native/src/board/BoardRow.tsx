@@ -1,4 +1,5 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import { type ReactElement, useEffect, useState } from "react";
@@ -12,9 +13,19 @@ import {
 } from "react-native";
 import type { Palette } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
+import {
+	bandOf,
+	type ClassifiedRow,
+	lastLine,
+	stateWord,
+	subagentChipText,
+	type Usual,
+	type WhyLine,
+	whyLine,
+} from "./attention";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
+import { isTopLevel } from "./rowActions";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
@@ -149,9 +160,26 @@ export function BoardRow({
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
+	// The chip reads the navigation row's tally (the shared gate the web rail
+	// uses), which the hub revises on invalidation; it is not the Board's S5
+	// activity read, which is Board-only and can lag behind this count.
+	const tally = chipTally(row);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, waiting ?? reason, age && spokenAge(age)].filter(Boolean).join(", ");
+	// The row is one accessibility element, so the chip's text reaches
+	// VoiceOver through this label, not a nested one. Speak the tally once: the
+	// why line already states the running count ("Waiting on N subagents"), so
+	// the chip adds only the failure count then (ruling 24 never speaks one).
+	const spoken = waiting ?? reason;
+	// Only a signal row's why line names the running count; a quiet row has no
+	// why line, so the chip must speak it. `waiting` replaces the reason with a
+	// held-change message, so it never names the count either.
+	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
+	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
+	const chipLabel = tally
+		? subagentChipText({ running: whyNamesRunning ? 0 : tally.running, failed: tally.failed })
+		: "";
+	const label = [row.title, word, spoken, chipLabel || undefined, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -212,8 +240,9 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age ? (
+					{hasDraft || age || tally ? (
 						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
+							<SubagentChip session={row} />
 							{hasDraft ? (
 								<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
 									<Text
@@ -256,6 +285,62 @@ export function BoardRow({
 		</Pressable>
 	);
 }
+
+/** The subagent count chip on a live root row (S3). It never takes the Needs
+ * you background (D2), and only the failure run reads in the danger ink: the
+ * running count stays in the neutral ink, as the web rail's chip does. */
+export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const tally = chipTally(session);
+	if (!tally) return null;
+	const failed = tally.failed > 0;
+	return (
+		<View
+			testID="subagent-chip"
+			style={{
+				backgroundColor: palette.inset,
+				borderRadius: 4,
+				paddingHorizontal: 4,
+			}}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					fontSize: 11 * scale,
+					lineHeight: 13 * scale,
+					fontWeight: "600",
+					color: palette.inkMid,
+				}}
+			>
+				{tally.running > 0 ? <Text style={{ color: palette.inkMid }}>{`${tally.running} running`}</Text> : null}
+				{tally.running > 0 && failed ? " · " : null}
+				{failed ? <Text style={{ color: palette.dangerInk }}>{`${tally.failed} failed`}</Text> : null}
+			</Text>
+		</View>
+	);
+}
+
+/** The tally a row's chip shows, or null for a nested row or one with nothing
+ * to show (subagentTallyToShow gates on live and non-empty). Only a live root
+ * carries a subagent tally (S3, D1), and the hub may set one on a nested fork
+ * row, so the chip gates on the kind the way the web rail's isTopLevelSession
+ * does. */
+const chipTally = (session: NavigationSessionSummary) => (isTopLevel(session) ? subagentTallyToShow(session) : null);
+
+/** A session row's subagent chip, for the lists that render their own rows
+ * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
+ * row has no chip, so a list can tell whether it has one. */
+export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
+	chipTally(session) ? <SubagentChip session={session} /> : null;
+
+/** The chip's text for the row's own accessibilityLabel: a Pressable override
+ * hides the chip's text from VoiceOver, so the list row has to speak it.
+ * Undefined when the row has no chip. */
+export const sessionSubagentChipLabel = (session: NavigationSessionSummary): string | undefined => {
+	const tally = chipTally(session);
+	return tally ? subagentChipText(tally) : undefined;
+};
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):

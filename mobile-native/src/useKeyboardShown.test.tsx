@@ -5,7 +5,7 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";
 import { keyboard, renderHook } from "./renderNative.testkit";
-import { useKeyboardShown } from "./useKeyboardShown";
+import { useComposerTyping, useKeyboardShown } from "./useKeyboardShown";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
@@ -48,5 +48,18 @@ describe("useKeyboardShown", () => {
 		expect(events.map((event) => keyboard.listening(event))).toEqual(before.map((count) => count + 1));
 		unmount();
 		expect(events.map((event) => keyboard.listening(event))).toEqual(before);
+	});
+});
+
+describe("useComposerTyping", () => {
+	it("is typing only while the keyboard is up and it is the composer's", () => {
+		const composers = renderHook(() => useComposerTyping(true));
+		const someoneElses = renderHook(() => useComposerTyping(false));
+		expect(composers.result.current).toBe(false);
+		act(() => keyboard.show());
+		expect(composers.result.current).toBe(true);
+		expect(someoneElses.result.current).toBe(false);
+		act(() => keyboard.hide());
+		expect(composers.result.current).toBe(false);
 	});
 });

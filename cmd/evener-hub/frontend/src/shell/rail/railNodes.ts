@@ -18,7 +18,6 @@ import {
   orderedHosts,
   projectHostIds as ownerHostIds,
   projectNodeExpansionKey,
-  sessionGroupHostId,
 } from "@evener/appwire-client/state/navigation";
 
 export type TreeTier = "current" | "recent" | "archived";
@@ -89,7 +88,7 @@ export interface SessionRailNode extends WidgetTreeNode {
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
   //
-  // Its fork originals (or a cluster's members), running jobs, and own live
+  // Its fork originals, running jobs, and own live
   // watches, followed by a completed-job fold when it has rows (see
   // splitChildren).
   children: (SessionRailNode | JobRailNode | WatchRailNode | CompletedJobsFoldRailNode | OverflowRailNode)[];
@@ -412,8 +411,8 @@ export function watchCountLabel(armed: number, retained: number, omitted: number
   return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
 }
 
-// Builds one parent's children: its nested rows (fork originals, or a
-// cluster's members) inline in their incoming order, then its running jobs
+// Builds one parent's children: its nested rows (fork originals)
+// inline in their incoming order, then its running jobs
 // and watches, with completed jobs folded last so live work stays at the top
 // of its own subtree. Subagents have no rows; the root's tally chip counts
 // them.
@@ -491,8 +490,8 @@ function toSessionNode(n: RailSession, isExpanded: IsExpanded, crossProjectTier 
 
 /** Builds rail nodes for a flat, childless-at-this-level session list - the
  * Needs-you, Live, and Pinned tiers, each of which is just TreeNode[] on
- * the wire. A session can still recurse into its own children (subagent
- * clusters), handled by toSessionNode regardless of which tier it's in.
+ * the wire. A session can still recurse into its own children (subagents),
+ * handled by toSessionNode regardless of which tier it's in.
  * Every row this returns is the root of a cross-project tier, so each one
  * carries the crossProjectTier mark - host grouping nests these rows under
  * subheaders, and the mark is how RailRow keeps telling a tier root from a
@@ -606,7 +605,7 @@ export function projectDisplayLabels(projects: readonly RailProject[]): Map<stri
 }
 
 // True when `nodes` (a project's session list or a tier) contains a session
-// with `ref`, recursing into subagent-cluster children.
+// with `ref`, recursing into nested children.
 function sessionListHasRef(nodes: RailSession[], ref: string): boolean {
   return nodes.some((n) => n.ref === ref || sessionListHasRef(n.children, ref));
 }
@@ -621,18 +620,9 @@ function sessionListHasRef(nodes: RailSession[], ref: string): boolean {
  * task tree. See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md
  * §B. */
 export function topLevelAncestorRef(projects: readonly RailProject[], ref: string): string | null {
-  // A CLUSTER row is a repeated-title grouping, not the owner of a task tree:
-  // its members are ordinary top-level sessions that happen to share a title,
-  // and its own ref is synthetic (a SHA of project + title) naming no session
-  // at all. So the search descends THROUGH it and treats its members as the
-  // top-level rows they are - reporting the cluster instead would name a
-  // "parent" that cannot be opened.
-  const tops = (project: RailProject): RailSession[] =>
-    project.sessions.flatMap((n) => (n.kind === "cluster" ? n.children : [n]));
   for (const project of projects) {
-    for (const top of tops(project)) {
-      if (top.ref === ref || sessionListHasRef(top.children, ref)) return top.ref;
-    }
+    const top = topLevelCarrier(project.sessions, ref);
+    if (top) return top.ref;
   }
   return null;
 }
@@ -756,7 +746,7 @@ function projectIsLoading(p: RailProject): boolean {
  * project's own list. */
 function activeSessionNodes(p: RailProject, isExpanded: IsExpanded, hostId?: string): SessionRailNode[] {
   return p.sessions
-    .filter((n) => !isArchivedTier(n) && (hostId === undefined || sessionGroupHostId(n) === hostId))
+    .filter((n) => !isArchivedTier(n) && (hostId === undefined || n.host_id === hostId))
     .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
     .map((n) => toSessionNode(n, isExpanded));
 }
@@ -1029,7 +1019,7 @@ export function liveNodesGroupedByHost(
   sources: readonly Source[],
   isExpanded: IsExpanded,
 ): RailNode[] {
-  const hostIds = new Set(nodes.map((n) => sessionGroupHostId(n.session)));
+  const hostIds = new Set(nodes.map((n) => n.session.host_id));
   if (hostIds.size <= 1) return nodes;
   return orderedHosts(hostIds, sources).map(({ id: hostId, label, online }): HostRailNode => {
     const id = liveHostGroupId(hostId);
@@ -1037,7 +1027,7 @@ export function liveNodesGroupedByHost(
       id,
       { id: hostId, label, online },
       isExpanded(id, true),
-      nodes.filter((n) => sessionGroupHostId(n.session) === hostId),
+      nodes.filter((n) => n.session.host_id === hostId),
     );
   });
 }
@@ -1045,9 +1035,7 @@ export function liveNodesGroupedByHost(
 /** The top-level row that visually owns `ref`: itself when `ref` is
  * top-level, the ancestor it nests under otherwise. A grouped branch holds
  * the TOP-LEVEL row's host - a subagent renders under its parent's row
- * wherever that row landed, never under its own host's group. (Distinct from
- * topLevelAncestorRef's "opens beside" carrier, which skips CLUSTER rows; a
- * cluster is still the row its children visibly nest under.) */
+ * wherever that row landed, never under its own host's group. */
 function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSession | null {
   for (const n of nodes) {
     if (n.ref === ref || sessionListHasRef(n.children, ref)) return n;
@@ -1099,13 +1087,13 @@ export function revealExpansionIds(
     const ancestors = revealAncestorIds(carrier, ref);
     if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key), ...ancestors];
     const id = projectNodeExpansionKey(p.key);
-    const carrierHost = sessionGroupHostId(carrier);
+    const carrierHost = carrier.host_id;
     if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost), ...ancestors];
     if (mode === "project-host") {
       // Branches render only while the project's loaded rows span hosts
       // (hostBranchNodes draws the same line), so a single-host chain stops
       // at the project fold instead of naming a fold that does not exist.
-      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map(sessionGroupHostId));
+      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
       return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost), ...ancestors] : [id, ...ancestors];
     }
     return [id, ...ancestors];
@@ -1116,8 +1104,8 @@ export function revealExpansionIds(
   // so a subheader id would name a fold that does not exist - the
   // carrier rows still apply.
   const ancestors = revealAncestorIds(carrier, ref);
-  if (mode !== "flat" && new Set(live.map(sessionGroupHostId)).size > 1)
-    return [liveHostGroupId(sessionGroupHostId(carrier)), ...ancestors];
+  if (mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1)
+    return [liveHostGroupId(carrier.host_id), ...ancestors];
   return ancestors;
 }
 
