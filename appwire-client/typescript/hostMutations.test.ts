@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { WireError } from "./errors";
+import { HostMutationOutcomeError, WireError } from "./errors";
 import {
   committedMutationRow,
   createHostMutations,
@@ -189,6 +189,26 @@ describe("committed mutation rows (registry spec 08 §11)", () => {
     ["an unknown arm", { outcome: "later" }, /no arm this client knows/],
   ])("refuses %s as a success", (_name, result, message) => {
     expect(() => committedMutationRow(result as never, "evener/host/update")).toThrow(message);
+  });
+
+  test.each([
+    ["an ambiguous keyless add", { outcome: "ambiguous", observedRow: row("alpha") }, "ambiguous"],
+    ["a dropped collision", { outcome: "collision-dropped", droppedEntry: {} }, "collision-dropped"],
+    [
+      "a teardown failure",
+      { outcome: "committed-with-teardown-failure", seam: "rebind", remnantId: "r1" },
+      "committed-with-teardown-failure",
+    ],
+    ["an unknown arm", { outcome: "later" }, "unknown"],
+  ])("refuses %s as a typed error carrying its arm", (_name, result, outcome) => {
+    let thrown: unknown;
+    try {
+      committedMutationRow(result as never, "evener/host/update");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(HostMutationOutcomeError);
+    expect((thrown as HostMutationOutcomeError).outcome).toBe(outcome);
   });
 });
 
