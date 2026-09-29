@@ -2274,7 +2274,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(events.EventWarning, warningDataFromError(
-					"Local context admission failed; compacting context and retrying: "+prepareErr.Error(), prepareErr))
+					"Local context admission failed; compacting context and retrying", prepareErr))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
@@ -2302,7 +2302,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if err != nil {
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(events.EventWarning, warningDataFromError(
-					"Local context admission failed; compacting context and retrying: "+err.Error(), err))
+					"Local context admission failed; compacting context and retrying", err))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
@@ -2319,7 +2319,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					failedModel = profile.Model()
 				}
 				s.emit(events.EventWarning, warningDataFromError(
-					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying: "+err.Error(), err))
+					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying", err))
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
 				continue

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/llm"
 )
 
@@ -23,10 +24,38 @@ func errorDataFromError(err error) events.ErrorData {
 	}
 }
 
-func warningDataFromError(message string, err error) events.WarningData {
+// warningCauseLimit bounds the error text a warning's message carries.
+const warningCauseLimit = 512
+
+// warningDataFromError is the warning for a failure: its message is the label
+// and the error's text ("<label>: <err>"), flattened to one line and bounded,
+// so a repeating warning says why on the phone, the web and in hooks (#3386).
+// The error also classifies the Title and Hint.
+func warningDataFromError(label string, err error) events.WarningData {
+	data := bareWarningDataFromError(label, err)
+	if err == nil {
+		return data
+	}
+	// errors.Join separates its errors with newlines; one line reads "; ".
+	var lines []string
+	for line := range strings.SplitSeq(err.Error(), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 0 {
+		data.Message += ": " + runetrim.Cut(strings.Join(lines, "; "), warningCauseLimit)
+	}
+	return data
+}
+
+// bareWarningDataFromError is warningDataFromError without the error's text
+// in the message: for errors whose text can echo the user's own request (a
+// provider's error body), which would otherwise reach Notification hooks.
+func bareWarningDataFromError(label string, err error) events.WarningData {
 	info := diagnostic.FromError(err)
 	return events.WarningData{
-		Message: strings.TrimSpace(message),
+		Message: strings.TrimSpace(label),
 		Source:  string(info.Source),
 		Title:   info.Title,
 		Hint:    info.Hint,

@@ -267,7 +267,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+				s.emit(events.EventWarning, warningDataFromError("context strategy error", err))
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
@@ -837,7 +837,10 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// Content filter recovery: compaction often removes the offending content,
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
-		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
+		// Bare: a provider's error body can echo the user's request, which
+		// would reach Notification hooks, and the retry recovers anyway; the
+		// error still classifies the Title and Hint.
+		s.emit(events.EventWarning, bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the round loop's own
 		// ManageContext); forceCompactForModelRecovery publishes through the
@@ -865,7 +868,10 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
 	if dec.EmitContextLenWarn && !contextWarningEmitted {
-		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
+		// Bare: a provider's error body can echo the user's request, which
+		// would reach Notification hooks, and the retry recovers anyway; the
+		// error still classifies the Title and Hint.
+		s.emit(events.EventWarning, bareWarningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
