@@ -25,6 +25,12 @@ test.each<[ToolWireCall, string]>([
   ["call_web_fetch", "Fetched https://example.com/release-notes · 48213 bytes"],
   ["call_web_search", 'Searched the web for "go race detector settle drain" · 2 results'],
   ["call_use_skill", "Activated skill: systematic-debugging"],
+  // A read says whose transcript and how much of it; a search what it looked
+  // for and what it found.
+  ["call_read_transcript", "Read transcript 02wMz5Txv5aIxgf9yVdd0N · all 1 turn"],
+  ["call_read_transcript_outline", "Read transcript 02wMz5Txv5aIxgf9yVdd0N · outline of 1 turn"],
+  ["call_find_sessions", 'Searched sessions for "settle race" · 1 match'],
+  ["call_find_sessions_catalog", "Listed recent sessions · 2 sessions"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
@@ -36,6 +42,46 @@ test.each<[ToolWireCall, string]>([
   ["call_unknown", "Used compact context"],
 ])("says %s, which no summary covers, as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call))).toBe(summary);
+});
+
+test("counts a transcript's turns and a search's finds in their own number", () => {
+  const read = (meta: Record<string, unknown>) =>
+    toolStepSummary({
+      toolName: "read_transcript",
+      argumentsJSON: JSON.stringify({ transcript_ref: "local:abc" }),
+      output: JSON.stringify({ transcript_ref: "local:abc", format: "markdown", content: "x", meta }),
+    });
+  expect(read({ turns_total: 5, turns_rendered: 5 })).toBe("Read transcript abc · all 5 turns");
+  expect(read({ turns_total: 5, turns_rendered: 2 })).toBe("Read transcript abc · 2 of 5 turns");
+  const found = (args: Record<string, unknown>, output: string) =>
+    toolStepSummary({ toolName: "find_session_transcripts", argumentsJSON: JSON.stringify(args), output });
+  expect(found({ query: "x" }, "…\n\n3 matches (scope: current_project)")).toBe(
+    'Searched sessions for "x" · 3 matches',
+  );
+  expect(found({ query: "x" }, "No matching sessions (scope: current_project).")).toBe(
+    'Searched sessions for "x" · 0 matches',
+  );
+  expect(found({}, "…\n\n1 match (scope: current_project)")).toBe("Listed recent sessions · 1 session");
+  expect(found({ children_of: "local:abc" }, "…\n\n2 matches (scope: current_project)")).toBe(
+    "Searched sessions spawned by local:abc · 2 matches",
+  );
+});
+
+// Only the footer, the output's last line, is the count: a session's title
+// can read like one, and the registry may append a nudge after it.
+test("reads a session search's count only from its footer", () => {
+  const output =
+    "1. local:abc — 3 matches in the parser\n   root · ~4 turns · updated 2026-09-27 20:00\n\n1 match (scope: current_project, scanned 9)";
+  const found = (extra: string) =>
+    toolStepSummary({
+      toolName: "find_session_transcripts",
+      argumentsJSON: JSON.stringify({ query: "parser" }),
+      output: output + extra,
+    });
+  expect(found("")).toBe('Searched sessions for "parser" · 1 match');
+  expect(found("\n\nYou have now made this same call and received the identical result 2 times in a row.")).toBe(
+    'Searched sessions for "parser" · 1 match',
+  );
 });
 
 test("keeps a shell command's cd when the session is somewhere else", () => {
@@ -53,6 +99,8 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   expect(toolFamily("web_search")).toBe("webSearch");
   for (const name of ["shell", "exec_command", "run_shell_command"]) expect(toolFamily(name)).toBe("shell");
   expect(toolFamily("use_skill")).toBe("skill");
+  for (const name of ["read_transcript", "read_session_transcript"]) expect(toolFamily(name)).toBe("transcript");
+  expect(toolFamily("find_session_transcripts")).toBe("sessions");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -114,6 +162,11 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["web_fetch", { url: "https://example.com" }, "Fetching https://example.com"],
   ["web_search", { query: "evener" }, 'Searching the web for "evener"'],
   ["use_skill", { skill_name: "brainstorming" }, "Activating skill: brainstorming"],
+  ["read_transcript", { transcript_ref: "local:abc" }, "Reading transcript abc"],
+  ["read_transcript", {}, "Reading this session's transcript"],
+  ["find_session_transcripts", { query: "settle" }, 'Searching sessions for "settle"'],
+  ["find_session_transcripts", { children_of: "local:abc" }, "Searching sessions spawned by local:abc"],
+  ["find_session_transcripts", {}, "Listing recent sessions"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {

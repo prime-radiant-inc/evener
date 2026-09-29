@@ -11,6 +11,12 @@ import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
+import {
+  findSessionsProgress,
+  findSessionsSummary,
+  readTranscriptProgress,
+  readTranscriptSummary,
+} from "./transcriptSteps";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -22,7 +28,18 @@ export interface ToolSummaryContext {
 export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output">;
 
 /** The family a run's summary counts a step under. */
-export type ToolFamily = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "skill" | "mcp" | "tool";
+export type ToolFamily =
+  | "read"
+  | "edit"
+  | "search"
+  | "fetch"
+  | "webSearch"
+  | "shell"
+  | "skill"
+  | "transcript"
+  | "sessions"
+  | "mcp"
+  | "tool";
 
 const GREP_PATTERN_CLIP = 50;
 const QUERY_CLIP = 120;
@@ -347,6 +364,10 @@ function progressFor(
       const skill = skillName(step);
       return skill ? `Activating skill: ${skill}` : "Activating a skill";
     }
+    case "transcript":
+      return readTranscriptProgress(step);
+    case "sessions":
+      return findSessionsProgress(step);
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -377,6 +398,9 @@ const TOOLS: Record<string, ToolEntry> = {
   exec_command: { family: "shell", summary: shellSummary },
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
+  read_transcript: { family: "transcript", summary: readTranscriptSummary },
+  read_session_transcript: { family: "transcript", summary: readTranscriptSummary },
+  find_session_transcripts: { family: "sessions", summary: findSessionsSummary },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {
