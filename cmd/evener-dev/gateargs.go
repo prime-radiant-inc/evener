@@ -101,6 +101,11 @@ func rootTestFlagsMain(args []string) int {
 // errWriteFailed stops the walk once an output write has failed.
 var errWriteFailed = errors.New("write failed")
 
+// errStopTail stops the walk at a flag terminator: everything after it is the
+// test binary's own argument list, so the walk hands the tail back verbatim
+// instead of classifying it.
+var errStopTail = errors.New("stop at the test binary's arguments")
+
 func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("root-test-flags", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -127,7 +132,36 @@ func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 	// walkFlags consumes each value with the shared tables and fails on a flag
 	// whose value is missing, so a value that spells -short is emitted as the
 	// value it is and a dangling flag is a usage error, not a panic.
+	//
+	// `-args` and the build-level `--` end the `go test` flags: everything
+	// after either is the test binary's own argument list, so the whole tail
+	// is handed back exactly as written and the walk stops. Classifying the
+	// tail would drop a -short there, which is an argument and not short
+	// mode, and could reject a value-taking-looking word as a flag given
+	// nothing.
+	at := 0
 	err := walkFlags(fs.Args(), func(tok flagToken) error {
+		// at is the raw argument this token came from; a separate value is the
+		// argument after it, so the next token is one or two further on.
+		here := at
+		at++
+		if tok.hasValue && !tok.inline {
+			at++
+		}
+		if tok.name == "-args" || tok.name == "--" {
+			if err := write(tok.whole); err != nil {
+				return err
+			}
+			for _, raw := range fs.Args()[here+1:] {
+				if err := checkValue(raw, raw); err != nil {
+					return err
+				}
+				if err := write(raw); err != nil {
+					return err
+				}
+			}
+			return errStopTail
+		}
 		if tok.name == "-short" {
 			// A bare or inline boolean: dropping it drops short mode, and it
 			// takes no separate value to keep.
@@ -151,6 +185,9 @@ func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 		}
 		return nil
 	})
+	if errors.Is(err, errStopTail) {
+		err = nil
+	}
 	if errors.Is(err, errWriteFailed) {
 		return 1
 	}

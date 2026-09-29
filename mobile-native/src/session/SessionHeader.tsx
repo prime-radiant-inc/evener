@@ -11,6 +11,7 @@ import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
 import { headerRowFill } from "./headerGlass";
 import type { ChipKind, ContextChip } from "./sessionState";
@@ -32,6 +33,7 @@ export function SessionHeader({
 	status,
 	chips,
 	hidden,
+	composerKeyboard = false,
 	onChip,
 	notes,
 	find,
@@ -39,7 +41,11 @@ export function SessionHeader({
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
+	/** A downward scroll hid the chips. */
 	hidden: boolean;
+	/** Whether a keyboard up would be the composer's (useComposerTyping): then
+	 * the chips and note step aside too. */
+	composerKeyboard?: boolean;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
 	/** The find bar, in the chips' place while find is open (spec 8.7). It
@@ -54,9 +60,10 @@ export function SessionHeader({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
+	const typing = useComposerTyping(composerKeyboard);
 	// The find bar never slides away: it stays put while the list scrolls from
 	// match to match, whatever hides the chips.
-	const slidAway = hidden && find == null;
+	const slidAway = (hidden || typing) && find == null;
 	const offset = useSlide(slidAway ? -rowHeight : 0);
 	const hasRow = chips.length > 0 || notes != null || find != null;
 	const onGlass = glassTop !== undefined;

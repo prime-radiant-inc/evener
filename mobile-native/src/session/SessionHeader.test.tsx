@@ -3,7 +3,7 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText, renderHook } from "../renderNative.testkit";
+import { keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
 import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import type { ChipKind, ContextChip } from "./sessionState";
@@ -20,6 +20,7 @@ vi.mock("../ConnectionProvider", () => ({
 const palette = paletteFor("light");
 
 afterEach(() => {
+	keyboard.reset();
 	vi.restoreAllMocks();
 });
 
@@ -50,6 +51,7 @@ function header(
 		status?: string | null;
 		chips?: readonly ContextChip[];
 		hidden?: boolean;
+		composerKeyboard?: boolean;
 		onChip?: (kind: ChipKind) => void;
 		find?: ReactNode;
 		notes?: ReactNode;
@@ -61,6 +63,7 @@ function header(
 			status={over.status ?? null}
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
+			composerKeyboard={over.composerKeyboard}
 			notes={over.notes}
 			glassTop={over.glassTop}
 			onChip={over.onChip ?? (() => {})}
@@ -301,6 +304,27 @@ describe("hiding on scroll (spec 8.1)", () => {
 			accessibilityElementsHidden: false,
 			importantForAccessibility: "auto",
 		});
+	});
+
+	// While you type in the composer the chips and note step aside too; the
+	// header reads the keyboard itself, so the keyboard coming and going
+	// re-renders it alone.
+	it("slides the row away while the keyboard is up for the composer, and back when it lowers", async () => {
+		const tree = render(header({ chips: [goal], composerKeyboard: true }));
+		await flushReduceMotion();
+		measured(tree);
+		act(() => keyboard.show());
+		expect(translateY(chipsRow(tree))).toBe(-48);
+		act(() => keyboard.hide());
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+
+	it("keeps the row while the keyboard is up for something other than the composer", async () => {
+		const tree = render(header({ chips: [goal], composerKeyboard: false }));
+		await flushReduceMotion();
+		measured(tree);
+		act(() => keyboard.show());
+		expect(translateY(chipsRow(tree))).toBe(0);
 	});
 
 	it("jumps with no animation under Reduce Motion", async () => {
