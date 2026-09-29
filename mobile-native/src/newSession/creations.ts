@@ -1,9 +1,17 @@
-// New session's one owner per hub for a start (#3104). A start keeps running
-// after its sheet closes, so the creation store belongs to the hub rather than
-// to one sheet: a sheet reopened mid-start shows the same form, still
-// starting, and can't start it twice. Each client gets one service, so a sheet
-// reopened on the same connection rebinds nothing and a start in flight
-// survives; a new connection still rebinds, which leaves that start uncertain.
+// New session's one owner per hub for a start (#3104).
+//
+// Why the store outlives the sheet: a start keeps running after its sheet is
+// swiped away, and it has to land somewhere that can clear its draft and say
+// what happened. With a store per sheet, a sheet reopened mid-start built a
+// second store from the saved draft, so the start could be sent twice and the
+// first one's landing deleted what was typed since. With one store per hub, a
+// reopened sheet shows the same form, still starting, and can't start it again.
+//
+// Each client gets one service, so a sheet reopened on the same connection
+// rebinds nothing and the start in flight survives. A store left bound to a
+// client that has since gone is harmless: the request already sent settles or
+// fails on that client, and the next sheet to open binds the current one,
+// which leaves a start still out uncertain, as any new connection does.
 import { createNewSessionService, type NewSessionService } from "../../../mobile/src/services/newSession";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { nativeDrafts } from "../nativeDrafts";
