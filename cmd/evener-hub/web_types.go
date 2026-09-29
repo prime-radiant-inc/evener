@@ -40,12 +40,6 @@ type launchModelsEntry struct {
 	filledAt time.Time
 }
 
-// launchModelsTTL is how long a cached launch model list is served without a
-// background refresh. It matches liveModelsTTL: the same prefetch cadence that
-// refreshes the live listings the launch check re-reads, so the two caches
-// track the same provider inventory.
-const launchModelsTTL = liveModelsTTL
-
 // launchModelsMaxEntries bounds the working-dir keys one server caches: the
 // spawn pane scopes its list by the directory being typed, so the key space is
 // user-driven. The oldest entry is evicted past the cap.

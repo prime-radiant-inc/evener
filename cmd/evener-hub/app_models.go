@@ -140,27 +140,45 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 		// cached entry could never be invalidated, so don't cache.
 		return evenerLaunchModelList(ctx, s.cfg, workingDir)
 	}
+	// Snapshot the entry under the lock, then clone it outside: the cache
+	// replaces an entry rather than mutating one in place, so the snapshot
+	// stays valid after the unlock.
 	s.launchModels.mu.Lock()
 	entry := s.launchModels.entries[workingDir]
-	if entry != nil && entry.gen == gen && time.Since(entry.filledAt) < launchModelsTTL {
-		resp := cloneModelListResponse(entry.resp)
-		s.launchModels.mu.Unlock()
-		return resp, nil
-	}
-	if entry != nil {
-		resp := cloneModelListResponse(entry.resp)
-		refresh := !s.launchModels.refreshing[workingDir]
-		if refresh {
-			s.launchModels.refreshing[workingDir] = true
-		}
-		s.launchModels.mu.Unlock()
-		if refresh {
-			go s.refreshLaunchModels(workingDir)
-		}
-		return resp, nil
-	}
 	s.launchModels.mu.Unlock()
-	return s.loadLaunchModels(ctx, workingDir, gen)
+	if entry == nil {
+		return s.loadLaunchModels(ctx, workingDir, gen)
+	}
+	// The launch list shares the live list's TTL: both track the same provider
+	// inventory, refreshed by the same prefetch cadence.
+	if entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
+		return cloneModelListResponse(entry.resp), nil
+	}
+	// Stale: serve it now and refresh behind the request, so a picker open pays
+	// the live listing once per key rather than on every open.
+	if s.beginLaunchModelsRefresh(workingDir) {
+		go s.refreshLaunchModels(workingDir)
+	}
+	return cloneModelListResponse(entry.resp), nil
+}
+
+// beginLaunchModelsRefresh claims the refresh slot for one working dir,
+// returning false when a refresh of it is already running. The periodic warm
+// uses it too, so a prefetch tick cannot race a request-triggered refresh.
+func (s *WebServer) beginLaunchModelsRefresh(workingDir string) bool {
+	s.launchModels.mu.Lock()
+	defer s.launchModels.mu.Unlock()
+	if s.launchModels.refreshing[workingDir] {
+		return false
+	}
+	s.launchModels.refreshing[workingDir] = true
+	return true
+}
+
+func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
+	s.launchModels.mu.Lock()
+	delete(s.launchModels.refreshing, workingDir)
+	s.launchModels.mu.Unlock()
 }
 
 // loadLaunchModels runs the launch check for one working dir and caches the
@@ -188,35 +206,41 @@ func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen
 // user-driven key space (the spawn pane's typed working directories) cannot
 // grow without bound. Caller holds the cache lock.
 func evictOldestLaunchModelsEntry(entries map[string]*launchModelsEntry) {
-	oldestKey := ""
-	var oldest time.Time
+	var (
+		oldestKey string
+		oldest    time.Time
+		found     bool
+	)
 	for key, entry := range entries {
-		if oldestKey == "" || entry.filledAt.Before(oldest) {
-			oldestKey, oldest = key, entry.filledAt
+		// found, not key == "": "" is a real key (the unscoped list), so an
+		// empty key named the oldest entry would re-arm the sentinel.
+		if !found || entry.filledAt.Before(oldest) {
+			oldestKey, oldest, found = key, entry.filledAt, true
 		}
 	}
-	if oldestKey != "" {
+	if found {
 		delete(entries, oldestKey)
 	}
 }
 
-// refreshLaunchModels re-fetches a stale entry in the background. It runs on a
-// detached context so the request that noticed the staleness returning does not
-// cancel the refresh, and clears its refreshing guard on the way out. A failed
-// refresh leaves the stale entry in place for the next request to retry.
+// launchModelsFetchContext bounds one launch-check pass. The check carries its
+// own evenerLaunchCheckTimeout budget; this deadline only bounds a pass that
+// outlives it (a stray pipe holding the output open).
+func launchModelsFetchContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, evenerLaunchCheckTimeout+time.Minute)
+}
+
+// refreshLaunchModels re-fetches a stale entry in the background, on a context
+// detached from the request that noticed the staleness — that request returning
+// must not cancel the refresh. A failed refresh leaves the stale entry in place
+// for the next request to retry.
 func (s *WebServer) refreshLaunchModels(workingDir string) {
-	defer func() {
-		s.launchModels.mu.Lock()
-		delete(s.launchModels.refreshing, workingDir)
-		s.launchModels.mu.Unlock()
-	}()
+	defer s.endLaunchModelsRefresh(workingDir)
 	gen, ok := liveModelsGeneration(s)
 	if !ok {
 		return
 	}
-	// The launch check carries its own evenerLaunchCheckTimeout budget; this
-	// outer deadline only bounds a refresh that outlives it (a stray pipe).
-	ctx, cancel := context.WithTimeout(context.Background(), evenerLaunchCheckTimeout+time.Minute)
+	ctx, cancel := launchModelsFetchContext(context.Background())
 	defer cancel()
 	_, _ = s.loadLaunchModels(ctx, workingDir, gen)
 }
@@ -233,33 +257,24 @@ func (s *WebServer) warmLaunchModels(ctx context.Context) {
 	if !ok {
 		return
 	}
+	// Claim the same slot a request-triggered refresh uses, so a tick landing on
+	// one does not spawn a second launch check for the same list.
+	if !s.beginLaunchModelsRefresh("") {
+		return
+	}
+	defer s.endLaunchModelsRefresh("")
 	_, _ = s.loadLaunchModels(ctx, "", gen)
 }
 
 // startLaunchModelsPrefetch warms the unscoped launch model list once at
-// startup and refreshes it on interval, mirroring startLiveModelsPrefetch for
-// the picker's cached list. It runs through the caller's background runner so
-// hub shutdown cancels it; a failed pass is silent and the next tick retries.
+// startup and refreshes it on interval. It runs through the caller's background
+// runner so hub shutdown cancels it; a failed pass is silent and the next tick
+// retries.
 func startLaunchModelsPrefetch(ctx context.Context, web *WebServer, interval time.Duration, startBackground func(func())) {
-	startBackground(func() {
-		warm := func() {
-			// The launch check carries its own evenerLaunchCheckTimeout budget;
-			// this outer deadline only bounds a pass that outlives it.
-			warmCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout+time.Minute)
-			defer cancel()
-			web.warmLaunchModels(warmCtx)
-		}
-		warm()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				warm()
-			}
-		}
+	startPeriodicPrefetch(ctx, interval, startBackground, func() {
+		warmCtx, cancel := launchModelsFetchContext(ctx)
+		defer cancel()
+		web.warmLaunchModels(warmCtx)
 	})
 }
 
