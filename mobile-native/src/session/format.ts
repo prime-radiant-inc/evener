@@ -1,7 +1,7 @@
-// The Session's compact numbers (spec 5): durations as 40s, 12m, 3h, 2d and
-// counts as 1.2K, 39.8K, 412K, 46M. The package's formatTokenCount stops at
-// "k" and relativeAge says "now" under a minute, so neither reads the way the
-// spec's copy does. Paths and URLs wrap only at their slashes.
+// The Session's compact durations (spec 5): 40s, 12m, 3h, 2d. relativeAge
+// says "now" under a minute, so it doesn't read the way the spec's copy does.
+// Token counts use the package's formatTokenCount. Paths and URLs wrap only at
+// their slashes.
 
 export type DurationUnit = "second" | "minute" | "hour" | "day";
 
@@ -32,24 +32,6 @@ export function compactDuration(ms: number): string {
 export function spokenDuration(ms: number): string {
 	const { count, unit } = durationIn(ms);
 	return `${count} ${unit}${count === 1 ? "" : "s"}`;
-}
-
-const UNITS = [
-	["K", 1_000],
-	["M", 1_000_000],
-] as const;
-
-export function compactCount(n: number): string {
-	const value = Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
-	if (value < 1000) return String(value);
-	for (const [unit, size] of UNITS) {
-		const scaled = value / size;
-		// One decimal below 100 of the unit, none from 100 up: 1.2K, 39.8K, 412K.
-		const text = (scaled < 100 ? scaled.toFixed(1) : scaled.toFixed(0)).replace(/\.0$/, "");
-		// 999,950 rounds to "1000K"; it reads better as the next unit.
-		if (Number(text) < 1000 || unit === "M") return `${text}${unit}`;
-	}
-	return String(value);
 }
 
 /** A path or URL may wrap only after a slash: a zero-width space follows each

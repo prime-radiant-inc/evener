@@ -6,6 +6,7 @@
 import {
 	type ItemModel,
 	isActiveItem,
+	formatTokenCount,
 	type ModelRetryState,
 	parseArgs,
 	pendingTextJoined,
@@ -14,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
 import { PULSE_BARS } from "../board/pulse";
-import { compactCount, compactDuration } from "./format";
+import { compactDuration } from "./format";
 
 /** No frame for this long reads "Quiet": the web's threshold
  * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts). */
@@ -110,7 +111,10 @@ function currentStep(session: TraySource): Step | null {
 function stepFor(item: ItemModel): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
-		return { text: tokens > 0 ? `Thinking… · ${compactCount(tokens)} tokens` : "Thinking…", waitsOnSubagents: false };
+		return {
+			text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…",
+			waitsOnSubagents: false,
+		};
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;

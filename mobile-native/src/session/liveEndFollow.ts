@@ -20,7 +20,8 @@ export interface ScrollGeometry {
 }
 
 /** Whether a scroll position is at the transcript's end: within AT_END_PT of
- * it, or everything fits in the viewport. The end is past any bottom inset. */
+ * it. The end is past any bottom inset, so a list that fits in the viewport
+ * above its inset is always at its end. */
 export function atEnd({ contentOffset, contentSize, layoutMeasurement, contentInset }: ScrollGeometry): boolean {
 	return contentOffset.y + layoutMeasurement.height >= contentSize.height + (contentInset?.bottom ?? 0) - AT_END_PT;
 }

@@ -2,17 +2,27 @@ package evener_test
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
 // makeVariable returns a Makefile variable's value, as make expands it, without
-// running any target.
+// running any target. The print rule arrives through a tiny wrapper makefile
+// rather than `make --eval`, which GNU make only gained in 4.0 and so is absent
+// from Apple's /usr/bin/make 3.81 (issue #3077). `include` and pattern rules
+// predate 3.81, so the wrapper parses everywhere the Makefile does.
 func makeVariable(t *testing.T, name string) []string {
 	t.Helper()
-	out, err := exec.Command("make", "--no-print-directory", "-s", "--eval", "print-var-%: ; @echo $($*)", "print-var-"+name).CombinedOutput()
+	wrapper := filepath.Join(t.TempDir(), "print-var.mk")
+	const rule = "include Makefile\n\nprint-var-%:\n\t@echo $($*)\n"
+	if err := os.WriteFile(wrapper, []byte(rule), 0o600); err != nil {
+		t.Fatalf("write wrapper makefile: %v", err)
+	}
+	out, err := exec.Command("make", "--no-print-directory", "-s", "-f", wrapper, "print-var-"+name).CombinedOutput()
 	if err != nil {
 		t.Fatalf("make print-var-%s: %v\n%s", name, err, out)
 	}

@@ -131,7 +131,7 @@ rm -rf "$tmpdir"
 - **A human steer renders as `user-message-item` with no
   `data-opens-exchange`**, not as `[data-testid="steering-item"]` — the
   latter is the daemon-steering divider
-  (`transcript/messages/SteeringItem.tsx:143-146`).
+  (`transcript/messages/SteeringItem.tsx:77`).
 - **Do not `await` the click.** `.click()` returns immediately, but an
   `await` of any kind — even `await Promise.resolve()` — yields to the
   microtask queue and can let the ack land before the "synchronous" read.
