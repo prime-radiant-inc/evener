@@ -10,14 +10,13 @@ import type { LiveSessionsReader } from "../hosts/liveCounts";
 import type { createNewSessionStore } from "../newSession";
 import type { LaunchMemory } from "./launchMemory";
 
-/** The sheet's pages. Plugins and SessionOptions are interim until PR 10. */
+/** The sheet's pages. SessionOptions is interim until PR 10. */
 export type NewSessionRoutes = {
 	Form: undefined;
 	Host: undefined;
 	Project: undefined;
 	Browse: { dir: string };
 	Model: undefined;
-	Plugins: undefined;
 	SessionOptions: undefined;
 };
 
