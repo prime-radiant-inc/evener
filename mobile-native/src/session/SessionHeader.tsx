@@ -8,7 +8,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { Animated, Pressable, ScrollView, Text, View } from "react-native";
 import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
-import { useReduceMotion } from "../reduceMotion";
+import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { FreshDot } from "../reader/FreshDot";
 import type { ChipKind, ContextChip } from "./sessionState";

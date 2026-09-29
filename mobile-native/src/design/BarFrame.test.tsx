@@ -6,23 +6,38 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { keyboard, render } from "../renderNative.testkit";
+import { keyboard, render, systemGlass } from "../renderNative.testkit";
 import { BarFrame } from "./BarFrame";
 import { paletteFor } from "./tokens";
 
-vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+// The app's color scheme, which a test switches to dark.
+const appearance = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useColorScheme: () => appearance.scheme,
+}));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 
-afterEach(() => keyboard.reset());
+afterEach(() => {
+	keyboard.reset();
+	systemGlass.reset();
+	appearance.scheme = "light";
+});
+
+// These pin which fill the frame chooses; what the glass looks like is in
+// the Release-build screenshots on #3136.
 
 const inset = () => useSafeAreaInsets().bottom;
 const style = (node: { props: { style?: unknown } }) =>
 	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
-// The frame's own host view, not the BarFrame element that carries its props.
+// The frame's own host view (glass or plain), not the BarFrame element that
+// carries its props.
 const host = (tree: ReturnType<typeof render>) =>
-	tree.root.find((node) => String(node.type) === "View" && node.props.testID === "bar");
+	tree.root.find(
+		(node) => (String(node.type) === "View" || String(node.type) === "GlassView") && node.props.testID === "bar",
+	);
 
 describe("BarFrame", () => {
 	it("draws the hairline and the page fill, and pads its content above the home indicator", () => {
@@ -72,5 +87,60 @@ describe("BarFrame", () => {
 			borderTopWidth: 0.5,
 			backgroundColor: paletteFor("light").page,
 		});
+	});
+
+	it("wears the system's Liquid Glass where the device has it, following the app's appearance", async () => {
+		systemGlass.available = true;
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		const bar = host(tree);
+		expect(String(bar.type)).toBe("GlassView");
+		// "auto" follows the window's appearance, which the app's own light or
+		// dark choice sets (Appearance.setColorScheme).
+		expect(bar.props.glassEffectStyle).toBe("regular");
+		expect(bar.props.colorScheme ?? "auto").toBe("auto");
+		// The glass is the fill; the hairline and the home indicator's room stay.
+		expect(style(bar).backgroundColor).toBeUndefined();
+		expect(style(bar)).toMatchObject({ borderTopWidth: 0.5, paddingBottom: inset() });
+	});
+
+	it("stays opaque where the device has no Liquid Glass (before iOS 26)", async () => {
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("View");
+		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
+	});
+
+	it("gives the glass up for the opaque fill while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("View");
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(String(host(tree).type)).toBe("GlassView");
+		act(() => systemGlass.setReduceTransparency(true));
+		expect(String(host(tree).type)).toBe("View");
+		expect(style(host(tree)).backgroundColor).toBe(paletteFor("light").page);
+	});
+
+	it("wears the glass in the dark too, and the dark page fill where it can't", async () => {
+		appearance.scheme = "dark";
+		systemGlass.available = true;
+		const glass = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(String(host(glass).type)).toBe("GlassView");
+		expect(style(host(glass))).toMatchObject({ borderColor: paletteFor("dark").edge });
+		systemGlass.available = false;
+		const opaque = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(style(host(opaque)).backgroundColor).toBe(paletteFor("dark").page);
+	});
+
+	it("stays opaque if the glass module can't be read (a binary without it)", async () => {
+		systemGlass.available = "throws";
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		await act(async () => {});
+		expect(String(host(tree).type)).toBe("View");
 	});
 });
