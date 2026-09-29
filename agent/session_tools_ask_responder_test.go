@@ -94,6 +94,7 @@ func TestPendingAskArguments_AvailableWithNoEventConsumer(t *testing.T) {
 	sess := newSession(t, withAdapter(f))
 	// No goroutine, no select, nothing: sess.Events() is never called.
 
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "pick a db", nil); err != nil {
@@ -132,6 +133,7 @@ func TestPendingAskArguments_OneEntryPerCallInOrder(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(f))
 
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "pick a db and a name", nil); err != nil {
@@ -168,6 +170,7 @@ func TestPendingAskArguments_ClearedWithAskPending(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(f))
 
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "pick a db", nil); err != nil {
