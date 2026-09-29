@@ -17,6 +17,8 @@ export interface SubagentLine {
 	activity?: string;
 	/** The subagent's own transcript, which tapping the row opens. */
 	ref?: string;
+	/** The subagent's id, for its outcome in the coordinator's tree. */
+	delegateId?: string;
 }
 
 /** A subagent is quiet once no update came for this long (the web's
@@ -68,9 +70,13 @@ export function subagentLine(
 	const ended = hubTime(delegate.runEndedAt);
 	const since = timing ? timing.durationMs : ended === null ? undefined : now - ended;
 	const stateText = since === undefined ? state : `${state} · ${compactDuration(since)}`;
-	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef };
+	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef, delegateId: delegate.delegateId };
 	if (state === "failed") {
 		if (delegate.reason) line.activity = delegate.reason;
+	} else if (state === "done" || state === "stopped") {
+		// What the roster knows. The report itself is only in the coordinator's
+		// tree (thread/read's roster drops it), which the row reads when it can.
+		line.activity = state === "done" ? "Finished" : "Stopped";
 	} else if (state === "running") {
 		const waitingOn = all.filter(
 			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",

@@ -1237,17 +1237,26 @@ export function ConversationScreen({
 		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	// A subagent row opens the subagent's own session, under this session as
-	// its coordinator, or on a subagent's screen, under the same coordinator.
+	// A subagent row's coordinator: this session, or on a subagent's screen,
+	// the same coordinator. A row shows only in a loaded transcript, which
+	// names its thread.
+	const threadId = conversation?.threadId;
+	const coordinator = useMemo(
+		() => subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null),
+		[subagentOf, threadId, route.params.ref, route.params.title],
+	);
+	// A finished subagent's row reads its outcome from the coordinator's tree.
+	const treeClient = connected ? client : null;
+	const subagentTree = useMemo(
+		() => (coordinator ? { ref: coordinator.ref, threadId: coordinator.threadId, client: treeClient } : null),
+		[coordinator, treeClient],
+	);
+	// A subagent row opens the subagent's own session, under its coordinator.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			// A row shows only in a loaded transcript, which names its thread.
-			const threadId = store.getState().conversation?.threadId;
-			const coordinator =
-				subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null);
 			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
 		},
-		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
+		[navigation, route.params.hubId, coordinator],
 	);
 	const answerFor = useCallback((itemId: string) => answerTo(conversation, itemId), [conversation]);
 	// Stable across renders, so a settled agent message keeps its memoized
@@ -2604,6 +2613,7 @@ export function ConversationScreen({
 						live={item.id === liveRun}
 						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
+						subagentTree={subagentTree}
 						openSubagent={openSubagent}
 						answerFor={answerFor}
 						errorActionFor={(row) =>

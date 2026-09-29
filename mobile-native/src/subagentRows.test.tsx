@@ -3,11 +3,19 @@
 // subagentwire) through the same pipeline ConversationScreen runs, at every
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
-import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
+import {
+	ACTIVITY_REFRESH_MIN_INTERVAL_MS,
+	type EvenerDelegateInfo,
+	hydrateThread,
+	type JobsListResponse,
+	type Thread,
+	type ThreadItem,
+} from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
-import { subagentCallItems } from "@evener/appwire-client/testing/subagentWireFixtures";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { subagentCallItems, subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
@@ -15,6 +23,7 @@ import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
+import { forgetSubagentTrees, holdSubagentTree, subagentTree } from "./subagents/subagentTree";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 vi.mock("react-native", async () => ({
@@ -344,5 +353,145 @@ describe("Chat", () => {
 		const { rows, delegates } = rowsAt("chat");
 		const hits = findMatches(rows, "fix race in tree settle", delegates);
 		expect(hits.map((index) => rows[index]?.kind)).toContain("activity");
+	});
+});
+
+// A finished subagent's row reads its outcome as the Subagents list does
+// (spec 8.2: "it reads the same as in the Subagents list"). thread/read's
+// roster carries no report (appwire.SlimDelegateForRoster), so the row reads
+// the coordinator's tree from evener/jobs/list, recorded in
+// agent/testdata/subagentwire/outcomes.json, and until it has one says what
+// the roster knows.
+describe("a finished subagent's outcome (audit G13)", () => {
+	const COORDINATOR = { ref: "local:root", threadId: "root" };
+	const finished = (delegateId: string, over: Partial<EvenerDelegateInfo> = {}) =>
+		subagent({
+			delegateId,
+			phase: "idle",
+			status: "idle",
+			outcome: "completed",
+			terminal: true,
+			runEndedAt: new Date(T0 + 30_000).toISOString(),
+			...over,
+		});
+	const harness: { client: FakeClient | null } = { client: null };
+	const jobsLists = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/jobs/list");
+
+	function hub(answer: () => unknown = () => subagentOutcomesResponse()) {
+		const client = new FakeClient("ready");
+		client.on("evener/jobs/list", async () => answer() as JobsListResponse);
+		harness.client = client;
+		return client;
+	}
+
+	const mounted: ReturnType<typeof render>[] = [];
+	function finishedRow(delegate: EvenerDelegateInfo) {
+		const { rows, delegates } = rowsAt("intent", delegate);
+		const row = rows.find(isSubagent) as Extract<TimelineRow, { kind: "activity" }>;
+		const tree = render(
+			<TimelineItem
+				item={row}
+				hubId="hub-1"
+				sessionRef="root"
+				delegates={delegates}
+				subagentTree={{ ...COORDINATOR, client: harness.client }}
+			/>,
+		);
+		mounted.push(tree);
+		return tree;
+	}
+
+	afterEach(() => {
+		for (const tree of mounted.splice(0)) act(() => tree.unmount());
+		forgetSubagentTrees("hub-1");
+		vi.useRealTimers();
+	});
+
+	it("says Finished until the tree comes, then the report's opening line", async () => {
+		const client = hub();
+		const tree = finishedRow(finished("dlg_reported"));
+		expect(renderedText(tree)).toContain("Finished");
+		await act(async () => {});
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(tree)).not.toContain("Finished");
+		expect(renderedText(tree)).not.toContain("The new test covers both orders.");
+		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("says Stopped for a subagent the user stopped, before and after the tree", async () => {
+		hub();
+		const tree = finishedRow(finished("dlg_stopped", { outcome: "cancelled" }));
+		expect(renderedText(tree)).toContain("Stopped");
+		await act(async () => {});
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(renderedText(tree)).not.toContain("Stopped by the user.");
+	});
+
+	it("keeps saying Finished, with nothing loading, when jobs/list fails", async () => {
+		const client = hub(() => {
+			throw new Error("jobs/list unavailable");
+		});
+		const tree = finishedRow(finished("dlg_reported"));
+		await act(async () => {});
+		expect(jobsLists(client)).toHaveLength(1);
+		expect(renderedText(tree)).toContain("Finished");
+		expect(tree.root.findAll((node) => String(node.type) === "ActivityIndicator")).toHaveLength(0);
+	});
+
+	it("reads no tree for a running subagent", async () => {
+		const client = hub();
+		finishedRow(subagent({ delegateId: "dlg_reported" }));
+		await act(async () => {});
+		expect(jobsLists(client)).toHaveLength(0);
+	});
+
+	it("shares the Subagents list's tree, so a second row or the list asks for it once", async () => {
+		const client = hub();
+		// The Subagents list holds the coordinator's tree, as useSubagentTree does.
+		const held = subagentTree("hub-1", COORDINATOR.ref, COORDINATOR.threadId);
+		const release = holdSubagentTree(held);
+		await act(async () => {
+			await held.setClient(client as never);
+		});
+		const first = finishedRow(finished("dlg_reported"));
+		const second = finishedRow(finished("dlg_reported"));
+		await act(async () => {});
+		expect(renderedText(first)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(second)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(jobsLists(client)).toHaveLength(1);
+		release();
+	});
+
+	it("reads the report once the subagent finishes while the tree is held", async () => {
+		vi.useFakeTimers();
+		const recorded = subagentOutcomesResponse() as { data: { revision: number; root: { entries: unknown[] } } };
+		// The first read lands a revision earlier, while the subagent still runs:
+		// no outcome, no report.
+		const running = structuredClone(recorded);
+		running.data.revision -= 1;
+		for (const entry of running.data.root.entries as { delegate?: Record<string, unknown> }[]) {
+			if (entry.delegate?.delegateId !== "dlg_reported") continue;
+			entry.delegate.projectionRevision = running.data.revision;
+			for (const key of ["outcome", "terminal", "packetKind", "message", "runEndedAt"]) delete entry.delegate[key];
+		}
+		let answer: unknown = running;
+		const client = hub(() => answer);
+		const tree = finishedRow(finished("dlg_reported"));
+		await act(async () => {});
+		expect(renderedText(tree)).toContain("Finished");
+		answer = recorded;
+		await act(async () => {
+			client.emitNotification({
+				method: "evener/delegate/updated",
+				params: {
+					ref: COORDINATOR.ref,
+					threadId: COORDINATOR.threadId,
+					delegate: finished("dlg_reported", { projectionRevision: recorded.data.revision, packetKind: "reported" }),
+				},
+			});
+			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		});
+		expect(jobsLists(client)).toHaveLength(2);
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
 	});
 });
