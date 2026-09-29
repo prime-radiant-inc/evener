@@ -323,15 +323,6 @@ function tailStartsIndented(tail: string): boolean {
   return false;
 }
 
-/**
- * Renders a markdown source string: marked tokenizes and generates HTML,
- * DOMPurify sanitizes it against a fixed allowlist, and the result is set
- * as innerHTML. Fenced code blocks render through CodeBlock's own
- * stylesheet; links always open in a new tab without opener access; raw
- * HTML in the source is never interpreted as markup. With `live`, the
- * source is treated as a truncated stream and its open constructs are
- * closed before parsing (see streaming.ts).
- */
 // One prose slice of a segmented message: the same parse+sanitize pipeline as
 // the single-root path, but over a token array carved out by segments.ts (a
 // token array, never re-serialized source, so whole-document references stay
@@ -343,6 +334,15 @@ const MarkdownSlice = memo(function MarkdownSlice({ segment }: { segment: { kind
   return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
+/**
+ * Renders a markdown source string: marked tokenizes and generates HTML,
+ * DOMPurify sanitizes it against a fixed allowlist, and the result is set
+ * as innerHTML. Fenced code blocks render through CodeBlock's own
+ * stylesheet; links always open in a new tab without opener access; raw
+ * HTML in the source is never interpreted as markup. With `live`, the
+ * source is treated as a truncated stream and its open constructs are
+ * closed before parsing (see streaming.ts).
+ */
 export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // Branch to the segmented path only when the source may carry a mermaid
   // fence; every other message takes the single-root path byte-identically.
