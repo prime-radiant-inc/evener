@@ -840,3 +840,20 @@ it("saves the empty form over the draft when the device won't delete it", async 
 	expect(store.getState()).toMatchObject({ cwd: "", prompt: "" });
 	expect(saved.get("hub-a")).toMatchObject({ cwd: "", prompt: "" });
 });
+
+it("keeps the host's recent models with its list, and drops both when the form moves", async () => {
+	const { store, calls } = setup();
+	const other = { provider: "q", model: "b" };
+	const loading = store.getState().setCwd("/project");
+	answer(calls, "model/list", null, { data: [model, other], recent: [other] });
+	await loading;
+	expect(store.getState().recentModels).toEqual([other]);
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	expect(store.getState().recentModels).toEqual([]);
+	answer(calls, "evener/host/request", "evener/path/validate", { path: "/project", valid: true });
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	expect(store.getState().recentModels).toEqual([]);
+});

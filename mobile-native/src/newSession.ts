@@ -46,6 +46,8 @@ interface Form {
 	setLaunchOverrides(value: LaunchConfigLayer): void;
 	projects: string[];
 	models: ModelDescriptor[];
+	/** The host's recently used models, from model/list's `recent`. */
+	recentModels: ModelDescriptor[];
 	loadingModels: boolean;
 	submitting: boolean;
 	error: string | null;
@@ -170,6 +172,7 @@ export function createNewSessionStore(
 		},
 		projects: [],
 		models: [],
+		recentModels: [],
 		loadingModels: false,
 		submitting: false,
 		error: null,
@@ -189,6 +192,7 @@ export function createNewSessionStore(
 				movingHost: false,
 				projects: [],
 				models: [],
+				recentModels: [],
 				loadingModels: false,
 				submitting: false,
 				...(uncertainCreation
@@ -212,6 +216,7 @@ export function createNewSessionStore(
 			set({
 				cwd,
 				models: [],
+				recentModels: [],
 				model: null,
 				reasoning: "",
 				loadingModels: false,
@@ -269,6 +274,7 @@ export function createNewSessionStore(
 			refreshingModels = !!current && refresh;
 			set({
 				models: [],
+				recentModels: [],
 				loadingModels: !!current,
 			});
 			if (!current) return;
@@ -285,6 +291,7 @@ export function createNewSessionStore(
 					const settingsModel = creationModel(result.data, model, get().launchOverrides);
 					set({
 						models: result.data,
+						recentModels: result.recent ?? [],
 						model,
 						reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning) ? reasoning : "",
 						modelError: null,
@@ -417,6 +424,7 @@ export function createNewSessionStore(
 				movingHost: !!current,
 				projects: [],
 				models: [],
+				recentModels: [],
 				loadingModels: false,
 			});
 			if (!current) return;
