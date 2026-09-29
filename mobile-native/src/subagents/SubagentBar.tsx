@@ -42,7 +42,13 @@ export function SubagentBar({
 					})}
 				>
 					<SymbolView name="stop.fill" size={12} tintColor={palette.inkHi} />
-					<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...label, color: palette.inkHi }}>
+					{/* Half the bar is too narrow for "Ask coordinator to stop it" on
+					    one line, so it wraps rather than lose its last words. */}
+					<Text
+						allowFontScaling={allowFontScaling}
+						numberOfLines={2}
+						style={{ ...label, flexShrink: 1, textAlign: "center", color: palette.inkHi }}
+					>
 						{offer === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
 					</Text>
 				</Pressable>

@@ -88,7 +88,7 @@ export async function createDemoHub(
 						{
 							sessionRef: planSession.ref,
 							path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-							versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+							text: fleetOptions?.planRevised ? SETTLE_RACE_PLAN_REVISED : SETTLE_RACE_PLAN,
 						},
 					],
 					planSession.workingDir,
@@ -675,6 +675,7 @@ if (
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 				}
 			: undefined,
 	);

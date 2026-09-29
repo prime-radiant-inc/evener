@@ -908,6 +908,10 @@ export interface DemoFleetOptions {
 	// owns the timer and sends the resulting invalidation, so a test fires the
 	// change by calling askQuestion directly instead of sleeping.
 	askAfterSeconds?: number;
+	// Mirrors EVENER_DEMO_FLEET_PLAN_REVISED: demo-hub.mts serves the
+	// settle-race plan's revision rather than its first text, so a Reader that
+	// read the plan before the restart shows what changed (frame 17).
+	planRevised?: boolean;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
