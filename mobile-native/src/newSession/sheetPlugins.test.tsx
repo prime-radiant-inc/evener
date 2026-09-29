@@ -95,3 +95,41 @@ it("reads the selection against the preview: names on, total, and blocking issue
 	});
 	expect(pluginChoice({}, { status: "loading" })).toMatchObject({ response: null, on: [], total: 0, issues: [] });
 });
+
+/** A sheet whose hub answers each place's preview when the test says. */
+function mountHeld() {
+	const pending: { params: unknown; resolve(value: PluginPreviewResponse): void }[] = [];
+	const client = {
+		request: (_method: string, params: unknown) =>
+			new Promise<PluginPreviewResponse>((resolve) => pending.push({ params, resolve })),
+		onNotification: () => () => {},
+	};
+	const store = createNewSessionStore("hub-1");
+	store.setState({ source: "local", cwd: "/home/jesse/git/evener", launchOverrides: { enabledPlugins: ["gone"] } });
+	let state: ReturnType<typeof useSheetPlugins> | null = null;
+	function Probe() {
+		state = useSheetPlugins(store, client as never, true);
+		return null;
+	}
+	render(<Probe />);
+	const choice = () => pluginChoice(store.getState().launchOverrides, state as never);
+	return { store, pending, choice, state: () => state };
+}
+
+for (const [what, move] of [
+	["host", { source: "paradise-park" }],
+	["project", { cwd: "/home/jesse/git/docs" }],
+] as const) {
+	it(`never shows the last ${what}'s plugins or problems while the new one's preview loads`, async () => {
+		const sheet = mountHeld();
+		await debounce();
+		await act(async () => sheet.pending[0]?.resolve(preview));
+		expect(sheet.choice()).toMatchObject({ total: 2, issues: [{ name: "gone" }] });
+		act(() => sheet.store.setState(move));
+		expect(sheet.state()).toEqual({ status: "loading" });
+		expect(sheet.choice()).toMatchObject({ response: null, on: [], total: 0, issues: [] });
+		await debounce();
+		await act(async () => sheet.pending[1]?.resolve({ plugins: [candidate("gone")] }));
+		expect(sheet.choice()).toMatchObject({ total: 1, on: ["gone"], issues: [] });
+	});
+}

@@ -613,3 +613,19 @@ it("says the host's plugins couldn't be listed when the first preview fails", as
 	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, Couldn't list this host's plugins");
 	form.dispose();
 });
+
+it("forgets the last project's plugin problems as soon as the project changes", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["gone"] } },
+		plugins: { plugins: [plugin("superpowers", true)] },
+	});
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 0 of 1");
+	expect(form.text()).toContain("gone: not present in current preview");
+	await act(async () => form.store.setState({ cwd: "/home/jesse/git/docs" }));
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, …");
+	expect(form.text()).not.toContain("gone: not present in current preview");
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 0 of 1");
+	form.dispose();
+});
