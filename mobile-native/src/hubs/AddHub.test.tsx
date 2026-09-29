@@ -31,6 +31,8 @@ const GRANTED: Permission = { granted: true, canAskAgain: true, status: "granted
 beforeEach(() => {
 	mocks.permission.value = GRANTED;
 	mocks.request.mockReset();
+	// expo-camera's request answers with the permission it settled on.
+	mocks.request.mockResolvedValue(GRANTED);
 	mocks.getStringAsync.mockReset();
 	mocks.saveHub.mockReset();
 	mocks.openSettings.mockReset();
@@ -147,6 +149,21 @@ it("offers Settings or pasting when camera access is off", async () => {
 	expect(field(tree, "Pairing link").props.secureTextEntry).toBe(true);
 });
 
+it("offers Settings or pasting once a camera request comes back refused, though it could ask again", async () => {
+	// Android leaves canAskAgain true after one refusal; the page must not
+	// stay blank waiting on a request that already answered (RoboRev, #3001).
+	mocks.permission.value = { granted: false, canAskAgain: true, status: "undetermined" };
+	mocks.request.mockResolvedValue({ granted: false, canAskAgain: true, status: "denied" });
+	const { tree } = mount("scan");
+	await act(async () => {
+		mocks.permission.value = { granted: false, canAskAgain: true, status: "denied" };
+		tree.update(<AddHub how="scan" onConnected={() => {}} />);
+	});
+	expect(mocks.request).toHaveBeenCalledTimes(1);
+	expect(renderedText(tree)).toContain("Camera access is off for Evener.");
+	expect(button(tree, "Paste the link instead")).toBeTruthy();
+});
+
 it("pastes a pairing link from the clipboard into review", async () => {
 	mocks.getStringAsync.mockResolvedValue(` ${LINK}\n`);
 	const { tree } = mount("paste");
@@ -196,6 +213,29 @@ it("reviews an address and token typed by hand", async () => {
 	expect(onConnected).toHaveBeenCalledTimes(1);
 });
 
+it("finishes when the hub is saved though a newer choice of hub kept it from being selected", async () => {
+	// saveHub resolves false when a later selection superseded this one; the
+	// hub is saved all the same, so review mustn't sit there (RoboRev, #3001).
+	mocks.saveHub.mockResolvedValue(false);
+	const { tree, onConnected } = mount("paste");
+	type(tree, "Pairing link", LINK);
+	act(() => {
+		field(tree, "Pairing link").props.onSubmitEditing();
+	});
+	await press(tree, "Connect");
+	expect(onConnected).toHaveBeenCalledTimes(1);
+});
+
+it("trims a typed token the way it trims the address", async () => {
+	mocks.saveHub.mockResolvedValue(true);
+	const { tree } = mount("address");
+	type(tree, "Address", " https://magic-kingdom:9180 ");
+	type(tree, "Token (optional)", ` ${TOKEN}\n`);
+	await press(tree, "Continue");
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledWith(expect.objectContaining({ token: TOKEN }));
+});
+
 it("stays on review and says what to change when the hub can't be saved", async () => {
 	mocks.saveHub.mockRejectedValue(new Error("Enter a complete http:// or https:// hub address."));
 	const { tree, onConnected } = mount("address");
@@ -204,7 +244,8 @@ it("stays on review and says what to change when the hub can't be saved", async 
 	await press(tree, "Connect");
 	expect(onConnected).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Pair with ftp://magic-kingdom");
-	expect(renderedText(tree)).toContain("Couldn't save this hub. Check the name and the link, and try again.");
+	// A typed address has no link to check.
+	expect(renderedText(tree)).toContain("Couldn't save this hub. Check the name and the address, and try again.");
 	expect(button(tree, "Connect").props.disabled).toBe(false);
 });
 

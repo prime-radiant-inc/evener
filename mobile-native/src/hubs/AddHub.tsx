@@ -38,12 +38,14 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 		setSaving(true);
 		setRefused(false);
 		try {
-			const selected = await saveHub({
+			// saveHub resolves false when a newer choice of hub superseded
+			// selecting this one; the hub is saved either way.
+			await saveHub({
 				name: review.name,
 				origin: review.target.origin,
 				token: review.target.token,
 			});
-			if (selected) onConnected();
+			onConnected();
 		} catch {
 			setRefused(true);
 		} finally {
@@ -77,7 +79,9 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 					/>
 				</Group>
 				{refused ? (
-					<GroupFooter tone="danger">Couldn't save this hub. Check the name and the link, and try again.</GroupFooter>
+					<GroupFooter tone="danger">
+						{`Couldn't save this hub. Check the name and the ${how === "address" ? "address" : "link"}, and try again.`}
+					</GroupFooter>
 				) : null}
 			</GroupedPage>
 		);
@@ -90,15 +94,18 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 	const [permission, requestPermission] = useCameraPermissions();
 	const [notPairing, setNotPairing] = useState(false);
 	const asked = useRef(false);
+	// Whether the one request this page makes has come back. Android can
+	// leave canAskAgain true after a refusal, so that alone can't end the wait.
+	const [answered, setAnswered] = useState(false);
 	const canAsk = permission !== null && !permission.granted && permission.canAskAgain;
 
 	useEffect(() => {
 		if (!canAsk || asked.current) return;
 		asked.current = true;
-		void requestPermission();
+		void requestPermission().finally(() => setAnswered(true));
 	}, [canAsk, requestPermission]);
 
-	if (permission === null || canAsk) return <GroupedPage>{null}</GroupedPage>;
+	if (permission === null || (canAsk && !answered)) return <GroupedPage>{null}</GroupedPage>;
 	if (!permission.granted)
 		return (
 			<GroupedPage>
@@ -205,7 +212,7 @@ function Address({ onPairing }: { onPairing(target: PairingTarget): void }) {
 					label="Continue"
 					tone="accent"
 					disabled={!address.trim()}
-					onPress={() => onPairing({ origin: address.trim(), token })}
+					onPress={() => onPairing({ origin: address.trim(), token: token.trim() })}
 				/>
 			</Group>
 		</GroupedPage>

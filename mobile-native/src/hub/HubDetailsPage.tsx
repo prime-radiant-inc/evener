@@ -31,13 +31,18 @@ export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<Hub
 			</GroupedPage>
 		) : null;
 
-	async function remove(id: string) {
+	async function remove(id: string, label: string) {
 		const selected = id === activeProfile?.id;
 		setFailure(null);
 		try {
 			await removeHub(id);
 		} catch (error) {
-			setFailure(error instanceof Error ? error.message : "Couldn't remove this hub.");
+			const reason = error instanceof Error ? error.message : "Couldn't remove this hub.";
+			// Removing the selected hub deselects it before a cleanup error
+			// comes back, and the sheet leaves for first run with this page:
+			// only an alert outlives that.
+			if (selected) Alert.alert(`Couldn't finish removing ${label}`, reason);
+			else setFailure(reason);
 			return;
 		}
 		if (!selected) navigation.goBack();
@@ -46,7 +51,7 @@ export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<Hub
 	function confirmRemove(id: string, label: string) {
 		Alert.alert(`Remove ${label}?`, "The saved hub, its token and its drafts are removed from this phone.", [
 			{ text: "Cancel", style: "cancel" },
-			destructiveButton("Remove", () => remove(id)),
+			destructiveButton("Remove", () => remove(id, label)),
 		]);
 	}
 

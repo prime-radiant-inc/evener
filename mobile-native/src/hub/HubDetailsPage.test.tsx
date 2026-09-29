@@ -159,6 +159,20 @@ it("says so when the hub was removed but its cleanup failed, rather than going b
 	expect(renderedText(tree)).toContain("The hub was removed, but some local data could not be deleted.");
 });
 
+it("tells you when the selected hub was removed but its cleanup failed, though the sheet then leaves", async () => {
+	// Removing the selected hub deselects it before the cleanup error comes
+	// back, so the sheet leaves for first run and this page unmounts; an alert
+	// outlives it (RoboRev, #3001).
+	connection.removeHub.mockRejectedValue(new Error("The hub was removed, but some local data could not be deleted."));
+	const { tree } = mount("hub-1");
+	await press(tree, "Remove this hub");
+	await confirmRemove();
+	expect(alertRequests.at(-1)).toMatchObject({
+		title: "Couldn't finish removing magic-kingdom",
+		message: "The hub was removed, but some local data could not be deleted.",
+	});
+});
+
 it("renders nothing once the hub is gone", () => {
 	connection.profiles = [MAGIC];
 	const { tree } = mount("hub-2");
