@@ -406,7 +406,7 @@ describe("the demo sessions with long content", () => {
 		expect(hydrated("s-mirror").pendingEscalations).toEqual([
 			expect.objectContaining({
 				deniedPath:
-					"/home/jesse/sites/docs/reference/appwire/protocol/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+					"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
 				partiallyRan: true,
 			}),
 		]);

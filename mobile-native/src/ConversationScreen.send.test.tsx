@@ -1692,7 +1692,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
 		const served = withApproval("ref-approval-long");
-		const deniedPath = `/home/jesse/sites/${"docs/reference/appwire/protocol/".repeat(6)}index.html`;
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
 		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
 			.pendingEscalations;
 		if (!escalation) throw new Error("no escalation");
