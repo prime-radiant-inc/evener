@@ -2,8 +2,11 @@
 
 import { expect, test } from "vitest";
 import {
+  createPagedOpenSettleTracker,
   createTranscriptSettleTracker,
   describeTranscriptSettleBlocker,
+  type PagedOpenSample,
+  type PagedOpenSettleTracker,
   SETTLE_OVERFLOW_FACTOR,
   SETTLE_QUIESCENT_FRAMES,
   type TranscriptGeometry,
@@ -30,6 +33,17 @@ function hold(tracker: TranscriptSettleTracker, one: TranscriptSettleSample, fra
   let blocker: TranscriptSettleBlocker | null = { kind: "unmounted" };
   for (let i = 0; i < frames; i++) blocker = tracker.observe(one);
   return blocker;
+}
+
+function pagedSample(geometry: TranscriptGeometry, turns = TURNS): PagedOpenSample {
+  return { turns, geometry };
+}
+
+/** Feeds one paged-open sample repeatedly, returning the last verdict. */
+function holdPaged(tracker: PagedOpenSettleTracker, one: PagedOpenSample, frames: number) {
+  let ready = false;
+  for (let i = 0; i < frames; i++) ready = tracker.observe(one);
+  return ready;
 }
 
 // The first frame has nothing to compare against, so a run of
@@ -122,4 +136,41 @@ test("every blocker carries the numbers that decided it into its description", (
     expect(described.length).toBeGreaterThan(0);
     for (const number of numbers) expect(described).toContain(number);
   }
+});
+
+// --- the ?paged=1 open -------------------------------------------------------
+
+// The paged fixture's read answers with a single older page, and that page
+// returns no further cursor - so the regression this pass exists for (an
+// auto-load at open) clears olderCursor and unmounts the paging row. Readiness
+// must not wait on the row: doing so spins to the harness tripwire and reports
+// a settle timeout instead of the pass's own "auto-loaded N older page(s)"
+// failure. These cases pin the row-agnostic shape directly.
+
+test("a hydrated paged open that holds still settles even though the paging row is gone", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  // The regression's fingerprint: the auto-loaded page pushed the turn count
+  // past the read's, and the row has unmounted. Neither is part of the sample.
+  expect(holdPaged(tracker, pagedSample(rendered(), TURNS + 12), FRAMES_TO_READY)).toBe(true);
+});
+
+test("a paged open whose read has not hydrated yet is not ready", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  expect(holdPaged(tracker, pagedSample(rendered(), 17), FRAMES_TO_READY)).toBe(false);
+});
+
+test("a paged open whose scroll port has not been laid out is not ready, however many turns hydrated", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  // A mounted-but-unlaid-out pane reports zero geometry and holds it still; the
+  // wait must not settle the open there before the paged shape has rendered.
+  const unlaid: TranscriptGeometry = { scrollHeight: 0, clientHeight: 0, scrollTop: 0 };
+  expect(holdPaged(tracker, pagedSample(unlaid, TURNS), FRAMES_TO_READY)).toBe(false);
+});
+
+test("paged-open stillness must be consecutive, not merely accumulated", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES);
+  tracker.observe(pagedSample({ ...rendered(), scrollHeight: 11_500, scrollTop: 11_500 - PORT }));
+  expect(tracker.observe(pagedSample(rendered()))).toBe(false);
+  expect(holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES)).toBe(true);
 });

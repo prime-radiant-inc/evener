@@ -97,8 +97,8 @@ func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testin
 // TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence proves kata
 // tpb0's premise: FinishGeneration's PhaseStopping branch previously discarded
 // whatever the run loop had already captured (task, worktree, scratch path) and
-// replaced it with a bare "stopped by parent" packet carrying no metadata at
-// all. An externally cancelled delegate must retain that partial evidence so a
+// replaced it with the synthetic "stopped by parent" packet, which carries none
+// of that evidence. An externally cancelled delegate must retain that partial evidence so a
 // later job_status/delegate_send read can show it, instead of only "cancelled".
 func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
