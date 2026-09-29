@@ -14,6 +14,9 @@
 // - expo-symbols: the SF Symbols every grouped row draws its glyph with
 //   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
 //   element, as the suites that mock it themselves draw it.
+// - react-native-webview: the WebView MermaidDiagram renders a diagram in. Its
+//   package ships untranspiled Flow source vitest can't parse, so every suite
+//   that rendered markdown mocked it alike; the fake is an inert host element.
 // - react-native-keyboard-controller: the App's KeyboardProvider and the
 //   Session's KeyboardAvoidingView, as inert host elements that keep their
 //   props, so a suite can see which avoiding view a screen uses and how; and
@@ -42,6 +45,8 @@ vi.mock("expo-haptics", async () => {
 });
 
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 
 vi.mock("react-native-keyboard-controller", async () => ({
 	KeyboardProvider: "KeyboardProvider",
