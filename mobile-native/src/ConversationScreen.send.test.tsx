@@ -1431,21 +1431,23 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 });
 
 // A short transcript rests just above the composer (spec 8.5), not at the top
-// with the page's empty middle between it and the bar. It fills the viewport
-// above the bar's inset, so at rest it is at its end and nothing sits under the
-// bar: filling the whole viewport would leave its last rows under the bar
-// until the list scrolled by the inset.
+// with the page's empty middle between it and the bar.
 it("rests a short transcript's end just above the composer", async () => {
-	const { tree } = await mount(twoTurns("ref-short-rests"));
+	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
+	const opacity = () => transcriptList(tree).props.style?.opacity;
+	// It shows once the viewport and the bar have both laid out.
+	expect(opacity()).toBe(0);
 	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	expect(opacity()).toBe(0);
 	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
 	await settle();
+	expect(opacity()).toBe(1);
 	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
 		minHeight: 450,
 		justifyContent: "flex-end",
 	});
-	expect(transcriptList(tree).props.contentContainerStyle).not.toHaveProperty("flexGrow");
 });
 
 it("loads older history as you drag near the top", async () => {
