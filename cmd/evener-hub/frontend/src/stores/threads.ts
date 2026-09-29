@@ -2550,17 +2550,76 @@ function isStorageUnavailable(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
 }
 
+// The fallback send's RPC is its only transport, so a failure on the wire is
+// retried rather than surfaced. Only a transport failure earns the second
+// attempt: a settled WireError is the daemon's own answer (a conflict or a
+// malformed request cannot succeed on an identical retry), while a timeout or a
+// dropped connection leaves the outcome unknown. The clientMutationId is minted
+// ONCE, before the ladder, and every attempt reuses it - the daemon dedups by
+// clientMutationId, so a reply lost after the mutation applied replays as a
+// no-op on the retry instead of applying twice.
+const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
+// A dropped connection leaves the client "reconnecting", where a retry fired
+// now only meets the client's own synchronous not-ready rejection. Wait for a
+// ready client before the second attempt, bounded so a wedged hub cannot hang
+// the send: 10s is the durable-write watchdog's own scale, which the composer
+// already tolerates. The read paths never wait like this for a mutation because
+// a blind retry could land twice - but every attempt here reuses one
+// clientMutationId, so the daemon dedups them.
+const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
+
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. The client mints
 // the clientMutationId exactly as those operations do, so the daemon still
 // dedups a replay; a rejection maps a conflict the same way they do.
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
-  try {
-    const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
-    await request.call(client, intent.method, { ...intent.payload, clientMutationId });
-  } catch (err) {
-    throw mapConflict(err);
+  let target = client;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // Resolve the transport from the CURRENT target: a retry may run against
+      // a rewired or waited-ready client, so the first client's request must
+      // not be reused.
+      const request = target.request as unknown as (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<unknown>;
+      await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      return;
+    } catch (err) {
+      if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
+      // A failed client that has closed for good can never become ready again,
+      // but a manual retry (ConnectionBanner) may already have wired a
+      // replacement - which can itself still be connecting. Retry against it
+      // once it is ready (bounded); surface at once only when no replacement
+      // has been wired at all, rather than waiting out the bound for a failed
+      // client that can never recover. requireClient() is rewire-aware, so it
+      // reads the current client, not the failed one.
+      if (target.state === "closed" || target.terminalReason !== null) {
+        let replacement: AppwireClientLike | null = null;
+        try {
+          const current = requireClient();
+          if (current !== target) replacement = current;
+        } catch {
+          replacement = null;
+        }
+        if (replacement === null) throw mapConflict(err);
+        if (replacement.state !== "ready") {
+          try {
+            replacement = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+          } catch {
+            throw mapConflict(err);
+          }
+        }
+        target = replacement;
+        continue;
+      }
+      try {
+        target = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+      } catch {
+        throw mapConflict(err);
+      }
+    }
   }
 }
 
@@ -3935,7 +3994,11 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // enqueueMutationIntent gate) deliberately do NOT call this - they keep
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
-// both attempts land.
+// both attempts land. The one mutation that does wait here is
+// enqueueMutationIntent's storage-unavailable fallback send
+// (dispatchMutationDirectly): it reuses ONE clientMutationId across its
+// attempts, so the daemon dedups a replay and the double-land reason above
+// does not hold.
 //
 // Loops rather than waiting once: a rewire mid-wait can land on a client
 // that is ALSO not yet ready (a fresh client still mid-handshake), so this
