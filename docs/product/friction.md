@@ -42,7 +42,7 @@ and should not be presented as reproduced production incidents.
 | [C11](#c11-successful-recovery-looks-like-failure) | Medium | Successful MCP recovery receives warning/error presentation | S02, S03, S05, S19 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
-| [R03](#r03-watch-intent-after-restart) | High | Restart ends future monitoring, including saved repeating timers | S08, S12 |
+| [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
 | [R04](#r04-idle-child-blocks-parent-restore) | High | One idle child's IO problem prevents its healthy parent from restoring | S08, S12, S13 |
 | [R05](#r05-goal-blocking-after-transient-failure) | Medium | A temporary execution failure leaves an authorized goal blocked | S09, S15 |
 | [R06](#r06-read-only-goal-progress) | Medium | Useful research can count as no progress while attempted writes count | S09, S14 |
@@ -429,17 +429,23 @@ The normal shutdown path already marks and signals owned jobs in
 job record's `runtime_lost` status describes lost supervision; it does not by
 itself prove that every OS process was terminated.
 
-**Discuss.** Decide which continuing timers and watches of surviving targets
-should be reconstructed after restart. Declarative timers/filters are different
-from arbitrary callback closures. Define due times, missed ticks, output cursors,
-receiver/generation validation and explicit-stop behavior before promising
-durable monitoring. Automatic restoration and the proposed single catch-up check
-for missed monitoring intervals remain under discussion.
+**Decision — recovery outcome.** Either automatically restore a continuing timer
+or watch, or reliably notify its owning agent session that it was canceled and
+requires explicit re-registration. The agent can decide whether to restart it
+while continuing the user's task. Cancellation with that handoff is acceptable;
+silent loss of monitoring is not. A watch having fired before does not remove
+the need to communicate that future observation ended. Preserve enough watch
+identity and intent for the session to act on the notification, and respect
+explicit Stop and the watched target's lifetime. Automatic restoration is not
+required where reliable cancellation notification provides the simpler recovery.
+Implementation remains pending.
 
-**Acceptance.** Restart during an eligible repeating watch and resume future
-observation under the chosen policy, preserving already-pending deliveries
-exactly once. Ineligible callbacks end clearly; a stopped or replaced generation
-is never silently rearmed.
+**Acceptance.** Restart with active timers and watches, including a repeating
+watch that has already delivered a result. Each continuing intent either resumes
+or reaches its owning agent as an actionable cancellation requiring
+re-registration. Already-pending deliveries retain their identities and are not
+duplicated. Watches of ended jobs settle with the job outcome; canceled work or
+replaced target generations are not silently rearmed.
 
 ### R04 Idle child blocks parent restore
 
