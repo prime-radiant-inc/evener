@@ -1,13 +1,12 @@
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { HoldingModal } from "./alerts/HoldingModal";
 import type { AttachmentRef } from "./projectedRows";
 import { useConnection } from "./ConnectionProvider";
 import { HubProfiles } from "./connection";
+import { ModalSheet } from "./sheet/ModalSheet";
 import { transcriptImageSource } from "./transcriptImageSource";
-import { Action, Copy, useColors } from "./ui";
+import { Copy, useColors } from "./ui";
 
 const hubs = new HubProfiles(SecureStore);
 
@@ -62,7 +61,7 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 }
 
 // A row of images in the transcript (spec 8.2, "Images"): 96pt thumbnails,
-// and a full-screen viewer that swipes between them.
+// and a viewer that swipes between them.
 export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; hubId: string }) {
 	const colors = useColors();
 	const { width } = useWindowDimensions();
@@ -98,55 +97,37 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 				))}
 			</ScrollView>
 			{page !== null ? (
-				<HoldingModal animationType="fade" presentationStyle="fullScreen" onRequestClose={() => setPage(null)}>
-					<SafeAreaProvider>
-						<SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
-							<View
-								style={{
-									padding: 16,
-									flexDirection: "row",
-									alignItems: "center",
-									gap: 12,
-								}}
-							>
-								<View style={{ flex: 1 }}>
-									<Copy>{images[page]?.name ?? "Attached image"}</Copy>
-									<Copy muted>{`${page + 1} of ${images.length}`}</Copy>
-								</View>
-								<Action onPress={() => setPage(null)}>Done</Action>
+				<ModalSheet
+					title={`${images[page]?.name ?? "Attached image"} · ${page + 1} of ${images.length}`}
+					done={{ onPress: () => setPage(null) }}
+					onRequestClose={() => setPage(null)}
+				>
+					<FlatList
+						ref={pager}
+						accessible
+						accessibilityRole="adjustable"
+						accessibilityLabel="Images"
+						accessibilityValue={{ text: `Image ${page + 1} of ${images.length}` }}
+						accessibilityActions={[
+							{ name: "increment", label: "Next image" },
+							{ name: "decrement", label: "Previous image" },
+						]}
+						onAccessibilityAction={(event) => turnTo(page + (event.nativeEvent.actionName === "increment" ? 1 : -1))}
+						data={images}
+						keyExtractor={(image) => image.id}
+						horizontal
+						pagingEnabled
+						showsHorizontalScrollIndicator={false}
+						initialScrollIndex={page}
+						getItemLayout={(_data, index) => ({ length: width, offset: width * index, index })}
+						onMomentumScrollEnd={(event) => setPage(Math.round(event.nativeEvent.contentOffset.x / Math.max(1, width)))}
+						renderItem={({ item }) => (
+							<View style={{ width, flex: 1, padding: 16 }}>
+								<HubImage image={item} hubId={hubId} />
 							</View>
-							<FlatList
-								ref={pager}
-								accessible
-								accessibilityRole="adjustable"
-								accessibilityLabel="Images"
-								accessibilityValue={{ text: `Image ${page + 1} of ${images.length}` }}
-								accessibilityActions={[
-									{ name: "increment", label: "Next image" },
-									{ name: "decrement", label: "Previous image" },
-								]}
-								onAccessibilityAction={(event) =>
-									turnTo(page + (event.nativeEvent.actionName === "increment" ? 1 : -1))
-								}
-								data={images}
-								keyExtractor={(image) => image.id}
-								horizontal
-								pagingEnabled
-								showsHorizontalScrollIndicator={false}
-								initialScrollIndex={page}
-								getItemLayout={(_data, index) => ({ length: width, offset: width * index, index })}
-								onMomentumScrollEnd={(event) =>
-									setPage(Math.round(event.nativeEvent.contentOffset.x / Math.max(1, width)))
-								}
-								renderItem={({ item }) => (
-									<View style={{ width, flex: 1, padding: 16 }}>
-										<HubImage image={item} hubId={hubId} />
-									</View>
-								)}
-							/>
-						</SafeAreaView>
-					</SafeAreaProvider>
-				</HoldingModal>
+						)}
+					/>
+				</ModalSheet>
 			) : null}
 		</>
 	);

@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { flatListCalls, render, renderedText } from "./renderNative.testkit";
@@ -8,10 +7,7 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	Image: "Image",
 }));
-vi.mock("react-native-safe-area-context", () => ({
-	SafeAreaView: "SafeAreaView",
-	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
-}));
+vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(async () => null) }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => ({ profiles: [] }) }));
 
@@ -62,6 +58,13 @@ describe("a row of images (spec 8.2)", () => {
 				.props.onPress(),
 		);
 		expect(pager(tree.root)).toBeUndefined();
+	});
+
+	it("frames the viewer in the shared modal sheet, with the image named in the header", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		act(() => thumbnails(tree.root)[0].props.onPress());
+		expect(tree.root.findByType("Modal" as never).props.presentationStyle).toBe("pageSheet");
+		expect(renderedText(tree)).toContain("first.png");
 	});
 });
 
