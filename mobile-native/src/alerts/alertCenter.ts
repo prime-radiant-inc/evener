@@ -292,16 +292,21 @@ export class AlertCenter {
 	}
 
 	/** Another hub, or none: nothing carries over, not even what is on screen,
-	 * whose ref named the old hub's session. The provider reports the screen
-	 * again after a reset. */
+	 * whose ref named the old hub's session, except a failed start, which
+	 * names its own hub and would otherwise be lost (#3104). The provider
+	 * reports the screen again after a reset. */
 	reset(): void {
+		const failedStarts = [...(this.banner?.alerts ?? []), ...this.afterBanner, ...this.held].filter(
+			(alert) => alert.kind === "startFailed",
+		);
 		this.stopBanner();
 		this.cancelRelease();
 		this.held = [];
 		this.afterBanner = [];
 		this.recent = [];
 		this.screen = { kind: "other" };
-		this.publish();
+		this.queueAfterBanner(failedStarts);
+		this.showAfterBanner();
 	}
 
 	/** Takes the alerts `about` matches out of the held ones and the banner,

@@ -17,7 +17,7 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 	const center = useAlertCenter();
 	const { banner } = useAlertSnapshot();
 	const noticeFor = useNoticeFor();
-	const { activeProfile, profiles } = useConnection();
+	const { activeProfile, profiles, selectHub } = useConnection();
 	const frame = useSafeAreaFrame();
 	const insets = useSafeAreaInsets();
 	const top = getDefaultHeaderHeight(frame, false, insets.top) + 4;
@@ -32,9 +32,11 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
 		else if (target.kind === "newSession") {
 			// The draft waits in that hub's creation store (#3104); a hub removed
-			// since has none.
-			if (profiles.some((profile) => profile.id === target.hubId))
-				navigation.dispatch(StackActions.push("NewSession", { hubId: target.hubId, hubName: target.hubName }));
+			// since has none. A start on another hub than the one selected opens
+			// once that hub is selected, so its sheet has its own connection.
+			if (!profiles.some((profile) => profile.id === target.hubId)) return;
+			if (target.hubId !== hubId) selectHub(target.hubId);
+			navigation.dispatch(StackActions.push("NewSession", { hubId: target.hubId, hubName: target.hubName }));
 		} else if (target.kind === "needsYou") {
 			navigation.dispatch(StackActions.popTo("Sessions"));
 			requestBoardJump("needsYou");

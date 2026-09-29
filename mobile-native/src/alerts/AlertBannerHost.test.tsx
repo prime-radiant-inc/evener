@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
 	center: null as AlertCenter | null,
 	notices: new Map<string, unknown>(),
 	opened: [] as unknown[][],
+	selected: [] as string[],
 }));
 vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
@@ -44,6 +45,7 @@ vi.mock("@react-navigation/native", async () => ({
 }));
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({
+		selectHub: (id: string) => harness.selected.push(id),
 		activeProfile: { id: "hub-1", name: "magic-kingdom" },
 		profiles: [
 			{ id: "hub-1", name: "magic-kingdom" },
@@ -91,6 +93,7 @@ beforeEach(() => {
 	harness.center = new AlertCenter(timer);
 	harness.notices.clear();
 	harness.opened.length = 0;
+	harness.selected.length = 0;
 });
 
 it("sits just below the nav bar, and shows nothing without a banner", () => {
@@ -146,6 +149,8 @@ it("opens the New session of the hub whose start failed, with its draft, whichev
 	const { card, dispatched } = mount();
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false }));
 	act(() => card().props.onPress());
+	// That hub is selected first, so its sheet opens on its own connection.
+	expect(harness.selected).toEqual(["hub-2"]);
 	expect(dispatched).toEqual([
 		expect.objectContaining({
 			type: "PUSH",
@@ -162,4 +167,12 @@ it("opens nothing for a failed start whose hub has since been removed (#3104)", 
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
 	act(() => card().props.onPress());
 	expect(dispatched).toEqual([]);
+});
+
+it("opens the selected hub's New session without selecting it again (#3104)", () => {
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(harness.selected).toEqual([]);
+	expect(dispatched).toHaveLength(1);
 });

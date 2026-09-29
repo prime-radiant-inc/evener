@@ -890,3 +890,23 @@ it("retires a failed start's alert when the form comes back into focus, not only
 	expect(form.text()).toContain("the hub is shutting down");
 	form.dispose();
 });
+
+it("never loses a failed start on a hub you switched away from (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// Another hub is selected: the alert center starts over for it.
+	await act(async () => form.alerts.reset());
+	await act(async () => form.releaseStart());
+	await settle();
+	const shown = form.alerts.getSnapshot().banner?.alerts;
+	expect(shown).toEqual([{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true }]);
+	// Switching once more keeps it, and a tap goes to its own hub.
+	await act(async () => form.alerts.reset());
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-1", hubName: "magic-kingdom" });
+});

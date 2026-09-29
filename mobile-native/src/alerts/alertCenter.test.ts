@@ -658,6 +658,23 @@ describe("a New session start that failed after its sheet closed (#3104)", () =>
 		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-b", hubName: "paradise-park" });
 	});
 
+	it("survives switching hubs, shown or waiting, since it names its own hub", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		alerts.reset();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.reset();
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
 	it("goes once New session is opened, which shows the same reason", () => {
 		const { alerts } = center();
 		alerts.offer(failed);
