@@ -276,6 +276,22 @@ it("keeps the list away through a fatal retry until the replacement is ready", a
 	expect(instanceCalls(replacement.methods).every((method) => method === "evener/instance/list")).toBe(true);
 });
 
+it("heads a provider's detail with the shared sheet header: its name, and Done on the right", async () => {
+	providersHub([instance({ name: "lunaroute", authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("lunaroute,"));
+	await act(async () => {});
+	const modal = tree.root.findByType("Modal" as never);
+	// The sheet's title comes first; the page's section labels are headers too.
+	expect(modal.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("lunaroute");
+	expect(modal.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" })).toHaveLength(0);
+	await act(async () => {
+		modal.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
 it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");

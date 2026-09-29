@@ -7,7 +7,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
 import { useDocumentFacts } from "./DocumentChip";
@@ -26,8 +27,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 				hubId,
 				sessionRef: ref,
 				path,
-				reviewRef: ref,
-				reviewTitle: title,
+				sessionTitle: title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		});

@@ -52,6 +52,8 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 			options = { ...options, ...next };
 		}),
 	};
+	// Where the page asked its scroller to go.
+	const scrolls: unknown[] = [];
 	const tree = render(
 		<HubSheetProvider value={context}>
 			<HostEditPage
@@ -59,6 +61,10 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 				route={{ key: "HostEdit", name: "HostEdit", params: { hubId: "hub-1", name } }}
 			/>
 		</HubSheetProvider>,
+		{
+			createNodeMock: (element) =>
+				element.type === "ScrollView" ? { scrollTo: (to: unknown) => scrolls.push(to) } : null,
+		},
 	);
 	await settle();
 	const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label, editable: true });
@@ -82,6 +88,7 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 		header,
 		save,
 		options: () => options,
+		scrolls,
 		dispose: () => hosts.dispose(),
 	};
 }
@@ -158,6 +165,41 @@ it("puts any other refusal above the fields", async () => {
 	await page.save();
 	const text = renderedText(page.tree);
 	expect(text.indexOf("the registry is read-only right now")).toBeLessThan(text.indexOf("SSH address"));
+	page.dispose();
+});
+
+it("scrolls a refusal that names a field into view, however far down the page was", async () => {
+	const fleet = scriptedFleet([attic]);
+	fleet.refuse.update = new WireError('host "attic": missing ssh destination', -32602, {
+		evenerErrorInfo: "invalidHostField",
+		field: "address",
+	});
+	const page = await mount(fleet, "attic");
+	// The page lays its SSH address field out 60 points down, and the person
+	// has scrolled to Roots at the bottom before pressing Save.
+	act(() =>
+		page.tree.root
+			.findByProps({ testID: "host-field-address" })
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 60, width: 393, height: 120 } } }),
+	);
+	await page.save();
+	expect(page.scrolls).toEqual([{ y: 60, animated: true }]);
+	page.dispose();
+});
+
+it("scrolls to the top for a refusal above the fields", async () => {
+	const fleet = scriptedFleet([attic]);
+	fleet.refuse.update = new WireError("the registry is read-only right now", -32000);
+	const page = await mount(fleet, "attic");
+	await page.save();
+	expect(page.scrolls).toEqual([{ y: 0, animated: true }]);
+	page.dispose();
+});
+
+it("stays where it is when a save lands", async () => {
+	const page = await mount(scriptedFleet([attic]), "attic");
+	await page.save();
+	expect(page.scrolls).toEqual([]);
 	page.dispose();
 });
 

@@ -374,3 +374,55 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		});
 	});
 });
+
+// EVENER_DEMO_LONG: content longer than any frame, so a screenshot pass
+// exercises long questions, approvals and messages, and many rows.
+describe("the demo sessions with long content", () => {
+	const long = createDemoSessions({ now: NOW, long: true });
+	const longThread = (slug: string) => {
+		const thread = long.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+		if (!thread) throw new Error(`no demo thread for ${slug}`);
+		return thread;
+	};
+	const items = (thread: Thread) => (thread.turns ?? []).flatMap((turn) => turn.items ?? []);
+	const hydrated = (slug: string) => {
+		const thread = longThread(slug);
+		return hydrateThread({ thread }, thread.evener.ref, NOW);
+	};
+	const notifications = (thread: Thread) =>
+		items(thread).filter((item) => item.type === "steering" && item.steeringKind === "notification");
+
+	it("asks four questions, the first long, with five long options", () => {
+		const model = hydrated("s-audit");
+		const questions = [...liveAsksFor(model).values()].flat();
+		expect(questions).toHaveLength(4);
+		expect(questions[0]?.question.length).toBeGreaterThan(250);
+		expect(questions[0]?.why?.length).toBeGreaterThan(600);
+		expect(questions[0]?.options).toHaveLength(5);
+		expect(longThread("s-audit").evener.pendingQuestion).toMatchObject({ count: 4 });
+	});
+
+	it("asks to write to a deep path that may have partly run", () => {
+		expect(hydrated("s-mirror").pendingEscalations).toEqual([
+			expect.objectContaining({
+				deniedPath:
+					"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+				partiallyRan: true,
+			}),
+		]);
+	});
+
+	it("gives the working session a long message from each side, many steps and notifications", () => {
+		const shown = items(longThread("s-pr2138"));
+		const usual = items(threadOf("s-pr2138"));
+		expect(shown.length).toBeGreaterThan(usual.length + 24);
+		expect(shown.some((item) => item.type === "userMessage" && (item.text ?? "").length > 500)).toBe(true);
+		expect(shown.some((item) => item.type === "agentMessage" && (item.text ?? "").length > 1500)).toBe(true);
+		expect(notifications(longThread("s-pr2138"))).not.toHaveLength(0);
+	});
+
+	it("leaves every session's usual content alone without the flag", () => {
+		expect(notifications(threadOf("s-pr2138"))).toHaveLength(0);
+		expect(threadOf("s-audit").evener.pendingQuestion).toMatchObject({ count: 2 });
+	});
+});

@@ -6,7 +6,13 @@ import {
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
-} from "./steeringClassify";
+  steeringNotificationFragments,
+} from "./steeringNotifications";
+import {
+  type NotificationWireCase,
+  notificationWireItem,
+  notificationWireItems,
+} from "./testing/notificationWireFixtures";
 
 // notificationsOf flattens the ordered fragment list down to just its parsed
 // notifications, in order - most existing tests here only care about the
@@ -26,15 +32,15 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
   return n;
 }
 
-// steeringClassify.ts now parses only STRUCTURED notification payloads -
+// steeringNotifications.ts now parses only STRUCTURED notification payloads -
 // <job-notification> markup and the historic "Observer callback:\n" header
-// (no longer emitted -- see the steeringClassify.ts header; these cases pin
+// (no longer emitted -- see the steeringNotifications.ts header; these cases pin
 // how a transcript recorded while it WAS emitted must still replay). The prose classifier that used to
 // guess a steering "kind" from wording is gone (SteeringItem.tsx routes on
 // ItemModel.steeringKind instead); this pins that its exports stay gone.
 
 test("no longer exports a prose classifier", async () => {
-  const mod = await import("./steeringClassify");
+  const mod = await import("./steeringNotifications");
   expect("classifySteering" in mod).toBe(false);
   expect("steeringTreatment" in mod).toBe(false);
 });
@@ -1178,4 +1184,215 @@ Job self completed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch fired on this session");
+});
+
+// --- the daemon's own frames (agent/testdata/notificationwire) -------------
+//
+// Every case below parses a steering item the real producers wrote, so these
+// pin the shapes a session actually receives rather than markup a test made up.
+
+function wireNotifications(name: NotificationWireCase): ParsedNotification[] {
+  return notificationsOf(parseSteeringNotifications(notificationWireItem(name).text ?? ""));
+}
+
+test("a subagent's report parses its name, outcome and message from the packet body", () => {
+  const [n, ...rest] = wireNotifications("delegate-reported");
+  expect(rest).toHaveLength(0);
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate completed",
+    tone: "success",
+    outcome: "completed",
+    delegateId: "dlg_1",
+    name: "Fix race in tree settle",
+    secondary: "Fix race in tree settle",
+    message: "Done: the settle pass now waits for the drain.\n\nTests: go test ./agent/... passes.",
+  });
+  expect(n?.rawText).toBe(notificationWireItem("delegate-reported").text);
+});
+
+test("an unnamed subagent's failure parses as a failure carrying its message", () => {
+  const [n] = wireNotifications("delegate-failed-unnamed");
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate failed",
+    tone: "error",
+    outcome: "failed",
+    delegateId: "dlg_2",
+    message: "go test exited 1 three times",
+    secondary: "dlg_2 · failed",
+  });
+  expect(n?.name).toBeUndefined();
+});
+
+test("a subagent the user stopped parses as stopped", () => {
+  const [n] = wireNotifications("delegate-stopped");
+  expect(n).toMatchObject({
+    type: "delegate",
+    tone: "warning",
+    outcome: "stopped",
+    name: "Check drain ordering",
+    message: "Stopped by the user.",
+  });
+});
+
+test("a parent's stop that cancelled a run carrying its own packet reads as stopped", () => {
+  expect(wireNotifications("delegate-stopped-by-parent-mid-run")).toMatchObject([
+    { type: "delegate", title: "Delegate stopped", outcome: "stopped", name: "Index the docs" },
+  ]);
+});
+
+// The fold's own bare stop packet (agent/internal/delegatestore/fold.go's
+// stopping branch, kept bare so old events replay unchanged, #3114) carries no
+// metadata: the parser falls back to what its kind implies.
+test("a terminal_error packet with no metadata reads as a failure", () => {
+  const frame = `<delegate-notification delegate_id="dlg_9" name="Tail the hub log">${JSON.stringify({
+    kind: "terminal_error",
+    message: "stopped by parent",
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))).toMatchObject([
+    { type: "delegate", title: "Delegate failed", outcome: "failed", message: "stopped by parent" },
+  ]);
+});
+
+test("a parent's stop reads as stopped", () => {
+  const [n] = wireNotifications("delegate-stopped-by-parent");
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate stopped",
+    outcome: "stopped",
+    name: "Tail the hub log",
+    message: "stopped by parent",
+  });
+});
+
+// The settled outcome is delegatestore.OutcomeStatus
+// (agent/internal/delegatestore/record.go): every value maps to one of the
+// three outcome words, and a value this client doesn't know claims none.
+test.each([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["exhausted", "failed"],
+  ["cancelled", "stopped"],
+  ["stopped", "stopped"],
+  ["timed_out_someday", undefined],
+  ["constructor", undefined],
+])("a packet whose metadata outcome is %s reads as %s", (outcome, expected) => {
+  const frame = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "terminal_error",
+    message: "x",
+    metadata: { outcome },
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))[0]?.outcome).toBe(expected);
+});
+
+test("the quiet watchdog parses how long the subagent has been quiet", () => {
+  const [n] = wireNotifications("delegate-quiet");
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate quiet",
+    tone: "neutral",
+    delegateId: "dlg_1",
+    quiet: { window: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
+  });
+  expect(n?.outcome).toBeUndefined();
+  expect(n?.message).toBeUndefined();
+});
+
+test("a background job's frames parse their outcome", () => {
+  expect(wireNotifications("job-shell-completed")).toMatchObject([
+    { type: "job", outcome: "completed", intent: "Run the agent tests", excerpt: expect.stringContaining("ok  ") },
+  ]);
+  expect(wireNotifications("job-shell-failed")).toMatchObject([
+    { type: "job", title: "Command failed", tone: "error", outcome: "failed", exitCode: 1 },
+  ]);
+  const [stopped, timer] = wireNotifications("job-pair");
+  expect(stopped).toMatchObject({ type: "job", outcome: "stopped", intent: "Tail the hub log" });
+  expect(timer).toMatchObject({ type: "watch", title: "Timer fired" });
+  expect(timer?.outcome).toBeUndefined();
+});
+
+test("the daemon's other endings parse to their outcomes", () => {
+  expect(wireNotifications("delegate-exhausted")).toMatchObject([
+    { type: "delegate", outcome: "failed", name: "Sweep the flaky tests", message: "max_turns exhausted at limit 40" },
+  ]);
+  expect(wireNotifications("job-shell-killed")).toMatchObject([{ type: "job", outcome: "failed", tone: "error" }]);
+  expect(wireNotifications("job-shell-cancelled")).toMatchObject([{ type: "job", outcome: "stopped" }]);
+  expect(wireNotifications("job-shell-attention")).toMatchObject([
+    { type: "job", outcome: "completed", intent: "Run the settle tests" },
+  ]);
+  const [send] = wireNotifications("job-watch-send");
+  expect(send).toMatchObject({ type: "watch-send", title: "Watch delivered" });
+  expect(send?.outcome).toBeUndefined();
+});
+
+// The title says the same ending the outcome does, in the outcome's words.
+test("a delegate packet's title names its normalized outcome", () => {
+  expect(wireNotifications("delegate-stopped")[0]?.title).toBe("Delegate stopped");
+  expect(wireNotifications("delegate-exhausted")[0]?.title).toBe("Delegate failed");
+  const unknown = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "terminal_error",
+    message: "x",
+    metadata: { outcome: "timed_out_someday" },
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(unknown))[0]?.title).toBe("Delegate reported");
+});
+
+test("a packet kind this client doesn't know implies no outcome", () => {
+  const frame = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "progress",
+    message: "x",
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))[0]?.outcome).toBeUndefined();
+});
+
+// Frames recorded before the packet carried status and name attributes.
+test("a legacy attribute-shaped delegate frame carries its outcome and name", () => {
+  const completed = `<delegate-notification delegate_id="dlg_42" name="Audit the store" event="completed" status="completed" reason="">
+Delegate dlg_42 completed.
+</delegate-notification>`;
+  const failed = `<delegate-notification delegate_id="dlg_42" event="command_exited_nonzero" status="command_exited_nonzero" reason="exit_nonzero">
+Delegate dlg_42 failed.
+</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(completed))[0]).toMatchObject({
+    outcome: "completed",
+    name: "Audit the store",
+  });
+  expect(notificationsOf(parseSteeringNotifications(failed))[0]?.outcome).toBe("failed");
+});
+
+test("a job frame's transcript reference parses", () => {
+  expect(wireNotifications("job-shell-completed")[0]?.transcriptRef).toBe("job:job_7");
+});
+
+// A delegate body that is neither a packet nor the quiet sentence still says
+// what it carried, so the card never reads as a bare name.
+test.each([
+  ["malformed JSON", "{oops"],
+  ["a JSON array", "[1,2]"],
+  ["prose", "something the daemon wrote"],
+])("a delegate frame whose body is %s keeps the body as its excerpt", (_shape, body) => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(`<delegate-notification delegate_id="dlg_9">${body}</delegate-notification>`),
+  );
+  expect(n).toMatchObject({ type: "delegate", delegateId: "dlg_9", excerpt: body });
+});
+
+test("steeringNotificationFragments returns fragments only for a steer carrying notification markup", () => {
+  expect(steeringNotificationFragments(notificationWireItem("delegate-reported").text ?? "")).toMatchObject([
+    { kind: "notification" },
+  ]);
+  expect(steeringNotificationFragments("Remember the open task.")).toBeNull();
+  // A truncated frame never parses, but it is still notification markup: the
+  // caller must see it, not mistake it for prose.
+  const truncated = (notificationWireItem("delegate-reported").text ?? "").slice(0, 60);
+  expect(steeringNotificationFragments(truncated)).toEqual([{ kind: "text", text: truncated }]);
+});
+
+test("no recorded frame leaves markup in any fragment", () => {
+  for (const item of notificationWireItems()) {
+    for (const fragment of parseSteeringNotifications(item.text ?? "")) {
+      expect(fragment.kind).toBe("notification");
+    }
+  }
 });

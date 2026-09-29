@@ -57,7 +57,7 @@ func TestFormatJobNotification(t *testing.T) {
 // the run (the shell tool call's `intent` argument, captured at launch onto
 // the job record). The web card renders it on the head line beside the
 // title, so a failed job announces WHY it ran, not just that it died. It is
-// a machine contract value for steeringClassify.ts's parser, so attr-shape
+// a machine contract value for steeringNotifications.ts's parser, so attr-shape
 // assertions here are contract assertions, not prose pins.
 func TestFormatJobNotificationEmitsIntent(t *testing.T) {
 	t.Parallel()
@@ -106,7 +106,7 @@ func TestFormatJobNotificationCarriesCommandOutcomeStatuses(t *testing.T) {
 // report head, a matched watch line) and agent-composed text (a disposal
 // hint, a watch frame) directly between <job-notification> tags and inside
 // quoted attribute values with no escaping. The web parser
-// (steeringClassify.ts) uses a non-greedy <job-notification>...
+// (steeringNotifications.ts) uses a non-greedy <job-notification>...
 // </job-notification> match, so a literal closing tag inside that content
 // ends the block early, and a literal opening+closing pair forges a second
 // card. A literal `>` or `"` inside an attribute value can also shift where
@@ -153,7 +153,7 @@ func TestFormatJobNotificationEscapesExcerptThatWouldForgeASecondBlock(t *testin
 }
 
 // notificationOpenTagPattern mirrors the web parser's opening-tag boundary
-// (steeringClassify.ts's <job-notification\s+[^>]*> match): it is naive
+// (steeringNotifications.ts's <job-notification\s+[^>]*> match): it is naive
 // about quoting and stops at the first literal '>', so a delimiter inside an
 // attribute value can shift where the parser believes the tag ends.
 var notificationOpenTagPattern = regexp.MustCompile(`^<job-notification\s+([^>]*)>`)

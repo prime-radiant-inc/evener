@@ -158,7 +158,6 @@ export function PageList<T>({
 	access.current = { rowKey, childRows };
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
-	const [refreshing, setRefreshing] = useState(false);
 	const [loadingMore, setLoadingMore] = useState(false);
 	const revealEpoch = useRef(revealRequest);
 	revealEpoch.current = revealRequest;
@@ -166,16 +165,6 @@ export function PageList<T>({
 		if (revealRef) setRevealRequest((value) => value + 1);
 		void actions?.reconcile();
 	}
-	const refreshPages = useCallback(async () => {
-		if (!ready) return;
-		setRefreshing(true);
-		try {
-			if (actions) await actions.reconcile();
-			else await pages.refresh();
-		} finally {
-			setRefreshing(false);
-		}
-	}, [actions, pages, ready]);
 	const requestMore = useCallback(
 		(allowError = false) => {
 			const current = pages.getSnapshot();
@@ -302,10 +291,6 @@ export function PageList<T>({
 				}}
 				data={rows}
 				keyExtractor={({ item }) => rowKey(item)}
-				refreshing={refreshing}
-				onRefresh={() => {
-					void refreshPages();
-				}}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}

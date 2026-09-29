@@ -15,9 +15,16 @@
 // which stay content-driven because structured markup can't false-positive
 // the way a prose pattern could (see parseSteeringNotifications below).
 
-import { jobStatusDisplay } from "@evener/appwire-client";
+import { jobStatusDisplay } from "./activityData";
+import { isPlainObject } from "./plainObject";
 
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
+
+// How a finished run ended, in the three words both clients speak: a job or
+// subagent that completed, one that failed (a failure, a nonzero exit, an
+// exhausted budget), and one that was stopped or cancelled. Absent for frames
+// that report no ending: watch deliveries and the quiet watchdog.
+export type NotificationOutcome = "completed" | "failed" | "stopped";
 
 export interface ParsedNotification {
   type: "delegate" | "job" | "watch" | "watch-send" | "observer-callback";
@@ -29,9 +36,16 @@ export interface ParsedNotification {
   // or the description gloss when an explicit empty intent marks the
   // block post-split.
   secondary: string;
+  outcome?: NotificationOutcome;
   jobId?: string;
   jobType?: string;
   delegateId?: string;
+  // A subagent's display name (the delegate frame's name attribute, or its
+  // packet's metadata name).
+  name?: string;
+  // The quiet watchdog's facts: how long the subagent has been quiet ("10m")
+  // and its last activity, as the daemon wrote them.
+  quiet?: { window: string; lastActivityAt: string };
   watchId?: string;
   // The caller's stated one-line rationale for the run (the shell tool call's
   // `intent` argument, carried on the wire as the block's intent attribute).
@@ -63,7 +77,8 @@ export function isValidTranscriptRef(value: string | undefined): value is string
   return REF_PART_PATTERN.test(source) && REF_PART_PATTERN.test(thread) && !thread.includes("..");
 }
 
-function stripSystemReminder(text: string): string {
+/** A steer's text without the <SYSTEM-REMINDER> wrapper the daemon may put around it. */
+export function stripSystemReminder(text: string): string {
   return text
     .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
     .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
@@ -93,6 +108,14 @@ interface JobNotificationAnalysis {
   disposition: JobDisposition;
   exitCode?: number;
 }
+
+const JOB_OUTCOMES: Record<JobDisposition, NotificationOutcome | undefined> = {
+  success: "completed",
+  failure: "failed",
+  cancelled: "stopped",
+  stopped: "stopped",
+  unknown: undefined,
+};
 
 function optionalSignedInteger(raw: string | undefined): number | undefined {
   const text = (raw ?? "").trim();
@@ -168,19 +191,49 @@ function splitNotificationBlocks(text: string): NotificationBlockFragment[] {
   return fragments;
 }
 
+// A delegate frame's body is one of three shapes. The daemon writes a
+// subagent's settled result as its TerminalPacket JSON
+// (agent/delegate_delivery.go's delegateNotificationContent: kind
+// reported|terminal_error, message as a JSON string, metadata carrying the
+// settled outcome and reason), and its quiet watchdog as one plain sentence
+// (agent/delegate_runtime.go's delegateQuietAttentionContent). Frames recorded
+// before either carried status/event attributes and an "excerpt:" body, and a
+// durable transcript still replays those, so that shape keeps parsing too.
 function parseDelegateNotification(block: string): ParsedNotification | null {
   const match = block.match(/^<delegate-notification\s+([^>]*)>([\s\S]*)<\/delegate-notification>$/);
   if (!match) return null;
   const attrs = parseQuotedAttrs(match[1] ?? "");
   const body = (match[2] ?? "").trim();
-  const { excerpt } = splitNotificationExcerpt(body);
+  const delegateId = attrs.delegate_id?.trim() || undefined;
+  const name = decodeNotificationEntities(attrs.name ?? "").trim();
+  const packet = parseTerminalPacket(body);
+  if (packet) return delegatePacketNotification(block, name, delegateId, packet);
+  const quiet = parseQuietWatchdog(body);
+  if (quiet) {
+    return {
+      type: "delegate",
+      title: "Delegate quiet",
+      tone: "neutral",
+      secondary: name || delegateId || "",
+      delegateId,
+      name: name || undefined,
+      quiet,
+      excerpt: "",
+      prose: body,
+      concerns: [],
+      rawText: block,
+    };
+  }
+  // A body with no "excerpt:" marker that is neither shape above (malformed
+  // JSON, an array, prose) is kept whole, so the card still says what came.
+  const excerpt = body.includes("\nexcerpt:\n") ? splitNotificationExcerpt(body).excerpt : body;
   const communicate = parseCommunicateEnvelope(decodeNotificationEntities(excerpt));
   const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const status = (attrs.status || attrs.event || "notification").trim();
   const reason = attrs.reason?.trim();
-  const secondary = [description || attrs.delegate_id?.trim(), tone === "error" || tone === "warning" ? reason : ""]
+  const secondary = [description || delegateId, tone === "error" || tone === "warning" ? reason : ""]
     .filter(Boolean)
     .join(" · ");
   return {
@@ -188,7 +241,11 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
     title: status ? `Delegate ${status}` : "Delegate notification",
     tone,
     secondary,
-    delegateId: attrs.delegate_id?.trim() || undefined,
+    // A legacy status names a delegate outcome, or a command outcome whose
+    // failure its tone already says.
+    outcome: DELEGATE_OUTCOMES.get(status) ?? (tone === "error" ? "failed" : undefined),
+    delegateId,
+    name: name || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: reason || undefined,
@@ -198,6 +255,93 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
     concerns: communicate?.concerns ?? [],
     rawText: block,
   };
+}
+
+// delegatestore.OutcomeStatus (agent/internal/delegatestore/record.go) in
+// the outcome words. An outcome this client doesn't know claims none.
+const DELEGATE_OUTCOMES = new Map<string, NotificationOutcome>([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["exhausted", "failed"],
+  ["cancelled", "stopped"],
+  ["stopped", "stopped"],
+]);
+
+// The outcome a packet's kind implies when its metadata names none.
+const PACKET_KIND_OUTCOMES = new Map([
+  ["reported", "completed"],
+  ["terminal_error", "failed"],
+]);
+
+interface TerminalPacket {
+  // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
+  // the packet kind implies when metadata carries none (the fold's own bare
+  // stop packet, agent/internal/delegatestore/fold.go, #3114).
+  outcome: string;
+  message: string;
+  reason: string;
+  name: string;
+  description: string;
+}
+
+// parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
+// escapes <, > and & as \u sequences, so the body is plain JSON with no
+// notification entities to decode.
+function parseTerminalPacket(body: string): TerminalPacket | null {
+  if (!body.startsWith("{")) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed) || typeof parsed.kind !== "string") return null;
+  const metadata = isPlainObject(parsed.metadata) ? parsed.metadata : {};
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  return {
+    outcome: text(metadata.outcome) || (PACKET_KIND_OUTCOMES.get(parsed.kind) ?? ""),
+    message: text(parsed.message),
+    reason: text(metadata.reason),
+    name: text(metadata.name),
+    description: text(metadata.description),
+  };
+}
+
+function delegatePacketNotification(
+  block: string,
+  frameName: string,
+  delegateId: string | undefined,
+  packet: TerminalPacket,
+): ParsedNotification {
+  const tone = notificationTone({ status: packet.outcome }, null);
+  const name = frameName || packet.name;
+  const label = name || packet.description || delegateId;
+  const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
+  return {
+    type: "delegate",
+    // In the outcome's own words; an ending this client doesn't know still reported.
+    title: `Delegate ${outcome ?? "reported"}`,
+    tone,
+    secondary: [label, tone === "error" || tone === "warning" ? packet.reason : ""].filter(Boolean).join(" · "),
+    outcome,
+    delegateId,
+    name: name || undefined,
+    description: packet.description || undefined,
+    status: packet.outcome,
+    reason: packet.reason || undefined,
+    excerpt: "",
+    message: packet.message || undefined,
+    concerns: [],
+    rawText: block,
+  };
+}
+
+// The quiet watchdog's one sentence, agent/job_watch.go's quietWatchdogMessage
+// ("quiet for 10m; last activity: <RFC 3339>"), HTML-escaped into the body.
+function parseQuietWatchdog(body: string): ParsedNotification["quiet"] | null {
+  const match = /^quiet for (\S+); last activity: (\S+)$/.exec(decodeNotificationEntities(body));
+  if (!match?.[1] || !match[2]) return null;
+  return { window: match[1], lastActivityAt: match[2] };
 }
 
 function splitNotificationExcerpt(body: string): { prose: string; excerpt: string } {
@@ -733,6 +877,9 @@ function parseJobNotification(block: string): ParsedNotification | null {
       type,
       type === "watch" ? bodyText : undefined,
     ),
+    // A watch delivery reports a trigger, not a run's ending, even when it
+    // carries the completed job's status (a watch_id-reclassified frame).
+    outcome: type === "job" ? JOB_OUTCOMES[analysis.disposition] : undefined,
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
     watchId: attrs.watch_id?.trim() || undefined,
@@ -797,6 +944,26 @@ export type SteeringFragment =
 // cannot false-positive the way a prose pattern like /completed all tasks/ can.
 // This is why the card's trigger stayed content-driven while the kind moved to
 // the wire, and why a pre-Kind transcript still renders its cards.
+const NOTIFICATION_MARKUP = /<\/?(?:job|delegate)-notification\b/;
+
+// steeringNotificationFragments is how a transcript decides a steer delivers
+// notifications: its ordered fragments when the text carries notification
+// markup, or null for any other steer. Markup that didn't parse (a truncated
+// or unclosed frame) still counts, and reaches the caller as a text fragment,
+// so a caller that must never show markup can tell it from prose.
+export function steeringNotificationFragments(text: string): SteeringFragment[] | null {
+  const fragments = parseSteeringNotifications(text);
+  const carriesMarkup = fragments.some(
+    (fragment) => fragment.kind === "notification" || NOTIFICATION_MARKUP.test(fragment.text),
+  );
+  return carriesMarkup ? fragments : null;
+}
+
+/** True when a text fragment is notification markup that didn't parse. */
+export function isNotificationRemnant(text: string): boolean {
+  return NOTIFICATION_MARKUP.test(text);
+}
+
 export function parseSteeringNotifications(text: string): SteeringFragment[] {
   const stripped = stripSystemReminder(text);
   const blockFragments = splitNotificationBlocks(stripped);

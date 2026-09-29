@@ -96,6 +96,33 @@ it("edits the name and token in today's hub editor", async () => {
 	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
 });
 
+it("heads the hub editor with the shared header: Edit hub and Cancel, titled once", async () => {
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe("Edit hub");
+	const titles = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Edit hub");
+	expect(titles).toHaveLength(1);
+	expect(tree.root.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Done" })).toHaveLength(0);
+	await press(tree, "Cancel");
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
+it("keeps the hub editor open on Cancel while a save is in flight", async () => {
+	let finish = () => {};
+	connection.updateHub.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	await press(tree, "Save changes");
+	const cancel = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" });
+	expect(cancel.props.disabled).toBe(true);
+	await act(async () => {
+		cancel.props.onPress();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
+	await act(async () => finish());
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
 it("asks before removing a hub", async () => {
 	const { tree } = mount("hub-2");
 	const remove = button(tree, "Remove this hub");

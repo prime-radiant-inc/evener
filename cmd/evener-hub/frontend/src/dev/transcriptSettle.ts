@@ -105,44 +105,115 @@ export function describeTranscriptSettleBlocker(blocker: TranscriptSettleBlocker
 }
 
 /**
+ * Counts consecutive frames in which the transcript's scroll geometry has not
+ * moved. The mount's reconcile loop is what moves scrollHeight/scrollTop, so a
+ * run long enough with neither changing means it has stopped. Shared by both
+ * readiness waits so the stillness rule - which fields count, the NaN
+ * sentinels, the reset on any change - is written once.
+ */
+function createStillnessCounter(): {
+  /** Records one frame; returns the consecutive-still run including it (0 once moved). */
+  observe(scrollHeight: number, scrollTop: number): number;
+  /** Drops the run for a frame that is not a stillness candidate at all. */
+  reset(): void;
+} {
+  let frames = 0;
+  // No frame has been seen yet, so the first one can never read as "unchanged".
+  let lastScrollHeight = Number.NaN;
+  let lastScrollTop = Number.NaN;
+  return {
+    observe(scrollHeight, scrollTop) {
+      const stillStanding = scrollHeight === lastScrollHeight && scrollTop === lastScrollTop;
+      lastScrollHeight = scrollHeight;
+      lastScrollTop = scrollTop;
+      frames = stillStanding ? frames + 1 : 0;
+      return frames;
+    },
+    reset() {
+      frames = 0;
+    },
+  };
+}
+
+/**
  * Tracks readiness across frames. `expectedTurns` is the scripted thread's turn
  * count: the fixture is not rendered until every one of them is in the model.
  */
 export function createTranscriptSettleTracker(expectedTurns: number): TranscriptSettleTracker {
-  let quiescentFrames = 0;
-  // No frame has been seen yet, so the first one can never read as "unchanged".
-  let lastScrollHeight = Number.NaN;
-  let lastScrollTop = Number.NaN;
+  const stillness = createStillnessCounter();
 
   return {
     observe({ turns, geometry }) {
       if (geometry === null) {
-        quiescentFrames = 0;
+        stillness.reset();
         return { kind: "unmounted" };
       }
       if (turns !== expectedTurns) {
-        quiescentFrames = 0;
+        stillness.reset();
         return { kind: "turns", turns, expected: expectedTurns };
       }
 
       const { scrollHeight, clientHeight, scrollTop } = geometry;
-      const stillStanding = scrollHeight === lastScrollHeight && scrollTop === lastScrollTop;
-      lastScrollHeight = scrollHeight;
-      lastScrollTop = scrollTop;
+      const still = stillness.observe(scrollHeight, scrollTop);
 
       const required = clientHeight * SETTLE_OVERFLOW_FACTOR;
       if (scrollHeight <= required) {
-        quiescentFrames = 0;
+        stillness.reset();
         return { kind: "overflow", scrollHeight, clientHeight, required };
       }
-      if (!stillStanding) {
-        quiescentFrames = 0;
-        return { kind: "moving", scrollHeight, scrollTop };
-      }
+      if (still === 0) return { kind: "moving", scrollHeight, scrollTop };
 
-      quiescentFrames++;
-      if (quiescentFrames >= SETTLE_QUIESCENT_FRAMES) return null;
-      return { kind: "quiescing", frames: quiescentFrames, required: SETTLE_QUIESCENT_FRAMES };
+      if (still >= SETTLE_QUIESCENT_FRAMES) return null;
+      return { kind: "quiescing", frames: still, required: SETTLE_QUIESCENT_FRAMES };
+    },
+  };
+}
+
+/**
+ * One frame's observation of the ?paged=1 open. Reuses the mount's sample, with
+ * geometry guaranteed present: the harness reads it through metrics(), which
+ * throws while the list is unmounted.
+ */
+export type PagedOpenSample = TranscriptSettleSample & { geometry: TranscriptGeometry };
+
+export interface PagedOpenSettleTracker {
+  /** Records one frame. Returns true once the paged open is settled enough to read. */
+  observe(sample: PagedOpenSample): boolean;
+}
+
+/**
+ * Tracks ?paged=1 readiness across frames: the read's turns are in the model
+ * AND the scroll port is laid out AND the geometry has held still for
+ * SETTLE_QUIESCENT_FRAMES consecutive frames.
+ *
+ * DELIBERATELY NOT a readiness condition: the paging row staying mounted. The
+ * regression this pass exists for auto-loads the fixture's single older page,
+ * which clears olderCursor and unmounts the row - waiting on the row would spin
+ * to the harness tripwire and report a settle timeout instead of the pass's own
+ * "auto-loaded N older page(s)" failure. The runner asserts the row is mounted
+ * and that no page loaded, so settling without the row is exactly what turns
+ * the regression into the fast, specific failure the pass exists to give. What
+ * replaces the row as the "the shape rendered" signal is the port being laid
+ * out: a mounted-but-unlaid-out pane reports its (zero) geometry, holds it
+ * still, and would otherwise settle the open before anything rendered.
+ */
+export function createPagedOpenSettleTracker(expectedTurns: number): PagedOpenSettleTracker {
+  const stillness = createStillnessCounter();
+  let lastTurns = Number.NaN;
+
+  return {
+    observe({ turns, geometry }) {
+      const still = stillness.observe(geometry.scrollHeight, geometry.scrollTop);
+      // The read has hydrated once the model carries at least the scripted
+      // turns (a prepended older page pushes it past that) and the port has a
+      // box (clientHeight > 0).
+      const standing = turns >= expectedTurns && geometry.clientHeight > 0 && still > 0 && turns === lastTurns;
+      lastTurns = turns;
+      if (!standing) {
+        stillness.reset();
+        return false;
+      }
+      return still >= SETTLE_QUIESCENT_FRAMES;
     },
   };
 }

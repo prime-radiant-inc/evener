@@ -1,4 +1,4 @@
-import { canonicalJson, normalizeConfig } from "@evener/appwire-client";
+import { canonicalJson, isPlainObject, normalizeConfig } from "@evener/appwire-client";
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
@@ -7,10 +7,6 @@ import type {
 	TranscriptDraftStorage,
 } from "@evener/appwire-client";
 import type { SyncStringStorage } from "./syncStringStorage";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
  * value `null` - a PRESENT record, distinct from no record at all (the
@@ -259,7 +255,7 @@ export function nativeKeybindingDrafts(hubId: string, backend: NativeKeybindingD
  * a layout, an unreadable marker, or anything else the old shape did not
  * admit). */
 function migrateLegacyTranscriptCheckpoint(value: unknown): TranscriptDraftCheckpoint | null {
-	if (!isRecord(value) || "layout" in value) return null;
+	if (!isPlainObject(value) || "layout" in value) return null;
 	if (typeof value.id !== "string" || value.id.length === 0) return null;
 	if (
 		!Number.isSafeInteger(value.baseRevision) ||

@@ -5828,7 +5828,7 @@ func delegateRowStopGated(row delegateSnapshot) bool {
 	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
 		return false
 	}
-	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"
+	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == delegatestore.ReasonStoppedByParent
 }
 
 // settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES

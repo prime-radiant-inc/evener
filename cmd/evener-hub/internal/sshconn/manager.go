@@ -2546,6 +2546,16 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
+	// A canceled loop no longer owns the host, and standing down needs no gate:
+	// return before contending for it. This covers the teardown ordering this
+	// path exists for — a loop is canceled, then its link is dropped, so the loop
+	// wakes on the drop with its context already canceled — and it stands down
+	// here instead of taking (or parking on) the gate it no longer owns. A loop
+	// canceled while already parked on Lock still takes the gate once, and the
+	// post-acquire check below returns it.
+	if ctx.Err() != nil {
+		return
+	}
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the

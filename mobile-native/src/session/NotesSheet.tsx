@@ -15,7 +15,8 @@ import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
@@ -87,7 +88,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 					openDocument={(path) =>
 						sheet.finish(() => {
 							navigation.goBack();
-							navigation.navigate("Reader", { hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: host.title });
+							navigation.navigate("Reader", { hubId, sessionRef: ref, path, sessionTitle: host.title });
 						})
 					}
 				/>

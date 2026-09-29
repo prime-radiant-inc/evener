@@ -11,6 +11,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { NotificationCards } from "./session/NotificationCards";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -123,6 +124,17 @@ export function TimelineItem({
 			);
 			break;
 		case "notice":
+			if (item.notifications) {
+				content = (
+					<NotificationCards
+						fragments={item.notifications}
+						delegates={delegates}
+						openSubagent={openSubagent}
+						disclosureId={disclosureId}
+					/>
+				);
+				break;
+			}
 			content = isCriticalNotice(item) ? (
 				<ErrorRow
 					title={item.text}

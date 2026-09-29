@@ -14,6 +14,7 @@ import type { AppwireClient } from "./client";
 import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
+import { isPlainObject } from "./plainObject";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
 import {
   createSettingsHubGeneration,
@@ -208,10 +209,6 @@ const SAVE_CANCELLED_MESSAGE = "Transcript preference save was cancelled.";
 
 class InvalidPatchResponseError extends Error {}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -246,7 +243,7 @@ function calculateHubDefault(
 }
 
 function fromWirePatchResponse(value: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value) || value.layout !== layout) return undefined;
+  if (!isPlainObject(value) || value.layout !== layout) return undefined;
   return fromWireDefault(value);
 }
 
@@ -261,7 +258,7 @@ function canonicalErrorPayload(
   field: string,
   layout: ViewportClass,
 ): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || !isRecord(error.data) || error.data.layout !== layout) return undefined;
+  if (!(error instanceof WireError) || !isPlainObject(error.data) || error.data.layout !== layout) return undefined;
   return wireRejectionPayload(error, info, field, fromWireDefault);
 }
 
@@ -290,7 +287,7 @@ function decodePatchReply(
 }
 
 export function fromWireChange(value: unknown): TranscriptDisplayChange | undefined {
-  if (!isRecord(value) || !isViewportClass(value.layout) || !isRevision(value.revision)) return undefined;
+  if (!isPlainObject(value) || !isViewportClass(value.layout) || !isRevision(value.revision)) return undefined;
   const config = fromWireConfig(value.config);
   return config === undefined ? undefined : { layout: value.layout, revision: value.revision, config };
 }
@@ -339,7 +336,7 @@ function invalidDraft(): never {
  * (a shape the native host wrote before layouts were recorded) can never be
  * guessed at. Throws on anything else. */
 function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
-  if (!isRecord(value)) invalidDraft();
+  if (!isPlainObject(value)) invalidDraft();
   if (
     typeof value.id !== "string" ||
     !value.id.length ||
