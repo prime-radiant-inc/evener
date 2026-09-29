@@ -797,6 +797,9 @@ export interface FleetSession {
 	ago: number;
 	activity?: string;
 	subagents: RawSubagent[];
+	/** A subagent's own session: when its run started (demoRunStartedAt), which
+	 * its working time counts from. */
+	runStartedAt?: number;
 }
 
 // The ref the fleet names a session by, from its fixture slug.

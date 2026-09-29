@@ -18,7 +18,7 @@ import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
-import { demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
+import { createDemoFleet, demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
 import { createDemoSessions } from "./demoSessions.js";
 import { DEMO_MODEL_LIST } from "./demoSetup.js";
 
@@ -293,6 +293,43 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(running.status.type).toBe("active");
 		expect(Object.values(running.evener.capabilities).some(Boolean)).toBe(false);
 		expect(subagent("Fix race in tree settle").evener.capabilities).toEqual(threadOf("s-roster").evener.capabilities);
+	});
+
+	it("times a running subagent the same in its row, its transcript entry and its own screen", () => {
+		// The Subagents list reads evener/jobs/list, the transcript the thread's
+		// delegates, and the subagent's screen its own thread's turn: one fact,
+		// its run's start, so the three can't disagree.
+		const fleet = createDemoFleet({ now: NOW });
+		const tree = fleet.answerJobsList({ ref: fleetSessionRef("s-pr2138") }).data as {
+			root: { entries: unknown[] };
+		};
+		const started = new Map<string, string>();
+		const visit = (entries: unknown[]) => {
+			for (const entry of entries as {
+				kind: string;
+				delegate?: { childRef: string; runStartedAt: string };
+				entries?: unknown[];
+			}[]) {
+				if (entry.kind === "delegate" && entry.delegate)
+					started.set(entry.delegate.childRef, entry.delegate.runStartedAt);
+				if (entry.entries) visit(entry.entries);
+			}
+		};
+		visit(tree.root.entries);
+		const running = sessions.filter((thread) => thread.evener.parentRef && thread.status.type === "active");
+		expect(running.length).toBeGreaterThan(0);
+		const transcript = new Map(
+			(threadOf("s-pr2138").evener.diagnostics?.delegates ?? []).map((delegate) => [
+				delegate.transcriptRef,
+				delegate.runStartedAt,
+			]),
+		);
+		for (const thread of running) {
+			const listed = started.get(thread.evener.ref);
+			if (!listed) continue;
+			expect(new Date(thread.evener.activeTurnStartedAt ?? 0).toISOString()).toBe(listed);
+			if (transcript.has(thread.evener.ref)) expect(transcript.get(thread.evener.ref)).toBe(listed);
+		}
 	});
 
 	it("advertises only readable notes on a session that needs a restart", () => {
