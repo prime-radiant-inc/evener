@@ -47,6 +47,8 @@ export interface QuestionDockProps {
 	 * shows only its header and the question, since the room is short and
 	 * the composer's Send is the answer. */
 	typing?: boolean;
+	/** While typing: hide the keyboard, so the options come back. */
+	onShowOptions?(): void;
 }
 
 export function QuestionDock({
@@ -61,6 +63,7 @@ export function QuestionDock({
 	onSend,
 	error = null,
 	typing = false,
+	onShowOptions,
 }: QuestionDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -162,6 +165,28 @@ export function QuestionDock({
 				<Text allowFontScaling={allowFontScaling} style={{ ...caption, flex: 1, fontVariant: ["tabular-nums"] }}>
 					{questionHeader(activeIndex, questions.length)}
 				</Text>
+				{typing ? (
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel="Show options"
+						accessibilityHint="Hides the keyboard"
+						accessibilityState={{ disabled: false }}
+						onPress={onShowOptions}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							paddingHorizontal: 8,
+							justifyContent: "center",
+							opacity: pressed ? 0.6 : 1,
+						})}
+					>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk }}
+						>
+							Show options
+						</Text>
+					</Pressable>
+				) : null}
 				<SymbolButton label="Fold" onPress={() => onFold(true)}>
 					<SymbolView name="chevron.down" tintColor={palette.inkMid} size={15 * scale} />
 				</SymbolButton>

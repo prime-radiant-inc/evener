@@ -2563,6 +2563,8 @@ export function ConversationScreen({
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
+							// Dragging the transcript lowers the keyboard, as in Messages.
+							keyboardDismissMode="interactive"
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
@@ -2828,6 +2830,7 @@ export function ConversationScreen({
 									// Typing your own answer with the keyboard up, the room is
 									// short: the dock keeps only the question (spec 8.4).
 									typing={composerShown && keyboardShown}
+									onShowOptions={Keyboard.dismiss}
 								/>
 							) : null}
 						</View>

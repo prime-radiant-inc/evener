@@ -630,6 +630,23 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(pressable(tree, "Send answer")).toBeDefined();
 	});
 
+	it("brings the options back from Show options, which lowers the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		await press(tree, "Show options");
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+	});
+
+	it("lowers the keyboard when you drag the transcript", async () => {
+		const { tree } = await mount(thread("ref-question-drag", "awaiting", true));
+		const [list] = tree.root.findAll(
+			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+		);
+		expect(list?.props.keyboardDismissMode).toBe("interactive");
+	});
+
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
 		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
 		await press(tree, "Other answer…");

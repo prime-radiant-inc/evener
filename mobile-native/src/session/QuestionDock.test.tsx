@@ -83,6 +83,7 @@ function mount(
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
 	const onOtherAnswer = vi.fn();
+	const onShowOptions = vi.fn();
 	function Dock() {
 		const draft = useQuestionDraft(destination, questions);
 		const [isFolded, setFolded] = useState(folded);
@@ -101,11 +102,12 @@ function mount(
 				onSend={onSend}
 				error={error}
 				typing={typing}
+				onShowOptions={onShowOptions}
 			/>
 		);
 	}
 	const tree = render(<Dock />);
-	return { tree, onSend, onFold, onOtherAnswer };
+	return { tree, onSend, onFold, onOtherAnswer, onShowOptions };
 }
 
 function press(tree: ReactTestRenderer, label: string) {
@@ -267,6 +269,17 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		expect(optionLabels(tree)).toEqual([]);
 		for (const label of ["Other answer…", "Next question", "Send answers"])
 			expect(pressable(tree, label)).toBeUndefined();
+	});
+
+	it("offers Show options, which hides the keyboard so the options come back", () => {
+		const { tree, onShowOptions } = mount(two, { typing: true });
+		expect(pressable(tree, "Show options")?.props.accessibilityHint).toBe("Hides the keyboard");
+		press(tree, "Show options");
+		expect(onShowOptions).toHaveBeenCalledTimes(1);
+	});
+
+	it("has no Show options while the options are showing", () => {
+		expect(pressable(mount(two).tree, "Show options")).toBeUndefined();
 	});
 });
 
