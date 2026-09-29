@@ -119,8 +119,8 @@ export class AlertCenter {
 	private touching = false;
 	private held: Alert[] = [];
 	/** Sessions you started that waited out a hold behind sessions needing
-	 * you, oldest first: each shows in turn once the banner ahead of it goes,
-	 * so none is lost. */
+	 * you, oldest first, and a held notice that came with them: each shows in
+	 * turn once the banner ahead of it goes, so none is lost. */
 	private afterBanner: Alert[] = [];
 	private recent: string[] = [];
 	private holds = new Map<symbol, HoldKind>();
@@ -237,8 +237,11 @@ export class AlertCenter {
 	/** Next took you on: it serves the held sessions itself now, so they
 	 * don't drop in later (the prototype's goNext). */
 	nextUsed(): void {
-		if (this.held.length === 0) return;
-		this.held = [];
+		// Next serves sessions that need you; a session you started isn't one,
+		// so it keeps waiting.
+		const kept = this.held.filter((alert) => alert.kind === "started");
+		if (kept.length === this.held.length) return;
+		this.held = kept;
 		this.publish();
 	}
 
@@ -343,13 +346,15 @@ export class AlertCenter {
 				this.publish();
 				return;
 			}
+			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
 			if (this.afterBanner.length > 0) {
-				// A session you started waits for any banner that is up to end.
+				// Sessions you started go first; a held notice follows them rather
+				// than being lost. They wait for any banner that is up to end.
+				if (notice !== undefined) this.queueAfterBanner([notice]);
 				if (current !== null) this.publish();
 				else this.showAfterBanner();
 				return;
 			}
-			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
 			if (notice === undefined) this.publish();
 			else this.show(notice);
 			return;

@@ -271,7 +271,7 @@ describe("what alerts at all", () => {
 		expect(alerts.getSnapshot().banner).toBeNull();
 	});
 
-	it("shows a waiting started session before a waiting notice", () => {
+	it("shows a waiting started session before a waiting notice, and the notice after it", () => {
 		const { alerts } = center();
 		const release = alerts.hold("covered");
 		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
@@ -279,6 +279,17 @@ describe("what alerts at all", () => {
 		release();
 		vi.advanceTimersByTime(RELEASE_MS);
 		expect(shown(alerts)).toEqual(["a"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+	});
+
+	it("keeps a started session that waited when Next takes you on", () => {
+		const { alerts } = center();
+		alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		alerts.nextUsed();
+		expect(alerts.getSnapshot().held).toBe(1);
 	});
 
 	it("never lets a started session join or replace a banner that is up, and shows it after", () => {
