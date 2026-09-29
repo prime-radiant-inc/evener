@@ -585,11 +585,10 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 // the record machinery's one derive-then-install path, so the file and the
 // store cannot disagree about the flags.
 //
-// BOUNDARY (S21): the first-contact caller that drives hostfence.Bootstrap —
-// the attach/Ensure wiring that runs the flow on a host's first contact — is
-// the deploy-pipeline surface's later slice. This slice lands the record
-// machinery, the fence and the gate the flow needs; until that caller lands,
-// bootstrapStore is consumed by the tests that pin both crash windows.
+// The first-contact caller is wired: hubHostManager.BootstrapFirstContact
+// drives the flow for a host at first contact, reached from the attach ladder's
+// first-attach repair through sshconn's BootstrapHook. bootstrapStore therefore
+// serves a production caller beside the tests that pin both crash windows.
 type hostBootstrapStore struct{ m *hubHostManager }
 
 // bootstrapStore returns the bootstrap record seam the first-contact flow
