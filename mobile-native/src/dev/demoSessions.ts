@@ -436,15 +436,6 @@ const CONTENT: Record<string, SessionContent> = {
 		},
 		tasks: { total: 4, done: 2, remaining: 2, current: { id: 3, description: "Cap retries per provider" } },
 	},
-	// Every tool family the phone summarizes, replayed from the recorded wire
-	// corpora rather than written by hand, to see and screenshot each one.
-	"s-tools": {
-		entries: [
-			{ user: "Show me one step of every tool family." },
-			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
-			{ agent: "That's one of each: the core tools, subagents, the task list, notifications and system events." },
-		],
-	},
 	"s-jobdisp": {
 		model: "lunaroute/glm-5.3-vision",
 		entries: [
@@ -1001,8 +992,24 @@ function askItem(
 }
 
 // `parentRef` names the session a subagent's thread belongs to.
+// Every tool family the phone summarizes, replayed from the recorded wire
+// corpora rather than written by hand, to see and screenshot each one. Built
+// only when served, so the usual sessions never read agent/testdata.
+function toolFamiliesContent(): SessionContent {
+	return {
+		entries: [
+			{ user: "Show me one step of every tool family." },
+			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
+			{ agent: "That's one of each: the core tools, subagents, the task list, notifications and system events." },
+		],
+	};
+}
+
 function sessionThread(session: FleetSession, now: number, parentRef?: string, long = false): Thread {
-	const content = (long ? LONG_CONTENT[session.slug] : undefined) ?? CONTENT[session.slug] ?? {};
+	const content =
+		(long ? LONG_CONTENT[session.slug] : undefined) ??
+		(session.slug === "s-tools" ? toolFamiliesContent() : CONTENT[session.slug]) ??
+		{};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";

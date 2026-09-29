@@ -818,7 +818,6 @@ export interface FleetSession {
 	runStartedAt?: number;
 }
 
-// The ref the fleet names a session by, from its fixture slug.
 // Not in the Board mockup, so served only with EVENER_DEMO_FLEET_TOOLS: a
 // session whose transcript replays the recorded wire corpora, one step of
 // every tool family (demoToolFamilies.ts).
@@ -834,6 +833,7 @@ function fleetList(toolFamilies = false): RawSession[] {
 	return toolFamilies ? [...SESSIONS, TOOL_FAMILIES_SESSION] : SESSIONS;
 }
 
+// The ref the fleet names a session by, from its fixture slug.
 export function fleetSessionRef(slug: string): string {
 	const raw = fleetList(true).find((candidate) => candidate.id === slug);
 	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
