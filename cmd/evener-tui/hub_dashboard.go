@@ -77,9 +77,16 @@ func dashboardGroupState(sessions []hubRow) string {
 		if row.kind != hubRowSession {
 			continue
 		}
-		contribution := stateLabel(rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent))
-		// Seed from the first session unconditionally: a rank-0 state ("ended",
-		// "notLoaded") still names the group, and seeding "" would lose it.
+		// A non-active subagent contributes "" (rollupContribution caps it): it
+		// says nothing about the project rollup, so skip it rather than seeding
+		// the group from it and losing a rank-0 sibling state ("ended").
+		capped := rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent)
+		if capped == "" {
+			continue
+		}
+		contribution := stateLabel(capped)
+		// Seed from the first real contribution unconditionally: a rank-0 state
+		// ("ended") still names the group, and seeding "" would lose it.
 		if !seeded || attentionRankLabel(contribution) > attentionRankLabel(state) {
 			state = contribution
 			seeded = true

@@ -354,3 +354,19 @@ func sessionTitle(rows []hubRow, ref string) string {
 	}
 	return "<none>"
 }
+
+// A subagent that arrives before its coordinator contributes nothing to the
+// rollup (capped), so it must not seed the group and mask an all-ended
+// project's "ended" with "notLoaded" (roborev #3129 round 9).
+func TestDashboardGroupState_SubagentFirstAllEndedReadsEnded(t *testing.T) {
+	tree := hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "p", Name: "evener",
+		Sessions: []hubTreeNode{
+			{Ref: "local:s1", State: "ended", Live: false, IsSubagent: true},
+			{Ref: "local:s2", State: "ended", Live: false},
+		},
+	}}}
+	if got := projectRowState(buildDashboardRows(tree)); got != "ended" {
+		t.Fatalf("subagent-first all-ended project state = %q, want ended", got)
+	}
+}
