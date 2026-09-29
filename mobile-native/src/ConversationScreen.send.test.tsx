@@ -4,7 +4,7 @@
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
@@ -13,6 +13,7 @@ import {
 	flatListCalls,
 	flatListScrollFailures,
 	alertRequests,
+	dockBody,
 	dropped as droppedConnection,
 	type PanGestureMock,
 	playedHaptics,
@@ -518,6 +519,59 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// The views between `node` and the screen's capped bottom area (the view
+// with a maxHeight), each with its flattened style.
+function viewsUpToBottomArea(node: ReactTestInstance) {
+	const views: Record<string, unknown>[] = [];
+	for (let at = node.parent; at; at = at.parent) {
+		if (String(at.type) !== "View") continue;
+		const style = Object.assign({}, ...[at.props.style].flat(Number.POSITIVE_INFINITY));
+		if (style.maxHeight !== undefined) return views;
+		views.push(style);
+	}
+	throw new Error("no capped bottom area above this node");
+}
+
+// Style wiring only (the geometry is checked on a simulator): the dock's own
+// slot gives up height inside the capped bottom area, so a dock taller than
+// the room left scrolls its body there, and nothing else in that area
+// shrinks, so the tray and the composer keep their height.
+function expectOnlyTheDockSlotShrinks(tree: ReactTestRenderer, testID: string) {
+	const slot = viewsUpToBottomArea(tree.root.findByProps({ testID }));
+	expect(slot).toEqual([expect.objectContaining({ flexShrink: 1 })]);
+	const input = tree.root.findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline)[0];
+	if (input) for (const style of viewsUpToBottomArea(input)) expect(style.flexShrink ?? 0).toBe(0);
+}
+
+// A question taller than any phone's bottom area: a long question, a long
+// why, and five options with long details.
+const LONG_QUESTION = "Fourteen tool descriptions mention options their tools don't accept. ".repeat(4).trim();
+const LONG_WHY = "Models try them and fail, which costs a retry each time and sometimes derails a whole turn. "
+	.repeat(6)
+	.trim();
+const LONG_QUESTION_TURN = {
+	...QUESTION_TURN,
+	items: [
+		{
+			...QUESTION_TURN.items[0],
+			argumentsJson: JSON.stringify({
+				questions: [
+					{
+						header: "Choice",
+						question: LONG_QUESTION,
+						why: LONG_WHY,
+						options: ["Drop them", "Keep them", "Only three", "Ask per tool", "Leave them"].map((label) => ({
+							label,
+							detail: `${label}, and everything that follows from it across the web and the TUI help text.`,
+						})),
+						multi_select: false,
+					},
+				],
+			}),
+		},
+	],
+};
+
 describe("a question waiting for an answer (spec 8.4)", () => {
 	// "Other answer…" focuses the composer on the next frame; these tests run
 	// that frame at once.
@@ -538,6 +592,26 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("puts a long question's text and options in the dock's scroller, and its answer controls outside it", async () => {
+		const served = thread("ref-question-long", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
+		expect(scrolled).toContain(LONG_QUESTION);
+		expect(scrolled).toContain(LONG_WHY);
+		expect(body.holds("Leave them")).toBe(true);
+		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
+		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+		await press(tree, "Other answer…");
+		expect(field(tree)).toBeDefined();
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
@@ -1590,6 +1664,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1603,6 +1678,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
@@ -1611,6 +1689,25 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
+		const served = withApproval("ref-approval-long");
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
+		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
+			.pendingEscalations;
+		if (!escalation) throw new Error("no escalation");
+		escalation.deniedPath = deniedPath;
+		escalation.partiallyRan = true;
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "approval-dock");
+		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
+		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("wires only the approval dock's slot to shrink", async () => {
+		const { tree } = await mount(withApproval("ref-approval-room"));
+		expectOnlyTheDockSlotShrinks(tree, "approval-dock");
 	});
 
 	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
