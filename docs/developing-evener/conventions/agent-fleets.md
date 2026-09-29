@@ -241,9 +241,9 @@ lands both histories on origin permanently (this happened — trees
 identical, every pre-rebase commit duplicated). Before any
 rebase/reset/force-push of main, check for live sessions (`ps aux | grep
 git`, activity in `.worktrees/` and `.claude/worktrees/`) and get the
-fleet paused first. Related: the remote `snapshot` tag moves, so a plain
-`git fetch` can fail on tag clobber — fetch the branch explicitly or
-force-update tags.
+fleet paused first. Related: the remote `snapshot` tag no longer moves — CI
+refreshes the mutable `snapshot` GitHub release instead — so the old
+tag-clobber fetch failure is gone.
 
 ## Worktrees
 

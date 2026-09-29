@@ -58,7 +58,7 @@ release:
     name: evener
 
 snapshot:
-  # The repo's mutable "snapshot" tag is not semver, so the default
-  # incpatch template cannot parse it; the version is metadata only (the
+  # A snapshot build carries no semver tag, so the default incpatch
+  # template has nothing to parse; the version is metadata only (the
   # archive names carry none), so use the commit.
   version_template: "{{ .ShortCommit }}"
