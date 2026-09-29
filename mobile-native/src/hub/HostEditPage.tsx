@@ -1,8 +1,10 @@
 // Edit a host in the Hub (spec 12): every field the web's Edit dialog has,
-// under its labels and help lines, filled from the host's row. Save sends the
-// guarded update and goes back; the hub is the one validator, so Save holds
-// only while it saves or the hub is away, and a refusal that names a field
-// lands under it. The page goes back if its host leaves the list.
+// under its labels, filled from the host's row; the address keeps its help
+// line, and each optional field says in its placeholder what empty means.
+// Save sends the guarded update and goes back; the hub is the one validator,
+// so Save holds only while it saves or the hub is away, and a refusal that
+// names a field lands under it. The page goes back if its host leaves the
+// list.
 import {
 	type EditableHostField,
 	friendlyErrorMessage,
@@ -29,6 +31,17 @@ import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
 type Props = NativeStackScreenProps<HubRoutes, "HostEdit">;
+
+// What each optional field means while it's empty, in place of the shared
+// "Optional…" help lines: the page says once that only the address is needed.
+const WHEN_EMPTY: Record<Exclude<EditableHostField, "address">, string> = {
+	user: "From the address",
+	keyPath: "The default key",
+	evenerPath: "evener on PATH",
+	configPath: "The default hub.toml",
+	addr: "The default address",
+	roots: "One per line",
+};
 type Fields = Record<EditableHostField, string>;
 
 export function HostEditPage(props: Props) {
@@ -146,6 +159,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 					/>
 				</View>
 			))}
+			<GroupFooter>Only the SSH address is required.</GroupFooter>
 		</GroupedPage>
 	);
 }
@@ -173,9 +187,10 @@ function Field({
 					onChangeText={onChange}
 					multiline={field === "roots"}
 					disabled={disabled}
+					placeholder={field === "address" ? undefined : WHEN_EMPTY[field]}
 				/>
 			</Group>
-			<GroupFooter>{help}</GroupFooter>
+			{field === "address" ? <GroupFooter>{help}</GroupFooter> : null}
 			{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 		</>
 	);
