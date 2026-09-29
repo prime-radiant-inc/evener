@@ -437,11 +437,12 @@ seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose te
 the pane shows as a preview, and the check then drives the pane's own **Trust**
 action and requires the host to report the file trusted — so that pane proves the
 read AND exercises a host-side write. `plugins-manager` is held to a seeded
-value too: the driver writes the host's own `known_marketplaces.json` (a file
-the store reads, whose directory source is referenced in place), then requires
-the host's seeded marketplace to be listed and the controller's default
-marketplace names to be absent. The seed and the read are pinned without a host
-by `TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore`.
+value too: the check seeds the host's own `known_marketplaces.json` over ssh
+before the host hub starts (a file the store reads, whose directory source is
+referenced in place), then requires the host's seeded marketplace to be listed
+and the controller's default marketplace names to be absent. The seed and the
+read are pinned without a host by
+`TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore`.
 
 The `credentials` pane also carries the credential-push action, and the check
 drives it end to end. The controller's own store is seeded first, through the

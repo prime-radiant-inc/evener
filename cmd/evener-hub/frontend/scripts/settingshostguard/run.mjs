@@ -336,8 +336,17 @@ class Driver {
   async waitClickableBox(exprSource, { timeoutMs = 15000, label } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const box = await evaluate(this.send, exprSource).catch(() => null);
-      if (box !== null && box !== undefined) return box;
+      // Around this poll the page is settled (the caller already waited for the
+      // pane), so an evaluate rejection is a real fault, not a transient
+      // navigation: let it propagate rather than masking it as a retry.
+      const box = await evaluate(this.send, exprSource);
+      if (box !== null && box !== undefined) {
+        check(
+          typeof box.x === "number" && typeof box.y === "number",
+          `${label ?? exprSource} returned a box without numeric coordinates: ${JSON.stringify(box)}`,
+        );
+        return box;
+      }
       if (Date.now() > deadline) {
         const text = await evaluate(this.send, SETTINGS_TEXT_EXPR).catch(() => "<unreadable>");
         throw new Error(`${label ?? exprSource} did not become clickable within ${timeoutMs}ms; settings text was:\n${text}`);

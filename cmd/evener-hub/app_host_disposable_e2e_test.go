@@ -212,13 +212,19 @@ func hostRawEnvValue(t *testing.T, host *hostSSH, name string) string {
 }
 
 // hostAmbientCredentialsPath mirrors cmdutil.CredentialsPath (cmdutil/registry.go)
-// for the override values a host reports. It reproduces the product's tri-state
-// rule bound for bound, INCLUDING its whitespace handling: an override that is
-// empty or whitespace-only is "present but empty" and falls through, while a
-// non-empty override is used RAW and untrimmed. Reading a trimmed host value
-// here would hash a different path than the product writes — silently disarming
-// the guard, which is exactly what TestHostAmbientCredentialsPathMatchesCmdutil
-// pins against.
+// for the override values a host reports, reproducing its whitespace handling
+// bound for bound:
+//
+//   - EVENER_CREDENTIALS_CONFIG and EVENER_PROVIDERS_CONFIG are "present but
+//     empty" when empty OR whitespace-only (the product trims for that test), so
+//     those fall through; a non-empty value is used RAW and untrimmed.
+//   - XDG_CONFIG_HOME falls through only when it is the empty string: the
+//     product uses any non-empty value raw (userdirs.ConfigRoot), so a
+//     whitespace-only value is NOT treated as unset.
+//
+// Reading a trimmed host value here would hash a different path than the
+// product writes — silently disarming the guard, which is exactly what
+// TestHostAmbientCredentialsPathMatchesCmdutil pins against.
 func hostAmbientCredentialsPath(credsConfig, providersConfig, xdgConfigHome, home string) string {
 	switch {
 	case strings.TrimSpace(credsConfig) != "":

@@ -13,12 +13,12 @@ import (
 	"primeradiant.com/evener/cmdutil"
 )
 
-// TestHostHubLaunchScriptUnsestsConfigOverrides pins the isolation net: the
+// TestHostHubLaunchScriptUnsetsConfigOverrides pins the isolation net: the
 // disposable hub may not inherit EVENER_CREDENTIALS_CONFIG or
 // EVENER_PROVIDERS_CONFIG, either of which outranks XDG_CONFIG_HOME and would
 // let the "disposable" hub read and write the host's real provider and
 // credential files. The unsets live in the launch's own `env` invocation.
-func TestHostHubLaunchScriptUnsestsConfigOverrides(t *testing.T) {
+func TestHostHubLaunchScriptUnsetsConfigOverrides(t *testing.T) {
 	script := hostHubLaunchScript("/host/bin/evener", "/host/dir/hub.toml", "/host/dir", "127.0.0.1:19183")
 	for _, want := range []string{
 		"env -u EVENER_CREDENTIALS_CONFIG",
