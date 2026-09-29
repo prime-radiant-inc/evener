@@ -369,7 +369,11 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
-	const search = useSearch(connected ? client : null);
+	// Search is bound only while the Board is in view (the plugin poll's
+	// rule): a reconnect while a pushed screen covers the Board must not send
+	// one `evener/search` for the query the field still holds. A sheet over
+	// the Board is still the Board (ruling 28), so it stays bound then.
+	const search = useSearch(connected && inFront ? client : null);
 	const searchInput = useRef<TextInput>(null);
 	const [searchText, setSearchText] = useState("");
 	// Searching from the moment the field takes focus until Cancel.
@@ -473,9 +477,25 @@ function Board({
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
 		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
+		scrolledFromTuck.current = true;
 		readMoreLiveIfNear();
 		readVisibleMore();
 	};
+	// iOS applies the scroller's initial content offset once, so a Dynamic
+	// Type change would leave the field tucked at the old height. Re-apply the
+	// offset for the new height, but only while the field is still tucked: a
+	// revealed field, a search in progress or a scroll down the list is left
+	// where the reader put it.
+	const tuckedHeight = useRef(searchFieldHeight);
+	const scrolledFromTuck = useRef(false);
+	useEffect(() => {
+		const was = tuckedHeight.current;
+		if (was === searchFieldHeight) return;
+		tuckedHeight.current = searchFieldHeight;
+		if (searching) return;
+		if (scrolledFromTuck.current && Math.abs(viewport.current.offset - was) > 1) return;
+		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: false });
+	}, [searchFieldHeight, searching]);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -765,10 +785,17 @@ function Board({
 		() => list.setInteraction("select", selecting && inFront && appActive),
 		[list, selecting, inFront, appActive],
 	);
-	// The rows the row menu sheet can be about: Live's and the categories'
-	// (a fold hides them, but they stay loaded) and the project sessions in
-	// the shown tree.
+	// The session rows the Board's list shows now, a departed row a hold keeps
+	// on screen included (ruling 22).
+	const shownRowItems = settled.display.flatMap((item) =>
+		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
+	);
+	// The rows the row menu sheet can be about: those, then Live's and the
+	// categories' (a fold hides them, but they stay loaded) and the project
+	// sessions in the shown tree, so the menu stays on whichever row it opened
+	// from.
 	const shownRows = useShownRows([
+		...shownRowItems,
 		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
 			item,
 			archived: false,
@@ -786,7 +813,11 @@ function Board({
 	// The sheet reads the row live, so its actions follow the row while it's
 	// open, and hands each answer back to the Board's own handlers.
 	const menuHandlers = useRef({ actOnRow, openSession });
-	menuHandlers.current = { actOnRow, openSession };
+	// The sheet reads these at press time, so they are written after the commit
+	// that made them current, not during render.
+	useEffect(() => {
+		menuHandlers.current = { actOnRow, openSession };
+	});
 	const rowMenuHost = useMemo<RowMenuHost>(
 		() => ({
 			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
@@ -857,10 +888,10 @@ function Board({
 	// whose results replace the sections, so leaving search mounts them
 	// afresh and both layouts always arrive, even for a project already
 	// unfolded; the section's offset from before search could be stale.
-	const revealProject = (projectKey: string) => {
+	const revealProject = (projectKey: string): boolean => {
 		const { view } = projectSections.projects;
 		const project = view.projects.find((candidate) => candidate.key === projectKey);
-		if (!project) return;
+		if (!project) return false;
 		const target = projectRevealTarget({
 			project,
 			pages: view.pages.get(projectKey),
@@ -870,6 +901,7 @@ function Board({
 		for (const fold of target.unfold) setFolded(fold, false);
 		reveal.current = { sectionTop: null, row: null };
 		setRevealKey(target.scrollTo);
+		return true;
 	};
 	const finishReveal = () => {
 		const pending = reveal.current;
@@ -877,12 +909,17 @@ function Board({
 		reveal.current = null;
 		setRevealKey(null);
 		const top = pending.sectionTop + pending.row.y;
-		scrollBoardTo(Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height)));
+		// A row taller than the viewport leaves no room to sit it a third of
+		// the way down: scroll to its top instead of past it.
+		const inset = 0.3 * Math.max(0, viewport.current.height - pending.row.height);
+		scrollBoardTo(Math.max(0, top - inset));
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
+		// A stale catalog can lose the project between the result's render and
+		// the tap: leave search only once the reveal has somewhere to land.
+		if (!revealProject(project.key)) return;
 		rememberSearch();
 		leaveSearch();
-		revealProject(project.key);
 	};
 	/** A project's change: through the journal, or held when it can't go now
 	 * (holdsChange), asked at the press since the journal may have moved
@@ -1039,9 +1076,6 @@ function Board({
 		);
 	};
 	const liveShown = shownGroups.get("live");
-	const shownRowItems = settled.display.flatMap((item) =>
-		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
-	);
 	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
 	/** Select mode's change to many rows, one at a time through the journal,
 	 * reading the Board as it is now. A row whose change can't go now
@@ -1172,7 +1206,7 @@ function Board({
 					) : (
 						<>
 							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
-							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} connected={connected} />
 							{continueReading ? (
 								<ContinueReadingRow
 									trail={continueReading}
@@ -1465,9 +1499,9 @@ function useSearch(client: ConversationClientLike | null) {
 	return { controller, snapshot };
 }
 
-/** The search field's row: an 8pt margin around a field that grows with
- * the text size. */
-const searchFieldHeightAt = (scale: number) => 16 + Math.round(36 * scale);
+/** The search field's row: an 8pt margin around a field that grows with the
+ * text size, never shorter than the 44pt touch target. */
+const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
 
 /** Board search's field (spec 7.4), first in the Board's scroller. Cancel
  * shows while you search. */
@@ -1490,13 +1524,19 @@ function SearchField({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	// The field draws the stock iOS 36pt, but must offer a 44pt touch target:
+	// the input's own row carries the target height, and the 36pt pill is a
+	// background behind it, so the touch area is not clipped to the shorter
+	// pill (React Native clips hitSlop to the parent's bounds).
+	const pill = Math.round(36 * scale);
+	const target = Math.max(44, pill);
 	return (
 		<View
 			testID="search-field"
 			style={{
 				height,
 				paddingHorizontal: 16,
-				paddingVertical: 8,
+				paddingVertical: (height - target) / 2,
 				flexDirection: "row",
 				alignItems: "center",
 				columnGap: 12,
@@ -1505,15 +1545,24 @@ function SearchField({
 			<View
 				style={{
 					flex: 1,
-					alignSelf: "stretch",
+					height: target,
 					flexDirection: "row",
 					alignItems: "center",
 					columnGap: 6,
 					paddingHorizontal: 8,
-					borderRadius: 10,
-					backgroundColor: palette.inset,
 				}}
 			>
+				<View
+					style={{
+						position: "absolute",
+						left: 0,
+						right: 0,
+						top: (target - pill) / 2,
+						height: pill,
+						borderRadius: 10,
+						backgroundColor: palette.inset,
+					}}
+				/>
 				<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
 				<TextInput
 					ref={inputRef}

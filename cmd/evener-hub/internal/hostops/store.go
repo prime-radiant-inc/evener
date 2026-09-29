@@ -1279,7 +1279,7 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 
 // ownedObjectKeys is the canonical field set of every object this store itself
 // decodes, keyed by the object's path inside the file. An object not named here is
-// opaque — a raw field's interior, whose schema the crash-fencing spec owns — so
+// opaque — a raw field's interior, whose schema this store does not own — so
 // its keys are not this store's to judge.
 //
 // The crash-fencing keys (fencingQuarantines, orphanBoundary, orphanResolved,

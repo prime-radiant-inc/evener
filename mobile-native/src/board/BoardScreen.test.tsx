@@ -38,6 +38,7 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { SearchResults } from "./SearchResults";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
@@ -60,6 +61,8 @@ const harness = vi.hoisted(() => ({
 	sqlite: new Map<string, unknown>(),
 	/** What AccessibilityInfo says of Reduce Motion. */
 	reduceMotion: false,
+	/** Dynamic Type's scale, as useWindowDimensions reports it. */
+	fontScale: 1,
 	/** AppState's change listeners. */
 	appState: new Set<(state: string) => void>(),
 	announce: vi.fn(),
@@ -82,6 +85,7 @@ vi.mock("react-native", async () => {
 				return { remove: () => harness.appState.delete(listener) };
 			},
 		},
+		useWindowDimensions: () => ({ fontScale: harness.fontScale, scale: 2, width: 390, height: 844 }),
 	};
 });
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
@@ -163,6 +167,7 @@ beforeEach(() => {
 	harness.focused = true;
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
+	harness.fontScale = 1;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -1301,6 +1306,119 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	await settle();
 	expect(fake.searches).toEqual(["ship"]);
 	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	act(() => tree.unmount());
+});
+
+it("doesn't search while the Board is out of view, and asks again when it returns", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A pushed screen covers the Board: a reconnect must not send the query.
+	harness.stack = screenOverBoard;
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	// Back in view, the field's query asks again.
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship", "ship"]);
+	act(() => tree.unmount());
+});
+
+it("gives the search field a 44pt touch target while it still draws 36pt", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const row = tree.root.find((node) => node.props.testID === "search-field");
+	expect(row.props.style.height).toBe(52);
+	// The visible pill is still the stock 36pt.
+	const pill = row.findAll((node) => node.type === ("View" as never) && node.props.style?.position === "absolute")[0];
+	expect(pill?.props.style.height).toBe(36);
+	// The input's own row is the target, so a slop wouldn't be clipped away.
+	const input = row.find(
+		(node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions",
+	);
+	expect(input.parent?.props.style.height).toBeGreaterThanOrEqual(44);
+	act(() => tree.unmount());
+});
+
+it("re-tucks the search field when Dynamic Type changes its height", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	expect(height).toBe(70);
+	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
+	act(() => tree.unmount());
+});
+
+it("leaves a field the reader revealed or scrolled past where it is on a Dynamic Type change", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	const scrollToY = (y: number) =>
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: { contentOffset: { x: 0, y }, layoutMeasurement: { width: 390, height: 700 } },
+			}),
+		);
+	// Revealed by pulling down, without focusing.
+	scrollToY(0);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	// Scrolled down the list.
+	scrollToY(400);
+	harness.fontScale = 1;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps one search through a sheet over the Board, without re-asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A sheet over the Board is still the Board (ruling 28): the binding holds,
+	// so closing it asks nothing again.
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
 
@@ -2480,6 +2598,24 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	act(() => tree.unmount());
 });
 
+it("hides notice actions while the hub is out of reach, keeping the notice rows", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(troubledFleet()).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
+	// Ruling 21: the Board's hub-facing actions show only while connected.
+	connect(id, null, "closed");
+	rerender(tree, nav);
+	expect(noticeTexts(tree)).toEqual([
+		"openai sign-in expired",
+		"Studio Mac is offline · 2 sessions",
+		"superpowers is broken",
+	]);
+	act(() => tree.unmount());
+});
+
 it("drops a sign-in notice once an auth update says it's resolved", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2830,6 +2966,43 @@ it("scrolls to a project from search that was already unfolded", async () => {
 	layOutAt(projectSection(tree, "projects"), 900, 400);
 	layOutAt(revealTarget(tree), 60, 48);
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls a project row taller than the viewport to its top, never past it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	await revealFromSearch(tree);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	// The row is taller than the 600pt viewport, so there is nowhere to sit it
+	// a third of the way down: the Board shows its top.
+	layOutAt(revealTarget(tree), 60, 700);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60, animated: true });
+	act(() => tree.unmount());
+});
+
+it("stays in search when a tapped project is no longer in the loaded catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("even");
+	// The catalog goes stale between the result's render and the tap: the
+	// project is no longer loaded, so there is nothing to reveal.
+	act(() => tree.root.findByType(SearchResults).props.onOpenProject({ key: "gone", name: "Gone" }));
+	expect(hasCancel(tree)).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -4123,6 +4296,23 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	nav.navigate.mockClear();
 	act(() => rowTitled(tree, "Refactor parser (archived tier)").props.onLongPress());
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
+});
+
+it("keeps the row menu's row while the list is held, even once the read drops it", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	// Opening the menu from the row holds the list (ruling 22).
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	const ref = `local:${SESSION_ID}`;
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
+	// A later read no longer has the row, but the held list keeps showing it,
+	// so the menu that is about it must still resolve one.
+	shape.live = [[swipeFinished, swipePark]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hasRow(tree, "Refactor parser")).toBe(true);
+	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
 });
 
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {

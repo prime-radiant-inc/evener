@@ -1,7 +1,7 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, View } from "react-native";
+import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -159,6 +159,12 @@ export function PageList<T>({
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
 	const [loadingMore, setLoadingMore] = useState(false);
+	// iOS ignores accessibilityLiveRegion, so announce the longer list's arrival
+	// there; Android reads the polite region on its own, and announcing too would
+	// say it twice. loadingMore starts false, so the first render stays quiet (#2903).
+	useEffect(() => {
+		if (loadingMore && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility("Loading more…");
+	}, [loadingMore]);
 	const revealEpoch = useRef(revealRequest);
 	revealEpoch.current = revealRequest;
 	function refreshList() {

@@ -185,10 +185,12 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 	);
 }
 
-/** The row every search result sits in, session or project. */
-function resultRowStyle(palette: ReturnType<typeof useColors>["palette"]) {
+/** The row every search result sits in, session or project. Its height
+ * mirrors the Board row it stands in for: a session a signal row (64), a
+ * project a quiet row (48). */
+function resultRowStyle(palette: ReturnType<typeof useColors>["palette"], minHeight: number) {
 	return ({ pressed }: { pressed: boolean }) => ({
-		minHeight: 56,
+		minHeight,
 		paddingHorizontal: 16,
 		paddingVertical: 8,
 		flexDirection: "row" as const,
@@ -236,7 +238,7 @@ function ResultRow({
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={() => onOpen(result)}
-			style={resultRowStyle(palette)}
+			style={resultRowStyle(palette, 64)}
 		>
 			<StateMark state={state} connected={connected} />
 			<View style={{ flex: 1, minWidth: 0 }}>
@@ -280,7 +282,7 @@ function ProjectResultRow({
 			accessibilityRole="button"
 			accessibilityLabel={[name, "project", folder].filter(Boolean).join(", ")}
 			onPress={() => onOpen(project)}
-			style={resultRowStyle(palette)}
+			style={resultRowStyle(palette, 48)}
 		>
 			<View style={{ width: 28, alignItems: "center" }}>
 				<SymbolView name="folder" size={17 * scale} tintColor={palette.inkMid} />
