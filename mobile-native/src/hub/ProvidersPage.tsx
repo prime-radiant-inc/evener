@@ -199,9 +199,10 @@ function Providers({
 	// Changes whenever you leave or switch the provider detail, so a late result
 	// from an earlier visit is ignored.
 	const detailVisitId = useRef(0);
-	// The id of the newest model check, so only that check can clear "Checking
-	// for new models…". Unlike detailVisitId it survives a link that reopens the
-	// same provider, and closing the detail forgets the check.
+	// The id of the newest model check, so only that check may report its
+	// failure. The Checking state itself is the store's published
+	// refreshingInstances, so unlike detailVisitId it survives a link that
+	// reopens the same provider and a detail close.
 	const latestModelCheckId = useRef(0);
 	// A screen the user has left must not act on a write or a check that
 	// outlives it: the bumps make every captured visit and check stale, so a
