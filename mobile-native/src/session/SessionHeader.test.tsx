@@ -392,8 +392,18 @@ describe("hiding on scroll (spec 8.1)", () => {
 	});
 });
 
-it("renders nothing with no chips and no status", () => {
-	expect(render(header()).toJSON()).toBeNull();
+it("shows nothing with no chips and no status, its empty panel still floating for the screen to measure", () => {
+	// The screen keeps the list clear of the panel's measured height, so the
+	// panel stays mounted, empty, to report it going to nothing.
+	const panel = render(header()).toJSON();
+	expect(panel).toMatchObject({ type: "View", children: null });
+	expect(Array.isArray(panel)).toBe(false);
+	expect(panel && !Array.isArray(panel) && panel.props.style).toEqual({
+		position: "absolute",
+		top: 0,
+		left: 0,
+		right: 0,
+	});
 });
 
 it("never says Reconnect, Connected or Refresh", () => {
