@@ -1594,8 +1594,9 @@ describe("a streamed reply's key once history records its round", () => {
 	// The list's keys, the way the Session screen derives them.
 	const keys = (model: ThreadModel) =>
 		sessionRows(groupTimeline(projectConversation(model).items), model.turns).map(readerKey);
-	// A read of the session mid-round: the reply is still an overlay stream.
-	function streaming(): ThreadModel {
+	// A read of the session mid-round: the reply is still an overlay stream,
+	// after any other overlay items the round has.
+	function streaming(before: unknown[] = []): ThreadModel {
 		const key = "stream:r1/0:agentMessage";
 		return hydrateThread(
 			{
@@ -1604,6 +1605,7 @@ describe("a streamed reply's key once history records its round", () => {
 				epoch: 1,
 				snapshot: { incarnation: "inc-1", length: 1 },
 				overlay: [
+					...before,
 					{
 						key,
 						kind: "stream",
@@ -1634,6 +1636,31 @@ describe("a streamed reply's key once history records its round", () => {
 		);
 		expect(live).toHaveLength(after.length);
 		expect(after.at(-1)).toBe(live.at(-1));
+	});
+
+	it("leaves the round's key to its stream when a communicate preview comes first", () => {
+		// A communicate message is recorded with no round id, so its preview
+		// has nothing to share a key with.
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("preview:call-9");
+		expect(live.at(-1)).toBe(keys(streaming()).at(-1));
 	});
 
 	it("keeps every key unique when a round records two replies around a delegate_send", () => {

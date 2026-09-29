@@ -917,9 +917,15 @@ function rowsForProjectedTurn(
 // and keeps one key through the change: the list doesn't remount it, and a
 // reading position or a "new below" count taken on it still finds it. Only the
 // round's first reply takes the round's key, since a round can record two
-// replies (text before and after a tool call); the later one keeps its own.
+// replies (text before and after a tool call); the later one keeps its own. A
+// communicate preview carries the round too, but its message is recorded with
+// no round id, so it has nothing to share a key with and takes none. The key
+// is for display and reading positions only: timelineIdentity, which the
+// store's merges use, stays transcriptKey-first.
 function roundKey(item: ItemModel): string | undefined {
-	return item.type === "agentMessage" && item.roundId ? `round:${item.roundId}:agentMessage` : undefined;
+	return item.type === "agentMessage" && item.roundId && !item.callId
+		? `round:${item.roundId}:agentMessage`
+		: undefined;
 }
 
 function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
