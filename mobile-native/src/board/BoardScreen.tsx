@@ -488,7 +488,10 @@ function Board({
 	};
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
-		scrollerOffset.current = contentOffset.y;
+		// While the Board's own scroll is under way, scrollerOffset holds where
+		// it's headed, which a glass change re-targets; its progress would
+		// overwrite that.
+		if (list.state !== "appScrolling") scrollerOffset.current = contentOffset.y;
 		// What shows below the glass, in the Board's content.
 		viewport.current = { offset: contentOffset.y + underGlass, height: layoutMeasurement.height - underGlass };
 		scrolledFromTuck.current = true;
@@ -1183,8 +1186,7 @@ function Board({
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{/* Fixed under the header; their sections aren't there while
 			    search results are. On the glass the Board runs under them, and
-			    the panel comes before the scroller in the tree, so it's raised
-			    over it. */}
+			    the panel's zIndex raises it over the scroller. */}
 			<GlassHeaderPanel
 				testID="board-header"
 				style={navGlass ? GLASS_PANEL : undefined}
@@ -1543,11 +1545,11 @@ function useSearch(client: ConversationClientLike | null) {
 	return { controller, snapshot };
 }
 
-/** The search field's row: an 8pt margin around a field that grows with the
- * text size, never shorter than the 44pt touch target. */
 /** The chips' panel on the glass: over the Board's top, which runs under it. */
 const GLASS_PANEL = { position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 } as const;
 
+/** The search field's row: an 8pt margin around a field that grows with the
+ * text size, never shorter than the 44pt touch target. */
 const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
 
 /** Board search's field (spec 7.4), first in the Board's scroller. Cancel

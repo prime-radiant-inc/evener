@@ -5363,6 +5363,16 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		// The field's focus starts search, which hides the chips: the glass
 		// shrinks to the bar while the reveal is still under way.
 		searchField(tree).focus();
+		// The reveal is still under way, reporting where it has got to so far.
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: {
+					contentOffset: { x: 0, y: -40 },
+					contentSize: { width: 390, height: 1600 },
+					layoutMeasurement: { width: 390, height: 700 },
+				},
+			}),
+		);
 		measureGlass(tree, 64);
 		expect(scrollTo).toHaveBeenLastCalledWith({ y: -64, animated: true });
 	});
