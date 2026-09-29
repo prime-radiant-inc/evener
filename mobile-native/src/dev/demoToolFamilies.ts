@@ -29,6 +29,11 @@ function tagged(items: ThreadItem[], name: string): ThreadItem[] {
 	}));
 }
 
+/** The directory the tool corpus was recorded in: its shell calls cd there. */
+export function recordedToolCwd(): string {
+	return (corpus("toolwire/calls.json") as { cwd: string }).cwd;
+}
+
 /** Every recorded item: the core tools, then subagents and the task list,
  * then subagent and job notifications, then system events and steers. */
 export function recordedToolFamilies(): ThreadItem[] {
