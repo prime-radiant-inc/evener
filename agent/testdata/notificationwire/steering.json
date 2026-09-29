@@ -34,12 +34,12 @@
   },
   {
     "case": "delegate-stopped-by-parent",
-    "note": "The bare packet a parent's stop settles when the run left none: kind terminal_error, no metadata, so the frame carries no outcome.",
+    "note": "The packet a parent's stop settles when the run left none: kind terminal_error, metadata outcome stopped, reason stopped_by_parent.",
     "item": {
       "type": "steering",
       "id": "item_steering_3",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_4\" name=\"Tail the hub log\"\u003e{\"kind\":\"terminal_error\",\"message\":\"stopped by parent\"}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_4\" name=\"Tail the hub log\"\u003e{\"kind\":\"terminal_error\",\"message\":\"stopped by parent\",\"metadata\":{\"outcome\":\"stopped\",\"reason\":\"stopped_by_parent\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },

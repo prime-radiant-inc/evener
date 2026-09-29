@@ -1236,11 +1236,12 @@ test("a subagent the user stopped parses as stopped", () => {
   });
 });
 
-test("a parent's bare stop packet carries no outcome of its own, so it reads as the terminal error it is", () => {
+test("a parent's stop reads as stopped", () => {
   const [n] = wireNotifications("delegate-stopped-by-parent");
   expect(n).toMatchObject({
     type: "delegate",
-    outcome: "failed",
+    title: "Delegate stopped",
+    outcome: "stopped",
     name: "Tail the hub log",
     message: "stopped by parent",
   });

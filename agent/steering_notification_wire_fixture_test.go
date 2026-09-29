@@ -194,7 +194,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		},
 		{
 			name: "delegate-stopped-by-parent",
-			note: "The bare packet a parent's stop settles when the run left none: kind terminal_error, no metadata, so the frame carries no outcome.",
+			note: "The packet a parent's stop settles when the run left none: kind terminal_error, metadata outcome stopped, reason stopped_by_parent.",
 			turn: notificationWireAttention(notificationWireReport("dlg_4"), notificationWireBarePacketFrame(t, "dlg_4", "Tail the hub log", delegateStoppedTerminalPacket())),
 		},
 		{

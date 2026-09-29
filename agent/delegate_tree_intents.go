@@ -633,7 +633,7 @@ func stoppedGenerationFinishEvent(lease delegateLease, packet *delegatestore.Ter
 		lease,
 		delegatestore.OutcomeStopped,
 		delegatestore.DispositionTerminalError,
-		"stopped_by_parent",
+		delegateStoppedByParentReason,
 		endedAt,
 		deliveryID,
 		&stopped,

@@ -28,6 +28,7 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
 const DANGER_INK = "#C51D23";
+const INK_LOW = "#6D6D64";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 
 function delegate(over: Partial<EvenerDelegateInfo> & { delegateId: string }): EvenerDelegateInfo {
@@ -155,9 +156,9 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("Stopped by the user.");
 	});
 
-	it("reads a parent's bare stop as the terminal error its frame reports", () => {
+	it("reads a parent's stop as stopped, not failed", () => {
 		const { tree } = show("delegate-stopped-by-parent");
-		expect(textNode(tree, "Tail the hub log failed")?.props.style).toMatchObject({ color: DANGER_INK });
+		expect(textNode(tree, "Tail the hub log stopped")?.props.style).toMatchObject({ color: INK_LOW });
 		expect(renderedText(tree)).toContain("stopped by parent");
 	});
 
