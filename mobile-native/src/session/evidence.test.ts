@@ -115,6 +115,32 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A skill's markdown is the skill author's, so its images never load a
+	// remote URL on the phone: each reads as its alt text.
+	it("shows a skill's images as their alt text, never loading them", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\nthe flow\n\nThen  done." },
+		]);
+	});
+
+	// -1 is the shell tool's sentinel for a command stopped by a signal or by
+	// evener's runtime limit, not an exit code, so it reads as no exit at all.
+	it("never says a command exited -1", () => {
+		expect(stepEvidence({ label: "shell", detail: { output: "partial\n[exit -1]", exitCode: -1 } })).toEqual([
+			{ kind: "output", text: "partial", lines: 1 },
+		]);
+	});
+
+	it("shows arguments that aren't a JSON object as they were sent", () => {
+		expect(
+			stepEvidence({ label: "github__search", detail: { arguments: "plain words", output: "" } }),
+		).toEqual([{ kind: "output", text: "plain words", lines: 1 }]);
+	});
+
 	it("pretty-prints an MCP tool's arguments and result", () => {
 		expect(real("call_mcp")).toEqual([
 			{

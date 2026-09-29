@@ -46,8 +46,15 @@ function diff(text: string): Evidence {
 	return { kind: "diff", text, ...diffStats(text) };
 }
 
-function output(text: string): Evidence {
-	return { kind: "output", text, lines: lineCount(text) };
+// A tool's output as it printed it, or nothing for an empty one.
+function rawOutput(text: string): Evidence[] {
+	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
+}
+
+// A skill's markdown is its author's, and the phone's markdown view loads
+// images from their URLs, so each image reads as its alt text instead.
+function withoutImages(markdown: string): string {
+	return markdown.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
 }
 
 // What a tool's output shows, by its family: a command without its exit
@@ -58,35 +65,39 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 	switch (toolFamily(label)) {
 		case "shell": {
 			const run = shellOutput(text);
-			const evidence = run.text ? [output(run.text)] : [];
+			const evidence = rawOutput(run.text);
 			const code = detail.exitCode ?? run.exitCode;
-			// An error of its own says the exit code with it (below).
-			if (code !== undefined && code !== 0 && !detail.error) evidence.push({ kind: "exit", code });
+			// An error of its own says the exit code with it (below). -1 is the
+			// shell tool's sentinel for a command stopped by a signal or by
+			// evener's runtime limit, not an exit code.
+			if (code !== undefined && code !== 0 && code !== -1 && !detail.error) evidence.push({ kind: "exit", code });
 			return evidence;
 		}
 		case "fetch": {
 			const page = webFetchResult(text);
-			return page ? [{ kind: "page", ...page }] : text ? [output(text)] : [];
+			return page?.text === undefined ? rawOutput(text) : [{ kind: "page", ...page, text: page.text }];
 		}
 		case "skill": {
 			const loaded = skillContext(text);
 			return loaded
-				? [{ kind: "markdown", title: loaded.name, markdown: loaded.instructions }]
-				: text
-					? [output(text)]
-					: [];
+				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
+				: rawOutput(text);
 		}
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
 			const result = text ? prettyJSON(text) : undefined;
-			const evidence: Evidence[] = args ? [{ kind: "json", label: "Arguments", text: args }] : [];
+			// Arguments that aren't a JSON object or array show as they were
+			// sent, as the web's MCPToolArguments shows them.
+			const evidence: Evidence[] = args
+				? [{ kind: "json", label: "Arguments", text: args }]
+				: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
 			if (result) evidence.push({ kind: "json", label: "Result", text: result });
-			else if (text) evidence.push(output(text));
+			else evidence.push(...rawOutput(text));
 			return evidence;
 		}
 		default:
-			return text ? [output(text)] : [];
+			return rawOutput(text);
 	}
 }
 

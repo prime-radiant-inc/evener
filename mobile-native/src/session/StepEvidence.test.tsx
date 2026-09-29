@@ -145,7 +145,8 @@ describe("each tool's evidence, drawn", () => {
 		const tree = drawn([{ kind: "page", text: "Three fixes.", url: "https://example.com/notes", bytes: 48213 }]);
 		expect(byText(tree.root, "Three fixes.")).toBeTruthy();
 		expect(byText(tree.root, "https://example.com/notes")?.props.style).toMatchObject({ fontFamily: "Menlo" });
-		expect(byText(tree.root, "48.2KB")).toBeTruthy();
+		// The web's size, formatByteCount.
+		expect(byText(tree.root, "48213 bytes")).toBeTruthy();
 	});
 
 	it("heads a skill's instructions with its name, the instructions as markdown", () => {

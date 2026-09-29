@@ -2,7 +2,7 @@
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
 // with the web's add and delete washes, the file a write wrote, an error, and
 // the images the step produced.
-import { formatTokenCount, lineCount } from "@evener/appwire-client";
+import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
@@ -162,7 +162,7 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 									allowFontScaling={allowFontScaling}
 									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 								>
-									{`${formatTokenCount(evidence.bytes)}B`}
+									{formatByteCount(evidence.bytes)}
 								</Text>
 							) : null}
 						</View>
