@@ -27,6 +27,7 @@ const list: Notice[] = [
 		text: "superpowers is broken",
 		action: "Plugins",
 		pluginId: "superpowers",
+		marketplace: "evener",
 	},
 ];
 
@@ -73,7 +74,7 @@ it("labels each action with its notice and gives it a 44pt target", () => {
 	}
 });
 
-it("opens the Hub at that provider's sign-in, the Hub at that host for a host, and Plugins for a plugin", () => {
+it("opens the Hub at that provider's sign-in, the Hub at that host for a host, and the Hub at that plugin for a plugin", () => {
 	const { tree, navigation } = mount(list);
 	act(() => actionButton(tree, "Sign in, openai sign-in expired").props.onPress());
 	// Ruling 25: the Hub opens at the provider's sign-in, its home under the page.
@@ -90,7 +91,12 @@ it("opens the Hub at that provider's sign-in, the Hub at that host for a host, a
 		initial: false,
 	});
 	act(() => actionButton(tree, "Plugins, superpowers is broken").props.onPress());
-	expect(navigation.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: "hub-1" });
+	// Ruling 25: the Hub opens at Plugins with that plugin's detail.
+	expect(navigation.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Plugins",
+		params: { hubId: "hub-1", focus: { plugin: "superpowers", marketplace: "evener" } },
+		initial: false,
+	});
 });
 
 it("draws nothing when there are no notices", () => {

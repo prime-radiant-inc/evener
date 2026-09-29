@@ -197,24 +197,61 @@ export function Row({
 
 /** A row whose trailing control is a switch in the accent color (spec 16.1:
  * switches are accent, never the working green). The switch is the accessible
- * element, so VoiceOver can flip it. */
+ * element, so VoiceOver can flip it. With `onPress`, the row's text also opens
+ * something (an installed plugin's detail) as its own button, and the row
+ * stays undimmed while only the switch is disabled. */
 export function SwitchRow({
 	label,
 	sub,
+	subTone = "normal",
 	icon,
 	value,
 	onChange,
 	disabled = false,
+	onPress,
+	accessibilityLabel,
+	switchLabel,
 }: {
 	label: string;
 	sub?: string;
+	/** "danger" for a second line that reports a problem, such as "Broken". */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	value: boolean;
 	onChange(value: boolean): void;
 	disabled?: boolean;
+	/** The row's text opens a detail. */
+	onPress?: () => void;
+	/** VoiceOver's reading of the text `onPress` opens. */
+	accessibilityLabel?: string;
+	/** VoiceOver's name for the switch, when the label alone doesn't say what
+	 * it sets ("superpowers on by default"). */
+	switchLabel?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const text = (
+		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+			>
+				{label}
+			</Text>
+			{sub ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: subTone === "danger" ? palette.dangerInk : palette.inkLow,
+						fontSize: 13 * scale,
+						lineHeight: 18 * scale,
+					}}
+				>
+					{sub}
+				</Text>
+			) : null}
+		</View>
+	);
 	return (
 		<View
 			style={{
@@ -224,28 +261,29 @@ export function SwitchRow({
 				minHeight: 44,
 				paddingHorizontal: 16,
 				paddingVertical: 8,
-				opacity: disabled ? 0.4 : 1,
+				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
-			<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+			{onPress ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={accessibilityLabel ?? [label, sub].filter(Boolean).join(", ")}
+					onPress={onPress}
+					style={({ pressed }) => ({
+						flex: 1,
+						alignSelf: "stretch",
+						justifyContent: "center",
+						opacity: pressed ? 0.6 : 1,
+					})}
 				>
-					{label}
-				</Text>
-				{sub ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
-					>
-						{sub}
-					</Text>
-				) : null}
-			</View>
+					{text}
+				</Pressable>
+			) : (
+				text
+			)}
 			<Switch
-				accessibilityLabel={label}
+				accessibilityLabel={switchLabel ?? label}
 				accessibilityHint={sub}
 				value={value}
 				disabled={disabled}
@@ -468,6 +506,58 @@ export function RowValue({
 				</Text>
 			) : null}
 			{tag ? <Tag text={tag.text} tone={tag.tone} /> : null}
+		</View>
+	);
+}
+
+/** A filter field over a list, on the inset fill: a magnifying glass, the
+ * field, and a clear button once something is typed. `label` is both its
+ * VoiceOver label and its placeholder. */
+export function SearchField({
+	label,
+	query,
+	onChange,
+}: {
+	label: string;
+	query: string;
+	onChange(query: string): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			style={{
+				marginHorizontal: 16,
+				minHeight: 36,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 6,
+				paddingHorizontal: 10,
+				borderRadius: 10,
+				backgroundColor: palette.inset,
+			}}
+		>
+			<SymbolView name="magnifyingglass" size={15} tintColor={palette.inkLow} />
+			<TextInput
+				accessibilityLabel={label}
+				placeholder={label}
+				placeholderTextColor={palette.inkLow}
+				value={query}
+				onChangeText={onChange}
+				autoCorrect={false}
+				allowFontScaling={allowFontScaling}
+				style={{ flex: 1, color: palette.inkHi, fontSize: 17 * scale, paddingVertical: 8 }}
+			/>
+			{query ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Clear filter"
+					onPress={() => onChange("")}
+					hitSlop={10}
+				>
+					<SymbolView name="xmark.circle.fill" size={15} tintColor={palette.inkLow} />
+				</Pressable>
+			) : null}
 		</View>
 	);
 }

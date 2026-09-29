@@ -8,6 +8,9 @@
 //   for real and a suite can assert on what a press played.
 // - expo-sqlite/kv-store: the device's key-value store, which the Haptics
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
+// - expo-symbols: the SF Symbols every grouped row draws its glyph with
+//   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
+//   element, as the suites that mock it themselves draw it.
 import { vi } from "vitest";
 
 // react-test-renderer logs a deprecation warning through console.error on
@@ -28,6 +31,8 @@ vi.mock("expo-haptics", async () => {
 		notificationAsync: async (type: string) => void playedHaptics.push(`notification:${type}`),
 	};
 });
+
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();
