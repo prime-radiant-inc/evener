@@ -96,10 +96,7 @@ export function committedMutationRow(result: HostMutationResult, method: string)
  * carries the dedicated removed-row shape. */
 function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
   committedMutationRow(result, method);
-  if (!("host" in result)) {
-    throw new Error("evener/host/remove: the response carries no committed row");
-  }
-  return result.host as RemovedRow;
+  return (result as { host: RemovedRow }).host;
 }
 
 export function createHostMutations(ports: HostMutationPorts): HostMutations {

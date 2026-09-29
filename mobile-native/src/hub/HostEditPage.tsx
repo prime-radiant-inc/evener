@@ -78,7 +78,9 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 			setError(null);
 			try {
 				await hosts.update(name, entryFrom(fields));
-				navigation.goBack();
+				// A host gone from the re-read is useLeavesWithHost's to leave with;
+				// going back here too would pop the page beneath.
+				if (hosts.getSnapshot().rows?.some((candidate) => candidate.name === name)) navigation.goBack();
 			} catch (refusal) {
 				const field = hostFieldError(refusal);
 				setError({

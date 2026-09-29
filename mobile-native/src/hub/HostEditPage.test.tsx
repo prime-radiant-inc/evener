@@ -202,3 +202,18 @@ it("goes back when its host leaves the hub's list while it is open", async () =>
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
 	page.dispose();
 });
+
+it("goes back once when the host is removed elsewhere while its edit saves", async () => {
+	const fleet = scriptedFleet([attic]);
+	const answer = fleet.client.request;
+	fleet.client.request = (async (method: string, params: unknown) => {
+		const result = await answer(method as never, params as never);
+		// Another client removes the host as this edit lands.
+		if (method === "evener/host/update") fleet.hosts = [];
+		return result;
+	}) as never;
+	const page = await mount(fleet, "attic");
+	await page.save();
+	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	page.dispose();
+});
