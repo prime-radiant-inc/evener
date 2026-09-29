@@ -1919,7 +1919,10 @@ function linkedPage(focus: string) {
 
 /** Answers each evener/instance/refreshModels call in turn, by provider. */
 function heldChecks(fake: FakeClient) {
-	const pending = new Map<string, { resolve: (value: InstanceListResponse) => void; reject: (reason: Error) => void }>();
+	const pending = new Map<
+		string,
+		{ resolve: (value: InstanceListResponse) => void; reject: (reason: Error) => void }
+	>();
 	fake.on(
 		"evener/instance/refreshModels",
 		(params: { name: string }) =>
