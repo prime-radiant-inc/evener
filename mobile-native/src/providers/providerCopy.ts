@@ -29,3 +29,6 @@ export const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE = endpointUncheckable("n
 
 /** The listing's failure, ahead of the reason. */
 export const PROVIDERS_NOT_LOADED = "Couldn't load the providers";
+
+/** Asking the provider for its current models didn't work. */
+export const MODELS_NOT_CHECKED = "The hub couldn't check for new models. Try again in a moment.";

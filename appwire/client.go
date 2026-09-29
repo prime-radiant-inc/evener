@@ -782,6 +782,12 @@ func (c *Client) Search(ctx context.Context, params SearchParams) (SearchRespons
 	return out, err
 }
 
+func (c *Client) ArchivedList(ctx context.Context, params ArchivedListParams) (ArchivedListResponse, error) {
+	var out ArchivedListResponse
+	err := c.request(ctx, MethodEvenerArchivedList, params, &out)
+	return out, err
+}
+
 func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
 	var out HarnessListResponse
 	err := c.request(ctx, MethodEvenerHarnessesList, params, &out)
