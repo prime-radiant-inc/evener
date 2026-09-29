@@ -13101,6 +13101,105 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // Follow-up Medium: the round-13 clearing refresh deleted the marker
+  // unconditionally. A durable commit that lands while the refresh's read is
+  // in flight writes the marker and bumps the generation, so the stale
+  // rejection must not erase the commit's own marker - that would let a later
+  // send jump the commit's undelivered row. The catch is guarded exactly as
+  // the success path guards its write-back. Here A's settled send leaves its
+  // clearing refresh parked on its read (generation captured before the read);
+  // B commits mid-read; the parked read then rejects (the wedge), and C must
+  // still refuse rather than jump B.
+  test("a stale refresh failure does not clobber a marker a commit wrote mid-read", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stale-read-clobber";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Park the refresh's OWN read after A's row settles, then let it reject on
+    // demand. listOptimistic is also read by the projection
+    // (readMutationPersistence) and the dispatcher's listTargetRefs, whose
+    // rejections are swallowed elsewhere, so the stub matches the refresh's
+    // frame to make sure the parked read is the one the guarded catch owns.
+    let rejectRead: (error: unknown) => void = () => {};
+    const readGate = new Promise<never>((_resolve, reject) => {
+      rejectRead = reject;
+    });
+    let readReached: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      readReached = resolve;
+    });
+    const realListOptimistic = storage.listOptimistic.bind(storage);
+    let holdNextRead = false;
+    storage.listOptimistic = (ref) => {
+      const fromRefresh = (new Error().stack ?? "").includes("refreshMutationPins");
+      if (holdNextRead && fromRefresh) {
+        holdNextRead = false;
+        readReached();
+        return readGate;
+      }
+      return realListOptimistic(ref);
+    };
+
+    let settled = false;
+    const realSettle = storage.settleReceipt.bind(storage);
+    storage.settleReceipt = async (id, state) => {
+      const result = await realSettle(id, state);
+      settled = true;
+      holdNextRead = true;
+      return result;
+    };
+
+    await threadsStore.getState().send("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !settled; i += 1) await probe.listOutbox();
+    await reached;
+    expect(settled).toBe(true);
+
+    // B's durable commit lands while that read is still parked: it marks the
+    // ref undelivered and bumps the generation past the parked read's capture.
+    // With no turn/queue handler bound, B is attempted but never delivered, so
+    // it stays a "submitting" row and keeps the ref undelivered.
+    await threadsStore.getState().queue("ref_a", "B");
+    expect((await storage.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+
+    // The parked, now-stale read rejects (the same failure a wedged storage
+    // produces). It must NOT clear the marker B's commit wrote.
+    rejectRead(new MutationStorageTimeoutError());
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+    probe.close();
+
+    // Storage wedges; B is still undelivered, so C must fail closed rather
+    // than reach the daemon ahead of it.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const sendC = threadsStore.getState().send("ref_a", "C");
+      const rejection = expect(sendC).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // A's settled turn/start only: C refused, so it dispatched nothing.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // The fallback discards the RPC response. What projects the turn, then? The
   // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
   // has NO turn/started case; the only case that builds turns and items is

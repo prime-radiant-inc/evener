@@ -941,7 +941,13 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
       // from a settled row would refuse the fallback exactly when storage is
       // unavailable - the outage this feature exists to cover. An unprovable
       // read means "nothing proven", so it clears.
-      undeliveredMutationRefs.delete(targetRef);
+      // Guarded exactly as the success path guards its write-back: a commit
+      // that landed while this read was in flight wrote the marker and bumped
+      // the generation, and a stale rejection must not clobber it (nor a
+      // marker the new runtime owns after retirement).
+      if (isCurrentMutationRuntime(runtime) && (mutationCommitGenerations.get(targetRef) ?? 0) === generation) {
+        undeliveredMutationRefs.delete(targetRef);
+      }
       // Rethrow so a caller that relied on the read's rejection (the hydration
       // reconciliation aborts on it) keeps that flow; only the marker changes.
       throw error;
@@ -993,8 +999,11 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
     ]);
   } catch (error) {
     // As in refreshMutationPins: an unprovable read clears rather than
-    // preserving a stale true that would refuse the fallback.
-    undeliveredMutationRefs.delete(targetRef);
+    // preserving a stale true - but only when no commit landed while this read
+    // was in flight (a stale rejection must not clobber the commit's marker).
+    if (isCurrentMutationRuntime(runtime) && (mutationCommitGenerations.get(targetRef) ?? 0) === generation) {
+      undeliveredMutationRefs.delete(targetRef);
+    }
     throw error;
   }
   if (!isCurrentMutationRuntime(runtime)) return;
