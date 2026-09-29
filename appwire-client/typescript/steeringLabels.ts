@@ -17,7 +17,8 @@ import type { SteeringKind } from "./types.gen";
 
 type SuppressedSteeringKind = "current-task" | "task-list";
 
-type LabelledSteeringKind = Exclude<SteeringKind, SuppressedSteeringKind | "notification">;
+/** The daemon steer kinds that show as a labelled steer. */
+export type LabelledSteeringKind = Exclude<SteeringKind, SuppressedSteeringKind | "notification">;
 
 /** The label each shown daemon steer folds to. Plain words (spec 5): what the
  * steer did, not the engine's name for it. */
@@ -34,7 +35,7 @@ export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>
   "image-description": "Image description",
   // Sent after an empty reply or bare text: keep working, through a tool.
   "no-tool-calls": "Reminded to keep working",
-  "loop-detected": "Loop detection",
+  "loop-detected": "Loop detected",
   "tasks-done": "Tasks complete",
   "task-nudge": "Task reminder",
   "task-inactive": "Task list idle",
@@ -43,7 +44,7 @@ export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>
   "human-note": "Human note",
   // Tells the agent how to read the transcript from before a compaction.
   "transcript-pointer": "Where to find the full transcript",
-  "provider-failure": "Provider failure",
+  "provider-failure": "Provider failed",
 };
 
 const SUPPRESSED: ReadonlySet<string> = new Set<SuppressedSteeringKind>(["current-task", "task-list"]);

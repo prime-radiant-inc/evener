@@ -191,7 +191,7 @@ test("labels provider-failure steering from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Provider failure")).toBeTruthy();
+  expect(screen.getByText("System steered: Provider failed")).toBeTruthy();
 });
 
 test("labels an interrupted salvage draft from the wire kind", () => {

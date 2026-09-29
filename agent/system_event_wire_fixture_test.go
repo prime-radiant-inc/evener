@@ -183,10 +183,14 @@ func TestSystemEventWireFixtures(t *testing.T) {
 		Note       string                `json:"note"`
 		Items      []systemEventWireCase `json:"items"`
 		FailedTurn appwire.Turn          `json:"failed_turn"`
+		// The same failed turn after an earlier, unrelated error the live
+		// overlay showed during it: that one is not the turn's failure.
+		FailedTurnWithOtherError appwire.Turn `json:"failed_turn_with_other_error"`
 	}{
-		Note:       "System events and daemon steers, each projected the way history (or the live overlay, for plugin_loaded and context_compaction) reaches the wire, and a failed turn as a reload groups it.",
-		Items:      cases,
-		FailedTurn: systemEventWireFailedTurn(t),
+		Note:                     "System events and daemon steers, each projected the way history (or the live overlay, for plugin_loaded and context_compaction) reaches the wire, and a failed turn as a reload groups it.",
+		Items:                    cases,
+		FailedTurn:               systemEventWireFailedTurn(t),
+		FailedTurnWithOtherError: systemEventWireFailedTurnWithOtherError(t),
 	}, "the mobile-native tests that read it")
 }
 
@@ -231,5 +235,28 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 	if errorItems != 1 {
 		t.Fatalf("the failed turn carries %d error systemMessages, want 1: %+v", errorItems, turn.Items)
 	}
+	return turn
+}
+
+// systemEventWireFailedTurnWithOtherError is the failed turn with an earlier,
+// distinct error in it: an unrecorded session error the live overlay shows as
+// an error systemMessage (appoverlay's noticeAnnouncement for ErrorData, which
+// is unexported, so its fields are built here the way it builds them).
+func systemEventWireFailedTurnWithOtherError(t *testing.T) appwire.Turn {
+	t.Helper()
+	turn := systemEventWireFailedTurn(t)
+	message := "MCP server github disconnected"
+	data := enrichErrorData(events.ErrorData{Error: message})
+	other, ok := apptranscript.SystemMessage(apptranscript.NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindError,
+		Description: data.Title,
+		Text:        message,
+	}, "notice_error_1", turn.ID)
+	if !ok {
+		t.Fatal("the earlier error has nothing to show")
+	}
+	items := append([]appwire.ThreadItem{}, turn.Items[:1]...)
+	items = append(items, other)
+	turn.Items = append(items, turn.Items[1:]...)
 	return turn
 }

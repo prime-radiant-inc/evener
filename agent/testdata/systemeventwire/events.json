@@ -314,5 +314,58 @@
       "hint": "Check the Evener session log and daemon state."
     },
     "startedAt": 1790625600000
+  },
+  "failed_turn_with_other_error": {
+    "id": "turn_2",
+    "items": [
+      {
+        "type": "userMessage",
+        "id": "item_user_1",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:0",
+        "position": {
+          "entry": 0,
+          "item": 0
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 1,
+        "text": "Go on",
+        "status": "completed",
+        "startedAt": 1790625600000
+      },
+      {
+        "type": "systemMessage",
+        "id": "notice_error_1",
+        "turnId": "turn_2",
+        "text": "MCP server github disconnected",
+        "description": "Evener error",
+        "status": "completed",
+        "eventKind": "error"
+      },
+      {
+        "type": "systemMessage",
+        "id": "item_turn_failure_2",
+        "transcriptKey": "apptranscript-item-v1:turn_2:0:1",
+        "position": {
+          "entry": 0,
+          "item": 1
+        },
+        "turnId": "turn_2",
+        "transcriptEntryIndex": 2,
+        "text": "Provider exploded: 529 overloaded",
+        "description": "Turn failed",
+        "error": "Provider exploded: 529 overloaded",
+        "status": "failed",
+        "eventKind": "error"
+      }
+    ],
+    "itemsView": "full",
+    "status": "failed",
+    "error": {
+      "message": "Provider exploded: 529 overloaded",
+      "source": "evener",
+      "title": "Evener error",
+      "hint": "Check the Evener session log and daemon state."
+    },
+    "startedAt": 1790625600000
   }
 }

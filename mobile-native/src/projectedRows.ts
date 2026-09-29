@@ -634,7 +634,11 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
+/** The systemMessage event kind of an error: a turn's failure, or a session
+ * error the live overlay shows. */
+export const ERROR_EVENT_KIND = "error";
+
+const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
@@ -665,6 +669,9 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
+// A steer whose kind this build has no label for (a newer daemon, or none).
+const STEERED = "System steered";
+
 // A daemon steer is instructions to the agent, never the conversation: it
 // folds to what it did, and opens to what it said (spec 8.2 "System event"),
 // with the label the web shows for its kind (steeringKindLabel). One the
@@ -686,9 +693,6 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 	if (notifications) return { ...common, text: it.text, notifications };
 	return { ...common, text: stripSystemReminder(it.text), label: steeringKindLabel(it.steeringKind) ?? STEERED };
 }
-
-// A steer whose kind this build has no label for (a newer daemon, or none).
-const STEERED = "System steered";
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
 	// A system family of "warning" IS the warning tone (systemFamily's own
@@ -899,12 +903,14 @@ function rowsForProjectedTurn(
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
 	const keyedRounds = new Set<string>();
+	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
 	for (const entry of projected.entries) {
 		// A failed turn's error shows once, as the failure row at its end, which
 		// carries the one action (spec 8.2 "Error"). A reload also carries the
 		// failure as an error systemMessage (apptranscript's TurnFailure item),
-		// which would say it a second time.
-		if (turn.error && isTurnErrorNotice(entry.item)) continue;
+		// which would say it a second time. Only that echo goes: another error
+		// in the same turn is news of its own.
+		if (turnError && echoesTurnError(entry.item, turnError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
@@ -929,10 +935,10 @@ function rowsForProjectedTurn(
 		}
 	}
 	// A turn error produces a failure item at the end of that turn's rows.
-	if (turn.error) {
+	if (turnError) {
 		entries.push({
 			type: "final",
-			item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+			item: failureItem(turnError, turn.id),
 		});
 	}
 	let slots = turnRowCache.get(turn);
@@ -1069,8 +1075,13 @@ export function projectConversation(
 
 // --- failure rows ----------------------------------------------------------------
 
-function isTurnErrorNotice(it: ItemModel): boolean {
-	return it.type === "systemMessage" && it.eventKind === "error";
+// The error systemMessage that says what turn.error says: apptranscript's
+// TurnFailure item carries the failure's message as its text (both fall back
+// to "The turn failed." when the failure has none).
+function echoesTurnError(it: ItemModel, error: NonNullable<Turn["error"]>): boolean {
+	return (
+		it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim()
+	);
 }
 
 function failureItem(

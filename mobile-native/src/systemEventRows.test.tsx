@@ -15,6 +15,7 @@ import {
 import {
 	type SystemEventWireCase,
 	systemEventWireFailedTurn,
+	systemEventWireFailedTurnWithOtherError,
 	systemEventWireItem,
 } from "@evener/appwire-client/testing/systemEventWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -119,7 +120,21 @@ describe("a failed turn (G5)", () => {
 		const failure = failures[0];
 		if (failure?.kind !== "failure") throw new Error("not a failure row");
 		expect(failure.title).toContain("Evener error");
+		expect(failure.detail).toContain("Provider exploded: 529 overloaded");
 		expect(errorAction(failure, model, true)).toBe("retry");
+	});
+
+	// Only the error that echoes turn.error goes: an earlier, distinct error in
+	// the same turn is news of its own.
+	it.each(LEVELS)("keeps a distinct earlier error in a failed turn, at %s", (level) => {
+		const { rows } = rowsAt(level, [systemEventWireFailedTurnWithOtherError()], false);
+		const errors = rows.filter(
+			(row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error"),
+		);
+		expect(errors.map((row) => row.id)).toEqual(["notice_error_1", "failure:turn_2"]);
+		const other = errors[0];
+		if (other?.kind !== "notice") throw new Error("not a notice row");
+		expect(other.text).toBe("MCP server github disconnected");
 	});
 
 	it("still shows a failure row with system events on", () => {
@@ -173,8 +188,8 @@ const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
 	["steer-precompact-hook", "Hook context before compacting"],
 	["steer-compact-nudge", "Running low on context"],
 	["steer-no-tool-calls", "Reminded to keep working"],
-	["steer-loop-detected", "Loop detection"],
-	["steer-provider-failure", "Provider failure"],
+	["steer-loop-detected", "Loop detected"],
+	["steer-provider-failure", "Provider failed"],
 	["steer-transcript-pointer", "Where to find the full transcript"],
 	["steer-task-nudge", "Task reminder"],
 	["steer-note-handoff", "Note to self"],

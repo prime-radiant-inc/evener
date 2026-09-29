@@ -1,4 +1,4 @@
-import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
+import { type AttachmentRef, ERROR_EVENT_KIND, type MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
@@ -12,7 +12,7 @@ export function isCriticalNotice(item: Notice): boolean {
 	return (
 		item.tone === "warning" ||
 		item.family === "warning" ||
-		item.eventKind === "error" ||
+		item.eventKind === ERROR_EVENT_KIND ||
 		(item.eventKind === "hook_completed" && item.exitCode !== undefined && item.exitCode !== 0)
 	);
 }

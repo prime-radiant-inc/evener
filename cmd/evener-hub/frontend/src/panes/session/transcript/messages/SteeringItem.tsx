@@ -19,6 +19,11 @@
 //     table - an unrecognized or absent kind renders unlabelled rather than
 //     inventing a label from a raw slug.
 //
+// The label table and the suppression (@evener/appwire-client steeringLabels)
+// are the phone's too. The table is exhaustive over the generated SteeringKind
+// union, so adding a kind in Go and regenerating fails the build until it is
+// given a label.
+//
 // Daemon-sourced steering images are never rendered as thumbnails - only ever as
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
@@ -49,15 +54,6 @@ const CLASS = {
 };
 
 const STEERED = "System steered";
-
-// A daemon steer's label (and whether it shows at all) comes from the kind
-// table the phone shares (@evener/appwire-client steeringLabels): it is
-// exhaustive over the generated SteeringKind union, so adding a kind in Go and
-// regenerating fails the build until it is given a label. current-task and
-// task-list are suppressed (the tasks panel + task-update card already own
-// that surface, parity-m4 §8:209-217), and notification routes to a card. An
-// unrecognized or absent kind renders unlabelled rather than inventing a label
-// from a raw slug.
 
 // The quiet collapsed-by-default steering divider (parity-m4 §8:
 // appendSteeringDivider) - summary is the glyph, the kind label (or the bare

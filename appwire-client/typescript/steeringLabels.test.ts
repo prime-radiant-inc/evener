@@ -23,6 +23,11 @@ test("says the task reminders the way the phone always has, in both clients", ()
   expect(steeringKindLabel("task-nudge")).toBe("Task reminder");
 });
 
+test("says a detector's and a provider's steers as events", () => {
+  expect(steeringKindLabel("loop-detected")).toBe("Loop detected");
+  expect(steeringKindLabel("provider-failure")).toBe("Provider failed");
+});
+
 test("puts the engineering labels in plain words (spec 5)", () => {
   expect(STEERING_KIND_LABELS).toMatchObject({
     "precompact-hook": "Hook context before compacting",

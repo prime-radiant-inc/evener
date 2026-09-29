@@ -1,7 +1,8 @@
 // systemEventWireFixtures reads the daemon's system events and steers as the
 // hub sends them: a tool repair, the two compaction summaries, plugin loads,
 // compaction passes, one steer per daemon kind the transcript labels, and a
-// failed turn as a reload groups it (turn.error plus its error systemMessage).
+// failed turn as a reload groups it (turn.error plus its error systemMessage),
+// alone and after an earlier, distinct error.
 //
 // agent's TestSystemEventWireFixtures produces the fixture from the builders
 // the live projector and history share, and re-verifies it on every Go test
@@ -38,6 +39,7 @@ export type SystemEventWireCase =
 interface SystemEventWireFixture {
   items: Array<{ case: SystemEventWireCase; note: string; item: ThreadItem }>;
   failed_turn: Turn;
+  failed_turn_with_other_error: Turn;
 }
 
 const fixture = (): SystemEventWireFixture => JSON.parse(systemEvents) as SystemEventWireFixture;
@@ -57,4 +59,10 @@ export function systemEventWireItems(): ThreadItem[] {
 /** systemEventWireFailedTurn returns the failed turn as a reload carries it. */
 export function systemEventWireFailedTurn(): Turn {
   return fixture().failed_turn;
+}
+
+/** systemEventWireFailedTurnWithOtherError returns the failed turn with an
+ * earlier, distinct error the live overlay showed during it. */
+export function systemEventWireFailedTurnWithOtherError(): Turn {
+  return fixture().failed_turn_with_other_error;
 }
