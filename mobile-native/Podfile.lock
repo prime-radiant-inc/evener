@@ -1,4 +1,6 @@
 PODS:
+  - EXApplication (57.0.3):
+    - ExpoModulesCore
   - EXConstants (57.0.17):
     - ExpoModulesCore
   - Expo (57.0.20):
@@ -2270,6 +2272,7 @@ PODS:
   - Yoga (0.0.0)
 
 DEPENDENCIES:
+  - EXApplication (from `../node_modules/expo-application/ios`)
   - EXConstants (from `../node_modules/expo/node_modules/expo-constants/ios`)
   - Expo (from `../node_modules/expo`)
   - ExpoAsset (from `../node_modules/expo/node_modules/expo-asset/ios`)
@@ -2383,6 +2386,8 @@ SPEC REPOS:
     - SDWebImageWebPCoder
 
 EXTERNAL SOURCES:
+  EXApplication:
+    :path: "../node_modules/expo-application/ios"
   EXConstants:
     :path: "../node_modules/expo/node_modules/expo-constants/ios"
   Expo:
@@ -2594,6 +2599,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
+  EXApplication: a727f05eb8592f0bc764f6ab8d51eacc158652ec
   EXConstants: 799577d2516460afb4b57874d6823a62327ce5c7
   Expo: 20c445ed59fdd6e967ced0bd3d3e99be771ea176
   ExpoAsset: bea9115098b9f4ddfb0456961c8a7d2779ccc8f5
