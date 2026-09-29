@@ -42,13 +42,7 @@ import {
 	stageFleetState,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
-import {
-	cursorEnd,
-	itemCount,
-	itemPage,
-	olderCursorAt,
-	withOlderHistory,
-} from "../src/dev/demoOlderHistory.js";
+import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
 import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
@@ -573,11 +567,10 @@ export async function createDemoHub(
 							params.includeTurns &&
 							typeof params.itemLimit === "number"
 						) {
-							const total = itemCount(selected.turns);
-							const start = Math.max(0, total - params.itemLimit);
+							const page = latestPage(selected.turns ?? [], params.itemLimit);
 							result = {
-								thread: { ...selected, turns: itemPage(selected.turns ?? [], start, total) },
-								...(olderCursorAt(start) ? { olderCursor: olderCursorAt(start) } : {}),
+								thread: { ...selected, turns: page.turns },
+								...(page.olderCursor ? { olderCursor: page.olderCursor } : {}),
 							};
 							break;
 						}
@@ -593,16 +586,13 @@ export async function createDemoHub(
 						result = {};
 						break;
 					case "thread/turns/list": {
-						const end = cursorEnd(params.cursor);
-						if (!selected || selected !== olderHistoryThread || end === null) {
-							result = { data: [] };
-							break;
-						}
-						const start = Math.max(0, end - (params.itemLimit ?? 40));
-						result = {
-							data: itemPage(selected.turns ?? [], start, end),
-							...(olderCursorAt(start) ? { nextCursor: olderCursorAt(start) } : {}),
-						};
+						const page =
+							selected && selected === olderHistoryThread
+								? pageBefore(selected.turns ?? [], params.cursor, params.itemLimit ?? 40)
+								: null;
+						result = page
+							? { data: page.turns, ...(page.olderCursor ? { nextCursor: page.olderCursor } : {}) }
+							: { data: [] };
 						break;
 					}
 					case "turn/queue":

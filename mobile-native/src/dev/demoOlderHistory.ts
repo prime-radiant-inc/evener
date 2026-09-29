@@ -60,14 +60,14 @@ export function withOlderHistory(thread: Thread): void {
 			completedAt: start + 600_000,
 			durationMs: 600_000,
 			items,
-		} as Turn;
+		};
 	});
 	thread.turns = [...older, ...(thread.turns ?? [])];
 }
 
 /** Items [start, end) of `turns`, flattened, rebuilt into turns; a turn cut
  * at the page's start says it has earlier items. */
-export function itemPage(turns: Turn[], start: number, end: number): Turn[] {
+function itemPage(turns: Turn[], start: number, end: number): Turn[] {
 	const flat = turns.flatMap((turn) => (turn.items ?? []).map((item) => ({ turn, item })));
 	const page: Turn[] = [];
 	for (const { turn, item } of flat.slice(start, end)) {
@@ -81,20 +81,33 @@ export function itemPage(turns: Turn[], start: number, end: number): Turn[] {
 	return page;
 }
 
-export function itemCount(turns: Turn[] | undefined): number {
-	return (turns ?? []).reduce((sum, turn) => sum + (turn.items?.length ?? 0), 0);
+function itemCount(turns: Turn[]): number {
+	return turns.reduce((sum, turn) => sum + (turn.items?.length ?? 0), 0);
 }
 
 const CURSOR = "older:";
 
-/** The cursor for the items before `start`, or undefined at the beginning. */
-export function olderCursorAt(start: number): string | undefined {
-	return start > 0 ? `${CURSOR}${start}` : undefined;
+/** A page of `turns`' items, and the cursor to the items before it (none at
+ * the beginning). */
+export interface ItemPage {
+	turns: Turn[];
+	olderCursor?: string;
 }
 
-/** Where a cursor this hub issued ends its page, or null for anyone else's. */
-export function cursorEnd(cursor: unknown): number | null {
+function pageEndingAt(turns: Turn[], end: number, limit: number): ItemPage {
+	const start = Math.max(0, end - limit);
+	return { turns: itemPage(turns, start, end), ...(start > 0 ? { olderCursor: `${CURSOR}${start}` } : {}) };
+}
+
+/** The latest `limit` items: what thread/read answers with an itemLimit. */
+export function latestPage(turns: Turn[], limit: number): ItemPage {
+	return pageEndingAt(turns, itemCount(turns), limit);
+}
+
+/** The `limit` items before a cursor this hub issued, or null for anyone
+ * else's: what thread/turns/list answers. */
+export function pageBefore(turns: Turn[], cursor: unknown, limit: number): ItemPage | null {
 	if (typeof cursor !== "string" || !cursor.startsWith(CURSOR)) return null;
 	const end = Number(cursor.slice(CURSOR.length));
-	return Number.isInteger(end) && end > 0 ? end : null;
+	return Number.isInteger(end) && end > 0 ? pageEndingAt(turns, end, limit) : null;
 }

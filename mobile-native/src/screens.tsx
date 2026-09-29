@@ -121,7 +121,7 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack } from "./session/FloatingStack";
-import { atEnd, useLiveEndFollow } from "./session/liveEndFollow";
+import { atEnd, pagesOlder, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
@@ -432,9 +432,6 @@ export function ConversationScreen({
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	const follow = useLiveEndFollow();
 	const captureSuppressed = useRef(false);
-	// Whether you have dragged this session's list yet: older history pages
-	// on distance from the top only after that.
-	const userScrolled = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
 	// Puts the caret at `caret` in the composer and focuses it, on the next
@@ -1243,7 +1240,6 @@ export function ConversationScreen({
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
 		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
-		userScrolled.current = false;
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
@@ -1454,7 +1450,7 @@ export function ConversationScreen({
 				key: currentKey,
 				height: measurement.height,
 				offset: scrollOffset,
-				desired,
+				clamped: scrollOffset !== desired,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
@@ -1960,6 +1956,11 @@ export function ConversationScreen({
 			stopBusy.current = false;
 			setStopping(false);
 		}
+	}
+	/** Loads the page above when the list at `y` is near its top and you have
+	 * moved it yourself (session/liveEndFollow pagesOlder). */
+	function pageOlderNear(y: number | undefined) {
+		if (y !== undefined && pagesOlder(follow.state.current, y)) loadOlderPage();
 	}
 	function jumpToLive() {
 		readerHeader.current = false;
@@ -2589,11 +2590,10 @@ export function ConversationScreen({
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
 								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2), once you
-								// have scrolled yourself: at the live end of a page shorter than
-								// the screen the list sits near its top, and paging there
-								// chained every older page in on open.
-								if (y < 800 && userScrolled.current && !follow.state.current.following) loadOlderPage();
+								// Older history loads as you near the top (spec 8.2), while you
+								// move the list; the drag and coast events check too, since a
+								// short flick or an overscroll may report no scroll between them.
+								if (follow.state.current.touch !== "none") pageOlderNear(y);
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(readerKey(item));
 									return measurement && measurement.y + measurement.height > y;
@@ -2611,19 +2611,23 @@ export function ConversationScreen({
 									);
 									const anchor = readerAnchor.current;
 									const measurement = readerMeasurements.current.get(readerKey(visible));
-									// Where you scrolled is where the anchor is: nothing to restore.
+									// Where you scrolled is where the anchor is, so there is nothing
+									// to restore until the anchor changes or its row reflows. The
+									// trade-off: every scroll re-captures the anchor and so arms a
+									// restore only for that exact row; one that reflows (a text-size
+									// change) restores, one whose y merely moves never does.
 									if (anchor && measurement)
 										appliedReaderRestore.current = {
 											key: measurement.key,
 											height: measurement.height,
 											offset: y,
-											desired: y,
+											clamped: false,
 										};
 								}
 							}}
-							onScrollBeginDrag={() => {
-								userScrolled.current = true;
+							onScrollBeginDrag={(event) => {
 								follow.dispatch({ type: "dragBegin" });
+								pageOlderNear(event?.nativeEvent.contentOffset.y);
 								readerHeader.current = false;
 								captureSuppressed.current = false;
 								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
@@ -2634,14 +2638,17 @@ export function ConversationScreen({
 							// under the finger.
 							onScrollEndDrag={(event) => {
 								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}
-							onMomentumScrollBegin={() => {
+							onMomentumScrollBegin={(event) => {
 								follow.dispatch({ type: "momentumBegin" });
+								pageOlderNear(event?.nativeEvent.contentOffset.y);
 							}}
 							onMomentumScrollEnd={(event) => {
 								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}

@@ -1348,6 +1348,48 @@ it("doesn't page older history at the live end of a short first page, or until y
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
+it("pages older history on a short first page you drag, whose end is its top", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-short"), { olderCursor: "cursor-1" });
+	const short = {
+		nativeEvent: { contentOffset: { y: 0 }, contentSize: { height: 300 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(short));
+	act(() => transcriptList(tree).props.onScrollEndDrag(short));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("pages older history on a flick near the top that reports no scroll mid-drag", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-flick"), { olderCursor: "cursor-1" });
+	const at = (y: number) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	});
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at(900)));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at(700)));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("doesn't page older history for a reading position restored near the top before you scroll", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-older-restored": {
+				hubId: "hub-1",
+				sessionRef: "ref-older-restored",
+				itemKey: "u-turn_1",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree, hub } = await mount(twoTurns("ref-older-restored"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 40);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
 it("doesn't page older history while the hub is away", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older-away"), { olderCursor: "cursor-1" });
 	harness.connection = { ...harness.connection, state: "connecting" };

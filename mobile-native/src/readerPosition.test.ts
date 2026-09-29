@@ -48,7 +48,7 @@ describe("reader positions", () => {
 		const desired = 4746;
 		const clamped = reachableReaderOffset(desired, 4934, 598);
 		expect(clamped).toBe(4336);
-		const cut = { key: "anchor", height: 127, offset: clamped, desired };
+		const cut = { key: "anchor", height: 127, offset: clamped, clamped: true };
 		expect(exactRestoreDue(cut, { key: "anchor", height: 127 }, clamped)).toBe(false);
 		const reachable = reachableReaderOffset(desired, 6120, 598);
 		expect(reachable).toBe(desired);
@@ -58,18 +58,18 @@ describe("reader positions", () => {
 	it("restores an anchor exactly once it has landed, however its row's measured y moves after", () => {
 		// A virtualized list re-estimating rows it unmounted moves the anchor
 		// row's measured y back and forth; chasing it made the list ping-pong.
-		const landed = { key: "anchor", height: 144, offset: 9731, desired: 9731 };
+		const landed = { key: "anchor", height: 144, offset: 9731, clamped: false };
 		expect(exactRestoreDue(landed, { key: "anchor", height: 144 }, 9570)).toBe(false);
 		expect(exactRestoreDue(landed, { key: "anchor", height: 144 }, 9731)).toBe(false);
 	});
 	it("restores again when the anchor's own row reflows, as a text-size change does", () => {
-		const landed = { key: "anchor", height: 144, offset: 9731, desired: 9731 };
+		const landed = { key: "anchor", height: 144, offset: 9731, clamped: false };
 		expect(exactRestoreDue(landed, { key: "anchor", height: 180 }, 9731)).toBe(true);
 	});
 	it("restores a new anchor, or the first time", () => {
 		expect(exactRestoreDue(null, { key: "anchor", height: 10 }, 100)).toBe(true);
 		expect(
-			exactRestoreDue({ key: "other", height: 10, offset: 5, desired: 5 }, { key: "anchor", height: 10 }, 100),
+			exactRestoreDue({ key: "other", height: 10, offset: 5, clamped: false }, { key: "anchor", height: 10 }, 100),
 		).toBe(true);
 	});
 	it("uses stable transcript identity and pair ordering", () => {
@@ -154,10 +154,11 @@ describe("reader positions", () => {
 			),
 		).toEqual({ kind: "exact", index: 20, viewOffset: -120 });
 		const measurement = { key: readerKey(rows[20]), y: 600, height: 120 };
-		const applied = { key: measurement.key, height: 120, offset: 12, desired: 12 };
-		expect(exactRestoreDue(null, measurement, 12)).toBe(true);
-		expect(exactRestoreDue(applied, measurement, 12)).toBe(false);
-		expect(exactRestoreDue({ ...applied, height: 80 }, measurement, 12)).toBe(true);
+		// The exact command's view offset is -12: the row at y 600 restores to 612.
+		const applied = { key: measurement.key, height: 120, offset: 612, clamped: false };
+		expect(exactRestoreDue(null, measurement, 612)).toBe(true);
+		expect(exactRestoreDue(applied, measurement, 612)).toBe(false);
+		expect(exactRestoreDue({ ...applied, height: 80 }, measurement, 612)).toBe(true);
 	});
 	it("requires exact identity or exact protocol position", () => {
 		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 3, item: 1 })];
@@ -188,7 +189,7 @@ describe("reader positions", () => {
 		}
 		expect(attempts.retryUnmeasured()).toBe(false);
 		expect(attempts.begin(measured)).toBe(true);
-		expect(exactRestoreDue({ key: measurement.key, height: 463, offset: 332, desired: 332 }, measurement, 332)).toBe(
+		expect(exactRestoreDue({ key: measurement.key, height: 463, offset: 332, clamped: false }, measurement, 332)).toBe(
 			false,
 		);
 		// Virtualization can remove the measured cell before the next effect.
