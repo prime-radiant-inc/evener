@@ -542,9 +542,10 @@ func (m *hubHostManager) recoverySafetyCheckLocked(remnantID string, remnant Hos
 func (m *hubHostManager) recoverySafetyCheck(remnantID string, remnant HostTeardownRemnant) error {
 	// "no supervisor or channel binding names the remnant's pinned target": the
 	// channel the manager holds for the name is the observable attachment, and
-	// the supervisor binding lives inside that same hold. BOUNDARY (S17-S21):
-	// the fencing slices' supervisor roster reports the binding by epoch; this
-	// build reads the channel the manager publishes.
+	// the supervisor binding lives inside that same hold. (The epoch-keyed
+	// supervisor roster an earlier revision named here was withdrawn with the
+	// crash-fencing program, comp08; this build reads the channel the manager
+	// publishes.)
 	if m.cfg.manager != nil {
 		if _, attached := m.cfg.manager.ChannelIfAttached(remnant.Host); attached {
 			return appwire.Conflict(fmt.Sprintf(

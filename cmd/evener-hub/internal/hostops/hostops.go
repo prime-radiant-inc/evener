@@ -5,9 +5,10 @@
 // pass that moves a record a crash left `pending`/`running` to `interrupted`
 // (§7).
 //
-// What this package deliberately does not own, because the spec hands each to a
-// later slice: the per-host gate (§5), the custody-first quarantine of a corrupt
-// store file (§4), and the live `quarantineEpoch` (S8). Its
+// Beyond the substrate, this package owns the custody-first quarantine of a
+// corrupt store file (§4: quarantine.go and custody.go, driven by Open) and the
+// live `quarantineEpoch` that pagination cursors pin (§8: cursor.go); the
+// per-host gate (§5) is the manager's. Its
 // record schema, states, one atomic write discipline, one store mutex, and load
 // are the substrate those paths stand on; dedup and the create-from-consume
 // write (§6), operations pagination (§8), and retention and compaction with
@@ -26,12 +27,14 @@
 // reconciliation of a mirror that trails hub.toml (deploy-pipeline §4's commit
 // marker rule) and cursor validation (§8) belong to the slices that read it.
 //
-// Corrupt or unreadable store at this layer: spec §4 quarantines a corrupt or
-// schema-invalid store file in custody-first order, and §7 runs the operation
-// store's load before anything else at boot. That custody hand-off belongs to
-// the crash-fencing slice; until it lands, Open refuses to load a corrupt or
-// unreadable file (ErrStoreCorrupt for a file that parses wrong, the wrapped
-// I/O error otherwise) and the caller must not serve hosts from it.
+// Corrupt or unreadable store: spec §4 quarantines a corrupt or schema-invalid
+// store file in custody-first order, and §7 runs the operation store's load
+// before anything else at boot. `Open` drives that custody path
+// (resolveStoreFS in quarantine.go): a corrupt file quarantines through the
+// custody snapshot and a replacement store opens from it, while a file this
+// layer cannot read refuses to load (ErrStoreCorrupt for a file that parses
+// wrong, the wrapped I/O error otherwise) and the caller must not serve hosts
+// from it.
 package hostops
 
 import (

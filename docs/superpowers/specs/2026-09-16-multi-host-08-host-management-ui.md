@@ -50,7 +50,7 @@ without a terminal.
 ## 1. Glossary
 
 Every later section uses these terms with exactly these meanings. The
-sixteen shared terms below are identical in both documents.
+shared terms below are identical in both documents.
 
 **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 
@@ -816,8 +816,11 @@ marker a completed migration records. The crash-fencing bootstrap-attempt fence
 and `helper_installed`/`helper_version` flags an earlier revision of this spec
 placed here were withdrawn with the crash-fencing program (Jesse, 2026-09-29;
 comp08 pass 1): a prior file still decodes those keys (the load strips them),
-and every rewrite drops them — the tolerant owned-key set and its pinned
-round-trip coverage live in `cmd/evener-hub/internal/hostops/retired_keys_test.go`.
+and every rewrite drops them — the load-and-drop is pinned by
+`TestHubTOMLLegacyBootstrapRecordLoadsAndIsDroppedOnRewrite` in
+`cmd/evener-hub/app_host_toml_store_test.go` (the operation store's retired keys
+have their own round-trip coverage in
+`cmd/evener-hub/internal/hostops/retired_keys_test.go`).
 
 Machine-managed record layout: every machine-managed record lives under a
 reserved top-level key beside `[[hosts]]` — never inside a host entry, and

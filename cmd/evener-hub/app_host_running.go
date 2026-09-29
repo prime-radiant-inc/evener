@@ -98,10 +98,11 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	// The admission-plus-probe window is serialized on this hub: the guard row
 	// is hub-wide (v1 admits one calling controller), so a second call must not
 	// advance the admitted epoch while the first is still probing with the
-	// epoch it admitted. FENCING BOUNDARY: the fencing slice's per-host remote
-	// lease and guard-file compare-and-advance replace this mutex; until then
-	// this is the serialization that keeps "persisted before the write half"
-	// true for the probe that actually runs.
+	// epoch it admitted. This mutex is the admitted posture: the per-host remote
+	// lease and guard-file compare-and-advance that once would have replaced it
+	// were withdrawn with the crash-fencing program (comp08), and this
+	// serialization keeps "persisted before the write half" true for the probe
+	// that actually runs.
 	m.cfg.runningProbeMu.Lock()
 	defer m.cfg.runningProbeMu.Unlock()
 	epoch := params.FencingEpoch
@@ -226,11 +227,11 @@ func (c hostRunningConfig) writeProbeIn(root string) error {
 // removed. No probe temp survives the probe window past its remove except a
 // crash orphan the boot prune owns.
 //
-// FENCING BOUNDARY: §10 requires the complete fencing protocol before this
-// write half — lease takeover, bounded kill/wait, guard advance (crash-fencing
-// spec §4). That execution is the fencing slice's; until it lands this probe is
-// authorized by the caller's presented epoch, which the serving hub persisted
-// before calling this function, and serialized by the caller's host gate.
+// The complete fencing protocol an earlier revision anticipated before this
+// write half — lease takeover, bounded kill/wait, guard advance — was withdrawn
+// with the crash-fencing program (comp08). This probe is authorized by the
+// caller's presented epoch, which the serving hub admitted before calling this
+// function, and serialized by the caller's host gate.
 func hostStateRootWriteProbe(dir string) error {
 	suffix, err := probeNonce()
 	if err != nil {
