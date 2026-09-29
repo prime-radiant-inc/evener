@@ -108,8 +108,7 @@ const allRows = (pages: ProjectPages | undefined) =>
 const activeRows = (pages: ProjectPages | undefined) => (pages ? [...pages.current.rows, ...pages.recent.rows] : []);
 const pinnedFirst = (projects: readonly NavigationProjectSummary[]) =>
 	[...projects].sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
-const onHost = (hostId: string | null) => (row: NavigationSessionSummary) =>
-	hostId === null || row.host_id === hostId;
+const onHost = (hostId: string | null) => (row: NavigationSessionSummary) => hostId === null || row.host_id === hostId;
 const activeTiersLoaded = (pages: ProjectPages) => pages.current.loaded && pages.recent.loaded;
 
 export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
@@ -234,7 +233,12 @@ function projectFirst(
 		return;
 	}
 	const shownBefore = out.length;
-	const hosts = branchByHost ? orderedHosts(activeRows(pages).map((row) => row.host_id), input.sources) : [];
+	const hosts = branchByHost
+		? orderedHosts(
+				activeRows(pages).map((row) => row.host_id),
+				input.sources,
+			)
+		: [];
 	if (hosts.length > 1)
 		for (const host of hosts) {
 			const branch = branchFold(project.key, host.id);
