@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	KeyboardAvoidingView,
-	Platform,
-	ScrollView,
-	Text,
-	TextInput,
-	View,
-} from "react-native";
+import { ActivityIndicator, Alert, Text, TextInput, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
@@ -23,10 +14,22 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { Group, GroupFooter, Row } from "./sheet/Grouped";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	Segmented,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
-import { Action, allowFontScaling, Choice, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -541,6 +544,21 @@ export function MarketplaceBrowser({
 	);
 }
 
+type MarketplaceKind = "url" | "github" | "directory";
+
+/** Each kind's segment, and what its source row asks for. A hub directory is
+ * picked with the hub path browser instead of a typed row. */
+const MARKETPLACE_KINDS: readonly {
+	value: MarketplaceKind;
+	label: string;
+	sourceLabel?: string;
+	placeholder?: string;
+}[] = [
+	{ value: "url", label: "Git URL", sourceLabel: "Git URL", placeholder: "https://example.com/plugins.git" },
+	{ value: "github", label: "GitHub", sourceLabel: "Repository", placeholder: "owner/repo" },
+	{ value: "directory", label: "Hub directory" },
+];
+
 export function AddMarketplace({
 	connectionState,
 	client,
@@ -564,11 +582,13 @@ export function AddMarketplace({
 }) {
 	const colors = useColors();
 	const scale = useTextScale();
-	const [kind, setKind] = useState<"url" | "github" | "directory">("url");
+	const [kind, setKind] = useState<MarketplaceKind>("url");
 	const [source, setSource] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
+	const nameInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while
 	// disconnected on its own.
@@ -613,11 +633,25 @@ export function AddMarketplace({
 			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
 		else onClose();
 	}
+	const add = whenReady(canUseConnection, () => {
+		void submit();
+	});
+	const typed = MARKETPLACE_KINDS.find((option) => option.value === kind);
 	return (
 		<ModalSheet
 			title="Add marketplace"
 			onCancel={onClose}
-			onRequestClose={onClose}
+			cancelDisabled={busy}
+			done={{
+				label: busy ? "Adding…" : "Add",
+				disabled: disabled || !source.trim(),
+				busy,
+				onPress: add,
+			}}
+			onRequestClose={() => {
+				// A swipe down waits out an add in flight, as Cancel does.
+				if (!busy) onClose();
+			}}
 			accessory={
 				<>
 					<Text
@@ -635,71 +669,63 @@ export function AddMarketplace({
 				</>
 			}
 		>
-			<KeyboardAvoidingView style={styles.fill} enabled={Platform.OS === "android"} behavior="height">
-				<ScrollView
-					automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-					keyboardShouldPersistTaps="handled"
-					contentContainerStyle={{ padding: 20, gap: 12 }}
-				>
-					<View style={[styles.row, { flexWrap: "wrap" }]}>
-						{(["url", "github", "directory"] as const).map((value) => (
-							<Choice
-								key={value}
-								label={value === "url" ? "Git URL" : value === "github" ? "GitHub repository" : "Hub directory"}
-								selected={kind === value}
-								disabled={busy}
-								onPress={() => {
-									if (value === kind) return;
-									setKind(value);
-									setSource("");
-								}}
+			<GroupedPage scrollRef={page}>
+				<FormError error={error} />
+				<GroupGap />
+				<Segmented<MarketplaceKind>
+					label="Kind"
+					options={MARKETPLACE_KINDS}
+					value={kind}
+					disabled={busy}
+					onChange={(value) => {
+						// Segmented skips a tap on the chosen kind already; this keeps the
+						// source safe even so.
+						if (value === kind) return;
+						setKind(value);
+						setSource("");
+					}}
+				/>
+				{kind === "directory" ? (
+					<>
+						<GroupLabel>{`Directory on ${hubName}`}</GroupLabel>
+						<View style={{ marginHorizontal: space.margin }}>
+							<HubPathField
+								kind="dir"
+								client={client}
+								label="Marketplace source"
+								value={source}
+								onChange={setSource}
+								disabled={disabled}
 							/>
-						))}
-					</View>
-					<Copy>{kind === "url" ? "Git URL" : kind === "github" ? "owner/repo" : `Directory on ${hubName}`}</Copy>
-					{kind === "directory" ? (
-						<HubPathField
-							kind="dir"
-							client={client}
+						</View>
+						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
+					</>
+				) : (
+					<Group label={typed?.sourceLabel ?? ""}>
+						<TextFieldRow
 							label="Marketplace source"
-							value={source}
-							onChange={setSource}
-							disabled={disabled}
-						/>
-					) : (
-						<TextInput
-							accessibilityLabel="Marketplace source"
+							placeholder={typed?.placeholder}
 							value={source}
 							onChangeText={setSource}
-							editable={!busy}
-							autoCapitalize="none"
-							autoCorrect={false}
-							style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+							disabled={busy}
+							returnKeyType="next"
+							onSubmitEditing={() => nameInput.current?.focus()}
 						/>
-					)}
-					{kind === "directory" && <Copy muted>This path is on the hub, not this phone.</Copy>}
-					<Copy>Name (optional)</Copy>
-					<TextInput
-						accessibilityLabel="Marketplace name"
+					</Group>
+				)}
+				<Group label="Name">
+					<TextFieldRow
+						label="Marketplace name"
 						value={name}
 						onChangeText={setName}
-						editable={!busy}
-						autoCapitalize="none"
-						autoCorrect={false}
-						style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+						disabled={busy}
+						returnKeyType="done"
+						onSubmitEditing={add}
+						ref={nameInput}
 					/>
-					<ErrorMessage message={error} />
-					{busy && <ActivityIndicator accessibilityLabel="Adding marketplace" />}
-					<Action
-						disabled={disabled || !source.trim()}
-						onPress={whenReady(canUseConnection, () => {
-							void submit();
-						})}
-					>
-						Add marketplace
-					</Action>
-				</ScrollView>
-			</KeyboardAvoidingView>
+				</Group>
+				<GroupFooter>Optional.</GroupFooter>
+			</GroupedPage>
 		</ModalSheet>
 	);
 }

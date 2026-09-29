@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { CONTINUE_READING_MS, DocumentMemory, type DocumentKey, forgetDocuments } from "./documentMemory";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const plan: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/superpowers/plans/settle.md" };
 const other: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/design/flake-triage.md" };
 const leaving = (progress: number) => ({
