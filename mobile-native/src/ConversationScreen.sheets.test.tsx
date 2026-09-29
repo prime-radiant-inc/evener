@@ -61,7 +61,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -326,14 +325,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
-	if (!tasks) throw new Error("no Tasks item in the header menu");
-	act(() => tasks.onPress());
+	act(() => menuAction("Tasks").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
@@ -348,14 +340,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 	const { tree } = mount(withCapabilities({ sharedNotes: true }));
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
-	if (!notes) throw new Error("no Notes & links item in the header menu");
-	act(() => notes.onPress());
+	act(() => menuAction("Notes & links").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",
@@ -745,14 +730,14 @@ function sessionList(tree: ReturnType<typeof render>) {
 					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
 				}),
 			),
+		// As React Native does, the drag's end carries where it let go.
 		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() =>
-				list().props.onScroll({
-					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-				}),
-			);
-			act(() => list().props.onScrollEndDrag());
+			const event = {
+				nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			};
+			act(() => list().props.onScrollBeginDrag(event));
+			act(() => list().props.onScroll(event));
+			act(() => list().props.onScrollEndDrag(event));
 		},
 	};
 }
@@ -893,7 +878,11 @@ it("hides the chips only for the person's own drag, never for the app moving the
 	// A coast after the drag counts as the person's too.
 	act(() => session.list().props.onMomentumScrollBegin());
 	session.scroll(4010);
-	act(() => session.list().props.onMomentumScrollEnd());
+	act(() =>
+		session.list().props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 4010 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
 	expect(session.block().props.hidden).toBe(false);
 	tree.unmount();
 });

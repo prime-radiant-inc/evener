@@ -6,7 +6,7 @@ import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalControls } from "../approvalControls";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { dockBody, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import { ApprovalDock } from "./ApprovalDock";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -73,6 +73,16 @@ async function press(tree: ReactTestRenderer, label: string) {
 const readable = (tree: ReactTestRenderer) => renderedText(tree).replaceAll("\u200b", "");
 
 describe("the approval dock (spec 8.4)", () => {
+	it("scrolls what the sandbox blocked when the screen has less room, while Allow and Deny stay put", () => {
+		const { tree } = mount(request(), fakeControls());
+		const body = dockBody(tree, "approval-dock");
+		const scrolled = textOf(body.scroller).replaceAll("\u200b", "");
+		expect(scrolled).toContain("Wants to write outside the workspace");
+		expect(scrolled).toContain("write_file  /Users/jesse/sites/docs/index.html");
+		expect(scrolled).toContain("This session can only write inside its project folder.");
+		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
 	it("says what the sandbox blocked, and offers the one file", () => {
 		const { tree } = mount(request(), fakeControls());
 		const text = readable(tree);

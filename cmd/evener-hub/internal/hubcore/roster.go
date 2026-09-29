@@ -1457,43 +1457,27 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 	return out
 }
 
-// liveEntryFromProbe publishes a probe's answer as a roster entry. It copies
+// liveEntryFromProbe publishes a probe's answer as a roster entry. The shared
+// thread-row facts come through LiveEntryThreadFacts and the result copies
 // through CloneLiveEntry, so the roster never shares a slice, map or pointer
-// with the prober's result, and a field added to both types is copied in one
-// place.
+// with the prober's result, and a row fact added to both types is copied in
+// one place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
-	// CloneLiveEntry deep-copies the whole literal below before it returns, so
-	// a field assigned straight from result (PendingEscalations, Watches, and
-	// so on) is not aliasing the probe's copy: RoboRev has twice flagged this
-	// function on that mistaken reading.
-	return CloneLiveEntry(LiveEntry{
+	// LiveEntryThreadFacts returns a CloneLiveEntry copy, so a field assigned
+	// straight from result (PendingEscalations, Watches, and so on) does not
+	// alias the probe's copy.
+	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
-		Status:                result.Status,
 		ActiveFlags:           result.ActiveFlags,
-		PendingAsk:            result.PendingAsk,
-		PendingEscalation:     result.PendingEscalation,
-		PendingEscalations:    result.PendingEscalations,
-		PendingQuestion:       result.PendingQuestion,
-		Failure:               result.Failure,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
 		RunningSubagentStates: result.RunningSubagentStates,
-		RunningJobs:           result.RunningJobs,
-		CompletedJobs:         result.CompletedJobs,
 		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
-		Watches:               result.Watches,
 		ChildWatches:          result.ChildWatches,
-		Tasks:                 result.Tasks,
-		Activity:              result.Activity,
-		Subagents:             result.Subagents,
-		LastTurnEndedAt:       result.LastTurnEndedAt,
-		Profile:               result.Profile,
-		LastMessage:           result.LastMessage,
-		CurrentModel:          result.CurrentModel,
-	})
+	}, result)
 }
 
 // RefreshEntry confirms one freshly spawned daemon without depending on other
@@ -1551,23 +1535,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || root.ID != entry.ThreadID || statusThreadID(root) == "" || (entry.SessionID != "" && statusThreadID(root) != entry.SessionID) {
 		return response, errors.New("spawned daemon read did not confirm its identity")
 	}
-	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
-	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
-		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		PendingEscalations: root.Evener.PendingEscalations,
-		PendingQuestion:    root.Evener.PendingQuestion,
-		Failure:            root.Evener.Failure,
-		LastMessage:        root.Evener.LastMessage,
-		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
-		Watches: diagnosticsWatches(root.Evener.Diagnostics),
-		Tasks:   root.Evener.Tasks,
-		// The identity checks above already require a current-protocol daemon,
-		// and every current daemon stamps its capability set on the thread
-		// projection this read answered from, so the caps beside the status
-		// are the daemon's own answer — not an approximation.
-		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
-		Profile: root.Evener.Profile, CurrentModel: root.ModelProvider}
+	result := ProbeResultFromThread(root)
+	result.OK = true
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

@@ -19,7 +19,8 @@ import { builtinComposerItems, type ComposerCommandSession } from "../composerCo
 import { useConnection } from "../ConnectionProvider";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 

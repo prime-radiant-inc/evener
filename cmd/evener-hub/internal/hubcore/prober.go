@@ -139,44 +139,87 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	sort.Strings(runningSubagentIDs)
 
-	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	// Lifecycle status is the explicit typed input to retirement UI: a
 	// detached control read that never marks activity. A failed lifecycle
 	// probe (older daemon, mid-restart race) clears current capability — it
 	// never changes process ownership or this probe's residency verdict.
 	lifecycle, lifecycleFresh := probeDaemonLifecycle(ctx, appClient)
+	result := ProbeResultFromThread(root)
+	result.RunningSubagentIDs = runningSubagentIDs
+	result.RunningSubagentStates = runningSubagentStates
+	result.ChildWatches = childWatches
+	result.Lifecycle = lifecycle
+	result.LifecycleFresh = lifecycleFresh
+	result.OK = true
+	return result
+}
+
+// ProbeResultFromThread builds the ProbeResult fields a single thread
+// projection carries, from its root row. The full probe (over its listed
+// root), ReadSpawnedThread and package hub's remote tree row all read a
+// thread's facts through it, so a field a row reads from the thread is set on
+// every path at once instead of being listed per caller and missed on one
+// (#2962, #2638). The caller adds the fields the thread row alone cannot
+// answer: descendant IDs and states, child watches, the daemon lifecycle, and
+// OK.
+func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	var subagents appwire.SubagentTally
 	if root.Evener.Subagents != nil {
 		subagents = *root.Evener.Subagents
 	}
+	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	return ProbeResult{
-		SessionID:             rootID,
-		Status:                root.Status.Type,
-		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:            root.Evener.AskPending,
-		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
-		PendingEscalations:    root.Evener.PendingEscalations,
-		PendingQuestion:       root.Evener.PendingQuestion,
-		Failure:               root.Evener.Failure,
-		Capabilities:          root.Evener.Capabilities,
-		CapabilitiesKnown:     true,
-		RunningSubagentIDs:    runningSubagentIDs,
-		RunningSubagentStates: runningSubagentStates,
-		RunningJobs:           runningJobs,
-		CompletedJobs:         completedJobs,
-		Lifecycle:             lifecycle,
-		LifecycleFresh:        lifecycleFresh,
-		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
-		ChildWatches:          childWatches,
-		Tasks:                 root.Evener.Tasks,
-		Activity:              root.Evener.Activity,
-		Subagents:             subagents,
-		LastTurnEndedAt:       UnixMilliTime(root.Evener.LastTurnEndedAt),
-		Profile:               root.Evener.Profile,
-		LastMessage:           root.Evener.LastMessage,
-		CurrentModel:          root.ModelProvider,
-		OK:                    true,
+		SessionID:          statusThreadID(root),
+		Status:             root.Status.Type,
+		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
+		PendingAsk:         root.Evener.AskPending,
+		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations: root.Evener.PendingEscalations,
+		PendingQuestion:    root.Evener.PendingQuestion,
+		Failure:            root.Evener.Failure,
+		// Both callers read a current-protocol daemon's own thread projection,
+		// which stamps the capability set beside the status, so the caps are the
+		// daemon's answer — not an approximation.
+		Capabilities:      root.Evener.Capabilities,
+		CapabilitiesKnown: true,
+		RunningJobs:       runningJobs,
+		CompletedJobs:     completedJobs,
+		Watches:           diagnosticsWatches(root.Evener.Diagnostics),
+		Tasks:             root.Evener.Tasks,
+		Activity:          root.Evener.Activity,
+		Subagents:         subagents,
+		LastTurnEndedAt:   UnixMilliTime(root.Evener.LastTurnEndedAt),
+		Profile:           root.Evener.Profile,
+		LastMessage:       root.Evener.LastMessage,
+		CurrentModel:      root.ModelProvider,
 	}
+}
+
+// LiveEntryThreadFacts copies the thread-row facts a ProbeResult carries onto
+// in, so every hub row that reads a thread projection fills them the same way:
+// the ask flag, escalation cards, jobs, watches, turn end and tasks, beside
+// the row's other summary fields. The caller keeps the fields only a local
+// probe answers — Capabilities, CapabilitiesKnown and ActiveFlags — as it holds
+// them, so a remote row leaves those absent. The result is a CloneLiveEntry
+// copy, so the row never aliases the probe's slices or pointers. (#2638)
+func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
+	in.Status = r.Status
+	in.PendingAsk = r.PendingAsk
+	in.PendingEscalation = r.PendingEscalation
+	in.PendingEscalations = r.PendingEscalations
+	in.PendingQuestion = r.PendingQuestion
+	in.Failure = r.Failure
+	in.RunningJobs = r.RunningJobs
+	in.CompletedJobs = r.CompletedJobs
+	in.Watches = r.Watches
+	in.Tasks = r.Tasks
+	in.Activity = r.Activity
+	in.Subagents = r.Subagents
+	in.LastTurnEndedAt = r.LastTurnEndedAt
+	in.Profile = r.Profile
+	in.LastMessage = r.LastMessage
+	in.CurrentModel = r.CurrentModel
+	return CloneLiveEntry(in)
 }
 
 // probeRootSessionID names the session whose row in the probe's list is the
@@ -265,13 +308,6 @@ func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.Evener
 		return nil
 	}
 	return diagnostics.Watches
-}
-
-// DiagnosticsWatches is the exported form of diagnosticsWatches, shared with
-// package hub's own tree projection so the two cannot drift. It is the same
-// logic; the package-local name stays for the existing in-package callers.
-func DiagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	return diagnosticsWatches(diagnostics)
 }
 
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal

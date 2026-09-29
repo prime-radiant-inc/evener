@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage as memory } from "../syncStringStorageTestUtils";
 import { BoardHold, boardHoldKey, type HeldAction, heldFor, turnSeen, turnStillSeen, waitingLine } from "./boardHold";
 
-function memory(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const archive = (ref: string, archived = true): HeldAction => ({
 	kind: "archive",
 	ref,

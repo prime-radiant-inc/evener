@@ -3,7 +3,7 @@
 // Only native edges are mocked.
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { ActionSheetIOS, Platform } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
@@ -234,6 +234,20 @@ describe("your note (spec 8.8)", () => {
 		expect(renderedText(tree)).toContain("Saves in 10 seconds, or when you close this.");
 	});
 
+	it("announces each change to the status line, since iOS ignores accessibilityLiveRegion (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		provide(session());
+		const tree = sheet();
+		// The standing explanation is the first render, not a change: quiet.
+		expect(announce).not.toHaveBeenCalled();
+		// Editing still shows the same explanation, so still nothing to say.
+		act(() => editor(tree)?.props.onChangeText("draft"));
+		expect(announce).not.toHaveBeenCalled();
+		act(() => editor(tree)?.props.onBlur());
+		expect(announce).toHaveBeenCalledWith("Saves in 10 seconds, or when you close this.");
+	});
+
 	it("says the agent is told when the agent is working", () => {
 		provide(session({ status: { type: "active" } as ThreadModel["status"] }));
 		expect(renderedText(sheet())).toContain("Your note stays on this session. The agent is told when it changes.");
@@ -332,8 +346,7 @@ describe("links", () => {
 			hubId: HUB,
 			sessionRef: REF,
 			path: "docs/plan.md",
-			reviewRef: REF,
-			reviewTitle: "Fix race",
+			sessionTitle: "Fix race",
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
 		expect(browser.openBrowserAsync).not.toHaveBeenCalled();

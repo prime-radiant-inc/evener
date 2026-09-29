@@ -250,11 +250,12 @@ type NavigationSubagentTally struct {
 const NavigationFailureCrashed = "crashed"
 
 // NavigationFailure says why a Failed row failed (S1c): the failure's headline
-// ("Provider error", "Usage limit reached") and its cause's kind ("provider",
-// "transcript_failed_closed", or the hub's own NavigationFailureCrashed), the
-// provider it came from and its HTTP status, from which a client composes the
-// row's why line ("codex-jesse-fsck.com sign-in expired (401)"). It never
-// carries the failure's message, which can quote a provider's error body.
+// ("Provider error", "Usage limit reached", "Sign-in required") and its cause's
+// kind ("provider", "signInRequired", "transcript_failed_closed", or the hub's
+// own NavigationFailureCrashed), the provider it came from and its HTTP status,
+// from which a client composes the row's why line ("codex-jesse-fsck.com
+// sign-in expired (401)"). It never carries the failure's message, which can
+// quote a provider's error body.
 type NavigationFailure struct {
 	Title     string `json:"title,omitempty"`
 	CauseKind string `json:"cause_kind,omitempty"`

@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -172,21 +171,6 @@ type hostManagerConfig struct {
 	// epoch is the durable probe epoch the plan persisted first, presented on
 	// the wire (never a default, never absent).
 	planProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error)
-	// orphanVerify is `evener/host/orphan-resolve`'s boundary enumeration seam
-	// (crash-fencing spec 08c §5): the read-only clean-rule check over a record's
-	// persisted boundary before the resolve's one atomic write, nil only when the
-	// boundary is proven clean. Nil takes verifyOrphanRecord's production
-	// default: the hostfence local clean rule for the local arms, the
-	// helper-gated lease enumeration for a remote-fencing record, and a
-	// fail-closed "enumeration unavailable" wherever neither can run.
-	orphanVerify func(ctx context.Context, record hostops.Record) error
-	// orphanFenceRunner returns the one-shot remote-command runner the resolve's
-	// remote-fencing arm uses (see hubcore.WebConfig). Nil leaves that arm's
-	// enumeration unavailable, which fails closed.
-	orphanFenceRunner func(host string) hostfence.Runner
-	// orphanAttestationMaxAge is §5's owner-set maximum attestation age; zero
-	// takes the shipped default (one hour). See OrphanResolve.
-	orphanAttestationMaxAge time.Duration
 	// planControllerDirty reports whether the running controller's build is
 	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
 	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
@@ -200,9 +184,9 @@ type hostManagerConfig struct {
 	// try-acquires rather than proceeding ungated.
 	gate hostops.Gate
 	// bootID identifies this controller process incarnation for the durable
-	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2; crash-fencing
-	// spec §4). Empty refuses the probe: an epoch that cannot be bound to a boot
-	// is not a fencible epoch.
+	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2). Empty
+	// refuses the probe: an epoch that cannot be bound to a boot is not a
+	// usable epoch.
 	bootID string
 	// probeTimeout bounds one evener/host/running round trip in the plan's
 	// gated probe (§6 step 2's "explicit owner-adjustable probe timeout").
@@ -261,8 +245,8 @@ type hostManagerConfig struct {
 	// runningProbeMu serializes evener/host/running's admission-plus-probe
 	// window: the guard epoch row is hub-wide, so a concurrent call must not
 	// advance the admitted epoch while another call is still probing under the
-	// epoch it admitted (the fencing slice replaces this with the remote
-	// guard/lease protocol).
+	// epoch it admitted. (The remote guard/lease protocol an earlier revision
+	// named here was withdrawn with the crash-fencing program, comp08.)
 	runningProbeMu sync.Mutex
 	// state retains per-host attach state from the manager's lifecycle
 	// events plus the last-known facts of the last attached render, so
@@ -1448,46 +1432,29 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts, _ = hostreg.New(nil)
 	}
 	m := &hubHostManager{cfg: &hostManagerConfig{
-		hosts:                   hosts,
-		store:                   &hostStore{},
-		configPath:              strings.TrimSpace(configPath),
-		ops:                     cfg.RemoteHostOpsStore,
-		sources:                 sources,
-		remoteCache:             cfg.RemoteThreadCache,
-		manager:                 manager,
-		client:                  cfg.RemoteHostClient,
-		online:                  cfg.RemoteHostOnline,
-		clientIfAttached:        cfg.RemoteHostClientIfAttached,
-		handshake:               cfg.RemoteHostHandshake,
-		facts:                   cfg.RemoteHostFacts,
-		planFacts:               cfg.RemoteHostPlanFacts,
-		planProbe:               cfg.RemoteHostPlanProbe,
-		orphanVerify:            cfg.RemoteHostOrphanVerify,
-		orphanFenceRunner:       cfg.RemoteHostOrphanFenceRunner,
-		orphanAttestationMaxAge: cfg.HostOrphanAttestationMaxAge,
-		gate:                    hostGateFor(manager),
-		bootID:                  strings.TrimSpace(cfg.HubBootID),
-		probeTimeout:            hostProbeTimeoutFor(cfg.HostProbeTimeout),
-		running:                 newHostRunningConfig(cfg),
-		state:                   newHostAttachState(),
-		mutating:                map[string]struct{}{},
-		policy:                  hostRecordPolicyFor(cfg),
-		logf:                    logf,
+		hosts:            hosts,
+		store:            &hostStore{},
+		configPath:       strings.TrimSpace(configPath),
+		ops:              cfg.RemoteHostOpsStore,
+		sources:          sources,
+		remoteCache:      cfg.RemoteThreadCache,
+		manager:          manager,
+		client:           cfg.RemoteHostClient,
+		online:           cfg.RemoteHostOnline,
+		clientIfAttached: cfg.RemoteHostClientIfAttached,
+		handshake:        cfg.RemoteHostHandshake,
+		facts:            cfg.RemoteHostFacts,
+		planFacts:        cfg.RemoteHostPlanFacts,
+		planProbe:        cfg.RemoteHostPlanProbe,
+		gate:             hostGateFor(manager),
+		bootID:           strings.TrimSpace(cfg.HubBootID),
+		probeTimeout:     hostProbeTimeoutFor(cfg.HostProbeTimeout),
+		running:          newHostRunningConfig(cfg),
+		state:            newHostAttachState(),
+		mutating:         map[string]struct{}{},
+		policy:           hostRecordPolicyFor(cfg),
+		logf:             logf,
 	}}
-	// The resolve's remote-fencing arm rides the manager's existing ssh process
-	// seam: the helper self-test and lease enumeration are read-only, so the
-	// runner presents no epoch and writes no controller state (crash-fencing
-	// spec 08c §5/§6). A hub with no manager leaves the arm unavailable, which
-	// fails closed.
-	if m.cfg.orphanFenceRunner == nil && manager != nil {
-		m.cfg.orphanFenceRunner = func(name string) hostfence.Runner {
-			entry, ok := hosts.Get(name)
-			if !ok {
-				return nil
-			}
-			return manager.FenceCommandRunnerFor(entry)
-		}
-	}
 	// The remnant fence is wired to the real record set (registry spec 08 §6):
 	// every gate that consults it — the retention and capacity exemptions, the
 	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the
@@ -1668,12 +1635,10 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			m.materializeHostRecords(fileRecords, hasFile)
 		}
 	}
-	// Spec 08b §7's remaining boot passes, in their fixed order, before the
+	// Spec 08b §7's boot passes, in their fixed order, before the
 	// manager serves: the tombstone-derived host-removed pass, the bidirectional
 	// generation-mirror reconciliation, and the cross-file intent
-	// reconciliation (§9). The local orphan-boundary reap (crash-fencing §3,
-	// S19) runs FIRST in the full order, at the store open — see the named seam
-	// in main.go's openHostOpsStore.
+	// reconciliation (§9).
 	m.reconcilePipelineBoot()
 	return m
 }
@@ -2081,11 +2046,6 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostTeardownRecover, hostManageHandler(func(ctx context.Context, params appwire.HostTeardownRecoverParams) (appwire.HostTeardownRecoverResult, error) {
 		return m.TeardownRecover(ctx, params)
 	}))
-	// orphan-resolve is the fencing surface's operator way out (crash-fencing
-	// spec 08c §5): controller-local like the repair mutations beside it — it
-	// acts on this hub's own operation store — and never added to
-	// remoteHostAdminMethods (pinned by TestHostRecoveryMutationsNotForwarded).
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostOrphanResolve, hostManageHandler(m.OrphanResolve))
 	// evener/host/plan rides the same manager and the same registration-time
 	// origin guard the settings mutations do (app_host_ops.go): plan is a
 	// mutation — it mints and persists the confirmation token — so it admits
@@ -3031,12 +2991,6 @@ func sortedMapKeys[V any](m map[string]V) []string {
 // (§9), which runs the compensation arms before the generic intent rules. Each
 // pass writes nothing when it finds nothing to converge, so an untouched file
 // stays byte-identical.
-//
-// BOUNDARY (S19): crash-fencing §3's safety-critical local reap of the store's
-// local orphan boundary runs FIRST in the full boot order, before this pass —
-// at the store open (`openHostOpsStore` in main.go), where the named seam
-// `reapLocalOrphanBoundary` sits. S19 fills that seam; nothing here does its
-// work.
 func (m *hubHostManager) reconcilePipelineBoot() {
 	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return

@@ -2,7 +2,7 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import { delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
+import { delegateTiming, type EvenerDelegateInfo, stableDelegateDisplayStatus } from "@evener/appwire-client";
 import { projectDelegateEntry } from "../../../mobile/src/services/activity";
 import { hubTime } from "../board/attention";
 import type { TimelineRow } from "../timeline";
@@ -12,7 +12,7 @@ type Activity = Extract<TimelineRow, { kind: "activity" }>;
 
 export interface SubagentLine {
 	title: string;
-	state: "running" | "failed" | "done";
+	state: "running" | "failed" | "stopped" | "done";
 	stateText: string;
 	activity?: string;
 	/** The subagent's own transcript, which tapping the row opens. */
@@ -23,7 +23,11 @@ export interface SubagentLine {
  * liveness threshold, ruling 10). */
 const QUIET_AFTER_MS = 20_000;
 
+// A stop, the parent's or the user's, ends a subagent without failing it.
+const STOPPED = new Set(["stopped", "cancelled", "canceled"]);
+
 function stateOf(delegate: EvenerDelegateInfo): SubagentLine["state"] {
+	if (STOPPED.has(stableDelegateDisplayStatus(delegate) ?? "")) return "stopped";
 	const { tone } = projectDelegateEntry(delegate);
 	return tone === "running" ? "running" : tone === "failed" ? "failed" : "done";
 }
@@ -32,9 +36,15 @@ function stateFromRow(row: Activity): SubagentLine["state"] {
 	return row.state === "running" ? "running" : row.state === "failed" ? "failed" : "done";
 }
 
-function titleOf(row: Activity, delegate: EvenerDelegateInfo | undefined): string {
+/** A subagent's title from its own record: its description, else its task's
+ * first line. Undefined when it has neither. */
+export function delegateTitle(delegate: EvenerDelegateInfo | undefined): string | undefined {
 	const task = delegate?.task?.split("\n")[0]?.trim();
-	return delegate?.description?.trim() || task || row.detail.description?.trim() || "Subagent";
+	return delegate?.description?.trim() || task || undefined;
+}
+
+function titleOf(row: Activity, delegate: EvenerDelegateInfo | undefined): string {
+	return delegateTitle(delegate) || row.detail.description?.trim() || "Subagent";
 }
 
 export function subagentLine(

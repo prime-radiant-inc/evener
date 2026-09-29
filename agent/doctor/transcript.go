@@ -152,6 +152,9 @@ type TurnSummary struct {
 	ToolCalls   []ToolCallSummary   `json:"tool_calls,omitempty"`
 	ToolResults []ToolResultSummary `json:"tool_results,omitempty"`
 	Text        string              `json:"text,omitempty"`
+	// SteeringSource carries a steering turn's provenance so a caller can tell
+	// whether the person spoke or the harness did. Empty on non-steering turns.
+	SteeringSource string `json:"steering_source,omitempty"`
 }
 
 // TranscriptResult is the rendered transcript with an honest elision footer:
@@ -222,7 +225,12 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 }
 
 func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int) TurnSummary {
-	ts := TurnSummary{Index: index, Kind: string(e.Turn.Kind), Role: string(e.Turn.Message.Role)}
+	ts := TurnSummary{
+		Index:          index,
+		Kind:           string(e.Turn.Kind),
+		Role:           string(e.Turn.Message.Role),
+		SteeringSource: e.Turn.SteeringSource,
+	}
 	var text strings.Builder
 	for _, part := range e.Turn.Message.Content {
 		switch part.Kind {

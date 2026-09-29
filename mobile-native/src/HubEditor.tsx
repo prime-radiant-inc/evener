@@ -1,10 +1,24 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Switch, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { HoldingModal } from "./alerts/HoldingModal";
+import type { TextInput } from "react-native";
 import type { HubProfile, HubUpdate } from "./connection";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	Row,
+	SwitchRow,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
+import { ModalSheet } from "./sheet/ModalSheet";
 
+const TOKEN_REPLACED = "Leave empty to remove the saved token.";
+const TOKEN_KEPT = "The saved token will be kept.";
+
+/** Edit hub (spec 12, Hubs): the saved hub's name, its address to read, and
+ * its token, replaced only when asked. */
 export function HubEditor({
 	profile,
 	save,
@@ -14,16 +28,17 @@ export function HubEditor({
 	save: (id: string, update: HubUpdate) => Promise<void>;
 	close: () => void;
 }) {
-	const colors = useColors();
 	const [name, setName] = useState(profile.name);
 	const [replaceToken, setReplaceToken] = useState(false);
 	const [token, setToken] = useState("");
 	const [saving, setSaving] = useState(false);
 	const pending = useRef(false);
-	const [error, setError] = useState<string | null>(null);
-	const inputStyle = [styles.input, { color: colors.text, borderColor: colors.border }];
+	const [error, setError] = useFormError();
+	const tokenInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	async function submit() {
-		if (pending.current) return;
+		// The return key reaches here too, so it holds a blank name as Save does.
+		if (pending.current || !name.trim()) return;
 		pending.current = true;
 		setSaving(true);
 		setError(null);
@@ -37,75 +52,58 @@ export function HubEditor({
 			setSaving(false);
 		}
 	}
+	// A save in flight finishes before the editor can close.
+	function cancel() {
+		if (!pending.current) close();
+	}
 	return (
-		<HoldingModal
-			animationType="slide"
-			presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
-			onRequestClose={() => {
-				if (!pending.current) close();
+		<ModalSheet
+			title="Edit hub"
+			onCancel={cancel}
+			cancelDisabled={saving}
+			done={{
+				label: saving ? "Saving…" : "Save",
+				disabled: saving || !name.trim(),
+				busy: saving,
+				onPress: () => void submit(),
 			}}
+			onRequestClose={cancel}
 		>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-				<View style={[styles.row, { paddingHorizontal: 20, paddingVertical: 8 }]}>
-					<View style={styles.fill}>
-						<Copy>Edit hub</Copy>
-					</View>
-					<Action disabled={saving} onPress={close}>
-						Cancel
-					</Action>
-				</View>
-				<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-					<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
-						<TextInput
-							accessibilityLabel="Hub name"
-							value={name}
-							onChangeText={setName}
-							editable={!saving}
-							style={inputStyle}
+			<GroupedPage scrollRef={page}>
+				<FormError error={error} />
+				<Group label="Name">
+					<TextFieldRow
+						label="Hub name"
+						value={name}
+						onChangeText={setName}
+						machine={false}
+						disabled={saving}
+						returnKeyType={replaceToken ? "next" : "done"}
+						onSubmitEditing={replaceToken ? () => tokenInput.current?.focus() : () => void submit()}
+					/>
+				</Group>
+				<Group label="Address">
+					<Row label={profile.origin} machineLabel accessibilityLabel={`Address, ${profile.origin}`} />
+				</Group>
+				<GroupFooter>To connect to another address, add a separate hub.</GroupFooter>
+				<Group label="Token">
+					<SwitchRow label="Replace saved token" value={replaceToken} disabled={saving} onChange={setReplaceToken} />
+					{replaceToken ? (
+						<TextFieldRow
+							label="New bearer token"
+							placeholder="New bearer token"
+							value={token}
+							onChangeText={setToken}
+							secure
+							disabled={saving}
+							returnKeyType="done"
+							onSubmitEditing={() => void submit()}
+							ref={tokenInput}
 						/>
-						<Copy muted>{profile.origin}</Copy>
-						<Copy muted>To connect to another address, add a separate hub.</Copy>
-						<View style={[styles.row, { justifyContent: "space-between" }]}>
-							<Copy>Replace saved token</Copy>
-							<Switch
-								accessibilityLabel="Replace saved token"
-								value={replaceToken}
-								disabled={saving}
-								onValueChange={setReplaceToken}
-							/>
-						</View>
-						{replaceToken ? (
-							<>
-								<TextInput
-									accessibilityLabel="New bearer token"
-									placeholder="New bearer token"
-									placeholderTextColor={colors.secondary}
-									value={token}
-									onChangeText={setToken}
-									editable={!saving}
-									secureTextEntry
-									autoCapitalize="none"
-									autoCorrect={false}
-									style={inputStyle}
-								/>
-								<Copy muted>Leave empty to remove the saved token.</Copy>
-							</>
-						) : (
-							<Copy muted>The saved token will be kept.</Copy>
-						)}
-						<ErrorMessage message={error} />
-						<Action
-							tone="primary"
-							disabled={saving || !name.trim()}
-							onPress={() => {
-								void submit();
-							}}
-						>
-							{saving ? "Saving…" : "Save changes"}
-						</Action>
-					</ScrollView>
-				</KeyboardAvoidingView>
-			</SafeAreaView>
-		</HoldingModal>
+					) : null}
+				</Group>
+				<GroupFooter>{replaceToken ? TOKEN_REPLACED : TOKEN_KEPT}</GroupFooter>
+			</GroupedPage>
+		</ModalSheet>
 	);
 }

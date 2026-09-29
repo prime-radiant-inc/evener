@@ -563,6 +563,13 @@ it("drops answers for the host it just left (Review Focus 2)", async () => {
 	expect(calls.some((c) => (c.params as { method?: string }).method === "model/list")).toBe(false);
 });
 
+it("drops the host-change line once you choose a project yourself", async () => {
+	const { store } = setup();
+	store.setState({ hostNote: "evener isn't on paradise-park, so the project changed to docs." });
+	await store.getState().setCwd("/Users/jesse/git/evener", false);
+	expect(store.getState().hostNote).toBeNull();
+});
+
 it("applies a setup and settles its model against the host's list", async () => {
 	const { store, calls } = setup();
 	store.getState().applySetup({

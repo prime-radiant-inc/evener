@@ -2017,8 +2017,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = screen.getByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(fake.calls.find((c) => c.method === "turn/drainAsSteer")?.params).toMatchObject({ ref: "ref_a" });
   });
 
@@ -2071,10 +2071,11 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // Settling the drain's work inside the act keeps its re-renders inside
-      // it, and the drain's request has gone out by the time the flush returns.
-      await flushPendingTurnsProjectionForTests();
+      // Settling the drain's work after this act keeps its re-renders inside the
+      // flush's own act, and the drain's request has gone out by the time the
+      // flush returns.
     });
+    await flushPendingTurnsProjectionForTests();
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
     expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
@@ -2128,9 +2129,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
   });
@@ -2165,9 +2166,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
 
     await screen.findByText(/image attachment is still processing/i);
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);

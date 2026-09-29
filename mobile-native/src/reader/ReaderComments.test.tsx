@@ -168,7 +168,7 @@ beforeEach(() => {
 		index: 2,
 		routes: [
 			{ key: "board", name: "Sessions" },
-			{ key: "coord", name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Coordinator" } },
+			{ key: "fix", name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ key: "reader-1", name: "Reader" },
 		],
 	};
@@ -205,8 +205,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 		...extra,
 	};
 	const element = (
@@ -282,8 +281,7 @@ describe("comments (Task 16)", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: PATH,
-			reviewRef: "local:coord",
-			reviewTitle: "Coordinator",
+			sessionTitle: "Fix race",
 			...over,
 		};
 		return mountSheet(
@@ -368,8 +366,7 @@ describe("comments (Task 16)", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: PATH,
-			reviewRef: "local:coord",
-			reviewTitle: "Coordinator",
+			sessionTitle: "Fix race",
 		});
 	});
 
@@ -447,7 +444,7 @@ describe("comments (Task 16)", () => {
 	it("quotes a block in a reply to its review session", async () => {
 		const { tree, navigation } = await mount();
 		choose(openMenu(tree, 1), "Quote in reply");
-		expect(takeQuote("studio", "local:coord")).toBe(goal.text);
+		expect(takeQuote("studio", "local:fix")).toBe(goal.text);
 		expect(navigation.pop).toHaveBeenCalledWith(1);
 	});
 
@@ -460,8 +457,8 @@ describe("comments (Task 16)", () => {
 	// A running subagent's session read carries no capabilities (ruling 30),
 	// so its document collects comments and offers Send review only once the
 	// session can take a message. The review goes to the session the document
-	// was opened in (ruling 16), so both refs name it.
-	const ownSession = { reviewRef: "local:fix", reviewTitle: "Fix race" };
+	// was opened in (ruling 16), the one whose ref the Reader reads it from.
+	const ownSession = { sessionTitle: "Fix race" };
 
 	it("offers Send review, in the bar and the Comments sheet, only while the review session can take a message", async () => {
 		memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." });

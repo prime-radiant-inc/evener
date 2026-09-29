@@ -1002,8 +1002,14 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 	if cfg.Logf != nil {
 		return cfg.Logf
 	}
+	// Resolve the sink once, when the logger is built, not per call. A server
+	// goroutine outlives the test that started it, so reading the mutable
+	// os.Stderr global from it races any test that redirects os.Stderr
+	// (captureHubStderr, issue #2783). The startup path sets the sink before
+	// any server runs, so this captures the same destination it always wanted.
+	stderr := os.Stderr
 	return func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
 	}
 }
 
@@ -1189,14 +1195,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		wirePluginStoreBroadcast(mgr, server)
 	}
 	cfg.PluginManager = mgr
-	// §8's admission fence is installed BEFORE registerThreadHandlers below:
-	// that call captures cfg by value, and the thread-list handler's explicit
-	// SourceIDs attach dials through dialRemoteHost with its own cfg copy — the
-	// second attach trigger, which must refuse while a name is quarantined or
-	// orphan-fenced. Installing it here also covers the attach handler's later
-	// by-value capture. It reads the operation store directly (the manager is
-	// not built yet); a hub without one fences nothing.
-	cfg.HostOrphanFence = func(name string) error { return orphanAdmissionRefusalFor(cfg.RemoteHostOpsStore, name) }
 	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
@@ -1251,9 +1249,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// afterwards would leave the handler reading an empty seam and dialing over
 	// a host whose teardown is still open.
 	cfg.HostRemnantFence = hostManage.openRemnantID
-	// The orphan fence seam was installed earlier (before registerThreadHandlers,
-	// whose by-value cfg copy the thread-list dial path uses); the attach handler
-	// registered below captures the same seam.
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.

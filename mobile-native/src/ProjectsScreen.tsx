@@ -1,7 +1,7 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, View } from "react-native";
+import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -158,24 +158,19 @@ export function PageList<T>({
 	access.current = { rowKey, childRows };
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
-	const [refreshing, setRefreshing] = useState(false);
 	const [loadingMore, setLoadingMore] = useState(false);
+	// iOS ignores accessibilityLiveRegion, so announce the longer list's arrival
+	// there; Android reads the polite region on its own, and announcing too would
+	// say it twice. loadingMore starts false, so the first render stays quiet (#2903).
+	useEffect(() => {
+		if (loadingMore && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility("Loading more…");
+	}, [loadingMore]);
 	const revealEpoch = useRef(revealRequest);
 	revealEpoch.current = revealRequest;
 	function refreshList() {
 		if (revealRef) setRevealRequest((value) => value + 1);
 		void actions?.reconcile();
 	}
-	const refreshPages = useCallback(async () => {
-		if (!ready) return;
-		setRefreshing(true);
-		try {
-			if (actions) await actions.reconcile();
-			else await pages.refresh();
-		} finally {
-			setRefreshing(false);
-		}
-	}, [actions, pages, ready]);
 	const requestMore = useCallback(
 		(allowError = false) => {
 			const current = pages.getSnapshot();
@@ -302,10 +297,6 @@ export function PageList<T>({
 				}}
 				data={rows}
 				keyExtractor={({ item }) => rowKey(item)}
-				refreshing={refreshing}
-				onRefresh={() => {
-					void refreshPages();
-				}}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}

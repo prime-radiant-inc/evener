@@ -1,8 +1,7 @@
 import { Text } from "react-native";
-import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
-import { FloatingStack } from "./FloatingStack";
+import { FloatingStack, transcriptEndRoomAt } from "./FloatingStack";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -24,21 +23,16 @@ describe("what floats above the transcript's end", () => {
 		expect(slots[1].props.style).toMatchObject({ paddingHorizontal: 16 });
 	});
 
-	it("says how tall it stands, so the transcript can keep its end clear of it", () => {
-		const heights: number[] = [];
-		const tree = render(
-			<FloatingStack toast={null} next={<Text>next</Text>} pill={null} onHeight={(height) => heights.push(height)} />,
-		);
-		act(() => {
-			column(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 44 } } });
-		});
-		expect(heights).toEqual([44]);
-	});
-
 	it("leaves out what doesn't show, so what does keeps its 10pt", () => {
 		const tree = render(<FloatingStack toast={null} next={<Text>next</Text>} pill={null} />);
 		const slots = column(tree).children as ReturnType<typeof column>[];
 		expect(slots).toHaveLength(1);
 		expect(slots[0].props.style).toMatchObject({ alignItems: "flex-end" });
+	});
+
+	it("has the transcript keep 60pt at its end, grown with the text size and never less, to clear Next", () => {
+		expect(transcriptEndRoomAt(0.82)).toBe(60);
+		expect(transcriptEndRoomAt(1)).toBe(60);
+		expect(transcriptEndRoomAt(1.5)).toBe(90);
 	});
 });

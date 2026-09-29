@@ -1,15 +1,8 @@
 import { expect, it } from "vitest";
 import { readJson, removeKeys, writeJson } from "./deviceStorage";
 import type { SyncStringStorage } from "./syncStringStorage";
+import { memoryStorage } from "./syncStringStorageTestUtils";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const broken: SyncStringStorage = {
 	getItemSync: () => {
 		throw new Error("disk");

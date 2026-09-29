@@ -538,8 +538,8 @@ func appendPendingRecordLocked(next *snapshot, req OperationCreateRequest, epoch
 	return record, nil
 }
 
-// fencingEpochJSON renders the worker's fencing epoch (crash-fencing spec §4's
-// (controller boot id, per-host op sequence) pair) in the record's raw field.
+// fencingEpochJSON renders the worker's epoch (the controller boot id plus
+// per-host op sequence pair) in the record's raw field.
 func fencingEpochJSON(bootID string, opSeq uint64) json.RawMessage {
 	raw, err := json.Marshal(GuardEpoch{BootID: bootID, OpSeq: opSeq})
 	if err != nil {
@@ -572,7 +572,7 @@ func validateOperationCreateRequest(req OperationCreateRequest) error {
 // (controller boot id, per-host op sequence) pair the store writes, so a caller
 // never has to decode the record's raw field itself. ok is false for a record
 // this store did not create (the field is empty), which a caller must treat as
-// "no fencible epoch", never as a zero one.
+// "no bound epoch", never as a zero one.
 func (r Record) FencingEpochValue() (GuardEpoch, bool) {
 	if len(r.FencingEpoch) == 0 {
 		return GuardEpoch{}, false
@@ -672,13 +672,6 @@ func (s *Store) interruptInFlight(note string) (int, error) {
 	for i := range next.Records {
 		record := &next.Records[i]
 		if !record.State.InFlight() {
-			continue
-		}
-		// §3/§7: a record whose spawn intent is still open is fenced, not
-		// interrupted. A shutdown that moved it to `interrupted` would drop the
-		// fence while the boundary may still hold the orphan; the boot reap
-		// resolves the record instead, on evidence.
-		if len(record.PendingSpawns) > 0 {
 			continue
 		}
 		record.State = StateInterrupted

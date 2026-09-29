@@ -41,12 +41,11 @@ package hub
 //     changed-entry refusal and the async debounced reconcile are the read
 //     path's own slice. The `concurrent-edit` type is defined here because the
 //     commit path needs it; the read path does not consult it yet.
-//   - Fencing execution (crash-fencing spec §3-§8, slices S17-S21): the fencing
-//     epoch, the remote lease/guard wrapper, kill/wait of superseded epochs,
-//     the guard advance, and `orphan-fenced-busy`. The retry and recover
-//     attempt records persist the epoch fields those slices fill in; the
-//     takeover of a timed-out attempt records its fenced-closed mark without the
-//     kill/wait.
+//   - Fencing execution (withdrawn, comp08): the remote lease/guard wrapper,
+//     kill/wait of superseded epochs, and the guard advance are gone. The retry
+//     and recover attempt records keep their epoch fields as historical data;
+//     the takeover of a timed-out attempt records its fenced-closed mark only,
+//     and the abandoned run may still execute (the accepted residual).
 //   - The store-side compensation record (deploy-pipeline spec §9, S7's
 //     `pendingStoreSync`/`pendingCompensation`): pre-commit compensation stays
 //     the hub.toml rollback (plus the re-read preimage), with no cross-file
@@ -181,25 +180,22 @@ type HostPendingTeardown struct {
 // §6: "rehydration is record load, never live-handle resurrection (no
 // in-process handle survives restart — §7)").
 //
-// BOUNDARY (S17-S21, crash-fencing spec §4): the remote arm — "the remote
-// guard-file identity plus the orphan epoch's lease-entry ownership tokens, so
-// the retry kills and verifies through the lease wrapper without the dead
-// worker's handles" — and the fresh fencing epoch a boot-recovered remnant's
-// retry must persist, kill/wait, and compare-and-advance belong to the
-// crash-fencing slices. The record carries the epoch fields those slices fill
-// in; this build resolves and verifies the local boundary only.
+// BOUNDARY (withdrawn, comp08): the remote arm an earlier revision specified
+// here — the remote guard-file identity plus the orphan epoch's lease-entry
+// ownership tokens, killed and verified through the lease wrapper — was removed
+// with the crash-fencing program. The record's retired fields stay decodable;
+// this build resolves and verifies the local boundary only.
 type HostCleanupHandle struct {
 	// Kind names which durable handle resolves the cleanup. This build writes
-	// `local-boundary`; the remote arm is the fencing slices'.
+	// `local-boundary`; any other kind refuses the typed `teardown-unknown-key`.
 	Kind string `toml:"kind"`
 	// Generation, IncarnationID, and PresenceEpoch are the persisted ownership
 	// boundary the handle resolves through.
 	Generation    uint64 `toml:"generation"`
 	IncarnationID string `toml:"incarnation_id"`
 	PresenceEpoch uint64 `toml:"presence_epoch"`
-	// RemoteGuardFile and LeaseEntryTokens are the remote arm's durable handle
-	// (crash-fencing spec §3/§4). Empty in this build: no remote seam persists
-	// one yet.
+	// RemoteGuardFile and LeaseEntryTokens are retired (comp08): a prior file's
+	// fields stay decodable and are dropped, never written. Empty here.
 	RemoteGuardFile   string   `toml:"remote_guard_file,omitempty"`
 	LeaseEntryTokens  []string `toml:"lease_entry_tokens,omitempty"`
 	FencingEpochBoot  string   `toml:"fencing_epoch_boot,omitempty"`
@@ -361,7 +357,8 @@ type HostTeardownAttempt struct {
 	// FencedAt is present exactly on a fenced-closed attempt: when a later
 	// retry took over its fencing epoch.
 	FencedAt string `toml:"fenced_at,omitempty"`
-	// FencingEpoch is the attempt's fencing epoch (crash-fencing spec §4).
+	// FencingEpoch is the attempt's epoch pair (boot id + op sequence), the
+	// historical field name retained on the record.
 	FencingEpochBoot  string `toml:"fencing_epoch_boot,omitempty"`
 	FencingEpochOpSeq uint64 `toml:"fencing_epoch_op_seq,omitempty"`
 }

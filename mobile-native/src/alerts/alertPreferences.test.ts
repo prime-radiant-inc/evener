@@ -1,16 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_PREFERENCES } from "./alertCenter";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage as memory } from "../syncStringStorageTestUtils";
 import { ALERT_PREFERENCES_KEY, AlertPreferenceStore } from "./alertPreferences";
-
-function memory(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 
 describe("In-app alerts preferences (spec 12)", () => {
 	it("start at the spec's defaults", () => {

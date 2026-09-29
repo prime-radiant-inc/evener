@@ -83,7 +83,10 @@ type Entry =
 	// A subagent the session started, by its id in the session's subagent tree.
 	| { subagent: string }
 	| { thinking: true }
-	| { ask: Question[] };
+	| { ask: Question[] }
+	// A daemon steering item of kind "notification": a job or delegate
+	// notification as the daemon delivers it.
+	| { notice: string };
 
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
@@ -97,7 +100,7 @@ interface SessionContent {
 	humanNote?: string;
 	agentNote?: string;
 	links?: Omit<SessionURL, "addedBy">[];
-	escalation?: Pick<SandboxEscalationRequested, "tool" | "kind" | "mode" | "deniedPath">;
+	escalation?: Pick<SandboxEscalationRequested, "tool" | "kind" | "mode" | "deniedPath" | "partiallyRan">;
 	usage?: Usage;
 }
 
@@ -471,6 +474,187 @@ const CONTENT: Record<string, SessionContent> = {
 	},
 };
 
+// EVENER_DEMO_LONG: content longer than any Appendix A frame, so a
+// screenshot pass exercises what real sessions carry: a long question with
+// five long options among four, an approval with a deep path, and a working
+// session with long messages from each side, many steps and daemon
+// notifications (content from the 2026-09-29 device audit).
+const LONG_AGENT = [
+	"## Where the race lives",
+	"",
+	"The flaky tests all trace back to one ordering problem between the **tree settle pass** and the **retirement drain**. Both take `t.mu`, but settle releases it between phases, and the drain can observe a half-settled tree in that window. On a quiet machine the window is a few microseconds; under `-race` and on the CI runners it widens to milliseconds, which is why the failure rate jumps from 1 in 400 locally to 1 in 6 on CI.",
+	"",
+	"What I checked, in order:",
+	"",
+	"1. Every caller of `settle` in `agent/retirement.go`, `agent/subagents.go` and `agent/session_lifecycle.go` (eleven call sites).",
+	"2. Whether the drain ever runs without the tree lock (it doesn't, except in `drainForTest`, which the failing tests don't use).",
+	"3. The three failing tests' timelines, reconstructed from `-v` output with nanosecond timestamps.",
+	"4. Whether the fix changes any public behavior (it doesn't: settle already promised to finish after drain; it just didn't enforce it).",
+	"",
+	"> The drain now waits for settle, and settle never waits on the drain. That keeps the lock order one-way and removes the window entirely.",
+	"",
+	"| Test | Local failures | CI failures | After fix |",
+	"|---|---|---|---|",
+	"| TestRetirementTreeSettleDrainsPendingRootAttention | 1/400 | 1/6 | 0/2000 |",
+	"| TestFoldPublicationMarkersLandInOrder | 0/400 | 1/11 | 0/2000 |",
+	"| TestQueueRetirementCancelsQueued | 2/400 | 1/4 | 0/2000 |",
+	"",
+	"```go",
+	"func (t *tree) settle(ctx context.Context) error {",
+	"\tif err := t.drain.wait(ctx); err != nil {",
+	'\t\treturn fmt.Errorf("settle: wait for drain: %w", err)',
+	"\t}",
+	"\tt.mu.Lock()",
+	"\tdefer t.mu.Unlock()",
+	"\treturn t.settleLocked(ctx)",
+	"}",
+	"```",
+	"",
+	"I'll keep the subagents running the -race matrix until every package has 2,000 clean runs, then open the follow-up PR. If any package still flakes after that, I'll stop and show you the timeline before changing anything else.",
+].join("\n");
+
+const jobNotification = (id: string, desc: string, status: string, reason: string, excerpt: string) =>
+	`<job-notification job_id="${id}" event="${status}" job_type="delegate" description="${desc}" status="${status}" reason="${reason}" intent="" output_bytes="${excerpt.length}" transcript_ref="magic-kingdom:${id}">\nJob ${id} ${status}. Output is available through read_transcript(transcript_ref="magic-kingdom:${id}") if needed.\nexcerpt:\n${excerpt}\n</job-notification>`;
+
+const LONG_NOTICES: Entry[] = [
+	{
+		notice: jobNotification(
+			"dlg_settle",
+			"Fix race in tree settle",
+			"failed",
+			"go test exited 1 (3 times)",
+			"--- FAIL: TestRetirementTreeSettleDrainsPendingRootAttention (0.44s)\n    retirement_test.go:212: settle finished before drain: got state idle, want draining\nFAIL\nexit status 1",
+		),
+	},
+	{
+		notice: jobNotification(
+			"dlg_run0",
+			"Run agent tests under -race on Linux",
+			"completed",
+			"",
+			'{"message":"All 2,000 runs of the three tests passed under -race on magic-kingdom (linux/amd64). No new failures in agent/..., cmd/evener-hub/... or internal/....","concerns":[]}',
+		),
+	},
+	{
+		notice: `<delegate-notification delegate_id="dlg_drain" name="Check drain ordering in tests">{"kind":"reported","message":"Drain ordering is correct in every test except TestQueueRetirementCancelsQueued, which asserts on an intermediate state that the fix removes. I rewrote its assertion to check the final state instead.","warnings":["TestQueueRetirementCancelsQueued's assertion changed"]}</delegate-notification>`,
+	},
+	{
+		notice: `${jobNotification("dlg_macos", "Run flaky tests 200 times on macOS", "completed", "", "200/200 passed")}\n${jobNotification("dlg_fold", "Verify fold publication markers", "failed", "context deadline exceeded", "panic: test timed out after 10m0s")}`,
+	},
+	{
+		notice: `<job-notification job_id="dlg_watch" event="watch" job_type="delegate" description="Watch CI for PR 2138" status="running" reason="" intent="">\nJob dlg_watch running. 4 of 7 checks finished; lint and race-modules/agent still running.\n</job-notification>`,
+	},
+];
+
+const LONG_STEPS: Entry[] = Array.from({ length: 24 }, (_, index) => ({
+	step: shell(
+		`Ran package ${index + 1} of 24 under -race`,
+		`go test -race -count=200 ./agent/internal/pkg${index + 1}/...`,
+		15 + index,
+		`ok  \tgithub.com/prime-radiant-inc/evener/agent/internal/pkg${index + 1}\t${(index * 1.7 + 3).toFixed(1)}s`,
+	),
+}));
+
+const LONG_USER =
+	"Some more context, since last time this went sideways: the three tests that fail are all in the retirement path, and two of them only fail under -race. Please don't quarantine them, don't add retries, and don't raise any timeouts. If you find the fix touches the lock order anywhere else, stop and tell me before you change it. I'd also like a short write-up of the root cause in the plan so the next person who touches retirement understands why the drain waits on settle and never the other way round.";
+
+// s-audit's ask, long: its first question grows long, its second stays, and
+// two more follow.
+function longAsk(questions: Question[]): Question[] {
+	const [, second] = questions;
+	return [
+		{
+			header: "Implied options",
+			question:
+				"Fourteen tool descriptions mention options their tools don't accept, and models keep trying them: should I drop the implied options from the descriptions, implement the missing flags so the descriptions become true, or split the difference tool by tool depending on how often each option is attempted in last week's transcripts?",
+			why: "Fourteen descriptions mention flags the tools don't accept, like --force on read_file, timeout_ms on job_watch and priority on delegate. Models try them and fail, which costs a retry each time and sometimes derails a whole turn. In last week's transcripts I found 212 attempts at these options across 61 sessions; 140 of them were --force on read_file alone. Dropping the text is quick and safe but loses the hint for the three options that would be genuinely useful. Implementing the flags is about 400 lines plus tests and changes tool behavior, which means the web and the TUI need matching help text. A per-tool pass is slower but lets you decide each case on its merits.",
+			multi_select: false,
+			options: [
+				{
+					label: "Drop them",
+					detail:
+						"Remove the implied options from all 14 descriptions, and add a lint that fails when a description names an argument the schema doesn't declare",
+					recommended: true,
+				},
+				{
+					label: "Keep them and add the flags",
+					detail:
+						"Implement the 9 missing flags; about 400 lines, with tests, plus matching help text in the web and the TUI",
+				},
+				{
+					label: "Implement only the three useful ones",
+					detail:
+						"Add --force to read_file, timeout_ms to job_watch and priority to delegate; drop the other eleven from the descriptions",
+				},
+				{
+					label: "Ask me per tool",
+					detail: "I'll list each of the 14 with its attempt count from last week's transcripts for a yes or no",
+				},
+				{
+					label: "Leave the descriptions alone for now",
+					detail: "Log each attempt instead, and revisit once we have a month of data",
+				},
+			],
+		},
+		...(second ? [second] : []),
+		{
+			header: "Report",
+			question: "How should I report what I changed?",
+			why: "The PR will touch 14 descriptions across 6 files.",
+			multi_select: false,
+			options: [
+				{ label: "One PR with a table", detail: "Every tool, before and after, in the PR body", recommended: true },
+				{ label: "One PR per tool group", detail: "Smaller reviews, more PRs" },
+				{ label: "Just the diff", detail: "No write-up" },
+			],
+		},
+		{
+			header: "Tests",
+			question: "Should the lint run in CI?",
+			why: "It adds about 2 seconds to make lint.",
+			multi_select: false,
+			options: [
+				{ label: "Yes, as part of make lint", detail: "Fails the build on a new mismatch", recommended: true },
+				{ label: "No, run it by hand", detail: "A script under scripts/ with help text" },
+			],
+		},
+	];
+}
+
+function withLongEntries(slug: string, change: (entries: Entry[]) => Entry[]): SessionContent {
+	const content = CONTENT[slug];
+	if (!content?.entries) throw new Error(`${slug} has no entries to lengthen`);
+	return { ...content, entries: change(content.entries) };
+}
+
+const mirror = CONTENT["s-mirror"];
+const LONG_CONTENT: Record<string, SessionContent> = {
+	"s-pr2138": withLongEntries("s-pr2138", ([first, ...rest]) => [
+		...(first ? [first] : []),
+		{ user: LONG_USER },
+		{ agent: LONG_AGENT },
+		...LONG_STEPS,
+		...LONG_NOTICES,
+		...rest,
+	]),
+	"s-audit": withLongEntries("s-audit", (entries) =>
+		entries.map((entry) => ("ask" in entry ? { ask: longAsk(entry.ask) } : entry)),
+	),
+	"s-mirror": {
+		...mirror,
+		...(mirror?.escalation
+			? {
+					escalation: {
+						...mirror.escalation,
+						deniedPath:
+							"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+						partiallyRan: true,
+					},
+				}
+			: {}),
+	},
+};
+
 // data.js's `generic` transcript: the prompt, a first reply, a read, and the
 // row's activity as the step still running while the session works.
 function genericEntries(session: FleetSession): Entry[] {
@@ -517,8 +701,6 @@ const THREAD_STATUS: Record<ProtoState, string> = {
 };
 
 const SUBAGENT_STATUS = { running: "running", failed: "failed", done: "completed" } as const;
-const SUBAGENT_ITEM_STATUS = { running: "inProgress", failed: "failed", done: "completed" } as const;
-
 function flatten(subagents: RawSubagent[], parent?: string): { subagent: RawSubagent; parent?: string }[] {
 	return subagents.flatMap((subagent) => [
 		{ subagent, ...(parent ? { parent } : {}) },
@@ -547,6 +729,9 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			phase: running ? "running" : "idle",
 			status: SUBAGENT_STATUS[subagent.state],
 			terminal: !running,
+			// The activity tree carries the same outcome (demoSubagents.ts), so the
+			// chip and the Subagents list classify this delegate alike (issue #2684).
+			...(running ? {} : { outcome: subagent.state === "failed" ? "failed" : "completed" }),
 			resumable: false,
 			needsAttention: subagent.state === "failed",
 			projectionRevision: 1,
@@ -577,9 +762,14 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		// A thought with no text yet: the encoder leaves the empty text out.
 		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
+		if ("notice" in entry)
+			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
 		if ("subagent" in entry) {
 			const subagent = subagents.get(entry.subagent);
 			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
+			// The call settles as soon as its launch receipt returns, whatever
+			// the subagent goes on to do, as agent's stableDelegateCreateTool
+			// answers it; the row reads the subagent's state from its delegate.
 			return {
 				...item,
 				type: "commandExecution",
@@ -587,8 +777,16 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 				callId: callId(subagent.id),
 				description: subagent.title,
 				argumentsJson: JSON.stringify({ description: subagent.title }),
-				status: SUBAGENT_ITEM_STATUS[subagent.state],
-				...(subagent.state === "running" ? {} : { completedAt: at }),
+				status: "completed",
+				completedAt: at,
+				output: JSON.stringify({
+					delegate_id: subagent.id,
+					child_session_id: demoSessionId(subagent.id),
+					type: "delegate",
+					status: "running",
+					name: subagent.title,
+					transcript_ref: hostSessionRef(session.hostId, subagent.id),
+				}),
 			};
 		}
 		const { step } = entry;
@@ -783,8 +981,8 @@ function askItem(
 }
 
 // `parentRef` names the session a subagent's thread belongs to.
-function sessionThread(session: FleetSession, now: number, parentRef?: string): Thread {
-	const content = CONTENT[session.slug] ?? {};
+function sessionThread(session: FleetSession, now: number, parentRef?: string, long = false): Thread {
+	const content = (long ? LONG_CONTENT[session.slug] : undefined) ?? CONTENT[session.slug] ?? {};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";
@@ -886,6 +1084,8 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string): 
 export interface DemoSessionsOptions {
 	// The instant the fleet's "ago" is measured from, as DemoFleetOptions.now.
 	now?: number;
+	// Mirrors EVENER_DEMO_LONG: LONG_CONTENT in place of the usual content.
+	long?: boolean;
 }
 
 // A thread for every fleet session, in the fleet's order, then one for every
@@ -894,7 +1094,7 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 	const now = options.now ?? Date.now();
 	const sessions = fleetSessions();
 	return [
-		...sessions.map((session) => sessionThread(session, now)),
+		...sessions.map((session) => sessionThread(session, now, undefined, options.long)),
 		...sessions.flatMap((session) =>
 			flatten(session.subagents).map(({ subagent, parent }) =>
 				sessionThread(

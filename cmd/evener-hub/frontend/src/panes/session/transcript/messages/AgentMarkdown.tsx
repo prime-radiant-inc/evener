@@ -1,4 +1,4 @@
-import { docFileRawURL, docImageURL } from "@evener/appwire-client";
+import { docFileRawURL, docImageURL, isValidTranscriptRef } from "@evener/appwire-client";
 import { type ReactPortal, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as paneActions from "../../../../shell/paneActions";
@@ -8,7 +8,6 @@ import { OpenButton } from "../../../../widgets/openbutton";
 import { browserDocPort } from "../../../doc/browserDocPort";
 import { useEntityTextEnhancement } from "../EntityText";
 import { fileDocParams } from "../fileOpenBeside";
-import { isValidTranscriptRef } from "./steeringClassify";
 
 function fileLinkPath(href: string): string | undefined {
   // URL references are not filesystem paths. Decode only the pathname, once,

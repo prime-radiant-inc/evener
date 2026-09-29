@@ -1,9 +1,10 @@
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import {
-	configForLevel,
 	currentLevel,
+	displayForLevel,
 	DETAIL_LEVELS,
 	DetailLevels,
 	detailMenuLabel,
@@ -11,14 +12,6 @@ import {
 	levelToast,
 } from "./detailLevels";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const hub = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { systemEvents: true });
 
 describe("the levels (spec 8.2; ruling 8)", () => {
@@ -46,33 +39,32 @@ describe("the levels (spec 8.2; ruling 8)", () => {
 
 describe("the config a session projects at", () => {
 	it("leaves the hub's config alone when nothing was chosen here", () => {
-		expect(configForLevel(null, hub)).toBe(hub);
-		expect(configForLevel(null, null)).toBeNull();
+		expect(displayForLevel(null, hub)).toEqual({ config: hub, justTheConversation: false });
+		expect(displayForLevel(null, hub).config).toBe(hub);
+		expect(displayForLevel(null, null)).toEqual({ config: null, justTheConversation: false });
 	});
 
 	it("shows the hub's Chat default as just the conversation too (ruling 8)", () => {
 		const chatHub = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, hub.advanced);
-		expect(configForLevel(null, chatHub)).toEqual(configForLevel("chat", hub));
+		expect(displayForLevel(null, chatHub)).toEqual(displayForLevel("chat", hub));
+		expect(displayForLevel("tools", chatHub).justTheConversation).toBe(false);
 	});
 
 	it("puts a chosen preset over the hub's advanced settings", () => {
-		const config = configForLevel("tools", hub);
+		const { config, justTheConversation } = displayForLevel("tools", hub);
 		expect(config?.content).toEqual({ kind: "preset", level: "tools" });
 		expect(config?.advanced).toEqual(hub.advanced);
+		expect(justTheConversation).toBe(false);
 	});
 
-	it("projects Chat with no step lines at all", () => {
-		expect(configForLevel("chat", hub)?.content).toEqual({
-			kind: "custom",
-			toolIntent: false,
-			toolCalls: false,
-			reasoning: false,
-			expandByDefault: false,
-		});
+	it("projects Chat at Intent, where a subagent's call survives, and keeps just the conversation", () => {
+		expect(displayForLevel("chat", hub).config?.content).toEqual({ kind: "preset", level: "intent" });
+		expect(displayForLevel("chat", hub).justTheConversation).toBe(true);
+		expect(displayForLevel("intent", hub).justTheConversation).toBe(false);
 	});
 
 	it("builds on the shipped mobile defaults when the hub has no config", () => {
-		const config = configForLevel("full", null);
+		const { config } = displayForLevel("full", null);
 		expect(config?.content).toEqual({ kind: "preset", level: "full" });
 		expect(config?.advanced.systemEvents).toBe(false);
 	});
@@ -92,7 +84,12 @@ describe("the config a session projects at", () => {
 				}),
 			),
 		).toBe("custom");
-		expect(currentLevel(null, null)).toBeNull();
+	});
+
+	it("marks the level the transcript renders at while the hub config is missing", () => {
+		// A menu that marked nothing would lie about the transcript on screen.
+		expect(currentLevel(null, null)).toBe("full");
+		expect(detailMenuLabel(currentLevel(null, null))).toBe("Detail level · Full");
 	});
 });
 

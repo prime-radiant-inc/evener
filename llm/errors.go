@@ -29,13 +29,23 @@ type Error interface {
 // for the reader, not a contract.
 var ErrNoCredential = errors.New("no credential")
 
+// ErrSignInRequired is the sentinel a sign-in ConfigurationError carries: a
+// provider instance's credential is absent or its token endpoint permanently
+// refused to refresh it, so the user must sign in again. Like [ErrNoCredential]
+// it lets a caller classify the failure from the error chain rather than parse
+// the message, whose text is remediation prose.
+var ErrSignInRequired = errors.New("sign in required")
+
 // ConfigurationError reports a configuration problem (e.g. invalid or missing
 // setup) and carries an optional underlying Cause. It satisfies the Error
-// interface with empty provider, status code, and error code, and is never
-// retryable.
+// interface with no status code or error code, and is never retryable. Its
+// Provider is empty unless the problem belongs to one provider instance.
 type ConfigurationError struct {
 	Message string
 	Cause   error
+	// ProviderInstance names the provider instance this configuration problem
+	// belongs to; empty when it is not attributable to one.
+	ProviderInstance string
 }
 
 // ContextBudgetError reports a request that Evener's local token admission
@@ -89,9 +99,9 @@ func (e *ConfigurationError) Error() string {
 	return "configuration error: " + strings.TrimSpace(e.Message)
 }
 
-// Provider returns the empty string; configuration errors are not attributed
-// to a provider.
-func (e *ConfigurationError) Provider() string { return "" }
+// Provider returns ProviderInstance, or the empty string when the error is not
+// attributed to one provider instance.
+func (e *ConfigurationError) Provider() string { return strings.TrimSpace(e.ProviderInstance) }
 
 // StatusCode returns 0; configuration errors have no HTTP status.
 func (e *ConfigurationError) StatusCode() int { return 0 }
