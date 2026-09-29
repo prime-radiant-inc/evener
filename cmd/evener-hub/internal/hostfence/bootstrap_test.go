@@ -33,6 +33,22 @@ type scriptedStore struct {
 	// returns instead of the caller's: the interleaving where a delayed attempt's
 	// write finds the fence already owned.
 	foreignFence *Provisioning
+	// boundIdentity, when set, is the only registration this store accepts: any
+	// other identity is refused as stale (the remove-and-re-add case).
+	boundIdentity *BootstrapIdentity
+	// staleOn, when set, makes the named write arm ("attempt", "revalidate",
+	// "invalidate", "finalize") refuse as stale regardless of the identity: the
+	// per-arm binding check.
+	staleOn map[string]bool
+}
+
+// checkIdentity refuses the named arm when its binding no longer stands: either
+// the store's bound registration differs, or the arm is flagged stale.
+func (s *scriptedStore) checkIdentity(arm string, identity BootstrapIdentity) error {
+	if s.staleOn[arm] || (s.boundIdentity != nil && identity != *s.boundIdentity) {
+		return &StaleAttemptError{Host: "h1", Bound: identity, Live: BootstrapIdentity{Generation: 9, IncarnationID: "inc-new", PresenceEpoch: 9}}
+	}
+	return nil
 }
 
 func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.record, nil }
@@ -41,7 +57,10 @@ func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.re
 // already carries a fence is returned unchanged, never overwritten. foreignFence,
 // when set, is the interleaving where a delayed attempt's write finds another
 // attempt's fence already landed.
-func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning, bool, error) {
+func (s *scriptedStore) PersistAttemptFence(_ string, identity BootstrapIdentity, epoch Epoch) (Provisioning, bool, error) {
+	if err := s.checkIdentity("attempt", identity); err != nil {
+		return Provisioning{}, false, err
+	}
 	if s.persistErr != nil {
 		return Provisioning{}, false, s.persistErr
 	}
@@ -63,12 +82,18 @@ func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning
 	return s.record, true, nil
 }
 
-func (s *scriptedStore) RevalidateAttemptFence(_ string, epoch Epoch, token string) (Provisioning, bool, error) {
+func (s *scriptedStore) RevalidateAttemptFence(_ string, identity BootstrapIdentity, epoch Epoch, token string) (Provisioning, bool, error) {
+	if err := s.checkIdentity("revalidate", identity); err != nil {
+		return s.record, false, err
+	}
 	ok := s.record.AttemptFenced && s.record.AttemptEpoch == epoch && s.record.AttemptToken == token && !s.record.HelperInstalled
 	return s.record, ok, nil
 }
 
-func (s *scriptedStore) InvalidateAttemptFence(_ string, epoch Epoch, token string) (Provisioning, error) {
+func (s *scriptedStore) InvalidateAttemptFence(_ string, identity BootstrapIdentity, epoch Epoch, token string) (Provisioning, error) {
+	if err := s.checkIdentity("invalidate", identity); err != nil {
+		return s.record, err
+	}
 	if s.record.AttemptFenced && s.record.AttemptEpoch == epoch && s.record.AttemptToken == token && !s.record.HelperInstalled {
 		s.record.AttemptToken = ""
 		s.writes = append(s.writes, "invalidate")
@@ -76,7 +101,10 @@ func (s *scriptedStore) InvalidateAttemptFence(_ string, epoch Epoch, token stri
 	return s.record, nil
 }
 
-func (s *scriptedStore) FinalizeBootstrap(_ string, version uint64) (Provisioning, error) {
+func (s *scriptedStore) FinalizeBootstrap(_ string, identity BootstrapIdentity, version uint64) (Provisioning, error) {
+	if err := s.checkIdentity("finalize", identity); err != nil {
+		return Provisioning{}, err
+	}
 	if s.finalizeErr != nil {
 		return Provisioning{}, s.finalizeErr
 	}
@@ -180,6 +208,11 @@ func versionRunner() *scriptedRunner {
 // bootstrapEpoch is one valid fencing epoch for these tests.
 func bootstrapEpoch() Epoch { return Epoch{BootID: "boot-1", OpSeq: 1} }
 
+// bootstrapIdentity is the resolved registration these tests bind attempts to.
+func bootstrapIdentity() BootstrapIdentity {
+	return BootstrapIdentity{Generation: 1, IncarnationID: "inc-1", PresenceEpoch: 1}
+}
+
 // eligibleFacts is the never-provisioned evidence §6:131's exemption requires.
 func eligibleFacts() BootstrapEvidence { return BootstrapEvidence{} }
 
@@ -243,7 +276,7 @@ func TestBootstrapRefusesWithoutClaimPrimitive(t *testing.T) {
 	store := &scriptedStore{}
 	runner := &scriptedRunner{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: nil,
 	})
 	if outcome.Kind != BootstrapUnset {
@@ -288,7 +321,7 @@ func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 			store := &scriptedStore{}
 			runner := &scriptedRunner{}
 			_, err := Bootstrap(context.Background(), BootstrapRequest{
-				Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+				Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 				Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: tc.report, err: tc.err},
 			})
 			var gate *HelperGateError
@@ -322,7 +355,7 @@ func TestBootstrapDeliverySequence(t *testing.T) {
 	runner := versionRunner()
 	var order []string
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: quiesce,
 		Order: func(step string) { order = append(order, step) },
 	})
@@ -369,7 +402,7 @@ func TestBootstrapRefusesFinalizeUntilHelperVerifies(t *testing.T) {
 		return "", "", 0, nil
 	}}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim()},
 	})
 	var gate *HelperGateError
@@ -393,7 +426,7 @@ func TestBootstrapCrashWindowBeforeFirstSideEffect(t *testing.T) {
 	// The crash: the claim primitive never answers (the process died after the
 	// fence write).
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{err: errors.New("crash")},
 	})
 	if err == nil {
@@ -410,7 +443,7 @@ func TestBootstrapCrashWindowBeforeFirstSideEffect(t *testing.T) {
 	retryRunner := &scriptedRunner{}
 	retryQuiesce := &scriptedQuiesce{report: bareClaim()}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: retryRunner, Quiesce: retryQuiesce, Probe: probe,
 	})
 	if err != nil {
@@ -445,7 +478,7 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	store := &scriptedStore{finalizeErr: errors.New("crash before the finalizing write")}
 	runner := versionRunner()
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim()},
 	})
 	if err == nil {
@@ -460,7 +493,7 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with a live bootstrapped process: refuse, never mutate.
 	live := &scriptedProbe{live: true}
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: live,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: live,
 	})
 	if _, ok := errors.AsType[*AttemptOrphanError](err); !ok {
 		t.Fatalf("err = %v, want an *AttemptOrphanError for the live crashed-attempt process", err)
@@ -468,7 +501,7 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with a claim but no probe primitive: unverifiable, refused as
 	// absent.
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: nil,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: nil,
 	})
 	var gate *HelperGateError
 	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
@@ -477,7 +510,7 @@ func TestBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	// Recovery with the process confirmed gone: the fenced path opens.
 	clearProbe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: clearProbe,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: clearProbe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
 		t.Fatalf("clear recovery = (%v, %v), want BootstrapFenced", outcome.Kind, err)
@@ -492,7 +525,7 @@ func TestBootstrapRetryRacingFinalizeReplaysUnderDedup(t *testing.T) {
 	runner := versionRunner()
 	quiesce := &scriptedQuiesce{report: bareClaim()}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: quiesce,
 	})
 	if err != nil {
@@ -527,7 +560,7 @@ func TestBootstrapSkipsDeliveryForPriorEvidence(t *testing.T) {
 			store := &scriptedStore{record: tc.rec}
 			runner := &scriptedRunner{}
 			outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-				Host: "h1", Epoch: bootstrapEpoch(), Evidence: tc.ev,
+				Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: tc.ev,
 				Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim()},
 			})
 			if err != nil || outcome.Kind != BootstrapFenced {
@@ -547,7 +580,7 @@ func TestBootstrapAlreadyProvisioned(t *testing.T) {
 	runner := &scriptedRunner{}
 	quiesce := &scriptedQuiesce{report: bareClaim()}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: runner, Quiesce: quiesce,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: runner, Quiesce: quiesce,
 	})
 	if err != nil || outcome.Kind != BootstrapProvisioned {
 		t.Fatalf("Bootstrap = (%v, %v), want BootstrapProvisioned", outcome.Kind, err)
@@ -565,7 +598,7 @@ func TestBootstrapCancelledClaimStaysRaw(t *testing.T) {
 	cancel()
 	store := &scriptedStore{}
 	_, err := Bootstrap(ctx, BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{err: context.Canceled},
 	})
@@ -584,9 +617,9 @@ func TestBootstrapValidatesRequest(t *testing.T) {
 		name string
 		req  BootstrapRequest
 	}{
-		{name: "no store", req: BootstrapRequest{Host: "h1", Epoch: bootstrapEpoch()}},
+		{name: "no store", req: BootstrapRequest{Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch()}},
 		{name: "no host", req: BootstrapRequest{Epoch: bootstrapEpoch(), Store: &scriptedStore{}}},
-		{name: "no epoch", req: BootstrapRequest{Host: "h1", Store: &scriptedStore{}}},
+		{name: "no epoch", req: BootstrapRequest{Host: "h1", Identity: bootstrapIdentity(), Store: &scriptedStore{}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -640,7 +673,7 @@ func TestBootstrapRefusesAnUnheldClaim(t *testing.T) {
 	store := &scriptedStore{}
 	runner := &scriptedRunner{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim(), noClaim: true},
 	})
 	if _, ok := errors.AsType[*HelperGateError](err); !ok {
@@ -658,15 +691,15 @@ func TestBootstrapRefusesAnUnheldClaim(t *testing.T) {
 // store the flow must refuse before any delivery.
 type unlandedFenceStore struct{ scriptedStore }
 
-func (s *unlandedFenceStore) PersistAttemptFence(string, Epoch) (Provisioning, bool, error) {
+func (s *unlandedFenceStore) PersistAttemptFence(string, BootstrapIdentity, Epoch) (Provisioning, bool, error) {
 	return Provisioning{}, false, nil
 }
 
-func (s *unlandedFenceStore) RevalidateAttemptFence(string, Epoch, string) (Provisioning, bool, error) {
+func (s *unlandedFenceStore) RevalidateAttemptFence(string, BootstrapIdentity, Epoch, string) (Provisioning, bool, error) {
 	return Provisioning{}, false, nil
 }
 
-func (s *unlandedFenceStore) InvalidateAttemptFence(string, Epoch, string) (Provisioning, error) {
+func (s *unlandedFenceStore) InvalidateAttemptFence(string, BootstrapIdentity, Epoch, string) (Provisioning, error) {
 	return Provisioning{}, nil
 }
 
@@ -677,7 +710,7 @@ func TestBootstrapRefusesAFenceThatDidNotLand(t *testing.T) {
 	store := &unlandedFenceStore{}
 	runner := &scriptedRunner{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim()},
 	})
 	if err == nil || !strings.Contains(err.Error(), "returned without the fence") {
@@ -695,7 +728,7 @@ func TestBootstrapRecoveryProbesThePersistedAttemptEpoch(t *testing.T) {
 	store := &scriptedStore{}
 	crashed := Epoch{BootID: "boot-old", OpSeq: 7}
 	if _, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: crashed, Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: crashed, Evidence: eligibleFacts(),
 		Store: store, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{err: errors.New("crash")},
 	}); err == nil {
 		t.Fatal("Bootstrap = nil error, want the crashed claim")
@@ -704,7 +737,7 @@ func TestBootstrapRecoveryProbesThePersistedAttemptEpoch(t *testing.T) {
 	// crashed attempt.
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
 		Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
@@ -722,7 +755,7 @@ func TestBootstrapRecoveryRefusesAnUnidentifiableAttempt(t *testing.T) {
 	store := &scriptedStore{record: Provisioning{AttemptFenced: true}}
 	probe := &scriptedProbe{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Probe: probe,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Probe: probe,
 	})
 	if _, ok := errors.AsType[*HelperGateError](err); !ok {
 		t.Fatalf("err = %v, want a typed fencing-helper-absent refusal for the unidentifiable attempt", err)
@@ -743,7 +776,7 @@ func TestBootstrapDoesNotDeliverWhenAnotherAttemptOwnsTheFence(t *testing.T) {
 	quiesce := &scriptedQuiesce{report: bareClaim()}
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: Epoch{BootID: "boot-b", OpSeq: 9}, Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: Epoch{BootID: "boot-b", OpSeq: 9}, Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: quiesce, Probe: probe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
@@ -767,14 +800,14 @@ func TestBootstrapRecoveryNamesThePersistedEpochInTheOrphan(t *testing.T) {
 	store := &scriptedStore{}
 	crashed := Epoch{BootID: "boot-old", OpSeq: 7}
 	if _, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: crashed, Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: crashed, Evidence: eligibleFacts(),
 		Store: store, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{err: errors.New("crash")},
 	}); err == nil {
 		t.Fatal("Bootstrap = nil error, want the crashed claim")
 	}
 	probe := &scriptedProbe{live: true}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
 		Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	orphan, ok := errors.AsType[*AttemptOrphanError](err)
@@ -794,7 +827,7 @@ func TestBootstrapReleasesTheClaimOnANonBareRefusal(t *testing.T) {
 	claim := &scriptedClaim{}
 	runner := &scriptedRunner{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner,
 		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}, claim: claim},
 	})
@@ -818,7 +851,7 @@ func TestBootstrapSurfacesAReleaseFailure(t *testing.T) {
 	claim := &scriptedClaim{err: errors.New("release failed")}
 	var logs []string
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: &scriptedStore{}, Runner: versionRunner(), Quiesce: &scriptedQuiesce{report: bareClaim(), claim: claim},
 		Logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
 	})
@@ -839,7 +872,7 @@ func TestBootstrapSurfacesAReleaseFailure(t *testing.T) {
 	// primary gate refusal stays matchable.
 	claim2 := &scriptedClaim{err: errors.New("release failed again")}
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: &scriptedStore{}, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{report: bareClaim(), claim: claim2},
 	})
 	if err == nil || !strings.Contains(err.Error(), "release failed again") {
@@ -856,7 +889,7 @@ type convergingStore struct {
 	*scriptedStore
 }
 
-func (s *convergingStore) InvalidateAttemptFence(string, Epoch, string) (Provisioning, error) {
+func (s *convergingStore) InvalidateAttemptFence(string, BootstrapIdentity, Epoch, string) (Provisioning, error) {
 	return Provisioning{
 		AttemptFenced: true, AttemptEpoch: s.record.AttemptEpoch,
 		HelperInstalled: true, HelperVersion: HelperVersion,
@@ -875,7 +908,7 @@ func TestBootstrapDoesNotDeliverWhenTwoAttemptsShareTheEpoch(t *testing.T) {
 	quiesce := &scriptedQuiesce{report: bareClaim()}
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: epoch, Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: epoch, Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: quiesce, Probe: probe,
 	})
 	if err != nil || outcome.Kind != BootstrapFenced {
@@ -893,7 +926,7 @@ func TestBootstrapReleasesTheClaimOnAClaimBesideAnError(t *testing.T) {
 	claim := &scriptedClaim{}
 	store := &scriptedStore{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{claim: claim, err: errors.New("claim primitive failed")},
 	})
@@ -913,7 +946,7 @@ func TestBootstrapRecoveryReplaysWhenTheRecordConverged(t *testing.T) {
 	store := &convergingStore{scriptedStore: base}
 	probe := &scriptedProbe{}
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	if err != nil {
 		t.Fatalf("recovery = %v", err)
@@ -934,7 +967,7 @@ func TestBootstrapRecoveryRefusesWhileAnAttemptIsActive(t *testing.T) {
 	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
 	probe := &scriptedProbe{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}}, Probe: probe,
 	})
 	var gate *HelperGateError
@@ -956,7 +989,7 @@ func TestBootstrapRecoveryRefusesOnForeignPresence(t *testing.T) {
 	store := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
 	probe := &scriptedProbe{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{},
 		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}}, Probe: probe,
 	})
 	var gate *HelperGateError
@@ -976,7 +1009,7 @@ func TestBootstrapOwnerLosesTheClaimToARecoverer(t *testing.T) {
 	store := &scriptedStore{}
 	runner := &scriptedRunner{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: false}},
 	})
 	var gate *HelperGateError
@@ -1030,7 +1063,7 @@ func TestBootstrapTypesDeliveryFailuresAsAbsent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Bootstrap(context.Background(), BootstrapRequest{
-				Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+				Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 				Store: &scriptedStore{}, Runner: &scriptedRunner{fn: tc.fn}, Quiesce: bareQuiesce(),
 			})
 			tc.check(t, err)
@@ -1041,7 +1074,7 @@ func TestBootstrapTypesDeliveryFailuresAsAbsent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := Bootstrap(ctx, BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: &scriptedStore{},
 		Runner: &scriptedRunner{fn: func(string) (string, string, int, error) {
 			return "", "", 0, context.Canceled
@@ -1069,7 +1102,7 @@ func TestBootstrapTypesVerifyFailuresAsAbsent(t *testing.T) {
 		return "", "", 0, nil
 	}}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: &scriptedStore{}, Runner: transport, Quiesce: bareQuiesce(),
 	})
 	gate, ok := errors.AsType[*HelperGateError](err)
@@ -1089,7 +1122,7 @@ func TestBootstrapTypesVerifyFailuresAsAbsent(t *testing.T) {
 		return "", "", 0, nil
 	}}
 	_, err = Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: &scriptedStore{}, Runner: untrusted, Quiesce: bareQuiesce(),
 	})
 	gate, ok = errors.AsType[*HelperGateError](err)
@@ -1106,7 +1139,7 @@ func TestBootstrapTypesVerifyFailuresAsAbsent(t *testing.T) {
 // paused after winning the fence and its claim.
 type retiredTokenStore struct{ *scriptedStore }
 
-func (s *retiredTokenStore) RevalidateAttemptFence(string, Epoch, string) (Provisioning, bool, error) {
+func (s *retiredTokenStore) RevalidateAttemptFence(string, BootstrapIdentity, Epoch, string) (Provisioning, bool, error) {
 	return s.record, false, nil
 }
 
@@ -1117,7 +1150,7 @@ func TestBootstrapDeliveryRefusesWhenTheTokenWasRetired(t *testing.T) {
 	store := &retiredTokenStore{scriptedStore: &scriptedStore{}}
 	runner := &scriptedRunner{}
 	_, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: store, Runner: runner, Quiesce: bareQuiesce(),
 	})
 	var gate *HelperGateError
@@ -1142,13 +1175,13 @@ type parkedOwnerStore struct {
 	park func()
 }
 
-func (s *parkedOwnerStore) RevalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, bool, error) {
+func (s *parkedOwnerStore) RevalidateAttemptFence(host string, identity BootstrapIdentity, epoch Epoch, token string) (Provisioning, bool, error) {
 	if s.park != nil {
 		park := s.park
 		s.park = nil
 		park()
 	}
-	return s.scriptedStore.RevalidateAttemptFence(host, epoch, token)
+	return s.scriptedStore.RevalidateAttemptFence(host, identity, epoch, token)
 }
 
 // TestBootstrapOwnerParkedAcrossRecoveryRefusesToDeliver pins the owner/recovery
@@ -1164,14 +1197,14 @@ func TestBootstrapOwnerParkedAcrossRecoveryRefusesToDeliver(t *testing.T) {
 	var recoveryOutcome BootstrapOutcome
 	parked.park = func() {
 		recoveryOutcome, recoveryErr = Bootstrap(context.Background(), BootstrapRequest{
-			Host: "h1", Epoch: bootstrapEpoch(), Store: base,
+			Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: base,
 			Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: &scriptedProbe{},
 		})
 	}
 
 	ownerRunner := versionRunner()
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
 		Store: parked, Runner: ownerRunner, Quiesce: bareQuiesce(),
 	})
 
@@ -1251,7 +1284,7 @@ func TestBootstrapRecoveryReplaysWhenTheOwnerFinalizedDuringTheClaim(t *testing.
 	store := &convergingOnClaimStore{scriptedStore: base}
 	probe := &scriptedProbe{live: true} // a live process would otherwise refuse as an orphan
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
-		Host: "h1", Epoch: bootstrapEpoch(), Store: store,
+		Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(), Store: store,
 		Runner: &scriptedRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	})
 	if err != nil {
@@ -1262,5 +1295,59 @@ func TestBootstrapRecoveryReplaysWhenTheOwnerFinalizedDuringTheClaim(t *testing.
 	}
 	if probe.calls != 0 {
 		t.Fatalf("recovery probed %d times against a converged record, want 0", probe.calls)
+	}
+}
+
+// TestBootstrapRefusesAStaleIdentityOnEveryWriteArm pins the identity binding
+// (round 9): an attempt bound to a registration the host no longer carries is
+// refused with the typed stale-attempt error on each write arm, and the arms
+// that precede a delivery never deliver.
+func TestBootstrapRefusesAStaleIdentityOnEveryWriteArm(t *testing.T) {
+	cases := []struct {
+		name           string
+		arm            string
+		wantDeliveries int
+		recovery       bool
+	}{
+		{name: "attempt fence", arm: "attempt"},
+		{name: "pre-delivery revalidation", arm: "revalidate"},
+		{name: "finalize", arm: "finalize", wantDeliveries: 1},
+		{name: "recovery invalidation", arm: "invalidate", recovery: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &scriptedStore{staleOn: map[string]bool{tc.arm: true}}
+			runner := versionRunner()
+			req := BootstrapRequest{
+				Host: "h1", Identity: bootstrapIdentity(), Epoch: bootstrapEpoch(),
+				Store: store, Runner: runner, Quiesce: bareQuiesce(), Probe: &scriptedProbe{},
+			}
+			if tc.recovery {
+				// Recovery reaches the invalidation arm on the verified-gone path.
+				store.record = Provisioning{AttemptFenced: true, AttemptEpoch: bootstrapEpoch(), AttemptToken: "tok"}
+				req.Evidence = BootstrapEvidence{}
+			} else {
+				req.Evidence = eligibleFacts()
+			}
+			_, err := Bootstrap(context.Background(), req)
+			if _, ok := errors.AsType[*StaleAttemptError](err); !ok {
+				t.Fatalf("err = %v, want a typed StaleAttemptError from the %s arm", err, tc.arm)
+			}
+			if !errors.Is(err, ErrStaleBootstrapAttempt) {
+				t.Fatalf("err = %v, want it to unwrap to ErrStaleBootstrapAttempt", err)
+			}
+			deliveries := 0
+			for _, call := range runner.calls {
+				if !strings.HasSuffix(call, " version") {
+					deliveries++
+				}
+			}
+			if deliveries != tc.wantDeliveries {
+				t.Fatalf("deliveries = %d, want %d (arm %s)", deliveries, tc.wantDeliveries, tc.arm)
+			}
+			if store.record.HelperInstalled {
+				t.Fatalf("a stale arm converged helperInstalled: %+v", store.record)
+			}
+		})
 	}
 }

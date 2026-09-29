@@ -113,6 +113,21 @@ func (p *hubProbe) BootstrappedProcessLive(_ context.Context, epoch hostfence.Ep
 	return p.live, nil
 }
 
+// hubBootstrapIdentity returns the live registration of the fixture's host: what
+// a caller resolves and binds its bootstrap attempt to.
+func hubBootstrapIdentity(t *testing.T, m *hubHostManager, name string) hostfence.BootstrapIdentity {
+	t.Helper()
+	for _, entry := range m.cfg.store.snapshot() {
+		if entry.Name == name {
+			return hostfence.BootstrapIdentity{
+				Generation: entry.Generation, IncarnationID: entry.IncarnationID, PresenceEpoch: entry.PresenceEpoch,
+			}
+		}
+	}
+	t.Fatalf("host %q is not live", name)
+	return hostfence.BootstrapIdentity{}
+}
+
 // bootstrapEpoch is one valid fencing epoch for these tests.
 func bootstrapEpoch() hostfence.Epoch { return hostfence.Epoch{BootID: "boot-1", OpSeq: 1} }
 
@@ -125,7 +140,7 @@ func bareQuiesce() *hubClaimQuiesce {
 // landed and the delivery ran, but the finalizing write never did.
 type failingFinalizeStore struct{ hostfence.BootstrapStore }
 
-func (failingFinalizeStore) FinalizeBootstrap(string, uint64) (hostfence.Provisioning, error) {
+func (failingFinalizeStore) FinalizeBootstrap(string, hostfence.BootstrapIdentity, uint64) (hostfence.Provisioning, error) {
 	return hostfence.Provisioning{}, errors.New("injected crash before the finalizing write")
 }
 
@@ -145,7 +160,7 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 		t.Fatalf("initial provisioning = %+v, want the zero record", initial)
 	}
 
-	fenced, won, err := store.PersistAttemptFence("alpha", bootstrapEpoch())
+	fenced, won, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), bootstrapEpoch())
 	if err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
@@ -180,7 +195,7 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 		t.Fatalf("the attempt-fence write converged helperInstalled:\n%s", raw)
 	}
 
-	finalized, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion)
+	finalized, err := store.FinalizeBootstrap("alpha", hubBootstrapIdentity(t, f.m, "alpha"), hostfence.HelperVersion)
 	if err != nil {
 		t.Fatalf("FinalizeBootstrap: %v", err)
 	}
@@ -215,7 +230,7 @@ func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 	runner := &hubRunner{}
 	quiesce := &hubClaimQuiesce{err: errors.New("the controller crashed")}
 	_, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
 		Runner: runner, Quiesce: quiesce,
 	})
 	var gate *hostfence.HelperGateError
@@ -239,7 +254,7 @@ func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 	retryQuiesce := bareQuiesce()
 	retryRunner := &hubRunner{}
 	outcome, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
 		Runner: retryRunner, Quiesce: retryQuiesce, Probe: probe,
 	})
 	if err != nil || outcome.Kind != hostfence.BootstrapFenced {
@@ -261,7 +276,7 @@ func TestHostBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	f := newBootstrapFixture(t)
 	runner := &hubRunner{}
 	_, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: failingFinalizeStore{f.m.bootstrapStore()},
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: failingFinalizeStore{f.m.bootstrapStore()},
 		Runner: runner, Quiesce: bareQuiesce(),
 	})
 	if err == nil {
@@ -276,7 +291,7 @@ func TestHostBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	}
 	// Recovery with a live process refuses; the file is untouched.
 	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
 		Runner: &hubRunner{}, Quiesce: bareQuiesce(), Probe: &hubProbe{live: true},
 	})
 	if _, ok := errors.AsType[*hostfence.AttemptOrphanError](err); !ok {
@@ -295,7 +310,7 @@ func TestHostBootstrapRetryReplaysProvisioned(t *testing.T) {
 	store := f.m.bootstrapStore()
 	first := &hubRunner{}
 	outcome, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: store,
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: store,
 		Runner: first, Quiesce: bareQuiesce(),
 	})
 	if err != nil || outcome.Kind != hostfence.BootstrapDelivered {
@@ -304,7 +319,7 @@ func TestHostBootstrapRetryReplaysProvisioned(t *testing.T) {
 	retryRunner := &hubRunner{}
 	retryQuiesce := bareQuiesce()
 	replay, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: bootstrapEpoch(), Store: store,
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: bootstrapEpoch(), Store: store,
 		Runner: retryRunner, Quiesce: retryQuiesce,
 	})
 	if err != nil || replay.Kind != hostfence.BootstrapProvisioned {
@@ -428,10 +443,10 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 func TestHostBootstrapProvisioningDoesNotSurviveRemoval(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
-	if _, _, err := store.PersistAttemptFence("alpha", bootstrapEpoch()); err != nil {
+	if _, _, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), bootstrapEpoch()); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
-	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
+	if _, err := store.FinalizeBootstrap("alpha", hubBootstrapIdentity(t, f.m, "alpha"), hostfence.HelperVersion); err != nil {
 		t.Fatalf("FinalizeBootstrap: %v", err)
 	}
 	if p := f.m.cfg.store.provisioningFor("alpha"); !p.Provisioned() {
@@ -486,7 +501,7 @@ func TestHostBootstrapProvisioningDoesNotSurviveRemoval(t *testing.T) {
 func TestHostBootstrapFinalizeRequiresTheAttemptFence(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
-	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err == nil {
+	if _, err := store.FinalizeBootstrap("alpha", hubBootstrapIdentity(t, f.m, "alpha"), hostfence.HelperVersion); err == nil {
 		t.Fatal("FinalizeBootstrap on a never-fenced host = nil error, want a refusal")
 	} else if !strings.Contains(err.Error(), "has no bootstrap-attempt fence") {
 		t.Fatalf("FinalizeBootstrap error = %v, want the explicit fence-before-install refusal", err)
@@ -494,7 +509,7 @@ func TestHostBootstrapFinalizeRequiresTheAttemptFence(t *testing.T) {
 	if record := liveRecord(t, f.path, "alpha"); record.HelperInstalled || record.BootstrapAttempted {
 		t.Fatalf("the refused finalize wrote flags: %+v", record)
 	}
-	if _, err := store.FinalizeBootstrap("alpha", 0); err == nil {
+	if _, err := store.FinalizeBootstrap("alpha", hubBootstrapIdentity(t, f.m, "alpha"), 0); err == nil {
 		t.Fatal("FinalizeBootstrap with version 0 = nil error, want a refusal")
 	} else if !strings.Contains(err.Error(), "needs the delivered helper version") {
 		t.Fatalf("FinalizeBootstrap(version 0) error = %v, want the explicit version refusal", err)
@@ -509,7 +524,7 @@ func TestHostBootstrapPersistsTheAttemptEpoch(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	epoch := hostfence.Epoch{BootID: "boot-9", OpSeq: 42}
-	if _, _, err := store.PersistAttemptFence("alpha", epoch); err != nil {
+	if _, _, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
 	record := liveRecord(t, f.path, "alpha")
@@ -547,7 +562,7 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	owner := hostfence.Epoch{BootID: "boot-a", OpSeq: 5}
-	first, won, err := store.PersistAttemptFence("alpha", owner)
+	first, won, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), owner)
 	if err != nil {
 		t.Fatalf("first PersistAttemptFence: %v", err)
 	}
@@ -559,7 +574,7 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	}
 	before := readHostFileBytes(t, f.path)
 
-	delayed, delayedWon, err := store.PersistAttemptFence("alpha", hostfence.Epoch{BootID: "boot-b", OpSeq: 9})
+	delayed, delayedWon, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), hostfence.Epoch{BootID: "boot-b", OpSeq: 9})
 	if err != nil {
 		t.Fatalf("second PersistAttemptFence: %v", err)
 	}
@@ -587,14 +602,14 @@ func TestHubBootstrapRecoveryProbesThePersistedEpoch(t *testing.T) {
 	f := newBootstrapFixture(t)
 	crashed := hostfence.Epoch{BootID: "boot-old", OpSeq: 7}
 	if _, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: crashed, Store: f.m.bootstrapStore(),
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: crashed, Store: f.m.bootstrapStore(),
 		Runner: &hubRunner{}, Quiesce: &hubClaimQuiesce{err: errors.New("the controller crashed")},
 	}); err == nil {
 		t.Fatal("Bootstrap = nil error, want the crashed claim")
 	}
 	probe := &hubProbe{}
 	if _, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
-		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-new", OpSeq: 3},
+		Host: "alpha", Identity: hubBootstrapIdentity(t, f.m, "alpha"), Epoch: hostfence.Epoch{BootID: "boot-new", OpSeq: 3},
 		Store: f.m.bootstrapStore(), Runner: &hubRunner{}, Quiesce: bareQuiesce(), Probe: probe,
 	}); err != nil {
 		t.Fatalf("recovery = %v", err)
@@ -634,27 +649,27 @@ func TestHostBootstrapTokenLifecycle(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	epoch := hostfence.Epoch{BootID: "boot-3", OpSeq: 11}
-	fenced, won, err := store.PersistAttemptFence("alpha", epoch)
+	fenced, won, err := store.PersistAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch)
 	if err != nil || !won {
 		t.Fatalf("PersistAttemptFence = (%+v, %v, %v), want a won write", fenced, won, err)
 	}
 	if fenced.AttemptToken == "" {
 		t.Fatal("the fence write minted no token")
 	}
-	if _, ok, err := store.RevalidateAttemptFence("alpha", epoch, fenced.AttemptToken); err != nil || !ok {
+	if _, ok, err := store.RevalidateAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch, fenced.AttemptToken); err != nil || !ok {
 		t.Fatalf("RevalidateAttemptFence = (%v, %v), want the token to stand", ok, err)
 	}
-	if _, ok, _ := store.RevalidateAttemptFence("alpha", epoch, "another-token"); ok {
+	if _, ok, _ := store.RevalidateAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch, "another-token"); ok {
 		t.Fatal("a foreign token revalidated")
 	}
-	retired, err := store.InvalidateAttemptFence("alpha", epoch, fenced.AttemptToken)
+	retired, err := store.InvalidateAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch, fenced.AttemptToken)
 	if err != nil {
 		t.Fatalf("InvalidateAttemptFence: %v", err)
 	}
 	if retired.AttemptToken != "" || !retired.AttemptFenced {
 		t.Fatalf("after invalidation = %+v, want the fence kept with no token", retired)
 	}
-	if _, ok, _ := store.RevalidateAttemptFence("alpha", epoch, fenced.AttemptToken); ok {
+	if _, ok, _ := store.RevalidateAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch, fenced.AttemptToken); ok {
 		t.Fatal("the retired token still revalidates")
 	}
 	if record := liveRecord(t, f.path, "alpha"); record.BootstrapAttemptToken != "" || !record.BootstrapAttempted {
@@ -662,11 +677,11 @@ func TestHostBootstrapTokenLifecycle(t *testing.T) {
 	}
 
 	// Once helperInstalled converges, invalidation writes nothing.
-	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
+	if _, err := store.FinalizeBootstrap("alpha", hubBootstrapIdentity(t, f.m, "alpha"), hostfence.HelperVersion); err != nil {
 		t.Fatalf("FinalizeBootstrap: %v", err)
 	}
 	before := readHostFileBytes(t, f.path)
-	after, err := store.InvalidateAttemptFence("alpha", epoch, fenced.AttemptToken)
+	after, err := store.InvalidateAttemptFence("alpha", hubBootstrapIdentity(t, f.m, "alpha"), epoch, fenced.AttemptToken)
 	if err != nil {
 		t.Fatalf("InvalidateAttemptFence after finalize: %v", err)
 	}
@@ -694,10 +709,10 @@ func TestHostBootstrapProvisioningSurvivesACompensatedRemoval(t *testing.T) {
 	}
 	m := bootHostManager(t, configPath)
 	store := m.bootstrapStore()
-	if _, _, err := store.PersistAttemptFence("side", bootstrapEpoch()); err != nil {
+	if _, _, err := store.PersistAttemptFence("side", hubBootstrapIdentity(t, m, "side"), bootstrapEpoch()); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
-	if _, err := store.FinalizeBootstrap("side", hostfence.HelperVersion); err != nil {
+	if _, err := store.FinalizeBootstrap("side", hubBootstrapIdentity(t, m, "side"), hostfence.HelperVersion); err != nil {
 		t.Fatalf("FinalizeBootstrap: %v", err)
 	}
 
@@ -740,5 +755,76 @@ func TestHostBootstrapProvisioningSurvivesACompensatedRemoval(t *testing.T) {
 	reopened := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, func(string, ...any) {})
 	if p := reopened.cfg.store.provisioningFor("side"); !p.AttemptFenced || !p.HelperInstalled {
 		t.Fatalf("reopened store provisioning = %+v, want the flags restored", p)
+	}
+}
+
+// TestHostBootstrapRefusesAStaleIdentityAfterReAdd pins the round-9 medium end to
+// end: an attempt bound to a registration the host no longer carries (a remove
+// and re-add landed while it paused) refuses with the typed stale-attempt error,
+// writes no fence, and delivers nothing — and the refusal maps onto the deploy
+// pipeline's `stale-entry` class on its generation binding, not a helper arm.
+func TestHostBootstrapRefusesAStaleIdentityAfterReAdd(t *testing.T) {
+	f := newBootstrapFixture(t)
+	m := f.m
+	stale := hubBootstrapIdentity(t, m, "alpha")
+
+	// Remove the host, then re-add it as a fresh incarnation.
+	known := m.cfg.store.snapshot()
+	removal := make([]hostreg.Host, 0, len(known))
+	for _, entry := range known {
+		if entry.Name != "alpha" {
+			removal = append(removal, entry)
+		}
+	}
+	m.cfg.mu.Lock()
+	err := m.persistHosts(removal, known, hostPersistChange{})
+	m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("removal write: %v", err)
+	}
+	fresh := known[0]
+	fresh.Generation++
+	fresh.IncarnationID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	fresh.PresenceEpoch++
+	m.cfg.store.set([]hostreg.Host{fresh})
+	m.cfg.mu.Lock()
+	err = m.persistHosts([]hostreg.Host{fresh}, removal, hostPersistChange{})
+	m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("re-add write: %v", err)
+	}
+	if live := hubBootstrapIdentity(t, m, "alpha"); live == stale {
+		t.Fatal("the re-add kept the old identity; the test cannot exercise the stale case")
+	}
+
+	// The paused attempt resumes with its stale expectation.
+	runner := &hubRunner{}
+	_, err = hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
+		Host: "alpha", Identity: stale, Epoch: bootstrapEpoch(), Evidence: hostfence.BootstrapEvidence{},
+		Store: m.bootstrapStore(), Runner: runner, Quiesce: bareQuiesce(),
+	})
+	staleErr, ok := errors.AsType[*hostfence.StaleAttemptError](err)
+	if !ok {
+		t.Fatalf("err = %v, want a typed StaleAttemptError", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none: a stale attempt must not deliver", runner.calls)
+	}
+	record := liveRecord(t, f.path, "alpha")
+	if record.BootstrapAttempted || record.BootstrapAttemptToken != "" || record.HelperInstalled {
+		t.Fatalf("host_records[alpha] = %+v, want the stale attempt to have written nothing", record)
+	}
+
+	// The wire class: stale-entry on the generation binding.
+	wire, ok := errors.AsType[appwire.WireError](m.operationProbeRefusal("alpha", staleErr))
+	if !ok {
+		t.Fatalf("stale refusal = (%v, %v), want a wire error", wire, err)
+	}
+	data, ok := wire.Data.(appwire.StaleEntryErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorStaleEntry || data.Binding != appwire.StaleEntryBindingGeneration {
+		t.Fatalf("stale refusal data = %#v, want the %s class on %s", wire.Data, appwire.ErrorStaleEntry, appwire.StaleEntryBindingGeneration)
+	}
+	if wire.Code != appwire.CodeConflict {
+		t.Fatalf("stale refusal code = %d, want the conflict class", wire.Code)
 	}
 }

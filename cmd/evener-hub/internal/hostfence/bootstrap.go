@@ -64,6 +64,33 @@ func (p Provisioning) Provisioned() bool {
 	return p.AttemptFenced && p.HelperInstalled && p.HelperVersion != 0
 }
 
+// ErrStaleBootstrapAttempt is the sentinel of the stale-registration class: a
+// bootstrap write refused because the host no longer carries the identity the
+// attempt was bound to.
+var ErrStaleBootstrapAttempt = errors.New("hostfence: the bootstrap attempt's host registration changed")
+
+// StaleAttemptError reports a bootstrap write refused because the live host no
+// longer carries the identity the attempt was bound to — a remove and re-add
+// landed while the attempt paused. It is deliberately not one of §8's
+// helper-gate classes: the helper is not the problem; the entry the caller
+// resolved is stale, which is the deploy pipeline's `stale-entry` class.
+type StaleAttemptError struct {
+	Host  string
+	Bound BootstrapIdentity
+	Live  BootstrapIdentity
+}
+
+// Error renders the refusal with both registrations.
+func (e *StaleAttemptError) Error() string {
+	return fmt.Sprintf(
+		"host %q: the bootstrap attempt is bound to generation %d/%q/%d but the live host carries %d/%q/%d; re-resolve the host and retry",
+		e.Host, e.Bound.Generation, e.Bound.IncarnationID, e.Bound.PresenceEpoch,
+		e.Live.Generation, e.Live.IncarnationID, e.Live.PresenceEpoch)
+}
+
+// Unwrap maps the refusal into the stale-registration class.
+func (e *StaleAttemptError) Unwrap() error { return ErrStaleBootstrapAttempt }
+
 // FencedWithoutHelper reports §6:137's crash posture: the attempt fence landed
 // but helperInstalled did not, so every later attempt takes the fenced recovery
 // path — never a second unfenced delivery.
@@ -80,6 +107,24 @@ type BootstrapEvidence struct {
 	// Interrupted reports an interrupted record from a crashed incarnation on
 	// this host.
 	Interrupted bool
+}
+
+// BootstrapIdentity is the host registration one bootstrap attempt is bound to:
+// the registry spec §1 (generation, incarnation id, presence epoch) triple the
+// caller resolved. Every fence, revalidation, and finalize write verifies the
+// live host still carries it, so an attempt that pauses across a remove and
+// re-add can never fence or deliver against the new incarnation with its stale
+// epoch.
+type BootstrapIdentity struct {
+	Generation    uint64
+	IncarnationID string
+	PresenceEpoch uint64
+}
+
+// IsZero reports whether the identity carries nothing: an unbound attempt, which
+// every write refuses.
+func (i BootstrapIdentity) IsZero() bool {
+	return i.Generation == 0 && i.IncarnationID == "" && i.PresenceEpoch == 0
 }
 
 // ExemptDeliveryPermitted reports §6:131's exactly-once exemption: the
@@ -112,24 +157,24 @@ type BootstrapStore interface {
 	// one persisted epoch). The winning record carries the durable AttemptToken
 	// the caller revalidates before delivering. A record returned without the
 	// fence is refused by the caller, never delivered behind.
-	PersistAttemptFence(host string, epoch Epoch) (Provisioning, bool, error)
+	PersistAttemptFence(host string, identity BootstrapIdentity, epoch Epoch) (Provisioning, bool, error)
 	// FinalizeBootstrap converges helperInstalled with the delivered version in
 	// the same atomic hub.toml write that finalizes bootstrap (§6:137). A
 	// failure refuses finalize: the attempt fence stays and helperInstalled is
 	// never converged behind it.
-	FinalizeBootstrap(host string, helperVersion uint64) (Provisioning, error)
+	FinalizeBootstrap(host string, identity BootstrapIdentity, helperVersion uint64) (Provisioning, error)
 	// RevalidateAttemptFence reports whether token still stands for the attempt
 	// at epoch on host: the record still carries the fence, names that epoch,
 	// carries that token, and has not converged helperInstalled. The delivery
 	// path calls it after winning its claim and before its first delivery step.
-	RevalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, bool, error)
+	RevalidateAttemptFence(host string, identity BootstrapIdentity, epoch Epoch, token string) (Provisioning, bool, error)
 	// InvalidateAttemptFence retires token in the same atomic write discipline as
 	// the other record writes, preconditioned on the record still naming that
 	// attempt and not having converged helperInstalled. Recovery calls it on the
 	// verified-gone path, while it holds its claim, before releasing and
 	// returning the fenced path. It returns the record as it stands after the
 	// call.
-	InvalidateAttemptFence(host string, epoch Epoch, token string) (Provisioning, error)
+	InvalidateAttemptFence(host string, identity BootstrapIdentity, epoch Epoch, token string) (Provisioning, error)
 }
 
 // QuiesceReport is the atomic claim-plus-quiesce primitive's answer (§6:135):
@@ -244,6 +289,12 @@ type BootstrapRequest struct {
 	Evidence BootstrapEvidence
 	// Store is the hub.toml record seam. Required.
 	Store BootstrapStore
+	// Identity is the host registration this attempt is bound to. Required: every
+	// write verifies the live host still carries it, so an attempt that pauses
+	// across a remove and re-add cannot fence or deliver against the new
+	// incarnation. The first-contact caller (S21b) supplies the expectation it
+	// read from the row it resolved.
+	Identity BootstrapIdentity
 	// Runner is the remote exec seam, used for the delivery and the self-test.
 	Runner Runner
 	// Quiesce is the host-side atomic claim-plus-quiesce primitive. Nil, a lost
@@ -310,6 +361,11 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	if strings.TrimSpace(req.Host) == "" {
 		return BootstrapOutcome{}, errors.New("hostfence: bootstrap needs a host name")
 	}
+	if req.Identity.IsZero() {
+		// Every write binds to the resolved registration; an unbound attempt could
+		// fence an incarnation it never resolved.
+		return BootstrapOutcome{}, errors.New("hostfence: bootstrap needs the host's resolved identity")
+	}
 	if err := req.Epoch.Validate(); err != nil {
 		return BootstrapOutcome{}, err
 	}
@@ -343,7 +399,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	// remote side effect, so a crash before helperInstalled leaves the host
 	// attempt-fenced, never never-provisioned again.
 	step("attempt")
-	fenced, won, err := req.Store.PersistAttemptFence(req.Host, req.Epoch)
+	fenced, won, err := req.Store.PersistAttemptFence(req.Host, req.Identity, req.Epoch)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
@@ -433,7 +489,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	// The two holds cannot overlap (the claim arbiter is exactly-one-wins), so a
 	// pre-claim owner can only resume after recovery released, and this read is
 	// what observes the invalidation.
-	if _, ok, err := req.Store.RevalidateAttemptFence(req.Host, req.Epoch, token); err != nil {
+	if _, ok, err := req.Store.RevalidateAttemptFence(req.Host, req.Identity, req.Epoch, token); err != nil {
 		return BootstrapOutcome{}, err
 	} else if !ok {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
@@ -478,7 +534,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	// §6:137 — converge helperInstalled in the same finalizing atomic write, or
 	// refuse finalize on failure.
 	step("finalize")
-	finalized, err := req.Store.FinalizeBootstrap(req.Host, HelperVersion)
+	finalized, err := req.Store.FinalizeBootstrap(req.Host, req.Identity, HelperVersion)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
@@ -607,7 +663,7 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 	// own pre-delivery revalidation and refuses; the record it returns is the
 	// record as it stands, so a concurrent finalize replays as provisioned here
 	// rather than being reported as a stale fenced posture.
-	retired, err := req.Store.InvalidateAttemptFence(req.Host, attempt, token)
+	retired, err := req.Store.InvalidateAttemptFence(req.Host, req.Identity, attempt, token)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}

@@ -473,6 +473,13 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 		return appwire.InternalError(fmt.Sprintf(
 			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err))
 	}
+	if stale, ok := errors.AsType[*hostfence.StaleAttemptError](err); ok {
+		// A bootstrap attempt bound to a registration the host no longer carries
+		// (a remove and re-add landed while the attempt paused) is the deploy
+		// pipeline's `stale-entry` class on its generation binding: the caller
+		// re-resolves the host and retries. Never a helper-gate arm.
+		return appwire.StaleEntry(appwire.StaleEntryBindingGeneration, stale.Error())
+	}
 	if orphan, ok := errors.AsType[*hostfence.AttemptOrphanError](err); ok {
 		// A crashed bootstrap attempt whose process is still live fences the host
 		// the way an open orphan-unverified record does (§8:158): the transient
