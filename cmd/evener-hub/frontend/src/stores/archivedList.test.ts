@@ -179,3 +179,34 @@ describe("refreshLoadedArchivedLists", () => {
     expect(seen.sort()).toEqual(["archived_projects|proj", "projects|a|b", "projects|proj"]);
   });
 });
+
+describe("a list's total before its first page", () => {
+  test("is unknown until a page arrives", async () => {
+    const fake = connectFakeClient();
+    const response = deferred<ArchivedListResponse>();
+    fake.on("evener/archived/list", () => response.promise);
+
+    const pending = refreshArchivedList("projects", "proj");
+    expect(entry("projects", "proj").loaded).toBe(false);
+    response.resolve(page(["local:a"], 1));
+    await pending;
+
+    expect(entry("projects", "proj").loaded).toBe(true);
+  });
+});
+
+describe("a replaced or recovered connection", () => {
+  test("drops every loaded list and the answer the old connection still owes", async () => {
+    const first = connectFakeClient();
+    const owed = deferred<ArchivedListResponse>();
+    first.on("evener/archived/list", (params) => (params.cursor ? owed.promise : page(["local:a"], 2, "cursor-1")));
+    await refreshArchivedList("projects", "proj");
+    const loadingMore = loadMoreArchivedList("projects", "proj");
+
+    connectFakeClient();
+    owed.resolve(page(["local:old"], 2));
+    await loadingMore;
+
+    expect(archivedListStore.getState().lists).toEqual({});
+  });
+});

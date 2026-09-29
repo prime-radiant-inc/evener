@@ -150,3 +150,12 @@ func (s *NavigationService) ArchivedList(ctx context.Context, request navigation
 	}
 	return appwire.ArchivedListResponse{Sessions: sessions, NextCursor: page.NextCursor, Total: page.Total}, nil
 }
+
+// archivedCount is the number of archived sessions in a catalog's project: the
+// count the rail shows on its Archived fold and the total evener/archived/list
+// pages through. TreeProject.MoreArchived stays the beyond-cap remainder for
+// the tree's own consumers.
+func archivedCount(project hubcore.TreeProject) int {
+	rows, _ := project.TierRows("archived")
+	return len(rows)
+}

@@ -265,3 +265,43 @@ func TestHubArchivedListEmptyPageIsAnEmptyArray(t *testing.T) {
 		t.Fatalf("sessions = %s, want []", response.Sessions)
 	}
 }
+
+// more_archived on a project summary is the project's archived session count:
+// the count the rail's Archived fold shows, and the total the archived list
+// pages through. It is the uncapped tier, not the beyond-cap remainder.
+func TestProjectSummaryMoreArchivedIsTheArchivedCount(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	old := now.Add(-30 * 24 * time.Hour)
+	metas := make([]schema.SessionMeta, 0, 62)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-capped-%03d", i), Name: fmt.Sprintf("capped %d", i), CreatedAt: old, UpdatedAt: old.Add(time.Duration(i) * time.Second), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/capped"}})
+	}
+	for i := range 2 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-current-%d", i), Name: fmt.Sprintf("current %d", i), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/capped"}})
+	}
+	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	small := hubcore.TreeProject{Key: "small", Name: "small", Archived: archivedRows("small", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("small %d", i) })}
+	whole := hubcore.TreeProject{Key: "small", Name: "small", IsArchived: true, Archived: archivedRows("whole", 4, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("whole %d", i) })}
+	p := archivedProjection(t, append(append([]hubcore.TreeProject(nil), tree.Projects...), small, whole)...)
+	for _, catalog := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects} {
+		summaries, err := p.CatalogPage(catalog, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, summary := range summaries.Projects {
+			ids, total := pageAllArchived(t, p, catalog, summary.Key, 50)
+			if summary.MoreArchived != total || total != len(ids) {
+				t.Fatalf("%s %s: more_archived=%d, list total=%d, listed=%d", catalog, summary.Key, summary.MoreArchived, total, len(ids))
+			}
+		}
+	}
+	capped, err := p.CatalogPage(navigationResourceProjects, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range capped.Projects {
+		if summary.Key != "small" && summary.MoreArchived != 60 {
+			t.Fatalf("capped project more_archived=%d, want 60", summary.MoreArchived)
+		}
+	}
+}

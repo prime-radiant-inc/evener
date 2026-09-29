@@ -31,6 +31,13 @@ import {
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import {
+  type ArchivedList,
+  archivedListKey,
+  loadMoreArchivedList,
+  refreshArchivedList,
+  useArchivedLists,
+} from "../../stores/archivedList";
 import { useConnectionStore } from "../../stores/connection";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
@@ -564,7 +571,9 @@ function returnedRootRows(resource: ResourceState, slot: string, field: string):
   const rows = data?.[field];
   return Array.isArray(rows) ? rows.length : 0;
 }
-const PROJECT_TIERS = ["current", "recent", "archived"] as const;
+// The tiers a project resource serves rows for. Archived rows come from the
+// project's archived list (withArchivedList), not from navigation.
+const PROJECT_TIERS = ["current", "recent"] as const;
 function projectPageStates(
   pages: ReadonlyMap<string, ResourceState>,
   projectKey: string,
@@ -691,7 +700,7 @@ function projectFromSummary(
   const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
   if (cached) return cached;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const base = root?.[tier];
@@ -719,7 +728,6 @@ function projectFromSummary(
     sessions: all,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   };
   return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
 }
@@ -754,7 +762,7 @@ function projectFromGraph(
   if (!projectEntity) return null;
   const metadata = normalized.graph.metadata;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const container = normalized.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier));
@@ -789,7 +797,6 @@ function projectFromGraph(
     nextOffsets,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   });
 }
 function asArchivedProject(project: RailProject): RailProject {
@@ -799,6 +806,43 @@ function asArchivedProject(project: RailProject): RailProject {
   const archived = { ...project, is_archived: true };
   archivedProjectModelCache.set(project as object, archived);
   return archived;
+}
+// withArchivedList adds a project's loaded archived rows, from its archived
+// list, to the rows navigation served, and leaves more_archived as the archived
+// rows not loaded yet. The summary's more_archived is the whole archived count;
+// once the list has loaded, its own total is the fresher count. Cached per
+// built project and list entry so an unchanged pair keeps one identity.
+const archivedListProjectCache = new WeakMap<object, { list: ArchivedList | undefined; result: RailProject }>();
+function withArchivedList(project: RailProject, catalog: CatalogKind, list: ArchivedList | undefined): RailProject {
+  const cached = archivedListProjectCache.get(project);
+  if (cached && cached.list === list) return cached.result;
+  const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
+  const summaryTotal = project.more_archived ?? 0;
+  const total = list?.loaded ? list.total : summaryTotal;
+  const result = {
+    ...project,
+    catalog,
+    archived_total: summaryTotal,
+    // A session unarchived moments ago can be in navigation's rows and still
+    // in the list until the list refreshes.
+    sessions: dedupeSessions([...project.sessions, ...rows]),
+    more_archived: Math.max(0, total - rows.length),
+  };
+  archivedListProjectCache.set(project, { list, result });
+  return result;
+}
+function allRailProjects(resources: RailResources): RailProject[] {
+  return [...resources.projects, ...resources.archivedProjects, ...resources.testRuns];
+}
+function withArchivedLists(resources: RailResources, lists: Readonly<Record<string, ArchivedList>>): RailResources {
+  const apply = (projects: readonly RailProject[], catalog: CatalogKind) =>
+    projects.map((project) => withArchivedList(project, catalog, lists[archivedListKey(catalog, project.key)]));
+  return {
+    ...resources,
+    projects: apply(resources.projects, "projects"),
+    archivedProjects: apply(resources.archivedProjects, "archived_projects"),
+    testRuns: apply(resources.testRuns, "test_runs"),
+  };
 }
 function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
@@ -937,7 +981,10 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
     },
   };
 }
-export const adaptNavigationResources = railResources;
+export const adaptNavigationResources = (
+  state: ReturnType<typeof navigationStore.getState>,
+  lists: Readonly<Record<string, ArchivedList>> = {},
+): RailResources => withArchivedLists(railResources(state), lists);
 function nonEmpty(resources: RailResources): boolean {
   return (
     resources.live.length > 0 ||
@@ -1058,10 +1105,12 @@ function NavigationRail({
   const railRef = useRef<HTMLDivElement>(null);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
-  const base = useMemo(
+  const archivedLists = useArchivedLists();
+  const navigationBase = useMemo(
     () => railResources({ ...navigationStore.getState(), resources: resourcesState }),
     [resourcesState],
   );
+  const base = useMemo(() => withArchivedLists(navigationBase, archivedLists), [navigationBase, archivedLists]);
   const resources = useMemo(
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
     [base, pending],
@@ -1187,9 +1236,7 @@ function NavigationRail({
   }, []);
   useEffect(() => {
     currentLoadProjectRoot.current = loadProjectRoot;
-    const ownedKeys = new Set(
-      [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].map((project) => project.key),
-    );
+    const ownedKeys = new Set(allRailProjects(resources).map((project) => project.key));
     for (const key of projectRetryCallbacks.current.keys()) {
       if (!ownedKeys.has(key)) projectRetryCallbacks.current.delete(key);
     }
@@ -1201,7 +1248,7 @@ function NavigationRail({
       rootLoadsInFlight.current.clear();
       rootGeneration.current = generation;
     }
-    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
+    for (const project of allRailProjects(resources)) {
       const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
         isExpanded(id, project.default_expanded ?? false),
       );
@@ -1218,6 +1265,31 @@ function NavigationRail({
       loadProjectRoot(project.key);
     }
   }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
+  // A hydrated project with archived sessions loads its archived list. A
+  // loaded list refetches when the navigation count moves to a total the list
+  // does not hold: rows were archived or unarchived elsewhere (another client,
+  // the CLI, age). Reacting only to a move keeps two counts that disagree from
+  // refetching without end, and a list an action already refreshed holds the
+  // new total, so it is not fetched twice.
+  const archivedCountsSeen = useRef(new Map<string, number>());
+  useEffect(() => {
+    for (const project of allRailProjects(resources)) {
+      if (!project.loaded || !project.catalog) continue;
+      const total = project.archived_total ?? 0;
+      const key = archivedListKey(project.catalog, project.key);
+      const list = archivedLists[key];
+      // A move seen while the list loads waits for the answer, which may carry
+      // the old total.
+      if (list?.loading) continue;
+      const countMoved = archivedCountsSeen.current.get(key) !== total;
+      archivedCountsSeen.current.set(key, total);
+      if (!list) {
+        if (total > 0) void refreshArchivedList(project.catalog, project.key);
+      } else if (countMoved && (!list.loaded || list.total !== total)) {
+        void refreshArchivedList(project.catalog, project.key);
+      }
+    }
+  }, [resources, archivedLists]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -1252,10 +1324,14 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
-      currentState,
-      locationKey,
-    );
+    const location = resourceData<{
+      project_key?: string;
+      tier?: string;
+      pin_section_id?: string;
+      session?: unknown;
+      top_level?: boolean;
+      top_level_ref?: string;
+    }>(currentState, locationKey);
     if (!location) {
       if (revealLookupInFlight.current?.target !== revealTarget) {
         const target = revealTarget;
@@ -1302,6 +1378,25 @@ function NavigationRail({
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
       );
+      // An archived row lives in its project's archived list, not in a
+      // navigation resource: page the list until the row loads, then the fold
+      // chain above opens it. A list that ends without the row cannot reveal it.
+      if (location.tier === "archived") {
+        const project = allRailProjects(resources).find((candidate) => candidate.key === location.project_key);
+        const catalog = project?.catalog;
+        const list = catalog ? archivedLists[archivedListKey(catalog, location.project_key)] : undefined;
+        // A nested row (a fork original) is found through the row that carries
+        // it, the location's top_level_ref.
+        const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
+        if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
+          const cursor = list.nextCursor;
+          if (cursor)
+            requestRevealResource(revealTarget, `archived:${catalog}:${cursor}`, () =>
+              loadMoreArchivedList(catalog, location.project_key as string),
+            );
+          else if (list.error === null) consumeReveal();
+        }
+      }
       return;
     }
     if (location.pin_section_id) {
@@ -1327,6 +1422,7 @@ function NavigationRail({
     requestRevealResource,
     openRevealSection,
     projectPlacement,
+    archivedLists,
   ]);
 
   function handleToggle(node: RailNode) {
@@ -1373,6 +1469,10 @@ function NavigationRail({
     handleToggle(node);
   }
   async function loadOverflowPage(page: OverflowPage): Promise<void> {
+    if (page.projectKey && page.tier === "archived" && page.catalog) {
+      await loadMoreArchivedList(page.catalog, page.projectKey);
+      return;
+    }
     if (page.projectKey && page.tier) {
       await navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit);
       return;

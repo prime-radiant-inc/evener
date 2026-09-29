@@ -47,6 +47,7 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
 vi.mock("expo-web-browser", () => ({}));
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));

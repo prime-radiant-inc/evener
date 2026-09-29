@@ -19,7 +19,9 @@
     "shellguard": "node scripts/shellguard/run.mjs",
     "spawnguard": "node scripts/spawnguard/run.mjs",
     "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs",
-    "retirementguard": "cd ../../.. && go test ./cmd/evener-hub -run '^TestRetirementBrowser$' -count=1 -args -retirement-browser"
+    "mermaidguard": "node scripts/mermaidguard/run.mjs",
+    "retirementguard": "cd ../../.. && go test ./cmd/evener-hub -run '^TestRetirementBrowser$' -count=1 -args -retirement-browser",
+    "generate:mermaid-fixtures": "node scripts/gen-mermaid-fixtures.mjs"
   },
   "license": "ISC",
   "dependencies": {
@@ -32,6 +34,7 @@
     "dockview-react": "^7.0.2",
     "dompurify": "^3.4.12",
     "marked": "^18.0.6",
+    "mermaid": "11.17.2",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.0",
     "prosemirror-keymap": "^1.2.3",

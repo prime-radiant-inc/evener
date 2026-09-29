@@ -1,10 +1,17 @@
 import DOMPurify from "dompurify";
 import { Marked, type RendererObject, type Token, type Tokens } from "marked";
-import { type Ref, useMemo, useRef } from "react";
+import { memo, type Ref, useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
-import { markdownLexer } from "./lexer";
+import { MermaidDiagram } from "../mermaid";
 import styles from "./markdown.module.css";
+import {
+  containsLinkDefinition,
+  type LiveSegmentsCache,
+  messageMayContainMermaid,
+  splitLiveMarkdownSegments,
+  splitMarkdownSegments,
+} from "./segments";
 import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
@@ -236,48 +243,6 @@ function splitLiveSource(source: string): { head: string; tail: string } | null 
   return { head: source.slice(0, blank + separator), tail: source.slice(tailStart) };
 }
 
-// Exact link-definition detection through the shared lexer: a definition on
-// either side of the split registers globally with marked and resolves
-// `[label]` uses anywhere in the whole - including across the split - that a
-// standalone tail parse would leave literal, so any `def` token, top level
-// or nested in a blockquote/list/table, falls back to the full parse. A
-// lexer failure fails closed to the full parse as well.
-function containsLinkDefinition(source: string): boolean {
-  let tokens: Token[];
-  try {
-    tokens = markdownLexer.lexer(source);
-  } catch {
-    return true;
-  }
-  return tokensContainDef(tokens);
-}
-
-function tokensContainDef(tokens: Token[]): boolean {
-  // Any unexpected shape (malformed tokens, a future marked token type with
-  // unguarded nesting) fails closed to the full parse: a missed `def` would
-  // resolve differently under the windowed halves, while a spurious fallback
-  // is exactly today's behavior.
-  try {
-    for (const token of tokens) {
-      if (token.type === "def") return true;
-      if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
-      if ("items" in token) {
-        for (const item of token.items ?? []) {
-          if (tokensContainDef(item?.tokens ?? [])) return true;
-        }
-      }
-      if (token.type === "table") {
-        for (const cell of [...(token.header ?? []), ...(token.rows ?? []).flat()]) {
-          if (tokensContainDef(cell?.tokens ?? [])) return true;
-        }
-      }
-    }
-    return false;
-  } catch {
-    return true;
-  }
-}
-
 // The head-side gate verdicts cached per exact head text: every one of them
 // (balance scan, hazard patterns, shared-lexer definition check) is a pure
 // function of the head string, so a verdict computed for a head stays valid
@@ -321,6 +286,17 @@ function tailStartsIndented(tail: string): boolean {
   return false;
 }
 
+// One prose slice of a segmented message: the same parse+sanitize pipeline as
+// the single-root path, but over a token array carved out by segments.ts (a
+// token array, never re-serialized source, so whole-document references stay
+// resolved). Memoized on the token array so a settling diagram elsewhere in
+// the message does not re-sanitize untouched prose.
+const MarkdownSlice = memo(function MarkdownSlice({ segment }: { segment: { kind: "markdown"; tokens: Token[] } }) {
+  const html = useMemo(() => DOMPurify.sanitize(md.parser(segment.tokens), SANITIZE_CONFIG), [segment.tokens]);
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: same sanitized pipeline as the single-root path, see above
+  return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
 /**
  * Renders a markdown source string: marked tokenizes and generates HTML,
  * DOMPurify sanitizes it against a fixed allowlist, and the result is set
@@ -331,6 +307,9 @@ function tailStartsIndented(tail: string): boolean {
  * closed before parsing (see streaming.ts).
  */
 export function Markdown({ source, live = false, ref }: MarkdownProps) {
+  // Branch to the segmented path only when the source may carry a mermaid
+  // fence; every other message takes the single-root path byte-identically.
+  const segmented = messageMayContainMermaid(source);
   // Live streams re-render per streamed token, and each render re-parses the
   // whole message (marked + DOMPurify) - O(n^2) over a long stream. Past the
   // window above, the settled head is served from a cache keyed on its own
@@ -347,6 +326,7 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // keyed on the head's own exact text, never stale, misses evaluate once.
   const headGateCacheRef = useRef<HeadGateVerdict | null>(null);
   const html = useMemo(() => {
+    if (segmented) return "";
     if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
@@ -405,7 +385,28 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
     }
     const tailHtml = DOMPurify.sanitize(md.parse(closedTail, { async: false }), SANITIZE_CONFIG);
     return headHtml + tailHtml;
-  }, [source, live]);
+  }, [source, live, segmented]);
+
+  // Segmented path (a mermaid fence is present). Live mode caches the segmentation
+  // of the frozen head (the source through the last CLOSED mermaid fence, keyed on
+  // its exact text) and re-segments only the tail per render, with the stream's
+  // open constructs closed and a still-open mermaid fence demoted within the tail
+  // (segments.ts). So a long stream no longer pays a whole-message lex+close on
+  // every token; the head's slice arrays keep identity and their MarkdownSlice memo
+  // hits. Settled renders (live=false) segment the source directly, unchanged. The
+  // hook is called unconditionally so hook order is stable as a source grows into
+  // (or out of) a fence; the settled single-root `html` is empty on this branch and
+  // vice versa.
+  const liveSegmentCacheRef = useRef<LiveSegmentsCache | null>(null);
+  const segments = useMemo(
+    () =>
+      segmented
+        ? live
+          ? splitLiveMarkdownSegments(source, liveSegmentCacheRef)
+          : splitMarkdownSegments(source, null)
+        : null,
+    [source, live, segmented],
+  );
 
   // Reviewed: this is the narrow, legitimate case for dangerouslySetInnerHTML
   // (rendering markdown-to-HTML has no alternative in React without a full
@@ -416,6 +417,29 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // allowlist as a second, independent layer (its default safe-URI-scheme
   // filtering for href/src is untouched - SANITIZE_CONFIG never sets
   // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
-  // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
-  return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
+  if (!segmented) {
+    // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
+    return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
+  }
+
+  // Keys combine a sequence position with content-derived values, so a
+  // settling fence (same position, different content) or a theme flip never
+  // reuses the wrong DOM node. A plain local counter rather than the map
+  // callback's index: biome forbids keys sourced from the array index.
+  let sequence = 0;
+  return (
+    <div ref={ref}>
+      {(segments ?? []).map((segment) => {
+        sequence += 1;
+        return segment.kind === "mermaid" ? (
+          <MermaidDiagram key={`mermaid-${sequence}-${segment.text.length}`} source={segment.text} />
+        ) : (
+          <MarkdownSlice
+            key={`markdown-${sequence}-${segment.tokens.length}-${segment.tokens[0]?.raw.length ?? 0}`}
+            segment={segment}
+          />
+        );
+      })}
+    </div>
+  );
 }
