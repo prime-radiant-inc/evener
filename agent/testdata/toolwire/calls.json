@@ -17,6 +17,10 @@
     "call_shell_failed": "A command that exited 1: still a result, not an error, with [exit 1] at its end.",
     "call_shell_timeout": "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
     "call_shell_windowed": "A long output, windowed: a digest of its head and tail, then [exit 0 · output windowed — read more with read_transcript(...)] (its job id fixed, its state left off).",
+    "call_task_list_add": "Three tasks added to an empty list. Its state is the whole list, each task's store-minted times fixed.",
+    "call_task_list_done": "The first task done with a note; the daemon starts the next one itself, so the state shows task 2 in progress though the call never named it.",
+    "call_task_list_start": "The first task started.",
+    "call_task_list_view": "A bare call: the list, changing nothing.",
     "call_unknown": "Hand-written: a tool no step summary covers; only its name matters.",
     "call_use_skill": "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
     "call_web_fetch": "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
@@ -176,6 +180,46 @@
       "type": "commandExecution",
       "id": "item_tool_1_14",
       "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_add",
+      "argumentsJson": "{\"add\":[{\"description\":\"Reproduce the settle race\",\"prompt\":\"Run go test -race ./agent until the settle race shows.\",\"type\":\"research\"},{\"description\":\"Order the drain before settle\",\"prompt\":\"Make the drain finish before settle reads the tree.\",\"type\":\"fix\"},{\"description\":\"Run the race detector again\",\"prompt\":\"Run go test -race ./agent -count=20.\",\"type\":\"verify\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_15",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_start",
+      "argumentsJson": "{\"update\":[{\"id\":1,\"status\":\"in_progress\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_16",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_done",
+      "argumentsJson": "{\"update\":[{\"id\":1,\"notes\":\"Reproduced in 3 of 20 runs.\",\"status\":\"done\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_17",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_view",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_18",
+      "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_create",
       "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"create\"}",
@@ -184,7 +228,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_15",
+      "id": "item_tool_1_19",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_list",
@@ -194,7 +238,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_16",
+      "id": "item_tool_1_20",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit",
@@ -204,7 +248,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_17",
+      "id": "item_tool_1_21",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch",
@@ -214,7 +258,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_18",
+      "id": "item_tool_1_22",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch_again",
@@ -224,7 +268,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_19",
+      "id": "item_tool_1_23",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
@@ -234,7 +278,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_20",
+      "id": "item_tool_1_24",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_remove",
@@ -244,7 +288,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_21",
+      "id": "item_tool_1_25",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
@@ -254,7 +298,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_22",
+      "id": "item_tool_1_26",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -264,7 +308,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_23",
+      "id": "item_tool_1_27",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -274,7 +318,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_24",
+      "id": "item_tool_1_28",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -284,7 +328,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_25",
+      "id": "item_tool_1_29",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -294,7 +338,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_26",
+      "id": "item_tool_1_30",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -304,7 +348,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_27",
+      "id": "item_tool_1_31",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -481,6 +525,173 @@
       "type": "commandExecution",
       "id": "item_tool_result_2_14",
       "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_add",
+      "output": "Added 3 task(s). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_15",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_start",
+      "output": "Updated 1→in_progress. Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "started": true
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_16",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_done",
+      "output": "Updated 1→done. Progress: 1 done, 0 cancelled, 2 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "done",
+          "notes": [
+            "Reproduced in 3 of 20 runs."
+          ],
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "completed_at": "2026-09-28T20:00:00Z",
+          "settled": true
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "started": true
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_17",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_view",
+      "output": "1. [done] research — Reproduce the settle race\n   note: Reproduced in 3 of 20 runs.\n2. [in_progress] fix — Order the drain before settle\n3. [open] verify — Run the race detector again\n\nProgress: 1 done, 0 cancelled, 2 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "done",
+          "notes": [
+            "Reproduced in 3 of 20 runs."
+          ],
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "completed_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_18",
+      "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_create",
       "output": "{\n  \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n  \"branch\": \"settle-fix\",\n  \"main_repo_root\": \"/home/jesse/git/evener\",\n  \"message\": \"Created and entered worktree \\\"settle-fix\\\" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix, base 5e5f1c3a9b7d). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"created\"\n}",
@@ -489,7 +700,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_15",
+      "id": "item_tool_result_2_19",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_list",
@@ -499,7 +710,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_16",
+      "id": "item_tool_result_2_20",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit",
@@ -509,7 +720,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_17",
+      "id": "item_tool_result_2_21",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch",
@@ -519,7 +730,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_18",
+      "id": "item_tool_result_2_22",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_switch_again",
@@ -529,7 +740,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_19",
+      "id": "item_tool_result_2_23",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
@@ -539,7 +750,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_20",
+      "id": "item_tool_result_2_24",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_remove",
@@ -549,7 +760,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_21",
+      "id": "item_tool_result_2_25",
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
@@ -559,7 +770,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_22",
+      "id": "item_tool_result_2_26",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -569,7 +780,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_23",
+      "id": "item_tool_result_2_27",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -579,7 +790,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_24",
+      "id": "item_tool_result_2_28",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -589,7 +800,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_25",
+      "id": "item_tool_result_2_29",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -599,7 +810,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_26",
+      "id": "item_tool_result_2_30",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -609,7 +820,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_27",
+      "id": "item_tool_result_2_31",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",

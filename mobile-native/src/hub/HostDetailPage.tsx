@@ -1,6 +1,6 @@
 // A host's detail in the Hub (spec 12): its state in words, its last-known
-// version beside the drift tag, its system, live sessions, project roots and
-// where it is defined; the hub's last error reaching it while it is offline;
+// version beside the drift tag, its system, live sessions and project roots;
+// the hub's last error reaching it while it is offline;
 // Connect for a host the hub isn't attached to or already retrying; and Edit
 // and Remove on every host, hub.toml's included (spec 12), through the guarded
 // host mutations.
@@ -79,7 +79,6 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				) : (
 					<Row label="Project roots" value="None" />
 				)}
-				<Row label="Defined in" value={row.origin === "sidecar" ? "the app or web" : "hub.toml"} />
 			</Group>
 			{!row.attached && row.lastAttachError ? (
 				// Raw text the hub reported, at the prototype's footnote size
@@ -111,6 +110,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				<Row
 					label="Edit"
 					tone="accent"
+					chevron
 					disabled={!ready || removing}
 					onPress={() => navigation.navigate("HostEdit", { hubId, name })}
 				/>

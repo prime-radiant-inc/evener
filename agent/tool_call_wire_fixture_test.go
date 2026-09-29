@@ -194,6 +194,20 @@ func withFixedRepo(repo *wtRepo) func(tool.ExecResult) tool.ExecResult {
 	}
 }
 
+// A task's created, updated and completed stamps are the store's clock.
+var toolWireTimestamp = regexp.MustCompile(`"\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})"`)
+
+// withFixedTimes records a result whose state carries clock times with each
+// one fixed at the fixture's start.
+func withFixedTimes(res tool.ExecResult) tool.ExecResult {
+	fixed, err := json.Marshal(wireFixtureStart.UTC())
+	if err != nil {
+		panic(err)
+	}
+	res.ToolState = toolWireTimestamp.ReplaceAll(res.ToolState, fixed)
+	return res
+}
+
 // withFixedJob records a shell result whose command became a job: its job id
 // fixed, the wait's elapsed seconds fixed, and its state (which carries the
 // elapsed milliseconds) left off.
@@ -295,6 +309,30 @@ func TestToolCallWireFixtures(t *testing.T) {
 			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
 			args:      map[string]any{"command": "printf 'started\\n'; sleep 10"},
 			normalize: withFixedJob,
+		},
+		{
+			id: "call_task_list_add", tool: "task_list",
+			note:      "Three tasks added to an empty list. Its state is the whole list, each task's store-minted times fixed.",
+			args:      map[string]any{"add": []map[string]any{{"type": "research", "description": "Reproduce the settle race", "prompt": "Run go test -race ./agent until the settle race shows."}, {"type": "fix", "description": "Order the drain before settle", "prompt": "Make the drain finish before settle reads the tree."}, {"type": "verify", "description": "Run the race detector again", "prompt": "Run go test -race ./agent -count=20."}}},
+			normalize: withFixedTimes,
+		},
+		{
+			id: "call_task_list_start", tool: "task_list",
+			note:      "The first task started.",
+			args:      map[string]any{"update": []map[string]any{{"id": 1, "status": "in_progress"}}},
+			normalize: withFixedTimes,
+		},
+		{
+			id: "call_task_list_done", tool: "task_list",
+			note:      "The first task done with a note; the daemon starts the next one itself, so the state shows task 2 in progress though the call never named it.",
+			args:      map[string]any{"update": []map[string]any{{"id": 1, "status": "done", "notes": "Reproduced in 3 of 20 runs."}}},
+			normalize: withFixedTimes,
+		},
+		{
+			id: "call_task_list_view", tool: "task_list",
+			note:      "A bare call: the list, changing nothing.",
+			args:      map[string]any{},
+			normalize: withFixedTimes,
 		},
 		{
 			id: "call_worktree_create", tool: "manage_worktree", inRepo: true, normalize: withFixedRepo(repo),

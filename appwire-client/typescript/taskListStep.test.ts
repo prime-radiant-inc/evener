@@ -1,22 +1,12 @@
 // @vitest-environment node
-import type { TaskRow } from "@evener/appwire-client";
+
 import { expect, test } from "vitest";
-import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
+import type { TaskRow } from "./taskListData";
+import { autoStartedTask, taskLabel } from "./taskListStep";
 
 function task(overrides: Partial<TaskRow> & Pick<TaskRow, "id" | "status">): TaskRow {
   return { type: "implement", description: `task ${overrides.id}`, prompt: "", ...overrides };
 }
-
-test("parseTaskState parses the same wire-true Task[] shape the tasks panel parses", () => {
-  const rows = parseTaskState([{ id: 1, type: "implement", description: "a", prompt: "", status: "open" }]);
-  expect(rows).toEqual([{ id: 1, type: "implement", description: "a", prompt: "", status: "open" }]);
-});
-
-test("parseTaskState is null for absent/malformed raw - never an empty list", () => {
-  expect(parseTaskState(undefined)).toBeNull();
-  expect(parseTaskState(null)).toBeNull();
-  expect(parseTaskState({})).toBeNull();
-});
 
 test("taskLabel prefers the authoritative description over the bare id", () => {
   const tasks = [task({ id: 4, description: "Port the charge path", status: "done" })];
