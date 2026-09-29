@@ -4,8 +4,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -14,20 +16,17 @@ import (
 // TestMustWriteHoldsForkLockAcrossTheWrite pins the guard that keeps a sibling
 // parallel test's fork from inheriting the fixture's still-open write fd and
 // making execve of that fixture fail with ETXTBSY ("text file busy", Go issue
-// #22315). Writing to a FIFO with no reader blocks inside os.WriteFile while it
-// holds syscall.ForkLock for reading, so a competing ForkLock.Lock — what
-// fork/exec takes — cannot acquire the lock: if mustWrite stops holding it, the
-// probe never sees a sustained acquisition failure and the test fails.
-//
-// The observation is attributed to mustWrite: the lock must read as free before
-// the write starts, as held for a sustained run while mustWrite blocks, and as
-// free again once mustWrite returns. A stray holder in a sibling parallel test
-// cannot satisfy all three.
+// #22315). Writing a payload larger than the FIFO pipe buffer with no reader
+// blocks inside os.WriteFile while it holds syscall.ForkLock for reading: first
+// opening (no reader), then writing (buffer full). A competing ForkLock.Lock —
+// what fork/exec takes — cannot acquire the lock during either, so the whole
+// open/write/close window is observed, not just the open.
 func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 	fifo := filepath.Join(t.TempDir(), "fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	body := strings.Repeat("x", 256<<10) // exceeds the default 64KiB pipe buffer
 
 	// fork/exec takes ForkLock for writing; mustWrite's RLock blocks it for the
 	// whole time the write is open, far longer than any sibling's transient use.
@@ -57,22 +56,23 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		// Unblock the writer's open(O_WRONLY) by opening the read/write end
-		// without blocking: O_RDWR returns immediately on a FIFO and satisfies a
-		// blocked O_WRONLY opener, so the writer can never be left hanging even
-		// on this error path. The body is far smaller than the pipe buffer, so
-		// the write completes without this end being drained; keep it open until
-		// the writer returns so it never sees EPIPE.
-		reader, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			result <- fmt.Sprintf("open FIFO reader: %v", err)
-			return
+		// Release the writer. The writer is blocked in open(O_WRONLY) with no
+		// reader, so this read end pairs with it immediately and cannot block;
+		// draining to EOF lets the larger-than-buffer payload finish and the
+		// blocked write complete before mustWrite returns.
+		reader, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, reader)
+			_ = reader.Close()
 		}
 		<-written
 		freed := acquireFree()
-		_ = reader.Close()
 		if held < sustained {
 			result <- fmt.Sprintf("mustWrite did not hold syscall.ForkLock across the write (observed held for %d of %d consecutive probes); a concurrent fork could inherit the open write fd (golang/go#22315)", held, sustained)
+			return
+		}
+		if err != nil {
+			result <- fmt.Sprintf("open FIFO reader: %v", err)
 			return
 		}
 		if !freed {
@@ -83,9 +83,9 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 	}()
 
 	if !<-baseline {
-		t.Fatal("ForkLock was already held before the write; cannot attribute a later observation to mustWrite")
+		t.Skip("ForkLock was already held before the write; a sibling test is using it")
 	}
-	mustWrite(t, fifo, "body\n")
+	mustWrite(t, fifo, body)
 	close(written)
 	<-probeDone
 	if reason := <-result; reason != "" {
