@@ -165,3 +165,9 @@ it("never shows a Show model on Board rows toggle (ruling 8), or asks to reconne
 	expect(renderedText(tree)).not.toContain("Show model");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b|\bRefresh\b|transcript display/i);
 });
+
+it("names the level the hub has saved, not a change still waiting to save", () => {
+	const draft = { revision: 3, config: { ...CONFIG, content: { kind: "preset" as const, level: "full" as const } } };
+	const { tree } = mount(transcript({ draft }));
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Default detail level, Intent" }).length).toBeGreaterThan(0);
+});

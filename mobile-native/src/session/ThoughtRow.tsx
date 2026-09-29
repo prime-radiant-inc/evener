@@ -2,8 +2,8 @@
 // opens to the thought in the serif. The live thought is the status tray's
 // line (ruling 10), so it never reaches the transcript.
 import { Pressable, Text } from "react-native";
-import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { compactDuration } from "./format";
 
 export function ThoughtRow({
@@ -19,6 +19,7 @@ export function ThoughtRow({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const label = durationMs === undefined ? "Thought" : `Thought for ${compactDuration(durationMs)}`;
 	return (
 		<>
@@ -38,7 +39,7 @@ export function ThoughtRow({
 				<Text
 					selectable
 					allowFontScaling={allowFontScaling}
-					style={{ fontFamily: fonts.serif, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+					style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 				>
 					{text}
 				</Text>

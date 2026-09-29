@@ -10,7 +10,6 @@
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
 import { boundQuestion } from "../projectedRows";
 import {
 	boundQuestionText,
@@ -20,6 +19,7 @@ import {
 	questionAdvanceTarget,
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
 import { dockCard } from "./dockCard";
 import { SymbolButton } from "./SymbolButton";
@@ -54,6 +54,7 @@ export function QuestionDock({
 }: QuestionDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { selections, activeIndex } = draft;
 	const card = dockCard(palette);
 	const caption = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid };
@@ -154,7 +155,7 @@ export function QuestionDock({
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						fontFamily: fonts.serifSemibold,
+						...face("semibold"),
 						fontSize: 17 * scale,
 						lineHeight: 24 * scale,
 						color: palette.prose,
@@ -165,7 +166,7 @@ export function QuestionDock({
 				{display.why ? (
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ fontFamily: fonts.serif, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+						style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 					>
 						{display.why}
 					</Text>

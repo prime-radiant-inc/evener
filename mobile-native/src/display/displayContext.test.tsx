@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
-import { typeRoles } from "../design/tokens";
+import { fonts, typeRoles } from "../design/tokens";
 import { render } from "../renderNative.testkit";
-import { DisplayProvider, type ReadingRoles, readingRoles, useReadingType } from "./displayContext";
+import { DisplayProvider, type ReadingRoles, readingRoles, useReadingFace, useReadingType } from "./displayContext";
 import { DisplayPreferences } from "./displayPreferences";
 
 vi.mock("react-native", async () => ({
@@ -45,4 +45,30 @@ it("reads the phone's choice, and the serif with no provider", () => {
 		</DisplayProvider>,
 	);
 	expect(seen.roles?.agentProse.fontFamily).toBeUndefined();
+});
+
+it("gives agent-written text the serif under Serif, and the system face with its weight under Sans", () => {
+	const seen: { face: ReturnType<typeof useReadingFace> | null } = { face: null };
+	function Probe() {
+		seen.face = useReadingFace();
+		return null;
+	}
+	render(<Probe />);
+	expect(seen.face?.("regular")).toEqual({ fontFamily: fonts.serif });
+	expect(seen.face?.("semibold")).toEqual({ fontFamily: fonts.serifSemibold });
+	const values = new Map<string, string>();
+	const prefs = new DisplayPreferences({
+		getItemSync: (key) => values.get(key) ?? null,
+		setItemSync: (key, value) => {
+			values.set(key, value);
+		},
+	});
+	prefs.set({ readingFont: "sans" });
+	render(
+		<DisplayProvider value={prefs}>
+			<Probe />
+		</DisplayProvider>,
+	);
+	expect(seen.face?.("regular")).toEqual({});
+	expect(seen.face?.("semibold")).toEqual({ fontWeight: "600" });
 });

@@ -52,3 +52,22 @@ export function readingRoles(font: ReadingFont): ReadingRoles {
 export function useReadingType(): ReadingRoles {
 	return readingRoles(useDisplayChoices().readingFont);
 }
+
+export type ReadingFace = { fontFamily?: string; fontWeight?: "600" };
+
+const SERIF_FACES: Record<"regular" | "semibold", ReadingFace> = {
+	regular: { fontFamily: fonts.serif },
+	semibold: { fontFamily: fonts.serifSemibold },
+};
+const SANS_FACES: Record<"regular" | "semibold", ReadingFace> = {
+	regular: {},
+	semibold: { fontWeight: "600" },
+};
+
+/** The face for agent-written text outside the reading roles (a thought, a
+ * question, a document's title, your comment): the serif, or under Sans the
+ * system face, with a semibold weight standing in for the semibold serif. */
+export function useReadingFace(): (weight: "regular" | "semibold") => ReadingFace {
+	const faces = useDisplayChoices().readingFont === "sans" ? SANS_FACES : SERIF_FACES;
+	return (weight) => faces[weight];
+}

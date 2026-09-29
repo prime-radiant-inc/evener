@@ -81,8 +81,8 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	const colors = useColors();
 	// useColors returns a new object each render, but every color in it comes
 	// from the palette, one constant per color scheme.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, as above
 	const reading = useReadingType();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, as above
 	const style = useMemo(
 		() => markdownStyle(colors, { body: reading.agentProse, headings: TRANSCRIPT_HEADINGS }),
 		[colors.palette, reading],

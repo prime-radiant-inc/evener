@@ -207,7 +207,8 @@ it("offers to keep your choice or use the hub's after a conflict", async () => {
 });
 
 it("checks the hub's setting on its own once the hub is back, once per uncertain write", () => {
-	const { tree, fake, update } = mount(transcript({ writeUncertain: true }), false);
+	// The shared store marks an unconfirmed write as a conflict too.
+	const { tree, fake, update } = mount(transcript({ writeUncertain: true, conflict: true }), false);
 	expect(renderedText(tree)).toContain("Checking the hub's setting…");
 	expect(fake.refresh).not.toHaveBeenCalled();
 	update(transcript({ writeUncertain: true }), true);
@@ -264,4 +265,44 @@ it.each([
 	["unreadable", transcript({ draftUnreadable: true, storageUnavailable: true })],
 ])("never asks to reconnect or refresh when %s", (_name, state) => {
 	expect(renderedText(mount(state).tree)).not.toMatch(CALM);
+});
+
+it("shows an unconfirmed write as a check, not a conflict to resolve", () => {
+	const { tree, button } = mount(transcript({ writeUncertain: true, conflict: true }));
+	expect(renderedText(tree)).toContain("Checking the hub's setting…");
+	expect(renderedText(tree)).not.toContain("The hub's setting changed while you were choosing.");
+	expect(button("Keep mine")).toBeNull();
+});
+
+it("drops a failed save's line while the hub's setting is being checked", async () => {
+	const { tree, fake, press, update } = mount(transcript());
+	fake.saveTranscript.mockRejectedValueOnce(new Error("reply lost"));
+	await press("Full, Everything, including the agent's reasoning");
+	expect(renderedText(tree)).toContain("The change couldn't be saved. Choose it again.");
+	update(transcript({ writeUncertain: true, conflict: true }));
+	expect(renderedText(tree)).not.toContain("The change couldn't be saved.");
+});
+
+it.each([
+	["a changed setting", "Transcript display settings changed again before this draft was saved.", false],
+	["a draft to check", "Could not restore the saved transcript draft. Check current settings to retry.", false],
+	["a phone that can't keep the draft", "Could not save the transcript draft locally.", true],
+])("says %s in its own words", (_name, error, storageUnavailable) => {
+	const { tree } = mount(transcript({ error, storageUnavailable }));
+	expect(renderedText(tree)).not.toMatch(CALM);
+	expect(renderedText(tree)).not.toContain("Check current settings");
+	expect(renderedText(tree)).toMatch(
+		storageUnavailable ? /This phone couldn't keep the change/ : /Couldn't load this hub's setting/,
+	);
+});
+
+it("says it is connecting while the hub's setting is still loading", () => {
+	const { tree } = mount(transcript({ confirmed: null, loading: true }));
+	expect(renderedText(tree)).toContain("Connecting to Work hub…");
+});
+
+it("saves nothing when the level already chosen is chosen again", async () => {
+	const { fake, press } = mount(transcript());
+	await press("Intent, Plus one folded line for each run of steps");
+	expect(fake.calls).toEqual([]);
 });

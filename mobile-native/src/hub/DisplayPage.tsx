@@ -42,7 +42,8 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 	};
 	const { snapshot } = useNativePreferences();
 	const transcript = snapshot?.transcriptMobile;
-	const config = (transcript?.draft ?? transcript?.confirmed)?.config;
+	// The hub's saved level, not a change still waiting to save.
+	const config = transcript?.confirmed?.config;
 	const levelLabel = config
 		? config.content.kind === "preset"
 			? detailLevel(config.content.level).label

@@ -4,8 +4,8 @@
 // transcript never shows the live one this way.
 import type { AskUserQuestion } from "@evener/appwire-client";
 import { Text, View } from "react-native";
-import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 
 export function QuestionHistory({
 	questions,
@@ -16,13 +16,14 @@ export function QuestionHistory({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	return (
 		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.attention, paddingLeft: 12, gap: 6 }}>
 			{questions.map((question) => (
 				<Text
 					key={`${question.header}\u0000${question.question}`}
 					allowFontScaling={allowFontScaling}
-					style={{ fontFamily: fonts.serif, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
+					style={{ ...face("regular"), fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
 				>
 					{question.question}
 				</Text>

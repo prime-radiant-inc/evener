@@ -45,6 +45,8 @@ const HOOK_LABELS: Record<(typeof HOOK_EXIT_DETAILS)[number], string> = {
 };
 
 const NOT_SAVED = "The change couldn't be saved. Choose it again.";
+const NOT_LOADED = "Couldn't load this hub's setting. It loads again once the hub is back.";
+const NOT_KEPT = "This phone couldn't keep the change, so it isn't saved yet.";
 
 export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "DetailLevel">) {
 	const { hubName } = useHubSheet();
@@ -63,7 +65,10 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		checkedUncertainty.current = true;
 		void model.refresh();
 	}, [writeUncertain, connected, model]);
-	if (!state || !model) {
+	const current = state?.confirmed ?? null;
+	const config = (state?.draft ?? current)?.config;
+	// A page that has never loaded says it is connecting (ruling 21).
+	if (!state || !model || (!config && state.loading)) {
 		return (
 			<GroupedPage>
 				<SheetStatus />
@@ -80,8 +85,9 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 			await model.editTranscript(config);
 			await model.saveTranscript();
 		});
-	const current = state.confirmed;
-	const config = (state.draft ?? current)?.config;
+	// The shared store marks an unconfirmed write as a conflict too; the page
+	// checks the hub's setting itself, so there is nothing to resolve yet.
+	const conflict = state.conflict && !writeUncertain;
 	const busy =
 		!connected || state.loading || state.saving || writeUncertain || state.storageUnavailable || state.conflict;
 	return (
@@ -104,7 +110,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				</>
 			) : null}
 			{writeUncertain ? <GroupFooter>Checking the hub's setting…</GroupFooter> : null}
-			{state.conflict && current ? (
+			{conflict && current ? (
 				<>
 					<GroupFooter tone="attention">The hub's setting changed while you were choosing.</GroupFooter>
 					<Group>
@@ -128,10 +134,13 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 					</Group>
 				</>
 			) : null}
-			{state.error && !state.draftUnreadable && !writeUncertain ? (
-				<GroupFooter tone="danger">{state.error}</GroupFooter>
+			{state.error && !state.draftUnreadable && !writeUncertain && !conflict ? (
+				// The store's own messages name its plumbing ("transcript display",
+				// a Check current settings button this page doesn't have), so the
+				// page says what happened in its own words.
+				<GroupFooter tone="danger">{state.storageUnavailable ? NOT_KEPT : NOT_LOADED}</GroupFooter>
 			) : null}
-			{failed ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{failed && !writeUncertain ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
 			{config && state.support === "supported" ? (
 				<>
 					<GroupLabel>Default detail level</GroupLabel>
@@ -143,7 +152,10 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 								sub={description}
 								checked={config.content.kind === "preset" && config.content.level === level}
 								disabled={busy}
-								onPress={() => choose({ ...config, content: { kind: "preset", level } })}
+								onPress={() => {
+									if (config.content.kind === "preset" && config.content.level === level) return;
+									choose({ ...config, content: { kind: "preset", level } });
+								}}
 							/>
 						))}
 						<Row

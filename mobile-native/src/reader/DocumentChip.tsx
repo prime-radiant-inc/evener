@@ -9,6 +9,7 @@ import { fonts } from "../design/tokens";
 import { compactDuration, spokenDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { documentKind } from "./documentSource";
 import { FreshDot } from "./FreshDot";
 import { messageDocuments } from "./documentReferences";
@@ -50,6 +51,7 @@ export function useDocumentFacts(hubId: string, sessionRef: string, path: string
 export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: DocumentChipProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
 	// A chip marks only a change (8.2); Files and its chip mark what's new.
 	const changed = freshness === "changed" ? "changed since you last read" : null;
@@ -86,7 +88,7 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					ellipsizeMode="tail"
 					style={{
 						flexShrink: 1,
-						fontFamily: fonts.serifSemibold,
+						...face("semibold"),
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,

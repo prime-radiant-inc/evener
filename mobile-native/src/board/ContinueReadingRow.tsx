@@ -3,9 +3,9 @@
 // A flat row like the notices, with no box.
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
 import type { ContinueReading } from "../reader/documentMemory";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 
 export function ContinueReadingRow({
 	trail,
@@ -16,6 +16,7 @@ export function ContinueReadingRow({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const percent = Math.round(trail.progress * 100);
 	return (
 		<Pressable
@@ -46,7 +47,7 @@ export function ContinueReadingRow({
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{
-						fontFamily: fonts.serifSemibold,
+						...face("semibold"),
 						fontSize: 15 * scale,
 						lineHeight: 19 * scale,
 						color: palette.inkHi,
