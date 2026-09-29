@@ -22,7 +22,7 @@ import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
@@ -41,7 +41,7 @@ import { BoardScreen } from "./BoardScreen";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
-import { seenMarkers } from "./nativeBoardMemory";
+import { forgetBoardForHub, seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
 import { ROW_ACTION_LABELS } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
@@ -340,7 +340,9 @@ function hub(
 					const { ref } = params as { ref: string };
 					if (method === "thread/read") {
 						const row = sessionRows().find((candidate) => candidate.ref === ref);
-						resolve({ thread: threadOf(ref, row?.state === "active" ? "active" : "idle") } as never);
+						resolve({
+							thread: threadOf(ref, row?.state === "active" ? "active" : "idle", row?.turn_ended_at),
+						} as never);
 					} else
 						resolve({
 							receipt: {
@@ -2959,6 +2961,86 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 	act(() => tree.unmount());
 });
 
+it("reflects a project change held offline in its menu and on its row, and its opposite cancels it (phase 6 ruling 18)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [sheet, choose] = openMenu();
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	const [held, undo] = openMenu();
+	expect(held.options).toEqual(["Unpin", "Archive project", "Cancel"]);
+	act(() => undo(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("queues a project change behind the held one it answers, even once back online", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	let answerPin: () => void = () => {};
+	const request = fake.client.request;
+	let favorites = 0;
+	fake.client.request = ((method: string, params: unknown) => {
+		// The held Pin to top's write hangs while it is on its way.
+		if (method === "evener/favorite/set" && favorites++ === 0) {
+			const answer = request(method as never, params as never);
+			return new Promise((resolve) => {
+				answerPin = () => resolve(answer as never);
+			});
+		}
+		return request(method as never, params as never);
+	}) as typeof request;
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [, pin] = openMenu();
+	act(() => pin(0));
+	await settle();
+	// The menu, opened offline, offers Unpin, and stays up across the
+	// reconnect while the held Pin to top goes out.
+	const [sheet, unpin] = openMenu();
+	expect(sheet.options?.[0]).toBe("Unpin");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await vi.waitFor(() => expect(favorites).toBe(1));
+	act(() => unpin(0));
+	await settle();
+	answerPin();
+	await vi.waitFor(() =>
+		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
+			{ kind: "project", id: "evener", favorited: true },
+			{ kind: "project", id: "evener", favorited: false },
+		]),
+	);
+	await vi.waitFor(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
+	act(() => tree.unmount());
+});
+
 it("offers no menu for a project another host shares", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3313,7 +3395,9 @@ it("drops the Projects chip once the projects catalog loads empty, as the sectio
 });
 
 /** A session's thread as thread/read answers it: `status` is its turn. */
-function threadOf(ref: string, status: string): Thread {
+/** A session's read: running a turn while `status` is active, its last turn
+ * ended at `turnEndedAt` (the row's turn_ended_at, the daemon's one stamp). */
+function threadOf(ref: string, status: string, turnEndedAt?: string): Thread {
 	return {
 		id: `thread:${ref}`,
 		sessionId: ref,
@@ -3346,6 +3430,8 @@ function threadOf(ref: string, status: string): Thread {
 				rename: true,
 			},
 			queue: { revision: 0, depth: 0, preview: [] },
+			...(status === "active" ? { activeTurnId: `turn:${ref}` } : {}),
+			...(turnEndedAt ? { lastTurnEndedAt: Date.parse(turnEndedAt) } : {}),
 		},
 	};
 }
@@ -3517,20 +3603,240 @@ it("opens Pin to category for a row's Pin", async () => {
 	});
 });
 
-it("offers only More on any row while reconnecting, and a menu of only the read marks", async () => {
+it("offers a row's actions offline too, to hold until the connection returns (phase 6 ruling 18)", async () => {
 	const fake = hub(swipeFleet());
 	const { id, tree, nav } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, nav);
-	const swipeables = tree.root.findAll((node) => node.type === ("ReanimatedSwipeable" as never));
-	expect(swipeables).toHaveLength(3);
-	for (const swipeable of swipeables) {
-		expect(swipeable.props.renderLeftActions).toBeUndefined();
-		expect(revealedLabels(swipeable, "right")).toEqual(["More"]);
+	const working = swipeableOf(tree, "Refactor parser");
+	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
+	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual(
+		expect.arrayContaining(["Pin to category…", "Stop", "Shut down", "Archive"]),
+	);
+});
+
+describe("Board actions held offline (phase 6 ruling 18)", () => {
+	const heldIn = (id: string) => JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]") as unknown[];
+	const interrupts = (fake: ReturnType<typeof hub>) =>
+		fake.threadCalls.filter((call) => call.method === "turn/interrupt");
+	async function reconnect(id: string, fake: ReturnType<typeof hub>, tree: ReactTestRenderer, nav: Navigation) {
+		connect(id, fake.client, "ready");
+		rerender(tree, nav);
+		await settle();
+		await settle();
 	}
-	const menu = menuHost(id);
-	expect(rowMenuLabels(menu, `local:${OTHER_SESSION_ID}`)).toEqual(["Mark as read"]);
-	expect(rowMenuLabels(menu, `local:${SESSION_ID}`)).toEqual([]);
+
+	it("holds an archive taken offline, says so on the row, and sends it once back online", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		expect(fake.mutations).toEqual([]);
+		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(0.5);
+		expect(texts(tree)).toContain("Archive waits for the connection");
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		expect(fake.mutations).toEqual([
+			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+		]);
+	});
+
+	it("queues a row's change behind the held one it answers, even once back online", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		let answerArchive: () => void = () => {};
+		const request = fake.client.request;
+		let archives = 0;
+		fake.client.request = ((method: string, params: unknown) => {
+			// The held archive's write hangs while it is on its way.
+			if (method === "evener/archive/set" && archives++ === 0) {
+				const answer = request(method as never, params as never);
+				return new Promise((resolve) => {
+					answerArchive = () => resolve(answer as never);
+				});
+			}
+			return request(method as never, params as never);
+		}) as typeof request;
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		// The menu, opened offline, stays up across the reconnect.
+		const menu = menuHost(id);
+		const item = menuItem(menu, `local:${SESSION_ID}`);
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(archives).toBe(1));
+		act(() => menu.act(item, "unarchive"));
+		await settle();
+		answerArchive();
+		await vi.waitFor(() =>
+			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		const menu = menuHost(id);
+		const [held] = menu.held(menuItem(menu, `local:${SESSION_ID}`));
+		expect(held?.label).toBe("Cancel Archive");
+		act(() => menu.cancel(held?.id ?? ""));
+		await settle();
+		expect(texts(tree)).not.toContain("Archive waits for the connection");
+		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+		await reconnect(id, fake, tree, nav);
+		expect(fake.mutations).toEqual([]);
+	});
+
+	it("sends a held Stop whose turn is the one seen, even with the Board out of view", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+		await settle();
+		expect(texts(tree)).toContain("Stop waits for the connection");
+		setFocused(false);
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(interrupts(fake)).toHaveLength(1));
+		expect(heldIn(id)).toEqual([]);
+	});
+
+	it("drops a held Stop once a newer turn runs, and says so", async () => {
+		const fleet = swipeFleet();
+		const [row] = fleet.live[0] ?? [];
+		if (!row) throw new Error("no working row");
+		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(10) }, ...(fleet.live[0] ?? []).slice(1)];
+		const fake = hub(fleet);
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+		await settle();
+		// Meanwhile that turn ended and another began.
+		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(1) }, ...(fleet.live[0] ?? []).slice(1)];
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(texts(tree)).toContain("The turn you stopped ended before you were back online"));
+		expect(interrupts(fake)).toEqual([]);
+		expect(heldIn(id)).toEqual([]);
+	});
+
+	it("sends what was held before a relaunch on the first ready connection, in the order held", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				{
+					id: "a",
+					heldAt: 1,
+					action: { kind: "rename", ref: `local:${OTHER_SESSION_ID}`, title: "Write changelog", name: "Notes" },
+				},
+				{
+					id: "b",
+					heldAt: 2,
+					action: {
+						kind: "shutDown",
+						ref: `local:${OTHER_SESSION_ID}`,
+						title: "Write changelog",
+						seen: { turnEndedAt: null, running: false },
+					},
+				},
+			]),
+		);
+		connect(id, fake.client, "ready");
+		await mount(navigation());
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/thread/name/set", "thread/shutdown"]);
+	});
+
+	it("offers no Cancel for a held action already on its way", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const ref = `local:${OTHER_SESSION_ID}`;
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				{
+					id: "a",
+					heldAt: 1,
+					action: { kind: "shutDown", ref, title: "Write changelog", seen: { turnEndedAt: null, running: false } },
+				},
+			]),
+		);
+		let answer: () => void = () => {};
+		const request = fake.client.request;
+		fake.client.request = ((method: string, params: unknown) => {
+			if (method !== "thread/shutdown") return request(method as never, params as never);
+			fake.mutations.push({ method, params });
+			return new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			});
+		}) as typeof request;
+		connect(id, fake.client, "ready");
+		const tree = await mount(navigation());
+		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
+		const menu = menuHost(id);
+		expect(menu.held(menuItem(menu, ref))).toEqual([]);
+		expect(texts(tree)).toContain("Shut down waits for the connection");
+		answer();
+		await settle();
+		expect(texts(tree)).not.toContain("Shut down waits for the connection");
+	});
+
+	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const shutDown = (key: string) => ({
+			id: key,
+			heldAt: 1,
+			action: {
+				kind: "shutDown",
+				ref: `local:${OTHER_SESSION_ID}`,
+				title: "Write changelog",
+				seen: { turnEndedAt: null, running: false },
+			},
+		});
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				shutDown("a"),
+				{ ...shutDown("b"), action: { ...shutDown("b").action, ref: "paradise-park:pp" } },
+			]),
+		);
+		let answer: () => void = () => {};
+		const request = fake.client.request;
+		fake.client.request = ((method: string, params: unknown) => {
+			if (method !== "thread/shutdown") return request(method as never, params as never);
+			fake.mutations.push({ method, params });
+			return new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			});
+		}) as typeof request;
+		connect(id, fake.client, "ready");
+		await mount(navigation());
+		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
+		forgetBoardForHub(id);
+		answer();
+		await settle();
+		await settle();
+		expect(fake.mutations).toHaveLength(1);
+		expect(harness.kv.has(`evener.native.board-hold.${id}`)).toBe(false);
+	});
 });
 
 it("puts swipes on pinned categories' rows and project sessions too", async () => {
@@ -4405,17 +4711,22 @@ it("marks the chosen finished sessions read and leaves select mode", async () =>
 	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
 });
 
-it("keeps only Mark as read in the select bar while offline", async () => {
+it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
 	const fake = hub(selectFleet());
 	const { id, tree } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, navigation());
 	select(tree, "Write changelog");
 	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
-		true,
-		true,
+		false,
+		false,
 		false,
 	]);
+	pressLabel(tree, "Archive");
+	await settle();
+	expect(inSelectMode(tree)).toBe(false);
+	expect(fake.mutations).toEqual([]);
+	expect(texts(tree)).toContain("Archive waits for the connection");
 });
 
 // The Board's Continue reading row (spec 7.1, ruling 20).

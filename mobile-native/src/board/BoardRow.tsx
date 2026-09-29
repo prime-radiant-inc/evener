@@ -38,6 +38,9 @@ export interface BoardRowProps {
 	onOpen: (row: NavigationSessionSummary) => void;
 	/** Half opacity and busy while a change to this row is on its way. */
 	dimmed?: boolean;
+	/** What waits for the connection on this row (phase 6 ruling 18), in
+	 * place of its why line. */
+	waiting?: string | null;
 	accessibilityActions?: readonly AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 	/** The row's long press, which RowMenu gives it: the row is the one
@@ -129,6 +132,7 @@ export function BoardRow({
 	now,
 	onOpen,
 	dimmed = false,
+	waiting = null,
 	accessibilityActions,
 	onAccessibilityAction,
 	onLongPress,
@@ -147,7 +151,7 @@ export function BoardRow({
 	const word = stateWord(state);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, reason, age && spokenAge(age)].filter(Boolean).join(", ");
+	const label = [row.title, word, waiting ?? reason, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -236,7 +240,11 @@ export function BoardRow({
 						</View>
 					) : null}
 				</View>
-				{why ? <WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} /> : null}
+				{waiting ? (
+					<WhyText why={{ text: waiting }} numberOfLines={1} marginTop={2} />
+				) : why ? (
+					<WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} />
+				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
 						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
