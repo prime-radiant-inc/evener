@@ -632,7 +632,12 @@ describe("a system event", () => {
 	});
 
 	it("opens a labelled steering notice's text", () => {
-		const reminder = notice({ origin: "steering", steeringKind: "task-nudge", text: "Remember the open task." });
+		const reminder = notice({
+			origin: "steering",
+			steeringKind: "task-nudge",
+			text: "Remember the open task.",
+			label: "Task reminder",
+		});
 		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
 		expect(renderedText(tree)).toContain("Task reminder");
 		expect(renderedText(tree)).not.toContain("Remember the open task.");
