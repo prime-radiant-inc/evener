@@ -12,6 +12,7 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	keyboard,
 	alertRequests,
 	dockBody,
 	dropped as droppedConnection,
@@ -34,7 +35,7 @@ import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
-import { AccessibilityInfo, ActionSheetIOS } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -79,7 +80,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -326,6 +326,7 @@ afterEach(() => {
 	catalogHub.fails = false;
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	keyboard.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -625,6 +626,69 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		await press(tree, "Other answer…");
 		expect(field(tree)).toBeDefined();
 		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+	});
+
+	it("shows only the question while the keyboard is up for your own answer, and the options once it goes down", async () => {
+		const { tree } = await mount(thread("ref-question-typing", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(options()).toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Other answer…")).toBeUndefined();
+		expect(field(tree)).toBeDefined();
+		act(() => keyboard.hide());
+		expect(options()).not.toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeDefined();
+	});
+
+	it("brings the options back from Show options, which lowers the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		act(() => pressable(tree, "Show options")?.props.onPress());
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+	});
+
+	it("sends what you typed as the answer while the keyboard is up", async () => {
+		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		await type(tree, "Drop them");
+		const send = composerSend(tree, "Send your answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "turn/start").map((request) => request.params.input),
+		).toEqual([[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }]]);
+		act(() => keyboard.hide());
+	});
+
+	it("lets a drag lower the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-drag", "awaiting", true));
+		const [list] = tree.root.findAll(
+			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+		);
+		expect(list?.props.keyboardDismissMode).toBe("interactive");
+	});
+
+	it("lets a drag lower the keyboard on Android, which has no interactive dismissal", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-question-drag-android", "awaiting", true));
+			const [list] = tree.root.findAll(
+				(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+			);
+			expect(list?.props.keyboardDismissMode).toBe("on-drag");
+		} finally {
+			platform.OS = "ios";
+		}
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
@@ -1888,6 +1952,15 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const body = dockBody(tree, "approval-dock");
 		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
 		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("keeps Allow and Deny while the keyboard is up", async () => {
+		const { tree } = await mount(withApproval("ref-approval-keyboard"));
+		act(() => keyboard.show());
+		expect(pressable(tree, "Allow this file only")).toBeDefined();
+		expect(pressable(tree, "Deny")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		act(() => keyboard.hide());
 	});
 
 	it("wires only the approval dock's slot to shrink", async () => {
