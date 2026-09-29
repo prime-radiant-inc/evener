@@ -4084,6 +4084,66 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		});
 	});
 
+	// G13: a finished subagent's row shows its report's opening line, read
+	// from the coordinator's tree, which the screen holds and the list's rows
+	// read. The tree lands after the rows first render, so the rows must
+	// render again when it does.
+	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
+		forgetSubagentTrees("hub-1");
+		const endedAt = new Date(Date.now() - 60_000).toISOString();
+		coordinatorHub.tree = subagentTree({
+			terminal: true,
+			outcome: "completed",
+			packetKind: "reported",
+			message: "Fixed the race: settle now waits for the drain.",
+			runEndedAt: endedAt,
+		});
+		const served = thread(COORDINATOR.ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-d",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-fix",
+					ownerSessionId: "coord",
+					rootSessionId: "coord",
+					childSessionId: "fix",
+					transcriptRef: "local:fix",
+					originItemId: "call-d",
+					description: "Fix race in tree settle",
+					type: "subagent",
+					lifecycle: "idle",
+					phase: "idle",
+					status: "idle",
+					outcome: "completed",
+					terminal: true,
+					runEndedAt: endedAt,
+					resumable: true,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mount(served);
+		await settle();
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
+	});
+
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
 		const served = thread(COORDINATOR.ref, "active");
 		(served as unknown as { turns: unknown[] }).turns = [
