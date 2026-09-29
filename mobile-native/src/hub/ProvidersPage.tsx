@@ -474,8 +474,7 @@ function Providers({
 						{core.diagnostics.map((message) => (
 							<GroupFooter key={message}>{message}</GroupFooter>
 						))}
-						<GroupLabel>Manage</GroupLabel>
-						<Group>
+						<Group label="Manage">
 							<Row
 								label="Add provider"
 								tone="accent"
@@ -670,8 +669,7 @@ function Providers({
 									{surface.busy && <ActivityIndicator accessibilityLabel="Updating provider" />}
 									{editingCredential ? null : (
 										<>
-											<GroupLabel>Manage</GroupLabel>
-											<Group>
+											<Group label="Manage">
 												<Row
 													label="Edit"
 													tone="accent"
@@ -826,17 +824,18 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
-			<GroupLabel>Models</GroupLabel>
 			{models.length > 0 ? (
-				<Group>
+				<Group label="Models">
 					{models.map((model) => (
 						<Row key={model.id} label={model.id} machineLabel />
 					))}
 				</Group>
 			) : (
-				<GroupFooter>No models listed</GroupFooter>
+				<>
+					<GroupLabel>Models</GroupLabel>
+					<GroupFooter>No models listed</GroupFooter>
+				</>
 			)}
-			<View style={{ height: 16 }} />
 		</>
 	);
 }

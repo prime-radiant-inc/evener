@@ -61,6 +61,11 @@ describe("a row", () => {
 		expect(merged(texts(path)[1]?.props.style).fontFamily).toBe("Menlo");
 	});
 
+	it("sets its second line in ink-mid", () => {
+		const tree = render(<Row label="paradise-park" sub="Connected · macOS · arm64" />);
+		expect(merged(texts(tree)[1]?.props.style).color).toBe(light.inkMid);
+	});
+
 	it("sets a machine label, such as a model id, in Menlo", () => {
 		const model = render(<Row label="gpt-5.6" machineLabel />);
 		expect(merged(texts(model)[0]?.props.style).fontFamily).toBe("Menlo");
@@ -79,6 +84,45 @@ describe("a group", () => {
 		);
 		expect(tree.root.findAllByProps({ testID: "hairline" })).toHaveLength(2);
 	});
+
+	it("keeps its distance from what comes before it, and hangs its label right over it", () => {
+		const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
+			node.type === "View" && merged(node.props.style).backgroundColor === light.surface;
+		const surface = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface)[0];
+		const plain = render(
+			<Group>
+				<Row label="One" />
+			</Group>,
+		);
+		expect(merged(surface(plain)?.props.style).marginTop).toBe(16);
+		const labelled = render(
+			<Group label="Fleet">
+				<Row label="Hosts" />
+			</Group>,
+		);
+		const header = labelled.root.findByProps({ accessibilityRole: "header" });
+		expect(header.props.children).toBe("Fleet");
+		expect(merged(header.props.style)).toMatchObject({ textTransform: "uppercase" });
+		expect(merged(surface(labelled)?.props.style).marginTop).toBe(0);
+		const machine = render(
+			<Group label="superpowers-marketplace" machineLabel>
+				<Row label="superpowers" />
+			</Group>,
+		);
+		expect(merged(machine.root.findByProps({ accessibilityRole: "header" }).props.style).fontFamily).toBe("Menlo");
+	});
+
+	it("starts a hairline under the text when both rows beside it carry a symbol", () => {
+		const tree = render(
+			<Group>
+				<Row icon="server.rack" label="Hosts" />
+				<Row icon="cpu" label="Providers" />
+				<Row label="Version" />
+			</Group>,
+		);
+		const insets = tree.root.findAllByProps({ testID: "hairline" }).map((line) => line.props.style.marginLeft);
+		expect(insets).toEqual([50, 16]);
+	});
 });
 
 describe("a switch row", () => {
@@ -92,6 +136,11 @@ describe("a switch row", () => {
 		expect(toggle.props.trackColor.true).toBe(light.accent);
 		toggle.props.onValueChange(false);
 		expect(onChange).toHaveBeenCalledWith(false);
+	});
+
+	it("sets its second line in ink-mid", () => {
+		const tree = render(<SwitchRow label="Haptics" sub="A tap when a banner arrives" value onChange={() => {}} />);
+		expect(merged(texts(tree)[1]?.props.style).color).toBe(light.inkMid);
 	});
 
 	it("dims while disabled, and gives iOS the off track's color", () => {
@@ -168,6 +217,8 @@ describe("labels, footers and tags", () => {
 	});
 
 	it("colors a footer by what it reports", () => {
+		const plain = texts(render(<GroupFooter>Add hosts from the web app.</GroupFooter>))[0]?.props.style;
+		expect(merged(plain).color).toBe(light.inkMid);
 		const style = texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style;
 		expect(merged(style).color).toBe(light.dangerInk);
 		expect(merged(style).fontFamily).toBeUndefined();

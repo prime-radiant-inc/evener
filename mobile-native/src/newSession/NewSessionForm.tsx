@@ -16,7 +16,7 @@ import { ImageAttachments } from "../ImageAttachments";
 import { ImageSelection } from "../imageSelection";
 import { nativeImagePicker } from "../nativeImagePicker";
 import { creationModel, startedSetup } from "../newSession";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, RowValue, Segmented } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue, Segmented } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -131,7 +131,6 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			<GroupGap />
 			<Group>
 				<View style={{ paddingHorizontal: 16, paddingVertical: 11, gap: 8 }}>
 					<TextInput
@@ -191,8 +190,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					</Group>
 				</>
 			) : null}
-			<GroupLabel>Where</GroupLabel>
-			<Group>
+			<Group label="Where">
 				<Row
 					icon="server.rack"
 					label="Host"
@@ -215,8 +213,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				{branch ? <Row icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
-			<GroupLabel>Agent</GroupLabel>
-			<Group>
+			<Group label="Agent">
 				<Row
 					icon="cpu"
 					label="Model"

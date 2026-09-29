@@ -24,7 +24,7 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { Group, GroupFooter, GroupGap, GroupLabel, Row } from "./sheet/Grouped";
+import { Group, GroupFooter, Row } from "./sheet/Grouped";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { Action, allowFontScaling, Choice, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
@@ -342,15 +342,13 @@ export function MarketplaceBrowser({
 	);
 	return (
 		<>
-			<GroupGap />
 			{problems}
 			{selected ? (
 				<>
 					<Group>
 						<Row label="All marketplaces" tone="accent" onPress={() => select(null)} />
 					</Group>
-					<GroupLabel machine>{selected}</GroupLabel>
-					<Group>
+					<Group label={selected} machineLabel>
 						{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
 						{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
 						<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
@@ -365,8 +363,7 @@ export function MarketplaceBrowser({
 					{segment === "browse" ? (
 						<>
 							{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
-							<GroupLabel>Catalog</GroupLabel>
-							<Group>
+							<Group label="Catalog">
 								<TextInput
 									accessibilityLabel="Filter marketplace plugins"
 									placeholder="Filter this catalog"
@@ -410,7 +407,6 @@ export function MarketplaceBrowser({
 							) : null}
 							{catalogPlugins.length > 0 ? (
 								<>
-									<GroupGap />
 									<Group>
 										{catalogPlugins.map((item) => {
 											const target = { plugin: item.name, marketplace: selected };
@@ -479,7 +475,6 @@ export function MarketplaceBrowser({
 					) : null}
 					{segment === "marketplaces" ? (
 						<>
-							<GroupGap />
 							<Group>
 								<Row
 									label="Add marketplace…"

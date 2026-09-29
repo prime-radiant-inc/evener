@@ -19,7 +19,7 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { HostsController } from "../hosts/hostsController";
-import { Group, GroupedPage, GroupFooter, GroupLabel, TextFieldRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, TextFieldRow } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
@@ -141,8 +141,7 @@ function Field({
 	const { label, help } = HOST_ENTRY_FIELD_TEXT[field];
 	return (
 		<>
-			<GroupLabel>{label}</GroupLabel>
-			<Group>
+			<Group label={label}>
 				<TextFieldRow
 					label={label}
 					value={value}

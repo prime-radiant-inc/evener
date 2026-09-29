@@ -240,7 +240,6 @@ export function ProviderSignInSheet({
 									}}
 								/>
 							</Group>
-							<View style={{ height: 20 }} />
 							<Group>
 								<TextInput
 									accessibilityLabel="Redirect URL"
