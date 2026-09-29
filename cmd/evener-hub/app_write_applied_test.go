@@ -46,15 +46,25 @@ func TestWriteAppliedKeepsTheInnerMessageAndWireClass(t *testing.T) {
 	}
 }
 
-// blockProvidersWrites leaves a directory where WriteConfigFile stages its
-// bytes, so every later write of providers.toml fails on a real filesystem
-// refusal (the technique breakCredentialWrites uses on the credentials file).
+// blockProvidersWrites makes every later write of providers.toml fail on a real
+// filesystem refusal (the technique breakCredentialWrites uses on the
+// credentials file). WriteConfigFile stages its bytes under a random name in
+// the target's directory, so no fixed temp name can be occupied to refuse the
+// open; the unwritable directory refuses the exclusive create itself.
 func blockProvidersWrites(t *testing.T, tomlPath string) {
 	t.Helper()
-	// The reload this runs from can be attempted more than once in a call, and
-	// the path only has to be occupied, not freshly created.
-	if err := os.Mkdir(tomlPath+".tmp", 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		t.Errorf("blocking the providers.toml temp path: %v", err)
+	blockWritesInDir(t, filepath.Dir(tomlPath))
+}
+
+// blockWritesInDir removes the write bit from dir for the rest of the test,
+// which is how a test refuses a writer that stages its temp file under a random
+// name in dir. The mode is restored when the test ends so the temp-dir cleanup
+// can still remove the tree.
+func blockWritesInDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Errorf("blocking writes in %s: %v", dir, err)
 	}
 }
 
@@ -72,7 +82,13 @@ func newInstanceRollbackFixture(t *testing.T) *instanceRollbackFixture {
 	t.Helper()
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
+	// providers.toml gets its own directory so blocking its writes (below) does
+	// not also block the hub state written under dir.
+	configDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tomlPath := filepath.Join(configDir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
 	credsStore := newTestCredentialsStore(t)
 	failReload := &atomic.Bool{}
@@ -613,10 +629,11 @@ func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
 	failNext := &atomic.Bool{}
 	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		if failNext.CompareAndSwap(true, false) {
-			// The store writes through <path>.tmp and renames, so a directory
-			// occupying that name refuses the open. The mkdir result is
+			// The store stages its temp file under a random name in the creds
+			// directory, so the directory is made unwritable: the exclusive
+			// create then fails whatever name it would take. The chmod result is
 			// asserted from the test goroutine, not here.
-			_ = os.Mkdir(credsStore.Path()+".tmp", 0o700)
+			blockWritesInDir(t, filepath.Dir(credsStore.Path()))
 			return nil, nil, errors.New("the registry refused to load")
 		}
 		return load(extra...)
@@ -682,8 +699,8 @@ func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDele
 	if !strings.Contains(err.Error(), "some credentials were not put back") {
 		t.Fatalf("evener/instance/remove = %v, want the leftover stray key reported", err)
 	}
-	if st, statErr := os.Stat(f.credsPath + ".tmp"); statErr != nil || !st.IsDir() {
-		t.Fatalf("credentials temp path = %v (err %v), want the blocking directory this case needs", st, statErr)
+	if info, statErr := os.Stat(filepath.Dir(f.credsPath)); statErr != nil || info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("credentials dir = %v (err %v), want the unwritable directory this case needs", info, statErr)
 	}
 	if v, _ := f.store.Get("openai-codex"); v != "" {
 		t.Fatalf("stored key = %q, want the stray key still deleted", v)

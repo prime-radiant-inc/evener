@@ -202,18 +202,19 @@ func (s *Store) save() error {
 		return fmt.Errorf("credentials: open: %w", err)
 	}
 	tmp := f.Name()
+	// A save that dies partway has already created the temp file, so clear it
+	// too: the rename takes the name with it, so this is a no-op once the save
+	// has landed.
+	defer func() { _ = s.fs.Remove(tmp) }()
 	if err := toml.NewEncoder(f).Encode(s.data); err != nil {
 		_ = f.Close()
-		_ = s.fs.Remove(tmp)
 		return fmt.Errorf("credentials: encode: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = s.fs.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = s.fs.Remove(tmp)
 		return err
 	}
 	return s.fs.Rename(tmp, s.path)
