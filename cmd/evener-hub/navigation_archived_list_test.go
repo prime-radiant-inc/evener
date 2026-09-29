@@ -353,4 +353,14 @@ func TestNavigationServesNoArchivedRows(t *testing.T) {
 	if before[key] != after[key] {
 		t.Fatal("renaming an archived row moved the project fingerprint")
 	}
+	// The archived count still rides the project summary, so archiving one
+	// more session moves the fingerprint and the rail refetches its list.
+	grown := append(append([]hubcore.TreeNode(nil), archived...), hubcore.TreeNode{ID: "session-archived-new", Title: "newly archived", Kind: "session", State: "idle", UpdatedAt: old.Add(-time.Hour)})
+	moved, _, err := navigationLogicalFingerprintsContext(context.Background(), build(grown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[key] == moved[key] {
+		t.Fatal("archiving one more session left the project fingerprint unchanged")
+	}
 }
