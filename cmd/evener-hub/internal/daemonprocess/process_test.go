@@ -19,6 +19,7 @@ type kernelProcess struct {
 	gone       bool
 	signalErr  error
 	inspectErr error
+	laterErr   error // what inspect fails with once snapshots run out
 }
 
 func (k *kernelProcess) inspect(Target) (identity, error) {
@@ -29,6 +30,9 @@ func (k *kernelProcess) inspect(Target) (identity, error) {
 		v := k.snapshots[0]
 		k.snapshots = k.snapshots[1:]
 		return v, nil
+	}
+	if k.laterErr != nil {
+		return identity{}, k.laterErr
 	}
 	return k.facts, nil
 }
@@ -348,5 +352,100 @@ func TestNonRetiringTargetRefusesAnExitingProcessWithoutItsCommand(t *testing.T)
 	if err == nil {
 		_ = p.Close()
 		t.Fatal("an exiting process with no command bound a signaling handle")
+	}
+}
+
+// A force stop can race the daemon's own exit (#3383): once it has begun
+// exiting, its memory is released and its command line reads empty, so the
+// kill's re-verify fails before the OS reports it gone. The process Open
+// bound is still the same generation and already on its way out, so the
+// kill has nothing left to do: it succeeds without a signal, and Wait
+// confirms the exit.
+func TestKillOfAnExitingDaemonSucceedsWithoutASignal(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	k.facts.argv = []string{""}
+	k.facts.exiting = true
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill of an exiting daemon = %v, want success", err)
+	}
+	if k.signals != 0 {
+		t.Fatal("an exiting daemon was signaled")
+	}
+	k.gone = true
+	if err := p.Wait(context.Background()); err != nil {
+		t.Fatalf("exit not confirmed: %v", err)
+	}
+}
+
+// A process that fails verification and isn't exiting (or is a different
+// generation) is still refused, not quietly treated as stopped.
+func TestKillStillRefusesAnUnverifiedProcess(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	k.facts.argv = []string{""}
+	if err := p.Kill(); err == nil {
+		t.Fatal("a live process that no longer verifies was treated as stopped")
+	}
+	k.facts.exiting = true
+	k.facts.generation = "generation-b"
+	if err := p.Kill(); err == nil {
+		t.Fatal("an exiting process of another generation was treated as stopped")
+	}
+	if k.signals != 0 {
+		t.Fatal("an unverified process was signaled")
+	}
+}
+
+// When the re-inspect after a failed verify itself fails, nothing says the
+// process is exiting: Kill keeps the verify's error rather than calling the
+// stop done.
+func TestKillKeepsTheVerifyErrorWhenReinspectFails(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	unverified := validIdentity()
+	unverified.argv = []string{""}
+	k.snapshots = []identity{unverified}
+	k.laterErr = errors.New("process stat unreadable")
+	if err := p.Kill(); err == nil || err.Error() != "daemon process is not a serve command" {
+		t.Fatalf("Kill = %v, want the verify error", err)
+	}
+	if k.signals != 0 {
+		t.Fatal("an unverified process was signaled")
+	}
+}
+
+// The daemon can finish exiting between the failed verify and the
+// re-inspect: the re-inspect then reports it gone, and the stop is done, as
+// the verify and exited() paths already treat a gone process.
+func TestKillOfADaemonThatExitsDuringReinspectSucceeds(t *testing.T) {
+	k := &kernelProcess{facts: validIdentity()}
+	p, err := testController(k).Open(validTarget())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer p.Close()
+	unverified := validIdentity()
+	unverified.argv = []string{""}
+	unverified.exiting = true
+	k.snapshots = []identity{unverified}
+	k.laterErr = ErrExited
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill of a daemon that exited mid-check = %v, want success", err)
+	}
+	if k.signals != 0 {
+		t.Fatal("an exited daemon was signaled")
 	}
 }
