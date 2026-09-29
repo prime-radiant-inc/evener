@@ -39,7 +39,7 @@ vi.mock("../nativeImagePicker", () => ({
 	nativeImagePicker: {
 		pick: async () => [],
 		capture: async () => [],
-		encode: async () => "",
+		encode: async () => ({ data: "", mediaType: "image/jpeg" }),
 		id: () => "image-1",
 	},
 }));

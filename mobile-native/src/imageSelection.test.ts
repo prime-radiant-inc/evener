@@ -2,7 +2,13 @@ import { afterEach, expect, it } from "vitest";
 import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import { CameraAccessDenied, ImageSelection, MAX_SOURCE_BYTES, type PickedImage } from "./imageSelection";
+import {
+	CameraAccessDenied,
+	type EncodedImage,
+	ImageSelection,
+	MAX_SOURCE_BYTES,
+	type PickedImage,
+} from "./imageSelection";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 const databases: SqliteDoubleDatabase[] = [];
@@ -11,7 +17,8 @@ afterEach(() => {
 });
 function setup(
 	pick: () => Promise<PickedImage[]>,
-	encode: (image: PickedImage) => Promise<string>,
+	/** A string is the image as JPEG. */
+	encode: (image: PickedImage) => Promise<string | EncodedImage>,
 	capture: () => Promise<PickedImage[]> = async () => [],
 ) {
 	const { database: db, port } = openSqliteSyncDouble();
@@ -25,7 +32,10 @@ function setup(
 		selection: new ImageSelection(document, {
 			pick,
 			capture,
-			encode,
+			encode: async (image) => {
+				const encoded = await encode(image);
+				return typeof encoded === "string" ? { data: encoded, mediaType: "image/jpeg" } : encoded;
+			},
 			id: () => `image-${++id}`,
 		}),
 	};
@@ -266,4 +276,26 @@ it("says how to turn the camera on when its permission is refused", async () => 
 	expect(document.getSnapshot().record.images).toBeUndefined();
 	expect(selection.getSnapshot().error).toBe("Camera access is off. Turn it on in Settings to take photos here.");
 	expect(selection.getSnapshot().busy).toBe(false);
+});
+
+it("keeps the type the phone encoded an image as, a screenshot's PNG included", async () => {
+	const { document, selection } = setup(
+		async () => [{ ...photo, name: "shot.png", type: "image/png" }],
+		async () => ({ data: "UE5H", mediaType: "image/png" }),
+	);
+	await selection.choose();
+	expect(document.getSnapshot().record.images?.[0]).toMatchObject({ name: "shot.png", mediaType: "image/png" });
+});
+
+it("says an image the phone couldn't encode couldn't be processed, and attaches the rest", async () => {
+	const { document, selection } = setup(
+		async () => [{ ...photo, name: "broken.heic" }, photo],
+		async (image) => {
+			if (image.name === "broken.heic") throw new Error("could not decode");
+			return "AQID";
+		},
+	);
+	await selection.choose();
+	expect(selection.getSnapshot().error).toBe("broken.heic (could not process image)");
+	expect(document.getSnapshot().record.images).toHaveLength(1);
 });

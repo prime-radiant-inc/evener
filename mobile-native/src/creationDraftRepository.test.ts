@@ -233,7 +233,7 @@ it("does not open the picker before the saved draft can be loaded", async () => 
 				return [];
 			},
 			capture: async () => [],
-			encode: async () => "",
+			encode: async () => ({ data: "", mediaType: "image/jpeg" }),
 			id: () => "new",
 		});
 		await picker.choose();

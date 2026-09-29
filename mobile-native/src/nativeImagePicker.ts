@@ -1,3 +1,4 @@
+import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
@@ -44,14 +45,33 @@ export const nativeImagePicker: ImagePicker = {
 		);
 	},
 	async encode(image) {
-		// The photo's own size, as the manipulator decodes it.
-		const { width, height } = await render(image.uri, null, (rendered) => ({
-			width: rendered.width,
-			height: rendered.height,
-		}));
-		return render(image.uri, fitResize(width, height), saveJpeg);
+		const size = pickerSize(image) ?? (await measure(image.uri));
+		if (sendsAsIs(image, size)) return { data: await new File(image.uri).base64(), mediaType: "image/png" };
+		const data = await render(image.uri, fitResize(size.width, size.height), saveJpeg);
+		return { data, mediaType: "image/jpeg" };
 	},
 };
+
+/** The pixel size the picker reported, which saves decoding the image to
+ * learn it, or null when it reported none. */
+function pickerSize(image: PickedImage): { width: number; height: number } | null {
+	const { width = 0, height = 0 } = image;
+	return width > 0 && height > 0 ? { width, height } : null;
+}
+
+/** The image's size as the manipulator decodes it: one render, only when the
+ * picker didn't say. */
+function measure(uri: string): Promise<{ width: number; height: number }> {
+	return render(uri, null, (rendered) => ({ width: rendered.width, height: rendered.height }));
+}
+
+/** A PNG that already fits, a screenshot say, goes as it is: re-encoded as
+ * JPEG it would lose its sharp text and its transparency. */
+function sendsAsIs(image: PickedImage, size: { width: number; height: number }): boolean {
+	return (
+		image.type === "image/png" && Math.max(size.width, size.height) <= LONG_EDGE && image.size <= MAX_ATTACHMENT_BYTES
+	);
+}
 
 // A camera photo is 12 to 48 megapixels; staged whole, even as JPEG it can
 // pass the 8 MB attachment limit (#3099). Scaled so its long edge is at most

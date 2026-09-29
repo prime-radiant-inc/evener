@@ -467,7 +467,7 @@ it("uses the shared picker pipeline without attaching late results to an abandon
 		],
 		encode: async () => {
 			started.resolve(null);
-			return (await encoding.promise) as string;
+			return { data: (await encoding.promise) as string, mediaType: "image/jpeg" };
 		},
 	});
 	const choosing = selection.choose();
