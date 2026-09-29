@@ -563,7 +563,7 @@ func rowFilterHaystack(row hubRow) string {
 		row.projectKey,
 		row.sourceLabel,
 		row.model,
-		row.state,
+		attentionState(row.state, row.approvalPending),
 		row.age,
 	}, " "))
 }

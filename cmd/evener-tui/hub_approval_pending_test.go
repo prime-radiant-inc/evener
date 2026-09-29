@@ -305,3 +305,31 @@ func sessionRowIndex(rows []hubRow, ref string) int {
 	}
 	return -1
 }
+
+func TestUpdateDashboardRowModel_SurvivesApprovalRebuild(t *testing.T) {
+	m := approvalTestModel(t, false)
+	m.updateDashboardRowModel("local:th_1", "newmodel")
+	if got := sessionModel(m.rows, "local:th_1"); got != "newmodel" {
+		t.Fatalf("model = %q, want newmodel", got)
+	}
+	m.setDashboardRowApproval("local:th_1", true)
+	if got := sessionModel(m.rows, "local:th_1"); got != "newmodel" {
+		t.Fatalf("an approval rebuild reverted the live model to %q", got)
+	}
+}
+
+func TestRowFilterHaystack_MatchesDisplayedApprovalState(t *testing.T) {
+	row := hubRow{kind: hubRowSession, state: "active", approvalPending: true, title: "x"}
+	if haystack := rowFilterHaystack(row); !strings.Contains(haystack, "awaiting") {
+		t.Fatalf("approval row haystack = %q, want it to contain the displayed state awaiting", haystack)
+	}
+}
+
+func sessionModel(rows []hubRow, ref string) string {
+	for _, row := range rows {
+		if row.kind == hubRowSession && row.ref.String() == ref {
+			return row.model
+		}
+	}
+	return "<none>"
+}

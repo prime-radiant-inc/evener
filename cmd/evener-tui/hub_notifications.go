@@ -442,8 +442,24 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 	for i := range m.rows {
 		if m.rows[i].ref.String() == ref {
 			m.rows[i].model = model
-			return
+			break
 		}
+	}
+	updateTreeNodeModels(m.tree.Live, ref, model)
+	for i := range m.tree.Projects {
+		updateTreeNodeModels(m.tree.Projects[i].Sessions, ref, model)
+	}
+}
+
+// updateTreeNodeModels keeps the cached tree node's Model in step with a live
+// thread/model/changed push, so a later buildDashboardRows rebuild (a live
+// escalation change, for one) does not revert the row to the stale tree value.
+func updateTreeNodeModels(nodes []hubTreeNode, ref, model string) {
+	for i := range nodes {
+		if nodes[i].Ref == ref {
+			nodes[i].Model = model
+		}
+		updateTreeNodeModels(nodes[i].Children, ref, model)
 	}
 }
 
