@@ -297,7 +297,11 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
 async function mountComposerWithHandle(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean; prepare?: (fake: FakeClient) => void } = {},
+  options: {
+    focused?: boolean;
+    prepare?: (fake: FakeClient) => void;
+    holdMountProjection?: boolean;
+  } = {},
 ) {
   const fake = connectFakeClient(options.prepare);
   fake.on("thread/read", () => readResponse(ref, overrides));
@@ -309,13 +313,17 @@ async function mountComposerWithHandle(
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
+  // The mount starts its own pending-turns refresh; leaving it in flight lets
+  // its state update land during a later bare await, outside act. A test that
+  // holds or observes that work open asks to keep it in flight.
+  if (!options.holdMountProjection) await flushPendingTurnsProjectionForTests();
   return { fake, ...view };
 }
 
 async function mountComposer(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean } = {},
+  options: { focused?: boolean; holdMountProjection?: boolean } = {},
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
@@ -2949,13 +2957,24 @@ test("a slow recovery read still activates before the mount's projection work is
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
   await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
-  await mountComposer("ref_a", { status: { type: "idle" } });
+  await mountComposer("ref_a", { status: { type: "idle" } }, { holdMountProjection: true });
   const editor = textarea();
   expect(editor.textContent).toBe("");
 
   await flushPendingTurnsProjectionForTests();
 
   expect(editor.textContent).toBe("slow to arrive");
+});
+
+test("the mount helper returns only after the mount's projection refresh has settled", async () => {
+  // Default mount: the helper settles the mount's own projection refresh, so
+  // this slow read is already applied. Its opt-out sibling shows the other side.
+  const storage = new SlowRecoveryStorage();
+  setMutationStorageForTests(storage);
+  await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+
+  expect(textarea().textContent).toBe("slow to arrive");
 });
 
 test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
@@ -3173,7 +3192,7 @@ test("a remounted Composer does not activate a stale recovery projection", async
   storage.pauseRecoveryReads();
 
   try {
-    await mountComposer("ref_a", { status: { type: "idle" } });
+    await mountComposer("ref_a", { status: { type: "idle" } }, { holdMountProjection: true });
     expect(textarea().textContent).toBe("");
   } finally {
     storage.resume();

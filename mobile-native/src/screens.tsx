@@ -108,7 +108,8 @@ import {
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
-	shouldApplyExactRestore,
+	type AppliedRestore,
+	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
@@ -121,7 +122,7 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
-import { atEnd, useLiveEndFollow } from "./session/liveEndFollow";
+import { atEnd, pagesOlder, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
@@ -418,12 +419,7 @@ export function ConversationScreen({
 	const readerViewportHeight = useRef(0);
 	const [layoutRevision, setLayoutRevision] = useState(0);
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
-	const appliedReaderRestore = useRef<{
-		key: string;
-		y: number;
-		height: number;
-		scrollOffset: number;
-	} | null>(null);
+	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
@@ -1451,25 +1447,14 @@ export function ConversationScreen({
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
 			if (!measurement) return;
-			const scrollOffset = reachableReaderOffset(
-				measurement.y - command.viewOffset,
-				readerContentHeight.current,
-				readerViewportHeight.current,
-			);
-			if (
-				!shouldApplyExactRestore(
-					appliedReaderRestore.current,
-					measurement,
-					appliedReaderRestore.current?.scrollOffset ?? null,
-					scrollOffset,
-				)
-			)
-				return;
+			const desired = measurement.y - command.viewOffset;
+			const scrollOffset = reachableReaderOffset(desired, readerContentHeight.current, readerViewportHeight.current);
+			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
 			appliedReaderRestore.current = {
 				key: currentKey,
-				y: measurement.y,
 				height: measurement.height,
-				scrollOffset,
+				offset: scrollOffset,
+				clamped: scrollOffset !== desired,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
@@ -1975,6 +1960,11 @@ export function ConversationScreen({
 			stopBusy.current = false;
 			setStopping(false);
 		}
+	}
+	/** Loads the page above when the list at `y` is near its top and you have
+	 * moved it yourself (session/liveEndFollow pagesOlder). */
+	function pageOlderNear(y: number | undefined) {
+		if (y !== undefined && pagesOlder(follow.state.current, y)) loadOlderPage();
 	}
 	function jumpToLive() {
 		readerHeader.current = false;
@@ -2606,8 +2596,15 @@ export function ConversationScreen({
 								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
 								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
 								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2).
-								if (y < 800) loadOlderPage();
+								// Older history loads as you near the top (spec 8.2) once you
+								// move the list. With no finger on it, and the app neither
+								// following the end nor restoring (which returns above), the
+								// list moved for an assistive scroll. The drag and coast events
+								// check too, since a short flick or an overscroll may report no
+								// scroll between them.
+								if (follow.state.current.touch === "none" && !follow.state.current.following)
+									follow.dispatch({ type: "assistiveScroll" });
+								if (!follow.state.current.following) pageOlderNear(y);
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(readerKey(item));
 									return measurement && measurement.y + measurement.height > y;
@@ -2625,15 +2622,23 @@ export function ConversationScreen({
 									);
 									const anchor = readerAnchor.current;
 									const measurement = readerMeasurements.current.get(readerKey(visible));
+									// Where you scrolled is where the anchor is, so there is nothing
+									// to restore until the anchor changes or its row reflows. The
+									// trade-off: every scroll re-captures the anchor and so arms a
+									// restore only for that exact row; one that reflows (a text-size
+									// change) restores, one whose y merely moves never does.
 									if (anchor && measurement)
 										appliedReaderRestore.current = {
-											...measurement,
-											scrollOffset: y,
+											key: measurement.key,
+											height: measurement.height,
+											offset: y,
+											clamped: false,
 										};
 								}
 							}}
-							onScrollBeginDrag={() => {
+							onScrollBeginDrag={(event) => {
 								follow.dispatch({ type: "dragBegin" });
+								pageOlderNear(event?.nativeEvent.contentOffset.y);
 								readerHeader.current = false;
 								captureSuppressed.current = false;
 								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
@@ -2644,14 +2649,17 @@ export function ConversationScreen({
 							// under the finger.
 							onScrollEndDrag={(event) => {
 								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}
-							onMomentumScrollBegin={() => {
+							onMomentumScrollBegin={(event) => {
 								follow.dispatch({ type: "momentumBegin" });
+								pageOlderNear(event?.nativeEvent.contentOffset.y);
 							}}
 							onMomentumScrollEnd={(event) => {
 								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+								pageOlderNear(event.nativeEvent.contentOffset.y);
 								readerPositions.save(readerAnchor.current);
 								setLayoutRevision((revision) => revision + 1);
 							}}
