@@ -1455,9 +1455,7 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		const announced: string[][] = [];
 		client.onNotification((notification) => {
 			if (notification.method === "evener/notices/changed")
-				announced.push(
-					(notification.params as { notices: { id: string }[] }).notices.map((notice) => notice.id),
-				);
+				announced.push((notification.params as { notices: { id: string }[] }).notices.map((notice) => notice.id));
 		});
 		try {
 			await client.connect();

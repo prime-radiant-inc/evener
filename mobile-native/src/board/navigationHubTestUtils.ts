@@ -75,10 +75,10 @@ export const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
 	method === "evener/notices/list"
 		? "notices"
 		: params.resource === "section"
-				? (params.section as Reader)
-				: params.resource === "pin_section"
-					? `pin_section:${params.sectionId}`
-					: (params.resource as Reader);
+			? (params.section as Reader)
+			: params.resource === "pin_section"
+				? `pin_section:${params.sectionId}`
+				: (params.resource as Reader);
 /** The oldest unanswered request for one reader. */
 export function next(hub: Hub, reader: Reader) {
 	const request = hub.requests.find((candidate) => !candidate.answered && readerOf(candidate) === reader);

@@ -134,7 +134,12 @@ describe("notices", () => {
 		// s-retry is the one live top-level session on GPT-5.6; the other
 		// GPT-5.6 rows are subagents.
 		expect(setup().answer("evener/notices/list", {}).notices).toEqual([
-			{ id: "signInRequired:codex-jesse-fsck.com", kind: "signInRequired", subject: "codex-jesse-fsck.com", affectedSessions: 1 },
+			{
+				id: "signInRequired:codex-jesse-fsck.com",
+				kind: "signInRequired",
+				subject: "codex-jesse-fsck.com",
+				affectedSessions: 1,
+			},
 		]);
 	});
 

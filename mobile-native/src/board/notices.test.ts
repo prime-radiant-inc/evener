@@ -60,7 +60,13 @@ it("names an offline host by its label from the manifest, with the hub's count",
 			sourceId: "studio",
 		},
 		// A host the manifest doesn't list yet goes by its id.
-		{ key: "hostOffline:rack", kind: "host", text: "rack is offline · 2 sessions", action: "Details", sourceId: "rack" },
+		{
+			key: "hostOffline:rack",
+			kind: "host",
+			text: "rack is offline · 2 sessions",
+			action: "Details",
+			sourceId: "rack",
+		},
 	]);
 });
 
@@ -69,7 +75,11 @@ it("names each broken plugin, and its marketplace when two broken plugins share 
 		notices({
 			hubNotices: [
 				{ ...notice("pluginBroken", "superpowers"), id: "pluginBroken:superpowers@evener", marketplace: "evener" },
-				{ ...notice("pluginBroken", "superpowers"), id: "pluginBroken:superpowers@community", marketplace: "community" },
+				{
+					...notice("pluginBroken", "superpowers"),
+					id: "pluginBroken:superpowers@community",
+					marketplace: "community",
+				},
 				{ ...notice("pluginBroken", "go"), id: "pluginBroken:go@evener", marketplace: "evener" },
 			],
 			sources: [],
