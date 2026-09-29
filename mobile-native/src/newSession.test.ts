@@ -1265,7 +1265,24 @@ describe("a start the hub answers with an error (#3104)", () => {
 		return { store, saved };
 	}
 
-	it("is held even when the hub refused it as invalid, since the session may exist by then (#3184)", async () => {
+	it("isn't held when the hub says it refused the start before any session existed (#3184)", async () => {
+		const { store, saved } = refusing(
+			new WireError("cwd is not a directory", -32602, {
+				evenerErrorInfo: "invalidParams",
+				mutationOutcome: "notAccepted",
+			}),
+		);
+		await store.getState().setCwd("/project", false);
+		store.getState().setPrompt("go");
+		expect(await store.getState().submit()).toEqual({ status: "failed" });
+		expect(store.getState().startMayRepeat()).toBe(false);
+		expect(store.getState().error).toBe("cwd is not a directory\n\nNo session was started. Your input is kept.");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: false });
+		// Started again, it goes out.
+		expect(await store.getState().submit()).toEqual({ status: "failed" });
+	});
+
+	it("is held when the hub refused it as invalid without saying no session existed, as an older hub does (#3184)", async () => {
 		const { store, saved } = refusing(new WireError("skill input is not supported", -32602));
 		await store.getState().setCwd("/project", false);
 		store.getState().setPrompt("go");
