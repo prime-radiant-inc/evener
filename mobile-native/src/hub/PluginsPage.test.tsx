@@ -3109,6 +3109,32 @@ it("opens the plugin a notice named once, then clears the focus", async () => {
 	expect(navigation.setParams).toHaveBeenCalledWith({ focus: undefined });
 });
 
+it("leaves an open plugin's late result behind when a link opens another plugin", async () => {
+	const hub = pageHub([entry("demo-plugin"), entry("other")]);
+	let fail: (reason: Error) => void = () => {};
+	hub.on(
+		"evener/plugin/upgrade",
+		() =>
+			new Promise((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	const { tree, props } = await mountPage(hub);
+	const detail = await openDetail(tree, "demo-plugin");
+	await act(async () => {
+		detail.findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
+	});
+	const other = { plugin: "other", marketplace: entry("other").marketplace };
+	await act(async () => {
+		tree.update(<PluginsStack {...props} route={{ ...props.route, params: { ...props.route.params, focus: other } }} />);
+	});
+	await act(async () => fail(new Error("upstream 502")));
+	await act(async () => {});
+	expect(tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Upgrade" }).length).toBeGreaterThan(0);
+	expect(renderedText(tree)).toContain("other");
+	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+});
+
 it("updates a marketplace's source and removes it from its detail in Marketplaces", async () => {
 	const hub = pageHub([]);
 	hub.on("evener/marketplace/refresh", () => ({ marketplaces: [marketplace] }));

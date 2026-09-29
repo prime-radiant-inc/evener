@@ -478,13 +478,16 @@ function Plugins({
 	useEffect(() => {
 		if (selected && state.plugins && !entry) close();
 	}, [selected, state.plugins, entry, close]);
-	// A notice's plugin opens once, when the list first mounts; the page
-	// clears the param so a remount doesn't open it again.
+	// A plugin a notice or a marketplace's page names opens once; the page
+	// clears the param so a remount doesn't open it again. It replaces any
+	// open plugin the way closing it would, so that plugin's late result
+	// never lands on this one.
 	useEffect(() => {
 		if (!focus) return;
+		close();
 		setSelected({ plugin: focus.plugin, marketplace: focus.marketplace });
 		onFocused();
-	}, [focus, onFocused]);
+	}, [focus, onFocused, close]);
 	async function act(action: () => Promise<void>, success?: () => string) {
 		const version = editorVersion.current;
 		const outcome = await runGatedMutation(canUseConnection, action);

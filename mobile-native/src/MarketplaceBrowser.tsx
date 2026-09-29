@@ -182,49 +182,45 @@ export function MarketplaceBrowser({
 				canUseConnection={canUseConnection}
 				retry={() => void state.fetchMarketplaces()}
 			/>
-			<>
-				{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
-				{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
-					<GroupFooter>No marketplaces on this hub.</GroupFooter>
-				) : null}
-				{rows.length > 0 ? (
-					<Group>
-						{rows.map((item) =>
-							segment === "browse" ? (
-								<Row
-									key={item.name}
-									label={item.name}
-									accessibilityLabel={`Browse ${item.name}`}
-									chevron
-									onPress={() => onOpenMarketplace(item.name)}
-								/>
-							) : (
-								<Row
-									key={item.name}
-									label={item.name}
-									sub={marketplaceSourceLabel(item.source)}
-									machineSub
-									chevron
-									onPress={() => onOpenMarketplace(item.name)}
-								/>
-							),
-						)}
-					</Group>
-				) : null}
-				{segment === "marketplaces" ? (
-					<>
-						<Group>
+			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
+			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
+				<GroupFooter>No marketplaces on this hub.</GroupFooter>
+			) : null}
+			{rows.length > 0 ? (
+				<Group>
+					{rows.map((item) =>
+						segment === "browse" ? (
 							<Row
-								label="Add marketplace…"
-								accessibilityLabel="Add marketplace"
-								tone="accent"
-								disabled={busy || !ready}
-								onPress={whenReady(canUseConnection, () => setAdding(true))}
+								key={item.name}
+								label={item.name}
+								accessibilityLabel={`Browse ${item.name}`}
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
 							/>
-						</Group>
-					</>
-				) : null}
-			</>
+						) : (
+							<Row
+								key={item.name}
+								label={item.name}
+								sub={marketplaceSourceLabel(item.source)}
+								machineSub
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
+							/>
+						),
+					)}
+				</Group>
+			) : null}
+			{segment === "marketplaces" ? (
+				<Group>
+					<Row
+						label="Add marketplace…"
+						accessibilityLabel="Add marketplace"
+						tone="accent"
+						disabled={busy || !ready}
+						onPress={whenReady(canUseConnection, () => setAdding(true))}
+					/>
+				</Group>
+			) : null}
 			{adding && (
 				<AddMarketplace
 					client={client}
@@ -272,6 +268,22 @@ export function MarketplaceBrowser({
 	);
 }
 
+/** What a marketplace's page writes through: the Plugins page's stores, gate
+ * and applied-removal guard. */
+export type MarketplaceWrites = Pick<
+	MarketplaceProps,
+	| "client"
+	| "hubName"
+	| "installed"
+	| "marketplaces"
+	| "gate"
+	| "ready"
+	| "canUseConnection"
+	| "appliedRemovalNames"
+	| "onAppliedRemoval"
+	| "onRemovedMarketplace"
+>;
+
 /** One marketplace's page, pushed over the Plugins page's list: its source,
  * Update source and Remove, and on Browse its catalog to install from. The
  * Plugins page owns everything it writes through (MarketplaceBrowser's props
@@ -291,19 +303,7 @@ export function MarketplaceDetail({
 	onRemovedMarketplace,
 	onOpenPlugin,
 	onGone,
-}: Pick<
-	MarketplaceProps,
-	| "client"
-	| "hubName"
-	| "installed"
-	| "marketplaces"
-	| "gate"
-	| "ready"
-	| "canUseConnection"
-	| "appliedRemovalNames"
-	| "onAppliedRemoval"
-	| "onRemovedMarketplace"
-> & {
+}: MarketplaceWrites & {
 	segment: "marketplaces" | "browse";
 	name: string;
 	onOpenPlugin(target: PluginRefParams): void;
@@ -328,11 +328,14 @@ export function MarketplaceDetail({
 	useEffect(() => {
 		appliedRemovalNamesRef.current = appliedRemovalNames;
 	}, [appliedRemovalNames]);
+	// A write or a Remove confirmation belongs to the stores it began on: when
+	// the Plugins page hands down new ones (a reconnect's new client) or this
+	// page goes, the bump fences it, so it neither runs nor reports here.
 	useEffect(
 		() => () => {
 			revision.current += 1;
 		},
-		[],
+		[marketplaces],
 	);
 	// The selected catalog is read from the store's cache. A mutation here or a
 	// change from another client retires the entry, and an empty slot is this
@@ -346,9 +349,12 @@ export function MarketplaceDetail({
 		if (browseTarget) void state.browseMarketplace(browseTarget);
 	}, [browseTarget, state.browseMarketplace]);
 	// A marketplace removed here or by another client leaves the list; its
-	// page goes with it.
+	// page goes with it, once, however often the list changes while it leaves.
+	const gone = useRef(false);
 	useEffect(() => {
-		if (state.marketplaces && !state.marketplaces.some((item) => item.name === name)) onGone();
+		if (gone.current || !state.marketplaces || state.marketplaces.some((item) => item.name === name)) return;
+		gone.current = true;
+		onGone();
 	}, [name, state.marketplaces, onGone]);
 	// Every write goes through the gate; a refusal reads as busy, a throw as
 	// failure. A not-ready press runs nothing and retires nothing - the copy
@@ -527,37 +533,35 @@ export function MarketplaceDetail({
 						<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
 					) : null}
 					{catalogPlugins.length > 0 ? (
-						<>
-							<Group>
-								{catalogPlugins.map((item) => {
-									const target = { plugin: item.name, marketplace: name };
-									const existing = plugins.plugins?.some(
-										(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
-									);
-									return (
-										<Row
-											key={item.name}
-											label={item.name}
-											sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
-											value={
-												<Text
-													allowFontScaling={allowFontScaling}
-													style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
-												>
-													{existing ? "Installed · Open" : "Install"}
-												</Text>
-											}
-											accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
-											disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
-											onPress={() => {
-												if (existing) onOpenPlugin(target);
-												else install(target);
-											}}
-										/>
-									);
-								})}
-							</Group>
-						</>
+						<Group>
+							{catalogPlugins.map((item) => {
+								const target = { plugin: item.name, marketplace: name };
+								const existing = plugins.plugins?.some(
+									(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
+								);
+								return (
+									<Row
+										key={item.name}
+										label={item.name}
+										sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
+										value={
+											<Text
+												allowFontScaling={allowFontScaling}
+												style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
+											>
+												{existing ? "Installed · Open" : "Install"}
+											</Text>
+										}
+										accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
+										disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
+										onPress={() => {
+											if (existing) onOpenPlugin(target);
+											else install(target);
+										}}
+									/>
+								);
+							})}
+						</Group>
 					) : null}
 				</>
 			) : null}

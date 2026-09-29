@@ -15,30 +15,10 @@ import {
 	useMemo,
 	useState,
 } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { LiveReadiness } from "../connectionDisplay";
-import type { MarketplaceEntry } from "@evener/appwire-client";
-import type { HubWriteGate, MarketplacesStore, PluginsStore } from "@evener/appwire-client/state/extensions";
+import type { MarketplaceWrites } from "../MarketplaceBrowser";
 
-export interface PluginsScreenSlot {
-	hubId: string;
-	client: ConversationClientLike;
-	hubName: string;
-	installed: PluginsStore;
-	marketplaces: MarketplacesStore;
-	gate: HubWriteGate;
-	ready: boolean;
-	canUseConnection: LiveReadiness;
-	appliedRemovalNames: ReadonlySet<string>;
-	onAppliedRemoval(
-		name: string,
-		notice: string | null,
-		owner: ConversationClientLike,
-		marketplaces: readonly MarketplaceEntry[] | null,
-		publicationVersion: number,
-	): boolean;
-	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
-}
+/** What the pushed page writes through, and the hub it was published for. */
+export type PluginsScreenSlot = MarketplaceWrites & { hubId: string };
 
 type SlotState = [PluginsScreenSlot | null, Dispatch<SetStateAction<PluginsScreenSlot | null>>];
 

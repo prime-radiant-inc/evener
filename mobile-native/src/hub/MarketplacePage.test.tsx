@@ -8,7 +8,7 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { render, renderedText } from "../renderNative.testkit";
+import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
 import { MarketplacePage } from "./MarketplacePage";
 import { type PluginsScreenSlot, PluginsScreenSlotProvider, usePublishPluginsScreen } from "./pluginsScreenSlot";
@@ -23,9 +23,14 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
 function slotFor(hubId: string, ready = true): PluginsScreenSlot {
+	return hubSlot(hubId, ready).slot;
+}
+
+/** A Plugins page's publication over its own fake hub, which lists acme. */
+function hubSlot(hubId: string, ready = true, listed = true) {
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({
-		marketplaces: [{ name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 }],
+		marketplaces: listed ? [{ name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 }] : [],
 	}));
 	hub.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
 	hub.on("evener/plugin/list", () => ({ plugins: [] }));
@@ -33,7 +38,7 @@ function slotFor(hubId: string, ready = true): PluginsScreenSlot {
 	const gate = createHubWriteGate();
 	const marketplaces = createMarketplacesStore(client, gate);
 	void marketplaces.getState().fetchMarketplaces();
-	return {
+	const slot: PluginsScreenSlot = {
 		hubId,
 		client,
 		hubName: "Work hub",
@@ -46,6 +51,7 @@ function slotFor(hubId: string, ready = true): PluginsScreenSlot {
 		onAppliedRemoval: () => true,
 		onRemovedMarketplace: () => {},
 	};
+	return { slot, hub };
 }
 
 /** The Plugins page's half: publishes `slot`, or nothing. */
@@ -112,4 +118,59 @@ it("follows the Plugins page's newer publication", async () => {
 	expect(update().props.disabled).toBe(false);
 	await act(async () => tree.update(page({ ...slot, ready: false }, navigation)));
 	expect(update().props.disabled).toBe(true);
+});
+
+it("runs no Remove confirmed after the Plugins page moved to a new connection", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const before = hubSlot("hub-1");
+	const tree = await pushedOver(before.slot, navigation);
+	await act(async () => tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress());
+	const confirm = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Remove");
+	// A reconnect hands the Plugins page a new client; it publishes new stores
+	// under the page still showing.
+	const after = hubSlot("hub-1");
+	await act(async () => tree.update(page(after.slot, navigation)));
+	await act(async () => {
+		confirm?.onPress?.();
+	});
+	await act(async () => {});
+	for (const hub of [before.hub, after.hub])
+		expect(hub.calls.map((call) => call.method)).not.toContain("evener/marketplace/remove");
+});
+
+it("shows nothing on the new connection's page from a write the old one left out", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const before = hubSlot("hub-1");
+	let fail: (reason: Error) => void = () => {};
+	before.hub.on(
+		"evener/marketplace/refresh",
+		() =>
+			new Promise((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	const tree = await pushedOver(before.slot, navigation);
+	await act(async () => tree.root.findByProps({ accessibilityLabel: "Update source" }).props.onPress());
+	await act(async () => tree.update(page(hubSlot("hub-1").slot, navigation)));
+	await act(async () => fail(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+});
+
+it("goes back once when its marketplace leaves the hub's list, however often the list changes after", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const gone = hubSlot("hub-1", true, false);
+	await pushedOver(gone.slot, navigation);
+	await act(async () => {
+		await gone.slot.marketplaces.getState().fetchMarketplaces();
+	});
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
+});
+
+it("goes back when the Plugins page underneath goes", async () => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const tree = await pushedOver(slotFor("hub-1"), navigation);
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	await act(async () => tree.update(page(null, navigation)));
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 });
