@@ -185,6 +185,12 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 // keeps CreateTemp's 0600. The name has no ".json" suffix, so the sidecar
 // listings ignore it. A crash between the create and the rename leaves one such
 // inert file behind — it reserves no name and no evener path reads it.
+//
+// Atomic replacement needs write permission on the containing metaDir, not just
+// on the target file: creating the temp beside the target is what makes the
+// rename atomic. Where the target is writable but metaDir is read-only, the old
+// in-place rewrite could still have updated the file while this cannot, and the
+// returned error says so.
 func replaceSidecar(path string, raw []byte) error {
 	// Preserve os.WriteFile's write-permission enforcement on the target; the
 	// open (without truncation) is the probe. A missing target is not an error.

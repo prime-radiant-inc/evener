@@ -797,7 +797,10 @@ func TestWriteSidecarExclCleanupSparesAReplacedFile(t *testing.T) {
 
 // TestUpdateSidecarPreservesFileMode: the atomic replace must keep the
 // target's existing permission bits, exactly as a plain rewrite would, so a
-// deliberately hardened sidecar is not silently widened to 0o644.
+// deliberately set sidecar mode is not silently widened to 0o644. The asserted
+// mode (0o640) is deliberately distinct from the temp's own 0600 default, so
+// the test actually exercises the mode restoration rather than passing on
+// os.CreateTemp's default.
 func TestUpdateSidecarPreservesFileMode(t *testing.T) {
 	dir := t.TempDir()
 	sc := testSidecar()
@@ -805,7 +808,7 @@ func TestUpdateSidecarPreservesFileMode(t *testing.T) {
 		t.Fatalf("WriteSidecarExcl: %v", err)
 	}
 	path := sidecarPath(dir, sc.Name)
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
@@ -815,8 +818,8 @@ func TestUpdateSidecarPreservesFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("sidecar mode after update = %o, want 600", got)
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("sidecar mode after update = %o, want 640", got)
 	}
 }
 
