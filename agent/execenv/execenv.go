@@ -222,6 +222,7 @@ type ListDirBudget struct {
 	entries     int
 	truncated   bool
 	incomplete  bool
+	spent       bool
 }
 
 // NewListDirBudget constructs a budget for one list_dir call. maxEntries is the
@@ -257,6 +258,7 @@ func (b *ListDirBudget) Incomplete() bool { return b.incomplete }
 func (b *ListDirBudget) chargeListing() bool {
 	if b.maxListings > 0 && b.listings >= b.maxListings {
 		b.truncated = true
+		b.spent = true
 		return false
 	}
 	b.listings++
@@ -268,6 +270,7 @@ func (b *ListDirBudget) chargeListing() bool {
 func (b *ListDirBudget) chargeEntry() bool {
 	if b.maxEntries > 0 && b.entries >= b.maxEntries {
 		b.truncated = true
+		b.spent = true
 		return false
 	}
 	b.entries++

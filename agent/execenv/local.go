@@ -1992,26 +1992,39 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 		}
 		return out
 	}
-	if limit == 0 {
-		// No room to keep anything. A single-entry probe tells the caller
-		// whether an entry remains, without scanning the directory; skipped
-		// (masked) entries are stepped over so a visible one still counts.
-		for {
+	// nextKept reports whether another entry the caller would keep remains,
+	// stepping over filtered entries. It reads at most probeMax raw entries
+	// (probeMax < 0 = unbounded) so a long run of filtered names cannot outrun
+	// the scan bound: found is true when a kept entry was seen, ended when the
+	// directory ended first, and both false when the probe budget ran out.
+	nextKept := func(probeMax int) (found, ended bool, err error) {
+		for n := 0; probeMax < 0 || n < probeMax; n++ {
 			if err := ctx.Err(); err != nil {
-				return dirPrefixResult{}, err
+				return false, false, err
 			}
 			batch, rerr := read(f, 1)
 			if len(batch) > 0 {
 				if keep == nil || keep(batch[0]) {
-					return dirPrefixResult{more: true}, nil
+					return true, false, nil
 				}
 				continue
 			}
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				return dirPrefixResult{}, rerr
+				return false, false, rerr
 			}
-			return dirPrefixResult{}, nil
+			return false, true, nil
 		}
+		return false, false, nil
+	}
+	if limit == 0 {
+		// No room to keep anything: probe for a kept entry to report whether the
+		// directory holds more, bounded by the scan cap and skipping filtered
+		// names so a masked run cannot outrun it.
+		found, ended, err := nextKept(scanCap)
+		if err != nil {
+			return dirPrefixResult{}, err
+		}
+		return dirPrefixResult{more: found || !ended, incomplete: !found && !ended}, nil
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -2019,14 +2032,14 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 		}
 		if scanCap >= 0 && scanned >= scanCap {
 			// We stopped with entries read. A directory that ended exactly at the
-			// cap is complete, not incomplete: probe one entry to tell EOF from
-			// "there is more". Only a yielded entry means the scan was cut short.
-			batch, rerr := read(f, 1)
-			if len(batch) > 0 {
-				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
+			// cap is complete, not incomplete: probe for a kept entry to tell EOF
+			// from "there is more", applying the same filter as the main loop.
+			found, ended, err := nextKept(scanCap)
+			if err != nil {
+				return dirPrefixResult{}, err
 			}
-			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				return dirPrefixResult{}, rerr
+			if found || !ended {
+				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
 			}
 			return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
 		}
@@ -2154,7 +2167,7 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 				}
 				// Abort remaining siblings when a child spent the budget; a
 				// scan-cap trip (incomplete) leaves room, so keep descending.
-				if budget.truncated && !budget.incomplete {
+				if budget.spent {
 					return nil
 				}
 			}

@@ -570,7 +570,7 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 			}
 			// Abort remaining siblings when a child spent the budget; a scan-cap
 			// trip (incomplete) leaves room, so keep descending.
-			if budget.truncated && !budget.incomplete {
+			if budget.spent {
 				return nil
 			}
 		}
