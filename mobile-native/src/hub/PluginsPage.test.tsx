@@ -3405,7 +3405,9 @@ it("points an empty plugin list at Browse when the hub has marketplaces, and at 
 		await choose(tree, "Installed");
 		return renderedText(tree);
 	};
-	expect(await installed(pageHub([]))).toContain("No plugins installed on this hub. Browse a marketplace to install one.");
+	expect(await installed(pageHub([]))).toContain(
+		"No plugins installed on this hub. Browse a marketplace to install one.",
+	);
 	const hub = pageHub([]);
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
 	const none = await installed(hub);
