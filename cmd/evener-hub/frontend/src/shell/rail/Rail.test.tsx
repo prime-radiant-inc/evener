@@ -29,6 +29,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -1785,6 +1786,41 @@ describe("resource-backed Rail", () => {
       expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(true);
     } finally {
       restoreSessionPane();
+    }
+  });
+
+  test("a rail row's Activity action opens the session and the activity sidebar, never the old pane", async () => {
+    // The chrome menu's twin: desktop Activity everywhere is the sidebar (the
+    // zoom system's triage surface). The rail NAVIGATES, idempotently: open
+    // the session pane, open the sidebar scoped to it, never toggle closed.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(
+        workspaceStore
+          .getState()
+          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
+      ).toBe(true);
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      // The reset updates a store the row subscribes to; unwrapped it lands
+      // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
     }
   });
 

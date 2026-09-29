@@ -164,9 +164,10 @@ describe("WatchesTab", () => {
     expect(screen.getByText("test heartbeat")).toBeTruthy();
     expect(screen.getByText(/every 5m/)).toBeTruthy();
     expect(screen.getByText("build landed")).toBeTruthy();
-    // The hub omitted 2 rows (1 armed): the line says the armed total and the
-    // remainder, in the rail's own grammar.
-    expect(screen.getByText("1 armed total · +2 more")).toBeTruthy();
+    // The hub omitted 2 rows (1 armed). The footer's armed total is the TRUE
+    // total - the retained armed row plus the omitted armed one - in the
+    // rail's own grammar.
+    expect(screen.getByText("2 watches · 2 armed total · +2 more")).toBeTruthy();
   });
 
   test("the empty state reads honestly when nothing watches", () => {

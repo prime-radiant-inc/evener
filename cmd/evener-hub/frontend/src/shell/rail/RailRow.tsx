@@ -62,6 +62,8 @@ import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../wi
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
+import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
+import { focusedActivityScopeRef } from "../focusedSession";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
@@ -524,7 +526,11 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  // The Activity ✓ means the sidebar is open ON THIS SESSION: the sidebar
+  // always scopes to the focused session, so a ✓ keyed to anything less would
+  // claim this row's activity is on screen while another session's is.
+  const sidebarOpen = useActivitySidebarStore((s) => s.open);
+  const activityOpen = sidebarOpen && focusedActivityScopeRef() === ref;
   const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.

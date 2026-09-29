@@ -1,15 +1,25 @@
 // The motion import boundary: the wrapper module (src/motion/index.tsx) is the
-// only file allowed to import the motion library, so the library, its
-// configuration, and the reduced-motion contract each live in exactly one
-// place. Modeled on src/styles/token-contract.test.ts's walker, over the same
-// hand-declared node:fs surface (src/styles/node-fs-shim.d.ts).
+// only file allowed to import the motion library - under EITHER specifier
+// ("motion/..." or the legacy "framer-motion/...", which the motion package
+// re-exports and which would silently load a second copy of the library) - so
+// the library, its configuration, and the reduced-motion contract each live in
+// exactly one place. Modeled on src/styles/token-contract.test.ts's walker,
+// over the same hand-declared node:fs surface (src/styles/node-fs-shim.d.ts).
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url))); // src/motion/.. = src
-const WRAPPER = join("motion", "index.tsx");
+// Exact-path exemptions: the wrapper (the one legal importer) and this test
+// file, whose pattern self-test samples contain the specifiers as strings.
+// A same-named file anywhere else gets neither (the token contract's decoy
+// precedent).
+const EXEMPT = new Set([join("motion", "index.tsx"), join("motion", "import-boundary.test.ts")]);
+
+// Both specifiers, either quote, any subpath, with or without a space after
+// "from" - the one pattern the boundary recognizes.
+const MOTION_IMPORT_RE = /from\s+["'](?:motion|framer-motion)(?:\/[^"']*)?["']/;
 
 function walk(dir: string): string[] {
   const found: string[] = [];
@@ -26,10 +36,23 @@ describe("motion import boundary", () => {
     const offenders: string[] = [];
     for (const absPath of walk(SRC)) {
       const rel = relative(SRC, absPath);
-      if (rel === WRAPPER) continue;
+      if (EXEMPT.has(rel)) continue;
       const text = readFileSync(absPath, "utf8");
-      if (/from\s+["']motion(\/|["'])/.test(text)) offenders.push(rel);
+      if (MOTION_IMPORT_RE.test(text)) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("the pattern catches both specifiers, subpaths, and quote styles", () => {
+    const caught = [
+      `import { m } from "motion/react"`,
+      `import { m } from 'motion'`,
+      `import { m } from "framer-motion"`,
+      `import { m } from 'framer-motion/m'`,
+      `} from "motion/react";`,
+    ];
+    for (const sample of caught) expect(MOTION_IMPORT_RE.test(sample)).toBe(true);
+    expect(MOTION_IMPORT_RE.test(`import { x } from "motion-sickness"`)).toBe(false);
+    expect(MOTION_IMPORT_RE.test(`import { x } from "./motion"`)).toBe(false);
   });
 });

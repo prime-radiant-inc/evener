@@ -37,6 +37,7 @@ import { useRef, useState } from "react";
 import { activitySidebarStore, useActivitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
+import { focusedActivityScopeRef } from "../../../shell/focusedSession";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
@@ -114,10 +115,11 @@ export function SessionChrome({
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
-  // The Activity menu item's checked state is the sidebar's open state on
-  // desktop; on mobile the item opens the Sheet and is never "checked".
+  // The Activity menu item's checked state is the sidebar's open state ON
+  // THIS SESSION on desktop (the sidebar always scopes to the focused
+  // session); on mobile the item opens the Sheet and is never "checked".
   const sidebarOpen = useActivitySidebarStore((s) => s.open);
-  const activityOpen = !isMobile && sidebarOpen;
+  const activityOpen = !isMobile && sidebarOpen && focusedActivityScopeRef() === sessionRef;
   const notesOpen = useTopNotesExpanded(sessionRef);
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));

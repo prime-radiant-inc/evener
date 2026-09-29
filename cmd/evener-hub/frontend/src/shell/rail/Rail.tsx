@@ -62,6 +62,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
@@ -1450,6 +1451,11 @@ function NavigationRail({
           // navigates, it does not toggle - closing notes belongs to the
           // panel's own header and the palette's Toggle command.
           topNotesStore.getState().openAndFocus(session.ref);
+        } else if (pane === "activity") {
+          // Desktop Activity everywhere is the zoom system's sidebar, scoped
+          // by the just-focused session. Same idempotent navigate: the rail
+          // opens, it does not toggle closed.
+          activitySidebarStore.getState().openWith();
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

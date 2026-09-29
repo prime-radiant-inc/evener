@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AnimatePresence, MotionProvider, m, spatialTransition } from "./index";
 
 describe("MotionProvider", () => {
@@ -12,6 +12,25 @@ describe("MotionProvider", () => {
       </MotionProvider>,
     );
     expect(container.querySelector('[data-testid="subject"]')).not.toBeNull();
+  });
+
+  // The `m` component only animates with feature support armed by LazyMotion;
+  // without it the library warns AND the component never interpolates. The
+  // wrapper must arm it, or every spatial transition in the app silently never
+  // runs. (Confirmed empirically: without LazyMotion the transform sat at its
+  // initial value for 500ms with rAF available.)
+  test("arms m's animations: the value actually interpolates", async () => {
+    const { container } = render(
+      <MotionProvider>
+        <m.div data-testid="subject" initial={{ x: 200 }} animate={{ x: 0 }} transition={{ duration: 0.1 }} />
+      </MotionProvider>,
+    );
+    const el = container.querySelector('[data-testid="subject"]');
+    expect(el?.getAttribute("style") ?? "").toContain("200");
+    // Within the animation's own duration the value must leave its start.
+    await vi.waitFor(() => {
+      expect(el?.getAttribute("style") ?? "").not.toContain("200px");
+    });
   });
 });
 

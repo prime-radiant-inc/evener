@@ -3,7 +3,7 @@
 // rail's watchCountLabel grammar, so the two surfaces cannot disagree).
 
 import { requireClass } from "../../widgets/internal/requireClass";
-import { watchCountLabel } from "../rail/railNodes";
+import { activeWatchCount, watchCountLabel } from "../rail/railNodes";
 import type { ActivityScope } from "../statusbar/statusScope";
 import styles from "./activitybar.module.css";
 import { WatchRow } from "./activityRows";
@@ -17,7 +17,6 @@ const CLASS = {
 export function WatchesTab({ scope, now }: { scope: ActivityScope; now: number }) {
   const watches = scope.leaf.watches ?? [];
   const omitted = scope.leaf.omitted_watches ?? 0;
-  const omittedArmed = scope.leaf.omitted_armed_watches ?? 0;
   if (watches.length === 0 && omitted === 0) {
     return <span className={CLASS.emptyNote}>No watches at this level.</span>;
   }
@@ -26,7 +25,13 @@ export function WatchesTab({ scope, now }: { scope: ActivityScope; now: number }
       {watches.map((watch) => (
         <WatchRow key={watch.id} watch={watch} now={now} />
       ))}
-      {omitted > 0 ? <span className={CLASS.passiveMore}>{watchCountLabel(omittedArmed, 0, omitted)}</span> : null}
+      {omitted > 0 ? (
+        // The rail's own grammar with the TRUE totals: the armed figure counts
+        // retained armed rows AND the omitted armed subset, never just one side.
+        <span className={CLASS.passiveMore}>
+          {watchCountLabel(activeWatchCount(scope.leaf), watches.length, omitted)}
+        </span>
+      ) : null}
     </div>
   );
 }
