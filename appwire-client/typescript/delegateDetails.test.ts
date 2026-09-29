@@ -1,6 +1,14 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import delegateRuntimeGo from "../../agent/delegate_runtime.go?raw";
+import delegateTreeFinishGo from "../../agent/delegate_tree_finish.go?raw";
+import delegateTreeIntentsGo from "../../agent/delegate_tree_intents.go?raw";
+import delegateTreeRestoreGo from "../../agent/delegate_tree_restore.go?raw";
+import delegateTreeStartGo from "../../agent/delegate_tree_start.go?raw";
+import delegateStoreRecordGo from "../../agent/internal/delegatestore/record.go?raw";
+import sessionBudgetGo from "../../agent/session_budget.go?raw";
+import subagentsGo from "../../agent/subagents.go?raw";
 import type { ActivityDelegate } from "./activityData";
 import { parseActivityTree } from "./activityData";
 import { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
@@ -223,6 +231,11 @@ test.each([
   ["stopped", "stopped_by_parent", "stopped by its coordinator"],
   ["exhausted", "tool_round_budget_exhausted", "ran out of tool rounds"],
   ["exhausted", "turn_budget_exhausted", "ran out of turns"],
+  ["failed", "launch_failed", "couldn't start"],
+  ["failed", "construction_failed", "couldn't be set up"],
+  ["failed", "artifacts_dir_failed", "couldn't create its artifacts folder"],
+  ["failed", "input_admission_failed", "couldn't take its input"],
+  ["completed", "attention_consumed_without_report", "finished without a new report"],
 ])("says %s's reason %s as %j", (outcome, reason, words) => {
   expect(delegateEndingText({ outcome, reason })).toBe(words);
 });
@@ -230,10 +243,49 @@ test.each([
 test("never shows a code it doesn't know, but keeps a reason already in words", () => {
   expect(delegateEndingText({ outcome: "failed", reason: "quota_window_closed" })).toBe("failed");
   expect(delegateEndingText({ outcome: "stopped", reason: "parent_went_away" })).toBe("stopped");
+  expect(delegateEndingText({ outcome: "exhausted", reason: "memory_budget_exhausted" })).toBe("ran out of budget");
   expect(delegateEndingText({ outcome: "failed", reason: "model refused the task" })).toBe("model refused the task");
 });
 
 test("says nothing for a run that ended well", () => {
   expect(delegateEndingText({ outcome: "completed" })).toBeUndefined();
   expect(delegateEndingText({})).toBeUndefined();
+});
+
+// Every consumer shows one line: the helper clamps the cause itself.
+test("says only the first line of a cause, bounded", () => {
+  expect(delegateEndingText({ outcome: "failed", error: "\n provider returned 500\nretry-after: 30" })).toBe(
+    "provider returned 500",
+  );
+  const long = delegateEndingText({ outcome: "failed", error: "x".repeat(400) });
+  expect(long?.length).toBeLessThanOrEqual(121);
+  expect(long?.endsWith("…")).toBe(true);
+});
+
+// The daemon's delegate reason codes, read from its own source: each one the
+// Go side can write has words here, so a new code without a mapping fails
+// this test instead of reaching a screen as snake_case. The codes follow the
+// daemon's naming (…_failed, …_lost, …_exhausted, …_error, …_terminal,
+// …_report, …_parent); cancelled and failed are plain words.
+test("has words for every delegate reason code the daemon writes", () => {
+  const sources = [
+    delegateRuntimeGo,
+    delegateTreeFinishGo,
+    delegateTreeIntentsGo,
+    delegateTreeRestoreGo,
+    delegateTreeStartGo,
+    delegateStoreRecordGo,
+    sessionBudgetGo,
+    subagentsGo,
+  ];
+  const codes = new Set(
+    sources.flatMap((source) =>
+      [...source.matchAll(/"([a-z]+(?:_[a-z]+)*_(?:failed|lost|exhausted|error|terminal|report|parent))"/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  );
+  expect(codes.size).toBeGreaterThan(10);
+  const unmapped = [...codes].filter((code) => delegateEndingText({ outcome: "unknown", reason: code }) === undefined);
+  expect(unmapped).toEqual([]);
 });

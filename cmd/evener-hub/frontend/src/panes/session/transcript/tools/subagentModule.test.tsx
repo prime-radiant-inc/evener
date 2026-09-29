@@ -288,6 +288,29 @@ test.each([
   expect(within(screen.getByTestId("subagent-row")).getByTestId("subagent-quote").textContent).toBe(quote);
 });
 
+// With no stable delegate to read, the card and its launch receipt read the
+// tool output's reason, a code too: both say it in words, never snake_case
+// (#3375 review).
+test("a failed card with no stable delegate says the tool output's reason code in words", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail_raw",
+    callId: "call_fail_raw",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({
+      delegate_id: "job_raw",
+      status: "failed",
+      transcript_ref: "ref_raw",
+      reason: "runtime_lost",
+    }),
+  });
+  render(<Body item={failed} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByTestId("subagent-quote").textContent).toContain("runtime lost");
+  expect(row.textContent).not.toContain("runtime_lost");
+});
+
 // 3zf8: a child deliberately killed with job_stop (or reconciled to
 // stopped/runtime_lost after a hub restart - agent/internal/jobstore/
 // reconcile.go) must never render byte-identical to one that finished its

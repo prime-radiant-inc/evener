@@ -13,6 +13,7 @@
 // to compute. Every live measurement falls back to the snapshot's frozen value
 // only when no anchor parses or the clock is not a finite number.
 import type { ActivityDelegate } from "./activityData";
+import { firstLine } from "./displayFormat";
 
 export type DelegateTimingFields = Pick<
   ActivityDelegate,
@@ -128,11 +129,14 @@ export function delegatePacket(
   }
 }
 
-// The daemon's reason codes (agent/delegate_tree_*.go, subagents.go) said
-// plainly. A reason is a code; a failed run's cause in words rides beside it
-// as `error` (#3327).
+// The daemon's reason codes (agent/delegate_*.go, subagents.go,
+// session_budget.go) said plainly. A reason is a code; a failed run's cause
+// in words rides beside it as `error` (#3327). delegateDetails.test.ts reads
+// the Go source and fails when a code there has no words here.
 const ENDING_WORDS = new Map([
   ["failed", "failed"],
+  // run_error and ended_without_report are what #3327's PR C makes a failed
+  // run's reason, in place of the bare "failed".
   ["run_error", "failed with an error"],
   ["ended_without_report", "ended without reporting"],
   ["terminal_error", "ended with an error"],
@@ -143,12 +147,17 @@ const ENDING_WORDS = new Map([
   ["stopped_by_parent", "stopped by its coordinator"],
   ["tool_round_budget_exhausted", "ran out of tool rounds"],
   ["turn_budget_exhausted", "ran out of turns"],
+  ["launch_failed", "couldn't start"],
+  ["construction_failed", "couldn't be set up"],
+  ["artifacts_dir_failed", "couldn't create its artifacts folder"],
+  ["input_admission_failed", "couldn't take its input"],
+  ["attention_consumed_without_report", "finished without a new report"],
 ]);
 
 // The word for an outcome whose reason is a code this client doesn't know.
 const OUTCOME_WORDS = new Map([
   ["failed", "failed"],
-  ["exhausted", "failed"],
+  ["exhausted", "ran out of budget"],
   ["cancelled", "stopped"],
   ["stopped", "stopped"],
 ]);
@@ -161,18 +170,22 @@ export interface DelegateEndingFields {
   error?: string;
 }
 
+// How long an ending may run: one line on every surface that shows it.
+const ENDING_MAX = 120;
+
 /** How a subagent's last run ended, in words, or undefined when there is
  * nothing to say: the hub's `error` when it sent one, else the reason code
  * said plainly. A code this client doesn't know reads as its outcome's word,
  * so a snake_case code never reaches the screen; a reason already in words
- * (an older hub's) shows as it is. */
+ * (an older hub's) shows as it is. Always one line, bounded, so every
+ * consumer shows the same. */
 export function delegateEndingText(delegate: DelegateEndingFields): string | undefined {
-  const error = delegate.error?.trim();
+  const error = firstLine(delegate.error ?? "", ENDING_MAX);
   if (error) return error;
   const reason = delegate.reason?.trim();
   if (!reason) return undefined;
   const words = ENDING_WORDS.get(reason);
   if (words) return words;
-  if (!CODE.test(reason)) return reason;
+  if (!CODE.test(reason)) return firstLine(reason, ENDING_MAX) || undefined;
   return OUTCOME_WORDS.get(delegate.outcome ?? "");
 }
