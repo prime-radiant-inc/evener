@@ -45,7 +45,8 @@ import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
-import { headerRowFill, navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
+import { ChipStrip } from "../design/ChipStrip";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -1871,101 +1872,80 @@ interface ChipProps {
 	onPress: () => void;
 }
 
-/** The section chips, fixed under the header (spec 7.1). Off the glass the
- * row fades at its trailing edge, so a cut-off chip reads as "there's more";
- * the fade is into the page color, so on the glass the chips run under its
- * edge instead. */
+/** The section chips, fixed under the header (spec 7.1), in the shared chip
+ * strip that owns the row's fill and its overflow fade. */
 function Chips({ chips, onGlass }: { chips: ChipProps[]; onGlass: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View testID="chips" style={{ backgroundColor: headerRowFill(onGlass, palette) }}>
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				contentContainerStyle={{ columnGap: 8, paddingHorizontal: 16, paddingVertical: 8 }}
-			>
-				{chips.map((chip) => (
-					<Pressable
-						key={chip.key}
-						testID="chip"
-						accessibilityRole="button"
-						accessibilityLabel={chip.label}
-						onPress={() => {
-							haptic("selection");
-							chip.onPress();
-						}}
-						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
-						hitSlop={{ top: 6, bottom: 6 }}
-						style={({ pressed }) => ({
-							minHeight: 32,
-							paddingHorizontal: 12,
-							borderRadius: 16,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 6,
-							backgroundColor: pressed ? palette.pressed : palette.surface,
-							borderWidth: 0.5,
-							borderColor: palette.edge,
-						})}
+		<ChipStrip testID="chips" onGlass={onGlass}>
+			{chips.map((chip) => (
+				<Pressable
+					key={chip.key}
+					testID="chip"
+					accessibilityRole="button"
+					accessibilityLabel={chip.label}
+					onPress={() => {
+						haptic("selection");
+						chip.onPress();
+					}}
+					// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
+					hitSlop={{ top: 6, bottom: 6 }}
+					style={({ pressed }) => ({
+						minHeight: 32,
+						paddingHorizontal: 12,
+						borderRadius: 16,
+						flexDirection: "row",
+						alignItems: "center",
+						columnGap: 6,
+						backgroundColor: pressed ? palette.pressed : palette.surface,
+						borderWidth: 0.5,
+						borderColor: palette.edge,
+					})}
+				>
+					{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
 					>
-						{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
+						{chip.name}
+					</Text>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
+					>
+						{String(chip.count)}
+					</Text>
+					{chip.badge ? (
+						<View
+							style={{
+								minWidth: 18 * scale,
+								height: 18 * scale,
+								paddingHorizontal: 5,
+								borderRadius: 9 * scale,
+								alignItems: "center",
+								justifyContent: "center",
+								backgroundColor: palette.attention,
+							}}
 						>
-							{chip.name}
-						</Text>
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
-						>
-							{String(chip.count)}
-						</Text>
-						{chip.badge ? (
-							<View
+							<Text
+								allowFontScaling={allowFontScaling}
 								style={{
-									minWidth: 18 * scale,
-									height: 18 * scale,
-									paddingHorizontal: 5,
-									borderRadius: 9 * scale,
-									alignItems: "center",
-									justifyContent: "center",
-									backgroundColor: palette.attention,
+									fontSize: 11 * scale,
+									fontWeight: "700",
+									fontVariant: ["tabular-nums"],
+									// Dark ink on amber in both themes: the light theme's ink,
+									// the dark theme's page.
+									color: palette.scheme === "dark" ? palette.page : palette.inkHi,
 								}}
 							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{
-										fontSize: 11 * scale,
-										fontWeight: "700",
-										fontVariant: ["tabular-nums"],
-										// Dark ink on amber in both themes: the light theme's ink,
-										// the dark theme's page.
-										color: palette.scheme === "dark" ? palette.page : palette.inkHi,
-									}}
-								>
-									{String(chip.badge)}
-								</Text>
-							</View>
-						) : null}
-					</Pressable>
-				))}
-			</ScrollView>
-			{onGlass ? null : (
-				<View
-					pointerEvents="none"
-					style={{
-						position: "absolute",
-						top: 0,
-						bottom: 0,
-						right: 0,
-						width: 28,
-						experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
-					}}
-				/>
-			)}
-		</View>
+								{String(chip.badge)}
+							</Text>
+						</View>
+					) : null}
+				</Pressable>
+			))}
+		</ChipStrip>
 	);
 }
 

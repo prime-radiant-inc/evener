@@ -703,8 +703,8 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	const { tree, scrollTo } = await mountWithInstances(navigation());
 	const scroller = boardScroller(tree);
 	// The chips sit outside the scroller, so they never scroll away.
-	expect(scroller.findAll((node) => node.props.testID === "chips")).toHaveLength(0);
-	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(1);
+	expect(scroller.findAll((node) => node.props.testID === "chips" && String(node.type) === "View")).toHaveLength(0);
+	expect(tree.root.findAll((node) => node.props.testID === "chips" && String(node.type) === "View")).toHaveLength(1);
 	expect(scroller.props.stickyHeaderIndices).toBeUndefined();
 	const layout = (testID: string, y: number, height: number) =>
 		tree.root
@@ -1191,7 +1191,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	bar.focus();
 	// Search takes the Board's place under the field, in the Board's scroller.
 	expect(hasRow(tree, "Ship it")).toBe(false);
-	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(0);
+	expect(tree.root.findAll((node) => node.props.testID === "chips" && String(node.type) === "View")).toHaveLength(0);
 	expect(tree.root.findAll((node) => node.props.testID === "live-block")).toHaveLength(0);
 	expect(boardScroller(tree).props.keyboardShouldPersistTaps).toBe("handled");
 	expect(hasCancel(tree)).toBe(true);
@@ -1217,7 +1217,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	// Cancel empties the field and brings the Board back.
 	bar.cancel();
 	expect(hasRow(tree, "Build docs")).toBe(true);
-	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(1);
+	expect(tree.root.findAll((node) => node.props.testID === "chips" && String(node.type) === "View")).toHaveLength(1);
 	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
 	expect(bar.input().props.value).toBe("");
 	expect(hasCancel(tree)).toBe(false);
@@ -5278,7 +5278,9 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		expect(block.props.style).toMatchObject({ position: "absolute", top: 0, left: 0, right: 0 });
 		expect(block.findAll((node) => String(node.type) === "GlassView")).toHaveLength(1);
 		expect(block.find((node) => node.props.testID === "nav-bar-room").props.style.height).toBe(64);
-		expect(block.find((node) => node.props.testID === "chips").props.style.backgroundColor).toBe("transparent");
+		expect(
+			block.find((node) => node.props.testID === "chips" && String(node.type) === "View").props.style.backgroundColor,
+		).toBe("transparent");
 		const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
 		// Before the glass has measured, the Board is inset by the bar's room,
 		// and the field it keeps tucked stays tucked just under the glass.
@@ -5318,8 +5320,11 @@ describe("the nav bar's glass (spec 16.3)", () => {
 					scroller: { contentOffset, contentInset, scrollIndicatorInsets, contentContainerStyle },
 					header: glassBlock(tree).props.style,
 					glass: glassBlock(tree).findAll((node) => String(node.type) === "GlassView").length,
-					chipsInScroller: boardScroller(tree).findAll((node) => node.props.testID === "chips").length,
-					chipsFill: tree.root.find((node) => node.props.testID === "chips").props.style.backgroundColor,
+					chipsInScroller: boardScroller(tree).findAll(
+						(node) => node.props.testID === "chips" && String(node.type) === "View",
+					).length,
+					chipsFill: tree.root.find((node) => node.props.testID === "chips" && String(node.type) === "View").props.style
+						.backgroundColor,
 				},
 			};
 		};
