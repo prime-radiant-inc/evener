@@ -19,3 +19,14 @@ it("hands what the first get passes to the maker, so each hub's instance keeps i
 	expect(each.get("hub-a", "second")).toEqual({ hubId: "hub-a", source: "first" });
 	expect(each.get("hub-b", "second")).toEqual({ hubId: "hub-b", source: "second" });
 });
+
+it("keeps an instance that is falsy, making it once", () => {
+	let made = 0;
+	const each = perHub(() => {
+		made++;
+		return 0;
+	});
+	expect(each.get("hub-a")).toBe(0);
+	expect(each.get("hub-a")).toBe(0);
+	expect(made).toBe(1);
+});

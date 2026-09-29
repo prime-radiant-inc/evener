@@ -9,12 +9,8 @@ export function perHub<T, A extends unknown[] = []>(make: (hubId: string, ...arg
 	const instances = new Map<string, T>();
 	return {
 		get(hubId: string, ...args: A): T {
-			let instance = instances.get(hubId);
-			if (!instance) {
-				instance = make(hubId, ...args);
-				instances.set(hubId, instance);
-			}
-			return instance;
+			if (!instances.has(hubId)) instances.set(hubId, make(hubId, ...args));
+			return instances.get(hubId) as T;
 		},
 		/** Drops the hub's instance, returning it so its owner can close it. */
 		forget(hubId: string): T | undefined {
