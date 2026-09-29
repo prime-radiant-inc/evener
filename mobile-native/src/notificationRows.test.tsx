@@ -12,7 +12,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf } from "./renderNative.testkit";
-import { configForLevel } from "./session/detailLevels";
+import { displayForLevel } from "./session/detailLevels";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
@@ -84,9 +84,9 @@ const LEVELS = ["chat", "intent", "tools", "full"] as const;
 
 function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems()) {
 	const model = hydrateThread({ thread: thread(items) }, "ref-1", 0);
-	const config = configForLevel(level, null);
+	const { config, justTheConversation } = displayForLevel(level, null);
 	const conversation = projectConversation(model, undefined, config ?? undefined);
-	const presentation = projectNativeTranscript(conversation, config);
+	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
 		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
 		delegates: conversation.delegates,

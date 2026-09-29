@@ -17,18 +17,12 @@ package agent
 // history reaches the wire. The AppWire package's steeringNotifications tests
 // and the phone's transcript row tests read the file this test pins.
 //
-// Regenerate after an intentional frame change with:
-//
-//	go test ./agent -run TestSteeringNotificationWireFixtures -update-notificationwire
+// Regenerate after an intentional frame change with `make fuzz-goldens`
+// (wire_fixture_test.go).
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,9 +36,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-var updateNotificationWire = flag.Bool("update-notificationwire", false,
-	"rewrite agent/testdata/notificationwire/steering.json from the current notification producers")
-
 // notificationWireFixturePath is the committed corpus both clients read.
 const notificationWireFixturePath = "testdata/notificationwire/steering.json"
 
@@ -53,8 +44,6 @@ type notificationWireFixture struct {
 	Note string             `json:"note"`
 	Item appwire.ThreadItem `json:"item"`
 }
-
-var notificationWireStart = time.Date(2026, 9, 28, 20, 0, 0, 0, time.UTC)
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {
 	t.Helper()
@@ -75,7 +64,7 @@ func notificationWireBarePacketFrame(t *testing.T, delegateID, name string, pack
 // the RunFinished event, from the run loop's own packet when it left one.
 func notificationWireStopFrame(t *testing.T, delegateID, name string, runPacket *delegatestore.TerminalPacket) string {
 	t.Helper()
-	event, _ := stoppedGenerationFinishEvent(delegateLease{delegateID: delegateID, generation: 1}, runPacket, notificationWireStart)
+	event, _ := stoppedGenerationFinishEvent(delegateLease{delegateID: delegateID, generation: 1}, runPacket, wireFixtureStart)
 	return notificationWireBarePacketFrame(t, delegateID, name, *event.RunFinished.Packet)
 }
 
@@ -92,7 +81,7 @@ func notificationWireDescriptor(name string) delegatestore.Descriptor {
 // appends as (delegateAttentionTurn), with its random stable turn id pinned
 // so the corpus stays byte-stable.
 func notificationWireAttention(attentionID, text string) schema.Turn {
-	turn := delegateAttentionTurn(attentionID, llm.User(text), notificationWireStart)
+	turn := delegateAttentionTurn(attentionID, llm.User(text), wireFixtureStart)
 	turn.StableTurnID = "q_fixture_" + attentionID
 	return turn
 }
@@ -101,7 +90,7 @@ func notificationWireAttention(attentionID, text string) schema.Turn {
 // appends when a background job or watch wakes it (kindedSteeringTurn).
 func notificationWireReminder(blocks ...string) schema.Turn {
 	turn := kindedSteeringTurn(strings.Join(blocks, "\n"), events.SteeringKindNotification, "turn_1")
-	turn.Timestamp = notificationWireStart
+	turn.Timestamp = wireFixtureStart
 	return turn
 }
 
@@ -112,7 +101,7 @@ func notificationWireReport(delegateID string) string {
 func TestSteeringNotificationWireFixtures(t *testing.T) {
 	t.Parallel()
 	ranFor := func(minutes int) (time.Time, time.Time) {
-		return notificationWireStart, notificationWireStart.Add(time.Duration(minutes) * time.Minute)
+		return wireFixtureStart, wireFixtureStart.Add(time.Duration(minutes) * time.Minute)
 	}
 	reportedStart, reportedEnd := ranFor(2)
 	failedStart, failedEnd := ranFor(6)
@@ -231,7 +220,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 			note: "The quiet watchdog: a plain-text body with no packet and no name attribute.",
 			turn: notificationWireAttention(
 				delegateQuietAttentionID(delegateLease{delegateID: "dlg_1", generation: 1}),
-				delegateQuietAttentionContent(delegateLease{delegateID: "dlg_1", generation: 1}, notificationWireStart.Add(time.Minute)),
+				delegateQuietAttentionContent(delegateLease{delegateID: "dlg_1", generation: 1}, wireFixtureStart.Add(time.Minute)),
 			),
 		},
 		{
@@ -279,28 +268,5 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		}
 		got = append(got, notificationWireFixture{Case: tc.name, Note: tc.note, Item: items[0]})
 	}
-	encoded, err := json.MarshalIndent(got, "", "  ")
-	if err != nil {
-		t.Fatalf("encode corpus: %v", err)
-	}
-	encoded = append(encoded, '\n')
-
-	if *updateNotificationWire {
-		if err := os.MkdirAll(filepath.Dir(notificationWireFixturePath), 0o755); err != nil {
-			t.Fatalf("create fixture dir: %v", err)
-		}
-		if err := os.WriteFile(notificationWireFixturePath, encoded, 0o644); err != nil {
-			t.Fatalf("write fixtures: %v", err)
-		}
-		return
-	}
-
-	want, err := os.ReadFile(notificationWireFixturePath)
-	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with -update-notificationwire)", notificationWireFixturePath, err)
-	}
-	if !bytes.Equal(want, encoded) {
-		t.Fatalf("the notification frames drifted from %s.\n got: %s\nwant: %s\nRegenerate with `go test ./agent -run TestSteeringNotificationWireFixtures -update-notificationwire`, then re-run the AppWire package and mobile-native tests that read it.",
-			notificationWireFixturePath, encoded, want)
-	}
+	checkWireFixture(t, notificationWireFixturePath, got, "the AppWire package and mobile-native tests that read it")
 }
