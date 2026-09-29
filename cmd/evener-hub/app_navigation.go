@@ -102,16 +102,9 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 		if err := rejectNavigationReadFields(params, fields, "catalog"); err != nil {
 			return navigationResourceKey{}, err
 		}
-		var kind navigationResourceKind
-		switch params.Catalog {
-		case "projects":
-			kind = navigationResourceProjects
-		case "archived_projects":
-			kind = navigationResourceArchivedProjects
-		case "test_runs":
-			kind = navigationResourceTestRuns
-		default:
-			return navigationResourceKey{}, fmt.Errorf("invalid catalog %q", params.Catalog)
+		kind, err := parseNavigationCatalog(params.Catalog)
+		if err != nil {
+			return navigationResourceKey{}, err
 		}
 		offset, limit, err := navigationReadPage(params, maxNavigationCatalogRows)
 		if err != nil {
@@ -236,6 +229,20 @@ func navigationReadResourceIsPaged(resource string) bool {
 	}
 }
 
+// parseNavigationCatalog maps a wire catalog name to its resource kind.
+func parseNavigationCatalog(name string) (navigationResourceKind, error) {
+	switch name {
+	case "projects":
+		return navigationResourceProjects, nil
+	case "archived_projects":
+		return navigationResourceArchivedProjects, nil
+	case "test_runs":
+		return navigationResourceTestRuns, nil
+	default:
+		return "", fmt.Errorf("invalid catalog %q", name)
+	}
+}
+
 func navigationReadPage(params appwire.NavigationReadParams, maximum uint32) (uint32, uint32, error) {
 	offset := uint32(0)
 	if params.Offset != nil {
@@ -269,10 +276,11 @@ func registerArchivedListHandler(server *appserver.Server, navigation *Navigatio
 		if navigation == nil {
 			return appwire.ArchivedListResponse{}, appwire.Unavailable("navigation unavailable")
 		}
-		response, err := navigation.ArchivedList(ctx, params)
-		if errors.Is(err, errArchivedListInvalid) {
+		request, err := parseNavigationArchivedListParams(params)
+		if err != nil {
 			return appwire.ArchivedListResponse{}, appwire.InvalidParams(err.Error())
 		}
+		response, err := navigation.ArchivedList(ctx, request)
 		if err != nil {
 			return appwire.ArchivedListResponse{}, navigationReadError(server, err)
 		}

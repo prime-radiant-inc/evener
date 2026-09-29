@@ -670,9 +670,6 @@ type SessionSeenSetResponse struct {
 	Navigation NavigationMutation `json:"navigation"`
 }
 
-// SearchParams selects matching live and past sessions for the hub command
-// palette. An empty query returns the most recent past sessions and all live
-// sessions, matching the palette's initial result set.
 // ArchivedListParams names the project whose archived sessions to list: the
 // catalog its rail row came from ("projects", "archived_projects" or
 // "test_runs"; the same key can exist in two catalogs) and its key. Cursor is
@@ -695,6 +692,9 @@ type ArchivedListResponse struct {
 	Total      int             `json:"total"`
 }
 
+// SearchParams selects matching live and past sessions for the hub command
+// palette. An empty query returns the most recent past sessions and all live
+// sessions, matching the palette's initial result set.
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
 	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll

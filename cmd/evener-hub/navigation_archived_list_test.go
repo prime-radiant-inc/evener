@@ -39,12 +39,12 @@ func archivedProjection(t *testing.T, projects ...hubcore.TreeProject) navigatio
 func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationResourceKind, key string, limit int) ([]string, int) {
 	t.Helper()
 	var ids []string
-	cursor := ""
+	request := navigationArchivedListRequest{Catalog: catalog, ProjectKey: key, Limit: limit}
 	for pages := 0; ; pages++ {
 		if pages > 10_000 {
 			t.Fatal("paging did not terminate")
 		}
-		page, err := p.ArchivedList(catalog, key, cursor, limit)
+		page, err := p.ArchivedList(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,11 @@ func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationRes
 		if page.NextCursor == "" {
 			return ids, page.Total
 		}
-		cursor = page.NextCursor
+		after, err := decodeArchivedCursor(page.NextCursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.After = &after
 	}
 }
 
@@ -98,17 +102,11 @@ func TestArchivedListReadsTheNamedCatalogsProject(t *testing.T) {
 	}
 }
 
-func TestArchivedListUnknownProjectIsEmptyAndBadRequestsError(t *testing.T) {
+func TestArchivedListUnknownProjectIsAnEmptyPage(t *testing.T) {
 	p := archivedProjection(t)
-	page, err := p.ArchivedList(navigationResourceProjects, "missing", "", 50)
+	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "missing"})
 	if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" {
 		t.Fatalf("page=%#v err=%v", page, err)
-	}
-	if _, err := p.ArchivedList("bogus", "missing", "", 50); err == nil {
-		t.Fatal("an unknown catalog must error")
-	}
-	if _, err := p.ArchivedList(navigationResourceProjects, "missing", "not-a-cursor", 50); err == nil {
-		t.Fatal("a malformed cursor must error")
 	}
 }
 
@@ -200,4 +198,12 @@ func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T)
 	assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
 	_, err = dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Cursor: "!"})
 	assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+	for _, params := range []appwire.ArchivedListParams{
+		{Catalog: "projects", ProjectKey: ""},
+		{Catalog: "projects", ProjectKey: key, Limit: -1},
+		{Catalog: "projects", ProjectKey: key, Limit: maxNavigationSectionRows + 1},
+	} {
+		_, err = dispatchArchivedList(t, server, params)
+		assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+	}
 }
