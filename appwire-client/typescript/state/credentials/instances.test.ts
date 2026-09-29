@@ -92,6 +92,64 @@ describe("two stores share nothing", () => {
   });
 });
 
+describe("refreshingInstances", () => {
+  test("the store publishes a refresh while it is out and clears it when it settles", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const pending = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => pending.promise);
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+
+    const refresh = store.getState().refreshModels("work");
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    pending.resolve(LISTING);
+    await refresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a second refresh keeps the instance published until the last settles", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const replies = [deferred<InstanceListResponse>(), deferred<InstanceListResponse>()];
+    let nth = 0;
+    fake.on("evener/instance/refreshModels", () => replies[nth++]!.promise);
+
+    const firstRefresh = store.getState().refreshModels("work");
+    const secondRefresh = store.getState().refreshModels("work");
+    replies[0]!.resolve(LISTING);
+    await firstRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    replies[1]!.resolve(LISTING);
+    await secondRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a replaced connection clears a refresh whose call is still out", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const pending = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => pending.promise);
+
+    const refresh = store.getState().refreshModels("work");
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    store.connectionChanged(readyClient(), "ready");
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+
+    pending.resolve(LISTING);
+    await refresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+});
+
 describe("listing reads and writes", () => {
   test("only the most recently started request replaces the listing", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
