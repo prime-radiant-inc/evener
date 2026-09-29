@@ -36,6 +36,8 @@ export type ToolWireCall =
   | "call_apply_patch"
   | "call_shell"
   | "call_shell_failed"
+  | "call_shell_windowed"
+  | "call_shell_timeout"
   | "call_web_fetch"
   | "call_web_search"
   | "call_use_skill"

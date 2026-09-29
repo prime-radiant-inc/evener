@@ -11,6 +11,11 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../TranscriptImages", () => ({ TranscriptImages: "TranscriptImages" }));
+vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+// MarkdownResponse renders a MermaidDiagram, whose WebView ships untranspiled
+// Flow source; the other suites that render it mock it the same way.
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./evidence", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./evidence")>();
 	return { ...original, stepEvidence: vi.fn(original.stepEvidence) };
@@ -125,5 +130,46 @@ describe("the evidence it draws", () => {
 		act(() => tree.update(<StepEvidence step={{ ...shell }} evidence={evidence} hubId="hub-1" />));
 		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
 		expect(texts(tree.root).some((node) => node.props.accessibilityLabel === "ok")).toBe(true);
+	});
+});
+
+// Each tool's evidence drawn as its words (evidence.ts reads them from what the
+// tools print; agent/testdata/toolwire).
+describe("each tool's evidence, drawn", () => {
+	const drawn = (evidence: Parameters<typeof StepEvidence>[0]["evidence"]) =>
+		render(<StepEvidence step={step("tool", {})} evidence={evidence} hubId="hub-1" />);
+
+	it("says what the shell tool's footer notes, quietly", () => {
+		const tree = drawn([{ kind: "note", text: "Timed out" }]);
+		expect(byText(tree.root, "Timed out")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+
+	it("says a nonzero exit in danger ink", () => {
+		const tree = drawn([{ kind: "exit", code: 1 }]);
+		expect(byText(tree.root, "Exited 1")?.props.style).toMatchObject({ color: DANGER_INK });
+	});
+
+	it("shows a fetched page's answer under where it came from and its size", () => {
+		const tree = drawn([{ kind: "page", text: "Three fixes.", url: "https://example.com/notes", bytes: 48213 }]);
+		expect(byText(tree.root, "Three fixes.")).toBeTruthy();
+		expect(byText(tree.root, "https://example.com/notes")?.props.style).toMatchObject({ fontFamily: "Menlo" });
+		// The web's size, formatByteCount.
+		expect(byText(tree.root, "48213 bytes")).toBeTruthy();
+	});
+
+	it("heads a skill's instructions with its name, the instructions as markdown", () => {
+		const tree = drawn([{ kind: "markdown", title: "systematic-debugging", markdown: "# Debugging" }]);
+		expect(byText(tree.root, "systematic-debugging")).toBeTruthy();
+		expect(tree.root.findAll((node) => node.props.markdown === "# Debugging").length).toBeGreaterThan(0);
+	});
+
+	it("labels a tool's arguments and result, each in Menlo", () => {
+		const tree = drawn([
+			{ kind: "json", label: "Arguments", text: '{\n  "a": 1\n}' },
+			{ kind: "json", label: "Result", text: '{\n  "b": 2\n}' },
+		]);
+		expect(byText(tree.root, "Arguments")).toBeTruthy();
+		expect(byText(tree.root, "Result")).toBeTruthy();
+		expect(byText(tree.root, '  "a": 1')?.props.style).toMatchObject({ fontFamily: "Menlo" });
 	});
 });

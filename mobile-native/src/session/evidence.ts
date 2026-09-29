@@ -1,7 +1,23 @@
 // What a step in a run has to show when you tap it (spec 8.2): an edit's
-// diff, the file a write wrote, a command's output, and an error. Pure, so
+// diff, the file a write wrote, a command's output, a fetched page, the skill
+// an activation loaded, a tool's arguments and result, and an error. Each
+// reads the words the tool printed, not the envelope around them (the
+// package's toolEvidence readers, which the web's bodies read too). Pure, so
 // the rules live apart from how StepEvidence draws them.
-import { diffStats, editDiffText, filePathOf, lineCount, parseArgs, str, toolFamily } from "@evener/appwire-client";
+import {
+	diffStats,
+	editDiffText,
+	filePathOf,
+	lineCount,
+	parseArgs,
+	prettyJSON,
+	type ShellOutput,
+	shellOutput,
+	skillContext,
+	str,
+	toolFamily,
+	webFetchResult,
+} from "@evener/appwire-client";
 import type { ActivityDetail } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -9,6 +25,17 @@ export type Evidence =
 	| { kind: "output"; text: string; lines: number }
 	| { kind: "diff"; text: string; added: number; removed: number }
 	| { kind: "wrote"; path: string }
+	// A command that exited nonzero with no error of its own.
+	| { kind: "exit"; code: number }
+	// What the shell tool's footer says besides the exit: a timed-out wait, a
+	// command still running, an output only partly here.
+	| { kind: "note"; text: string }
+	// A fetched page: the model's answer (or the page's content), from where.
+	| { kind: "page"; text: string; url?: string; bytes?: number }
+	// Markdown with a heading: the instructions a skill loaded.
+	| { kind: "markdown"; title: string; markdown: string }
+	// A tool's arguments or result, pretty-printed.
+	| { kind: "json"; label: "Arguments" | "Result"; text: string }
 	| { kind: "error"; text: string; exitCode?: number };
 
 /** Output lines shown in the transcript before "Show all N lines". */
@@ -21,6 +48,78 @@ const isFileTool = (label: string) => toolFamily(label) === "edit";
 
 function diff(text: string): Evidence {
 	return { kind: "diff", text, ...diffStats(text) };
+}
+
+// A tool's output as it printed it, or nothing for an empty one.
+function rawOutput(text: string): Evidence[] {
+	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
+}
+
+// A skill's markdown is its author's, and the phone's markdown view loads
+// images from their URLs, so each image, inline (![alt](url)), by reference
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
+function withoutImages(markdown: string): string {
+	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+}
+
+// What the shell tool's footer says besides the exit.
+function shellNotes(run: ShellOutput): Evidence[] {
+	const notes: Evidence[] = [];
+	if (run.windowed) notes.push({ kind: "note", text: "A long output: only its start and end are here" });
+	if (run.stillRunning)
+		notes.push({
+			kind: "note",
+			text: run.timedOut
+				? "Still running in the background after its wait timed out"
+				: "Still running in the background",
+		});
+	else if (run.timedOut) notes.push({ kind: "note", text: "Timed out" });
+	return notes;
+}
+
+// What a tool's output shows, by its family: a command without its exit
+// footer, a fetched page's answer, a skill's instructions, an MCP or other
+// tool's JSON pretty-printed; anything else as the tool printed it.
+function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
+	const text = detail.output ?? "";
+	switch (toolFamily(label)) {
+		case "shell": {
+			const run = shellOutput(text);
+			const evidence = rawOutput(run.text);
+			const code = detail.exitCode ?? run.exitCode;
+			// An error of its own says the exit code with it (below). -1 is the
+			// shell tool's sentinel for a command stopped by a signal or by
+			// evener's runtime limit, not an exit code.
+			if (code !== undefined && code !== 0 && code !== -1 && !detail.error) evidence.push({ kind: "exit", code });
+			evidence.push(...shellNotes(run));
+			return evidence;
+		}
+		case "fetch": {
+			const page = webFetchResult(text);
+			return page?.text === undefined ? rawOutput(text) : [{ kind: "page", ...page, text: page.text }];
+		}
+		case "skill": {
+			const loaded = skillContext(text);
+			return loaded
+				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
+				: rawOutput(text);
+		}
+		case "mcp":
+		case "tool": {
+			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
+			const result = text ? prettyJSON(text) : undefined;
+			// Arguments that aren't a JSON object or array show as they were
+			// sent, as the web's MCPToolArguments shows them.
+			const evidence: Evidence[] = args
+				? [{ kind: "json", label: "Arguments", text: args }]
+				: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
+			if (result) evidence.push({ kind: "json", label: "Result", text: result });
+			else evidence.push(...rawOutput(text));
+			return evidence;
+		}
+		default:
+			return rawOutput(text);
+	}
 }
 
 /** The parts of a step its evidence comes from. */
@@ -48,8 +147,8 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 		} else if (path) {
 			evidence.push({ kind: "wrote", path });
 		}
-	} else if (detail.output) {
-		evidence.push({ kind: "output", text: detail.output, lines: lineCount(detail.output) });
+	} else {
+		evidence.push(...outputEvidence(step.label, detail));
 	}
 	if (detail.error) {
 		evidence.push({

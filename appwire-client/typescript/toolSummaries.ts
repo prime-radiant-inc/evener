@@ -9,7 +9,8 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
-import { clip, formatByteCount, lineCount, parseArgs, parseJSONObject, str } from "./toolCallText";
+import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
+import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -96,14 +97,26 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // list_dir ends its listing with the count it returned: "3 entries" after a
 // blank line, the count alone for an empty directory, or "2 of 5 entries
 // (offset 0) — more…" for a page of a longer one. A summary says how many it
-// returned; an output without a count counts its lines.
-const LIST_DIR_COUNT_RE = /(?:^|\n)(\d+)(?: of (\d+))? entries/;
+// returned; an output without a count counts its lines. The footer is always
+// the last line, so only the last line is read: an entry named like a count
+// ("2 entries.md") never reads as one.
+const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries(?: \(|$)/;
+
+function entries(n: number | string): string {
+  return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
+}
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
-  const stated = LIST_DIR_COUNT_RE.exec(output)?.[1];
-  if (stated === undefined) return outputCount(output, "entries");
-  return `${stated} ${stated === "1" ? "entry" : "entries"}`;
+  // The footer is the last line of the tool's own output, which may be
+  // followed by an intervention the registry appended.
+  const tails = outputTails(output);
+  for (const tail of tails) {
+    const stated = LIST_DIR_COUNT_RE.exec(lastLine(tail.trimEnd()))?.[1];
+    if (stated !== undefined) return entries(stated);
+  }
+  // No footer: the listing's own lines, without an intervention after it.
+  return entries(lineCount(tails.at(-1) ?? output));
 }
 
 /** "Listed agent/internal · 4 entries", or "Listed files". */
@@ -197,10 +210,10 @@ export function shellSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
 
 // --- web ----------------------------------------------------------------------
 
-/** How big a fetched page was: web_fetch's size_bytes, else its output. */
+/** How big a fetched page was: web_fetch's size_bytes (from the one parse,
+ * webFetchResult), else its output. */
 export function webFetchByteCount(output: string): number {
-  const sizeBytes = parseJSONObject(output)?.size_bytes;
-  return typeof sizeBytes === "number" ? sizeBytes : output.length;
+  return webFetchResult(output)?.bytes ?? output.length;
 }
 
 /** "Fetched https://example.com/release-notes · 48213 bytes", or "Fetched a
