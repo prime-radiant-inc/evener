@@ -3,8 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignIn.testkit";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { palettes } from "./design/tokens";
 import { Button } from "./sheet/Grouped";
-import { Action } from "./ui";
 
 // What the sheet's native edges saw, in order: the clipboard write and the
 // in-app browser opening, so a test can tell which came first.
@@ -475,7 +475,14 @@ it("offers the code's page as the one call to action, with Copy code beside the 
 		["Copy code", false],
 		["Open sign-in page", true],
 	]);
-	expect(tree.root.findAll((node) => node.type === Action)).toHaveLength(0);
-	// The hub drops a device flow after hubAuthFlowTTL (app_auth.go).
-	expect(renderedText(tree)).toContain("The code expires in 15 minutes.");
+	// The hub drops a device flow after hubAuthFlowTTL (app_auth.go); the
+	// prototype sets the line in ink-low at 13.
+	const expiry = tree.root.find(
+		(node) => String(node.type) === "Text" && node.props.children === "The code expires in 15 minutes.",
+	);
+	expect(Object.assign({}, ...[expiry.props.style].flat())).toMatchObject({ color: palettes.light.inkLow, fontSize: 13 });
+	// At the largest text sizes Copy code moves under the code rather than
+	// pushing past the box.
+	const box = tree.root.find((node) => node.type === Button && node.props.label === "Copy code").parent;
+	expect(box?.props.style).toMatchObject({ flexWrap: "wrap" });
 });

@@ -489,28 +489,19 @@ export function TextFieldRow({
 /** A button, as the prototype draws one (styles.css .btn): `primary` is the
  * page's call to action, filled in the accent and full width at 50pt
  * (.btn.primary.big); the plain one is a 36pt capsule on the surface, beside
- * what it acts on (.btn). Its label follows Dynamic Type, so the height is a
- * minimum. Most actions are rows; a page's one call to action is this. */
-export function Button({
-	label,
-	onPress,
-	primary = false,
-	disabled = false,
-}: {
-	label: string;
-	onPress(): void;
-	primary?: boolean;
-	disabled?: boolean;
-}) {
+ * what it acts on (.btn), whose touch reaches the 44pt minimum (48 on
+ * Android, as Action's does). Its label follows Dynamic Type, so the height
+ * is a minimum. Most actions are rows; a page's one call to action is this.
+ * It dims when pressed as the app's other buttons do. */
+export function Button({ label, onPress, primary = false }: { label: string; onPress(): void; primary?: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reach = ((Platform.OS === "android" ? 48 : 44) - 36) / 2;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={label}
-			accessibilityState={{ disabled }}
-			disabled={disabled}
 			onPress={onPress}
+			hitSlop={primary ? undefined : { top: reach, bottom: reach }}
 			style={({ pressed }) => ({
 				minHeight: primary ? 50 : 36,
 				borderRadius: primary ? 25 : 18,
@@ -522,7 +513,7 @@ export function Button({
 				backgroundColor: primary ? palette.accentFill : palette.surface,
 				borderWidth: primary ? 0 : 0.5,
 				borderColor: palette.edgeStrong,
-				opacity: disabled ? 0.45 : pressed ? 0.85 : 1,
+				opacity: pressed ? 0.65 : 1,
 			})}
 		>
 			<Text

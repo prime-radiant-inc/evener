@@ -3404,6 +3404,13 @@ it("says a time from a clock ahead of this phone's was just now, not a count of 
 	expect(detail.findAllByProps({ accessibilityLabel: "Updated, just now" }).length).toBeGreaterThan(0);
 });
 
+it("says a time under a second old was just now", async () => {
+	const hub = pageHub([entry("demo-plugin", { installedAt: Date.now() / 1000, lastUpdated: Date.now() / 1000 })]);
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "demo-plugin");
+	expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+});
+
 it.each([
 	[
 		"the catalog read fails",

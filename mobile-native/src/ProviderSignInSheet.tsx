@@ -138,6 +138,8 @@ export function ProviderSignInSheet({
 						<View
 							style={{
 								flexDirection: "row",
+								// At the largest text sizes Copy code moves under the code.
+								flexWrap: "wrap",
 								alignItems: "center",
 								justifyContent: "space-between",
 								gap: 12,
@@ -180,7 +182,7 @@ export function ProviderSignInSheet({
 						    (app_auth.go); the provider's code expires in about that time. */}
 						<Text
 							allowFontScaling={allowFontScaling}
-							style={{ color: palette.inkMid, ...scaledType(uiType.footnote, scale) }}
+							style={{ color: palette.inkLow, ...scaledType(uiType.footnote, scale) }}
 						>
 							The code expires in 15 minutes.
 						</Text>
