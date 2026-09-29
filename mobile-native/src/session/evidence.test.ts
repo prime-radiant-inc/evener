@@ -222,6 +222,53 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(real("call_watch_repeat")).toEqual([{ kind: "output", text: "Look over the open PRs.", lines: 1 }]);
 	});
 
+	// A watch listing reads as the web's rows: each watch's state, id and
+	// trigger in words, never the producer's after_seconds grammar.
+	it("shows a watch list's rows in words", () => {
+		expect(real("call_watch_list")).toEqual([
+			{
+				kind: "output",
+				text: "watching  watch_fixture_1  in 5m · this session\nwatching  watch_fixture_2  every 10m · this session",
+				lines: 2,
+			},
+		]);
+	});
+
+	// The line names the watch and its state; the evidence is its trigger in
+	// words, and its note.
+	it("shows an inspected watch's trigger in words, and its note", () => {
+		expect(real("call_watch_inspect")).toEqual([
+			{ kind: "output", text: "in 5m · this session\nCheck the deploy finished.", lines: 2 },
+		]);
+	});
+
+	// A clear, and a create with no note, say everything in their line.
+	it("shows nothing more for a watch clear or a create with no note", () => {
+		expect(real("call_watch_clear")).toEqual([]);
+		const noteless = {
+			watch_id: "watch_x",
+			source: "self",
+			watching: true,
+			after_seconds: 300,
+			replaced_existing: false,
+			fired: false,
+		};
+		const item = {
+			...toolWireStep("call_watch_timer"),
+			raw: noteless,
+			output: "[watching self · watch_id watch_x · after 300s]",
+		};
+		expect(stepEvidence({ label: "job_watch", detail: activityDetail(item) })).toEqual([]);
+	});
+
+	// A result this build can't read shows what the tool printed.
+	it("shows a watch result it can't read as the tool printed it", () => {
+		const item = { ...toolWireStep("call_watch_timer"), raw: undefined };
+		expect(stepEvidence({ label: "job_watch", detail: activityDetail(item) })).toEqual([
+			{ kind: "output", text: item.output ?? "", lines: 1 },
+		]);
+	});
+
 	// A listing's status and bracketed codes read as words; a command in its
 	// label keeps its own spelling.
 	it("shows a job list with its codes in words", () => {
