@@ -93,9 +93,11 @@ it("selects another hub and leaves closing the sheet to the sheet", () => {
 	expect(navigation.goBack).not.toHaveBeenCalled();
 });
 
-it("offers nothing to press on the hub already selected", () => {
+it("offers nothing to press on the hub already selected, and tells VoiceOver it's the selected one", () => {
 	const { tree } = mount();
 	expect(hubRow(tree, "magic-kingdom").props.onPress).toBeUndefined();
+	expect(hubRow(tree, "magic-kingdom").props.accessibilityState).toMatchObject({ selected: true });
+	expect(hubRow(tree, "paradise-park").props.accessibilityState).toMatchObject({ selected: false });
 });
 
 it("opens a hub's details from its info button", () => {

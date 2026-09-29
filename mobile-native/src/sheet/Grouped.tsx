@@ -175,9 +175,10 @@ export function Row({
 		paddingVertical: 11,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
+	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	if (!onPress)
 		return (
-			<View accessible accessibilityLabel={reading} style={style}>
+			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
 				{body}
 			</View>
 		);
@@ -185,7 +186,7 @@ export function Row({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
-			accessibilityState={checked === undefined ? { disabled } : { disabled, selected: checked }}
+			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}

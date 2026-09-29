@@ -5,7 +5,7 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStringAsync } from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { Linking, Text, TextInput, type TextInputProps, View } from "react-native";
+import { AppState, Linking, Text, TextInput, type TextInputProps, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { fonts } from "../design/tokens";
 import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
@@ -20,7 +20,16 @@ interface Review {
 	name: string;
 }
 
-export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected(): void }) {
+export function AddHub({
+	how: initialHow,
+	onConnected,
+	onHowChange,
+}: {
+	how: How;
+	onConnected(): void;
+	/** The way changed inside the page (scanning gave way to pasting). */
+	onHowChange?(how: How): void;
+}) {
 	const { saveHub } = useConnection();
 	const [how, setHow] = useState(initialHow);
 	const [review, setReview] = useState<Review | null>(null);
@@ -85,13 +94,22 @@ export function AddHub({ how: initialHow, onConnected }: { how: How; onConnected
 				) : null}
 			</GroupedPage>
 		);
-	if (how === "scan") return <Scan onPairing={startReview} onPasteInstead={() => setHow("paste")} />;
+	if (how === "scan")
+		return (
+			<Scan
+				onPairing={startReview}
+				onPasteInstead={() => {
+					setHow("paste");
+					onHowChange?.("paste");
+				}}
+			/>
+		);
 	if (how === "paste") return <Paste onPairing={startReview} />;
 	return <Address onPairing={startReview} />;
 }
 
 function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget): void; onPasteInstead(): void }) {
-	const [permission, requestPermission] = useCameraPermissions();
+	const [permission, requestPermission, getPermission] = useCameraPermissions();
 	const [notPairing, setNotPairing] = useState(false);
 	const asked = useRef(false);
 	// Whether the one request this page makes has come back. Android can
@@ -104,6 +122,15 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 		asked.current = true;
 		void requestPermission().finally(() => setAnswered(true));
 	}, [canAsk, requestPermission]);
+
+	// The hook reads the permission on mount and after a request only; a
+	// grant made in Settings shows once the app comes back to the front.
+	useEffect(() => {
+		const subscription = AppState.addEventListener("change", (state) => {
+			if (state === "active") void getPermission();
+		});
+		return () => subscription.remove();
+	}, [getPermission]);
 
 	if (permission === null || (canAsk && !answered)) return <GroupedPage>{null}</GroupedPage>;
 	if (!permission.granted)

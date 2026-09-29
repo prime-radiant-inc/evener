@@ -7,6 +7,13 @@ import type { HubRoutes } from "./hubSheetContext";
 
 function closedBySelection() {}
 
-export function AddHubPage({ route }: NativeStackScreenProps<HubRoutes, "AddHub">) {
-	return <AddHub how={route.params.how} onConnected={closedBySelection} />;
+export function AddHubPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "AddHub">) {
+	// The header's title comes from the route's way, so it follows the page.
+	return (
+		<AddHub
+			how={route.params.how}
+			onConnected={closedBySelection}
+			onHowChange={(how) => navigation.setParams({ how })}
+		/>
+	);
 }

@@ -7,19 +7,28 @@ type Permission = { granted: boolean; canAskAgain: boolean; status: string };
 const mocks = vi.hoisted(() => ({
 	permission: { value: null as Permission | null },
 	request: vi.fn(),
+	get: vi.fn(),
+	appState: [] as ((state: string) => void)[],
 	getStringAsync: vi.fn(),
 	saveHub: vi.fn(),
 	openSettings: vi.fn(),
 }));
 vi.mock("expo-camera", () => ({
 	CameraView: "CameraView",
-	useCameraPermissions: () => [mocks.permission.value, mocks.request],
+	useCameraPermissions: () => [mocks.permission.value, mocks.request, mocks.get],
 }));
 vi.mock("expo-clipboard", () => ({ getStringAsync: mocks.getStringAsync }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ saveHub: mocks.saveHub }) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	Linking: { openSettings: mocks.openSettings },
+	AppState: {
+		currentState: "active",
+		addEventListener: (_event: string, listener: (state: string) => void) => {
+			mocks.appState.push(listener);
+			return { remove: () => mocks.appState.splice(mocks.appState.indexOf(listener), 1) };
+		},
+	},
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -31,6 +40,8 @@ const GRANTED: Permission = { granted: true, canAskAgain: true, status: "granted
 beforeEach(() => {
 	mocks.permission.value = GRANTED;
 	mocks.request.mockReset();
+	mocks.get.mockReset();
+	mocks.appState.length = 0;
 	// expo-camera's request answers with the permission it settled on.
 	mocks.request.mockResolvedValue(GRANTED);
 	mocks.getStringAsync.mockReset();
@@ -162,6 +173,21 @@ it("offers Settings or pasting once a camera request comes back refused, though 
 	expect(mocks.request).toHaveBeenCalledTimes(1);
 	expect(renderedText(tree)).toContain("Camera access is off for Evener.");
 	expect(button(tree, "Paste the link instead")).toBeTruthy();
+});
+
+it("reads the camera permission again on coming back from Settings", async () => {
+	// useCameraPermissions reads once on mount and after a request, so a
+	// grant made in Settings wouldn't show until the page remounted.
+	mocks.permission.value = { granted: false, canAskAgain: false, status: "denied" };
+	mount("scan");
+	await act(async () => {
+		for (const listener of mocks.appState) listener("background");
+	});
+	expect(mocks.get).not.toHaveBeenCalled();
+	await act(async () => {
+		for (const listener of mocks.appState) listener("active");
+	});
+	expect(mocks.get).toHaveBeenCalledTimes(1);
 });
 
 it("pastes a pairing link from the clipboard into review", async () => {
