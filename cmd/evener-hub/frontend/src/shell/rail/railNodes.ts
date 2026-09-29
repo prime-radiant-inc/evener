@@ -417,8 +417,10 @@ export function watchCountLabel(armed: number, retained: number, omitted: number
   return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
 }
 
-// The states a subagent still has live work in - direct, or anywhere in its
-// subtree (the activity summary supplies the subtree half).
+// The states a subagent still has live work in. The same set marks every
+// level: a subagent is current when its own state is here, when it has a
+// running job, or when any descendant is current by this same rule - so an
+// idle subagent whose child awaits the user never folds as "inactive".
 const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
   "active",
   "awaiting",
@@ -430,8 +432,9 @@ const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
 // The activity sidebar's Agents tab splits its scope's children on this; the
 // rail itself no longer does (its rows follow the wire's order below).
 export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
-  const activity = activeWorkSummary(child);
-  return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
+  if (CURRENT_SUBAGENT_STATES.has(child.state)) return true;
+  if ((child.running_jobs ?? []).length > 0) return true;
+  return child.children.some(subagentIsCurrent);
 }
 
 // Builds one parent's children: its nested rows (fork originals)
@@ -564,19 +567,15 @@ export function needsYouDescendantCount(node: RailSession): number {
 }
 
 export interface ActiveWorkSummary {
-  workingSubagents: number;
   runningJobs: number;
 }
 
-export function activeWorkSummary(node: NavigationSessionSummary): ActiveWorkSummary {
-  let workingSubagents = 0;
+export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
   let runningJobs = (node.running_jobs ?? []).length;
   for (const child of node.children) {
-    const childActivity = activeWorkSummary(child);
-    workingSubagents += (displayState(child) === "active" ? 1 : 0) + childActivity.workingSubagents;
-    runningJobs += childActivity.runningJobs;
+    runningJobs += activeWorkSummary(child).runningJobs;
   }
-  return { workingSubagents, runningJobs };
+  return { runningJobs };
 }
 
 export function runningJobCount(node: RailSession): number {

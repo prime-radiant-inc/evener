@@ -26,9 +26,37 @@ import {
   projectNodesWithHostBranches,
   revealExpansionIds,
   sessionNodes,
+  subagentIsCurrent,
   topLevelAncestorRef,
   watchCountLabel,
 } from "./railNodes";
+
+describe("subagentIsCurrent", () => {
+  test("a descendant in any current state makes the subagent current, not only an active one", () => {
+    // The direct level accepts the whole current set (awaiting counts); the
+    // subtree must read the same set, or the Agents tab folds an idle
+    // subagent whose own child is waiting on the user.
+    const grandchild = session({ ref: "local:grandchild", state: "awaiting" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("a descendant's running job makes the subagent current", () => {
+    const grandchild = session({
+      ref: "local:grandchild",
+      state: "idle",
+      running_jobs: [{ job_id: "j1", job_type: "shell", status: "running" }],
+    });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an idle subagent with a quiet subtree is not current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(false);
+  });
+});
 
 function session(overrides: Partial<RailSession> = {}): RailSession {
   return {
