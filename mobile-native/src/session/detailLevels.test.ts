@@ -92,7 +92,12 @@ describe("the config a session projects at", () => {
 				}),
 			),
 		).toBe("custom");
-		expect(currentLevel(null, null)).toBeNull();
+	});
+
+	it("marks the level the transcript renders at while the hub config is missing", () => {
+		// A menu that marked nothing would lie about the transcript on screen.
+		expect(currentLevel(null, null)).toBe("full");
+		expect(detailMenuLabel(currentLevel(null, null))).toBe("Detail level · Full");
 	});
 });
 
