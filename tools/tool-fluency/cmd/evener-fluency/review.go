@@ -131,7 +131,11 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		}
 		for _, call := range turn.ToolCalls {
 			if !isMessageToUser(call) {
-				fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
+				if brief := delegateBrief(call); brief != "" {
+					fmt.Fprintf(&b, "→ %s\n\n%s\n\n", call.Name, brief)
+				} else {
+					fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
+				}
 				continue
 			}
 			if msg := shownMessage(call.Arguments); msg != "" {
@@ -151,6 +155,54 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		}
 	}
 	return b.String()
+}
+
+// delegateArguments decodes a delegate call's arguments: the assignment
+// prompt, and each task_list step's own prompt when the call seeds a
+// multi-step plan instead of a single prompt (agent/internal/tool/
+// definitions.go's DefDelegate).
+type delegateArguments struct {
+	Prompt   string `json:"prompt"`
+	TaskList []struct {
+		Title  string `json:"title"`
+		Prompt string `json:"prompt"`
+	} `json:"task_list"`
+}
+
+// delegateSendArguments decodes a delegate_send call's arguments: the
+// message delivered to the addressed delegate or caller (DefDelegateSend).
+type delegateSendArguments struct {
+	Message string `json:"message"`
+}
+
+// delegateBrief returns the full text of a delegate or delegate_send call's
+// brief: what a blind reader needs to judge how work was split and briefed,
+// which the 80-byte argument preview cuts short. It returns "" for any other
+// tool, and for a delegate/delegate_send call whose arguments do not decode
+// as JSON or carry no prompt/message — renderPacket falls back to the
+// preview line then.
+func delegateBrief(call doctor.ToolCallSummary) string {
+	switch call.Name {
+	case "delegate":
+		var args delegateArguments
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			return ""
+		}
+		var b strings.Builder
+		b.WriteString(args.Prompt)
+		for i, step := range args.TaskList {
+			fmt.Fprintf(&b, "\n\nStep %d: %s\n%s", i+1, step.Title, step.Prompt)
+		}
+		return b.String()
+	case "delegate_send":
+		var args delegateSendArguments
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			return ""
+		}
+		return args.Message
+	default:
+		return ""
+	}
 }
 
 // indentBlock indents every line of s by four spaces, a Markdown code block
