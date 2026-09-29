@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { liveBands } from "../board/attention";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou, servedFirst } from "./fleetOrder";
+import type { LiveBands } from "../board/attention";
+import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou, servedFirst } from "./fleetOrder";
 import { fleetSession as row } from "./fleetTestUtils";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
@@ -9,6 +10,9 @@ const question = row("question", { state: "awaiting", ask_pending: true, updated
 const working = row("working", { state: "active", updated_at: at(9) });
 const finished = row("finished", { state: "awaiting", updated_at: at(8) });
 const bands = liveBands([failed, question, working, finished], [failed, question], () => false);
+/** Next's destination: the head of the order it serves. */
+const nextSession = (from: LiveBands, ref: string, recent: readonly string[]) =>
+	nextQueue(from, ref, recent)[0] ?? null;
 
 describe("who else needs you (spec 13.2)", () => {
 	it("counts every session that needs you except this one", () => {
@@ -79,6 +83,8 @@ describe("Next serves what alerted you first (spec 8.3)", () => {
 		expect(nextSession(four, "b", ["d"])?.ref).toBe("d");
 		expect(nextSession(four, "c", [])?.ref).toBe("d");
 		expect(nextSession(four, "d", [])?.ref).toBe("a");
+		// Its touch-and-hold list reads the same order, Next's destination first.
+		expect(nextQueue(four, "b", ["d"]).map((r) => r.ref)).toEqual(["d", "c", "a"]);
 	});
 });
 

@@ -679,6 +679,17 @@ it("holds banners while it's in front, and counts them on Back", async () => {
 	expect(alerts.holds.at(-1)).toEqual([false, "quiet"]);
 });
 
+it("leaves Android its own back arrow", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	Platform.OS = "android";
+	try {
+		const { navigation } = await mount();
+		expect(navigation.latest("headerLeft")).toBeUndefined();
+	} finally {
+		Platform.OS = "ios";
+	}
+});
+
 it("reads plain Back when nothing waits", async () => {
 	const { navigation } = await mount();
 	const back = navigation.latest("headerLeft") as (props: never) => ReactElement;

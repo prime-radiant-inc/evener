@@ -16,6 +16,7 @@ import {
 	Image,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
+	Platform,
 	Pressable,
 	Text,
 	View,
@@ -310,13 +311,16 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		];
 		navigation.setOptions({
 			title: "",
-			headerLeft: () => (
-				<BackButton
-					count={held}
-					label={held > 0 ? `Back, ${held} new while you read` : "Back"}
-					onPress={navigation.goBack}
-				/>
-			),
+			// iPhone only, as the Session's: Android keeps its own back arrow.
+			...(Platform.OS === "ios" && {
+				headerLeft: () => (
+					<BackButton
+						count={held}
+						label={held > 0 ? `Back, ${held} new while you read` : "Back"}
+						onPress={() => navigation.goBack()}
+					/>
+				),
+			}),
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});

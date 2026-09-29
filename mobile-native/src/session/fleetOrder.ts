@@ -24,20 +24,17 @@ export function servedFirst<T extends { ref: string }>(needsYou: readonly T[], r
 		.map(({ row }) => row);
 }
 
-/** Next's destination: what alerted you most recently, then Needs you order
+/** The order Next serves, its destination first, which its touch-and-hold
+ * list shows too: what alerted you most recently, then Needs you order
  * (ruling 11). From a session in Needs you, that order starts at the one
  * after it and wraps around, so Next walks through everyone who needs you
  * instead of bouncing between two. From any other session it starts at the
  * head. */
-export function nextSession(
-	bands: LiveBands,
-	currentRef: string,
-	recent: readonly string[],
-): NavigationSessionSummary | null {
+export function nextQueue(bands: LiveBands, currentRef: string, recent: readonly string[]): NavigationSessionSummary[] {
 	const order = bands.needsYou.map((item) => item.row);
 	const index = order.findIndex((row) => row.ref === currentRef);
 	const after = index === -1 ? order : [...order.slice(index + 1), ...order.slice(0, index)];
-	return servedFirst(after, recent)[0] ?? null;
+	return servedFirst(after, recent);
 }
 
 export function liveOrder(bands: LiveBands): NavigationSessionSummary[] {

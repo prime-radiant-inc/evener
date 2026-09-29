@@ -125,7 +125,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou, servedFirst } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -719,6 +719,10 @@ export function ConversationScreen({
 	const othersWaitingCount = othersWaiting.length;
 	// Next serves whichever session alerted you most recently first (spec 8.3).
 	const alertedRecently = useAlertedRecently();
+	const queue = useMemo(
+		() => nextQueue(fleet.bands, route.params.ref, alertedRecently),
+		[fleet.bands, route.params.ref, alertedRecently],
+	);
 	const nextUsed = useNextUsed();
 	useEffect(() => {
 		// iPhone only: Android keeps its own back arrow.
@@ -769,7 +773,7 @@ export function ConversationScreen({
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
 		if (Platform.OS !== "ios") return;
-		const choices = servedFirst(othersWaiting, alertedRecently).slice(0, 8);
+		const choices = queue.slice(0, 8);
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
 				options: [...choices.map((row) => row.title), "Cancel"],
@@ -2562,10 +2566,7 @@ export function ConversationScreen({
 	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
-	const nextTarget =
-		approval === null && questionBatch === null && find === null
-			? nextSession(fleet.bands, route.params.ref, alertedRecently)
-			: null;
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
