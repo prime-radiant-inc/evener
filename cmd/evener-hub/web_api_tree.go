@@ -1236,7 +1236,6 @@ func (s *WebServer) favoriteAuthorityForReferences(snapshot navigationSnapshot, 
 	return hubcore.FavoriteAuthority{
 		Sessions: sessions,
 		Projects: favoriteProjectAuthorities(snapshot),
-		Nodes:    tree.FavoriteNodeAuthorities(),
 	}, subagents
 }
 

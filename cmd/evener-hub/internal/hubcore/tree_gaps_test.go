@@ -64,25 +64,6 @@ func TestPinCandidatesDeduplicates(t *testing.T) {
 	}
 }
 
-// TestPinCandidatesFromClusterChildren covers the path where session children
-// grouped under a cluster are included.
-func TestPinCandidatesFromClusterChildren(t *testing.T) {
-	tree := Tree{
-		Projects: []TreeProject{
-			{allCurrent: []TreeNode{
-				{Kind: "cluster", Children: []TreeNode{
-					{ID: "session-1", Kind: "session"},
-					{ID: "session-2", Kind: "session"},
-				}},
-			}},
-		},
-	}
-	got := tree.PinCandidates()
-	if len(got) != 2 {
-		t.Fatalf("PinCandidates = %d, want 2 (from cluster children)", len(got))
-	}
-}
-
 // TestPinCandidatesFromArchivedProjects covers the ArchivedProjects path.
 func TestPinCandidatesFromArchivedProjects(t *testing.T) {
 	tree := Tree{
@@ -95,52 +76,6 @@ func TestPinCandidatesFromArchivedProjects(t *testing.T) {
 	got := tree.PinCandidates()
 	if len(got) != 1 {
 		t.Fatalf("PinCandidates = %d, want 1 (from archived)", len(got))
-	}
-}
-
-// TestFavoriteNodeAuthoritiesEmpty covers the empty path.
-func TestFavoriteNodeAuthoritiesEmpty(t *testing.T) {
-	tree := Tree{}
-	got := tree.FavoriteNodeAuthorities()
-	if len(got) != 0 {
-		t.Fatalf("FavoriteNodeAuthorities on empty tree = %d, want 0", len(got))
-	}
-}
-
-// TestFavoriteNodeAuthoritiesFromProjects covers the Projects path.
-func TestFavoriteNodeAuthoritiesFromProjects(t *testing.T) {
-	tree := Tree{
-		Projects: []TreeProject{
-			{allCurrent: []TreeNode{
-				{ID: "session-1", Kind: "session"},
-				{ID: "", Kind: "session"}, // should be skipped
-			}},
-		},
-	}
-	got := tree.FavoriteNodeAuthorities()
-	if len(got) != 1 {
-		t.Fatalf("FavoriteNodeAuthorities = %d, want 1", len(got))
-	}
-	if got[0].ID != "session-1" {
-		t.Fatalf("FavoriteNodeAuthorities[0].ID = %q, want session-1", got[0].ID)
-	}
-}
-
-// TestFavoriteNodeAuthoritiesFromArchived covers the ArchivedProjects path.
-func TestFavoriteNodeAuthoritiesFromArchived(t *testing.T) {
-	tree := Tree{
-		ArchivedProjects: []TreeProject{
-			{allArchived: []TreeNode{
-				{ID: "session-arch", Kind: "session"},
-			}},
-		},
-	}
-	got := tree.FavoriteNodeAuthorities()
-	if len(got) != 1 {
-		t.Fatalf("FavoriteNodeAuthorities = %d, want 1", len(got))
-	}
-	if got[0].ID != "session-arch" {
-		t.Fatalf("FavoriteNodeAuthorities[0].ID = %q, want session-arch", got[0].ID)
 	}
 }
 
@@ -289,25 +224,6 @@ func TestFavoriteCandidatesWithFork(t *testing.T) {
 	}
 	if got[0].ID != "fork-1" {
 		t.Fatalf("FavoriteCandidates[0].ID = %q, want fork-1", got[0].ID)
-	}
-}
-
-// TestFavoriteCandidatesWithClusterChildren covers the cluster-children path.
-func TestFavoriteCandidatesWithClusterChildren(t *testing.T) {
-	tree := Tree{
-		Projects: []TreeProject{
-			{allCurrent: []TreeNode{
-				{Kind: "cluster", Children: []TreeNode{
-					{ID: "session-1", Kind: "session"},
-					{ID: "fork-1", Kind: "fork"},
-					{ID: "cluster-2", Kind: "cluster"}, // should be skipped
-				}},
-			}},
-		},
-	}
-	got := tree.FavoriteCandidates()
-	if len(got) != 2 {
-		t.Fatalf("FavoriteCandidates = %d, want 2 (session + fork, not nested cluster)", len(got))
 	}
 }
 

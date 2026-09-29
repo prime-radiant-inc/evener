@@ -15,7 +15,6 @@ import {
 	type HostFacts,
 	orderedHosts,
 	projectHostIds,
-	sessionGroupHostId,
 } from "@evener/appwire-client/state/navigation";
 import type { ProjectBrowserSnapshot, ProjectSessionTier } from "../projectBrowser";
 import type { OrganizeBy } from "./boardMemory";
@@ -110,7 +109,7 @@ const activeRows = (pages: ProjectPages | undefined) => (pages ? [...pages.curre
 const pinnedFirst = (projects: readonly NavigationProjectSummary[]) =>
 	[...projects].sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
 const onHost = (hostId: string | null) => (row: NavigationSessionSummary) =>
-	hostId === null || sessionGroupHostId(row) === hostId;
+	hostId === null || row.host_id === hostId;
 const activeTiersLoaded = (pages: ProjectPages) => pages.current.loaded && pages.recent.loaded;
 
 export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
@@ -235,7 +234,7 @@ function projectFirst(
 		return;
 	}
 	const shownBefore = out.length;
-	const hosts = branchByHost ? orderedHosts(activeRows(pages).map(sessionGroupHostId), input.sources) : [];
+	const hosts = branchByHost ? orderedHosts(activeRows(pages).map((row) => row.host_id), input.sources) : [];
 	if (hosts.length > 1)
 		for (const host of hosts) {
 			const branch = branchFold(project.key, host.id);
@@ -396,7 +395,7 @@ export function liveCountsByHost(
 	for (const row of liveRows) {
 		if (seen.has(row.ref)) continue;
 		seen.add(row.ref);
-		const host = sessionGroupHostId(row);
+		const host = row.host_id;
 		counts.set(host, (counts.get(host) ?? 0) + 1);
 	}
 	return (hostId) => counts.get(hostId) ?? null;

@@ -126,7 +126,7 @@ export function SessionChrome({
     : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
-  const eligibleFallback = fallbackSession && !["subagent", "fork", "cluster"].includes(fallbackSession.kind);
+  const eligibleFallback = fallbackSession && !["subagent", "fork"].includes(fallbackSession.kind);
   const validIdentity =
     typeof fallbackSession?.host_id === "string" &&
     fallbackSession.host_id.trim() !== "" &&

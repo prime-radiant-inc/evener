@@ -2395,7 +2395,6 @@ export interface NavigationSessionSummary {
   state: string;
   kind: string;
   branch?: string;
-  cluster_count?: number;
   favorite?: boolean;
   rename?: boolean;
   live: boolean;
