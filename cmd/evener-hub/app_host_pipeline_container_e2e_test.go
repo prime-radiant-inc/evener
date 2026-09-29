@@ -247,7 +247,7 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	}
 
 	// Step 2: evener/host/plan mints the confirmation token deploy consumes.
-	planned := hostPipelinePlan(t, ctx, client, hostName, runTarget, version, attached)
+	planned := hostPipelinePlan(ctx, t, client, hostName, runTarget, version, attached)
 
 	// Step 3: evener/host/deploy consumes the token and starts the operation.
 	deployClientID := "e2e-deploy-" + runID
@@ -274,7 +274,7 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// Step 4: the confirmation token is single-use. Presenting the consumed
 	// token again with a fresh client operation ID (so dedup cannot answer it)
 	// must refuse the typed token-missing arm.
-	tokenRefusal := assertHostPipelineTokenConsumed(t, ctx, client, hostName, planned.Token, "e2e-replay-"+runID)
+	tokenRefusal := assertHostPipelineTokenConsumed(ctx, t, client, hostName, planned.Token, "e2e-replay-"+runID)
 
 	// Step 5: evener/host/restart replaces the host's process on the identity
 	// pair the deploy record carries.
@@ -380,7 +380,7 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 // token is minted, the plan names the run target and the controller's own
 // stamped revision, and — because the attach just provisioned the host with
 // that same build and it is healthy — no restart follows the push.
-func hostPipelinePlan(t *testing.T, ctx context.Context, client *appwire.Client, hostName, runTarget, version string, attached appwire.HostRow) appwire.HostPlanPlanned {
+func hostPipelinePlan(ctx context.Context, t *testing.T, client *appwire.Client, hostName, runTarget, version string, attached appwire.HostRow) appwire.HostPlanPlanned {
 	t.Helper()
 	result, err := clientRequest[appwire.HostPlanResult](ctx, client, appwire.MethodEvenerHostPlan, appwire.HostPlanParams{Name: hostName})
 	if err != nil {
@@ -550,7 +550,7 @@ func assertHostPipelineProgress(t *testing.T, record appwire.OperationRecord, wa
 // deploy presenting the token this run's plan already consumed — with a fresh
 // client operation ID, so dedup cannot answer it — must refuse the typed
 // token-missing arm. It returns the refusal's message for the absence scan.
-func assertHostPipelineTokenConsumed(t *testing.T, ctx context.Context, client *appwire.Client, hostName, token, replayOpID string) string {
+func assertHostPipelineTokenConsumed(ctx context.Context, t *testing.T, client *appwire.Client, hostName, token, replayOpID string) string {
 	t.Helper()
 	_, err := clientRequest[appwire.HostDeployResponse](ctx, client, appwire.MethodEvenerHostDeploy, appwire.HostDeployParams{Name: hostName, Token: token, OperationID: replayOpID})
 	if err == nil {
@@ -711,7 +711,7 @@ func startHostPipelineContainer(t *testing.T) *hostPipelineContainer {
 	port := 0
 	var runOut []byte
 	var runErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		port = hostPipelineFreePort(t)
 		_, _ = hostPipelineDockerRun(docker, time.Minute, "rm", "-f", name)
 		runOut, runErr = hostPipelineDockerRun(docker, 2*time.Minute, "run", "-d", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:22", port), image)
