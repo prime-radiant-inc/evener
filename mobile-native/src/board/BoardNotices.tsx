@@ -17,13 +17,14 @@ export function openNotice(
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
 		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
-	else
+	else {
 		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
 		navigation.navigate("Hub", {
 			screen: "Plugins",
 			params: { hubId, focus: { plugin: notice.pluginId, marketplace: notice.marketplace } },
 			initial: false,
 		});
+	}
 }
 
 /** The Board's notices, one row each under the chips (spec 7.1). */

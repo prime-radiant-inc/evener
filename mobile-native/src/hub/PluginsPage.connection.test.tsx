@@ -289,8 +289,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	const fakeA = new FakeClient("ready");
 	fakeA.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(fakeA, "ready");
-	const forHub = (hubId: string) =>
-		({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof PluginsPage>;
+	const forHub = (hubId: string) => ({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof PluginsPage>;
 	const tree = render(<PluginsPage {...forHub("hub-1")} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("kept");
