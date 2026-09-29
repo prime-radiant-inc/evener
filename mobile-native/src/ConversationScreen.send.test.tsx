@@ -517,6 +517,25 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// Every view from a dock up to the screen's capped bottom area gives up
+// height, so a dock taller than the room left scrolls its body inside that
+// area rather than running past it with its answer controls.
+function expectDockShrinksIntoBottomArea(tree: ReactTestRenderer, testID: string) {
+	let node = tree.root.findByProps({ testID }).parent;
+	let views = 0;
+	while (node) {
+		if (String(node.type) === "View") {
+			const style = Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+			if (style.maxHeight !== undefined) break;
+			expect(style).toMatchObject({ flexShrink: 1 });
+			views++;
+		}
+		node = node.parent;
+	}
+	expect(node).not.toBeNull();
+	expect(views).toBeGreaterThan(0);
+}
+
 describe("a question waiting for an answer (spec 8.4)", () => {
 	// "Other answer…" focuses the composer on the next frame; these tests run
 	// that frame at once.
@@ -537,6 +556,11 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("gives a long question only the room the screen has, so its answer controls stay reachable", async () => {
+		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
+		expectDockShrinksIntoBottomArea(tree, "question-dock");
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
@@ -1610,6 +1634,11 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("gives a long approval only the room the screen has, so Allow and Deny stay reachable", async () => {
+		const { tree } = await mount(withApproval("ref-approval-room"));
+		expectDockShrinksIntoBottomArea(tree, "approval-dock");
 	});
 
 	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {

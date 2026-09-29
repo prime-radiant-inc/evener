@@ -5,7 +5,7 @@
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { ApprovalControls } from "../approvalControls";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -109,31 +109,41 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (
-		<View style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
-			<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-				<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
+		// The card gives up height when the screen has less room than the
+		// request needs (a long target, the largest text sizes): what the sandbox
+		// blocked scrolls, and Allow and Deny stay on screen.
+		<View testID="approval-dock" style={{ ...dockCard(palette), flexShrink: 1, padding: 16, gap: 8 }}>
+			<ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 8 }}>
+				<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+					<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+					>
+						{card.wants}
+					</Text>
+				</View>
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+					style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 				>
-					{card.wants}
+					{card.target ? `${card.tool}  ${breakAtSlashes(card.target)}` : card.tool}
 				</Text>
-			</View>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
-			>
-				{card.target ? `${card.tool}  ${breakAtSlashes(card.target)}` : card.tool}
-			</Text>
-			<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
-			{waiting > 0 ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
-				>
-					{`${waiting} more waiting`}
-				</Text>
-			) : null}
+				<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
+				{waiting > 0 ? (
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							fontSize: 13 * scale,
+							lineHeight: 18 * scale,
+							color: palette.inkMid,
+							fontVariant: ["tabular-nums"],
+						}}
+					>
+						{`${waiting} more waiting`}
+					</Text>
+				) : null}
+			</ScrollView>
 			{controls && state.error ? (
 				<Text {...body} numberOfLines={1} style={{ ...body.style, color: palette.dangerInk }}>
 					{state.error}

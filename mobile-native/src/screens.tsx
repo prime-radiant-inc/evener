@@ -2770,7 +2770,9 @@ export function ConversationScreen({
 								) : null}
 							</View>
 						</ScrollView>
-						<View>
+						{/* Shrinks so a dock taller than the room left scrolls its body and
+						    keeps its answer controls on screen (spec 8.4). */}
+						<View style={{ flexShrink: 1 }}>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.

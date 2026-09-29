@@ -9,7 +9,7 @@
 // canonical ref.
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { boundQuestion } from "../projectedRows";
 import {
 	boundQuestionText,
@@ -141,7 +141,11 @@ export function QuestionDock({
 		})),
 	);
 	return (
-		<View style={{ ...card, paddingTop: 4, paddingBottom: 8 }}>
+		// The card gives up height when the screen has less room than the
+		// question needs (a long question, the largest text sizes, the keyboard
+		// up): the question and its options scroll, and the header and the
+		// answer controls stay on screen, so every question can be answered.
+		<View testID="question-dock" style={{ ...card, flexShrink: 1, paddingTop: 4, paddingBottom: 8 }}>
 			<View
 				style={{ flexDirection: "row", alignItems: "center", paddingLeft: activeIndex > 0 ? 4 : 16, paddingRight: 4 }}
 			>
@@ -157,108 +161,110 @@ export function QuestionDock({
 					<SymbolView name="chevron.down" tintColor={palette.inkMid} size={15 * scale} />
 				</SymbolButton>
 			</View>
-			<View style={{ paddingHorizontal: 16, gap: 4 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{
-						...face.semibold,
-						fontSize: 17 * scale,
-						lineHeight: 24 * scale,
-						color: palette.prose,
-					}}
-				>
-					{display.question}
-				</Text>
-				{display.why ? (
+			<ScrollView style={{ flexGrow: 0, flexShrink: 1 }} keyboardShouldPersistTaps="handled">
+				<View style={{ paddingHorizontal: 16, gap: 4 }}>
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
+						style={{
+							...face.semibold,
+							fontSize: 17 * scale,
+							lineHeight: 24 * scale,
+							color: palette.prose,
+						}}
 					>
-						{display.why}
+						{display.question}
 					</Text>
-				) : null}
-			</View>
-			<View style={{ marginTop: 8 }}>
-				{options.map((option, index) => {
-					const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
-					const mark = question.multiSelect
-						? checked
-							? "checkmark.square.fill"
-							: "square"
-						: checked
-							? "largecircle.fill.circle"
-							: "circle";
-					return (
-						<Pressable
-							// Keyed by where the agent offered the option: labels are the
-							// agent's and can repeat.
-							key={`${question.key}:${option.position}`}
-							accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
-							// The caption and the detail sit inside the row, which VoiceOver
-							// reads by its label alone, so both go into what it reads.
-							accessibilityLabel={
-								option.recommended
-									? `${option.shown?.label ?? option.label}, Recommended`
-									: (option.shown?.label ?? option.label)
-							}
-							accessibilityHint={option.shown?.detail || undefined}
-							accessibilityState={{ checked, disabled: !editable }}
-							disabled={!editable}
-							onPress={() => {
-								const labels =
-									question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
-								const next =
-									question.multiSelect && checked
-										? labels.filter((label) => label !== option.label)
-										: question.multiSelect
-											? [...labels, option.label]
-											: [option.label];
-								select(next.length ? { kind: "option", labels: next } : null);
-							}}
-							style={({ pressed }) => ({
-								minHeight: 44,
-								flexDirection: "row",
-								alignItems: "flex-start",
-								gap: 12,
-								paddingLeft: 16,
-								opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-							})}
+					{display.why ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.inkMid }}
 						>
-							<View style={{ paddingTop: 12 }}>
-								<SymbolView name={mark} tintColor={checked ? palette.accentInk : palette.inkMid} size={20 * scale} />
-							</View>
-							<View
-								style={{
-									flex: 1,
-									paddingVertical: 10,
-									paddingRight: 16,
-									// Hairlines inset to the label divide the rows.
-									borderTopWidth: index === 0 ? 0 : 0.5,
-									borderTopColor: palette.edge,
+							{display.why}
+						</Text>
+					) : null}
+				</View>
+				<View style={{ marginTop: 8 }}>
+					{options.map((option, index) => {
+						const checked = answer?.resolution?.kind === "option" && answer.resolution.labels.includes(option.label);
+						const mark = question.multiSelect
+							? checked
+								? "checkmark.square.fill"
+								: "square"
+							: checked
+								? "largecircle.fill.circle"
+								: "circle";
+						return (
+							<Pressable
+								// Keyed by where the agent offered the option: labels are the
+								// agent's and can repeat.
+								key={`${question.key}:${option.position}`}
+								accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
+								// The caption and the detail sit inside the row, which VoiceOver
+								// reads by its label alone, so both go into what it reads.
+								accessibilityLabel={
+									option.recommended
+										? `${option.shown?.label ?? option.label}, Recommended`
+										: (option.shown?.label ?? option.label)
+								}
+								accessibilityHint={option.shown?.detail || undefined}
+								accessibilityState={{ checked, disabled: !editable }}
+								disabled={!editable}
+								onPress={() => {
+									const labels =
+										question.multiSelect && answer?.resolution?.kind === "option" ? answer.resolution.labels : [];
+									const next =
+										question.multiSelect && checked
+											? labels.filter((label) => label !== option.label)
+											: question.multiSelect
+												? [...labels, option.label]
+												: [option.label];
+									select(next.length ? { kind: "option", labels: next } : null);
 								}}
+								style={({ pressed }) => ({
+									minHeight: 44,
+									flexDirection: "row",
+									alignItems: "flex-start",
+									gap: 12,
+									paddingLeft: 16,
+									opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
+								})}
 							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
+								<View style={{ paddingTop: 12 }}>
+									<SymbolView name={mark} tintColor={checked ? palette.accentInk : palette.inkMid} size={20 * scale} />
+								</View>
+								<View
+									style={{
+										flex: 1,
+										paddingVertical: 10,
+										paddingRight: 16,
+										// Hairlines inset to the label divide the rows.
+										borderTopWidth: index === 0 ? 0 : 0.5,
+										borderTopColor: palette.edge,
+									}}
 								>
-									{option.shown?.label ?? option.label}
-									{option.recommended ? (
-										<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
-									) : null}
-								</Text>
-								{option.shown?.detail ? (
 									<Text
 										allowFontScaling={allowFontScaling}
-										style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+										style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
 									>
-										{option.shown.detail}
+										{option.shown?.label ?? option.label}
+										{option.recommended ? (
+											<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
+										) : null}
 									</Text>
-								) : null}
-							</View>
-						</Pressable>
-					);
-				})}
-			</View>
+									{option.shown?.detail ? (
+										<Text
+											allowFontScaling={allowFontScaling}
+											style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+										>
+											{option.shown.detail}
+										</Text>
+									) : null}
+								</View>
+							</Pressable>
+						);
+					})}
+				</View>
+			</ScrollView>
 			{error || draft.error ? (
 				<Text
 					allowFontScaling={allowFontScaling}
