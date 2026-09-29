@@ -109,3 +109,44 @@ describe("model toggles", () => {
     expect(button.getAttribute("aria-disabled")).toBe("true");
   });
 });
+
+// A provider such as OpenRouter lists hundreds of models; the sheet mounts at
+// most MODEL_LIST_CAP switches and offers a search to reach the rest (issue
+// #3279, the same decision the phone makes).
+describe("long model lists", () => {
+  function manyModels(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `model-${String(index).padStart(2, "0")}`,
+    }));
+  }
+
+  test("mounts at most the cap and says how many are hidden", () => {
+    credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(60) }], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} />);
+    expect(screen.getAllByRole("switch")).toHaveLength(50);
+    expect(screen.getByText("Showing 50 of 60 models — search to narrow.")).toBeTruthy();
+  });
+
+  test("filters to the typed search, reaching a model past the cap", () => {
+    credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(60) }], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "model-59" } });
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
+    expect(screen.getByRole("switch", { name: "model-59" })).toBeTruthy();
+  });
+
+  test("says so when the search matches no model", () => {
+    credentialsStore.setState({ instances: [{ ...entry(), models: manyModels(60) }], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "zzz" } });
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByText("No matching models.")).toBeTruthy();
+  });
+
+  test("leaves a short list uncapped, with no search field", () => {
+    credentialsStore.setState({ instances: [entry()], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} />);
+    expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+  });
+});

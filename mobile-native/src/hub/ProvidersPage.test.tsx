@@ -23,7 +23,7 @@ import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
-import { Tag } from "../sheet/Grouped";
+import { SwitchRow, Tag } from "../sheet/Grouped";
 import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProvidersPage } from "./ProvidersPage";
 import {
@@ -1651,6 +1651,46 @@ it("lists every model with a switch, off for one that's disabled, in SF Pro (spe
 	expect(control(tree, "gpt-5.5").props.value).toBe(false);
 	const label = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "gpt-5.5");
 	expect(JSON.stringify(label.props.style)).not.toContain("Menlo");
+});
+
+// A provider such as OpenRouter lists hundreds of models; the detail mounts at
+// most MODEL_LIST_CAP switches and offers a search to reach the rest (issue
+// #3279, the same decision the web sheet makes).
+const withManyModels = (count: number) =>
+	instance({
+		authModes: ["apiKey"],
+		models: Array.from({ length: count }, (_, index) => ({ id: `model-${String(index).padStart(2, "0")}` })),
+	});
+
+it("caps a long model list, says how many are hidden, and reaches the rest by search", async () => {
+	providersHub([withManyModels(60)]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(50);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("Showing 50 of 60 models — search to narrow.");
+	act(() => control(tree, "Search models").props.onChangeText("model-59"));
+	expect(control(tree, "model-59").props.value).toBe(true);
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(1);
+});
+
+it("says so when the model search matches nothing", async () => {
+	providersHub([withManyModels(60)]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(0);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("No matching models.");
+});
+
+it("leaves a short model list uncapped, with no search field", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+	expect(hasControl(tree, "Search models")).toBe(false);
 });
 
 it("turns a model on or off through the hub", async () => {

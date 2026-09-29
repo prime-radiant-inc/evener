@@ -81,10 +81,16 @@ const CLASS = {
   fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
   testResult: requireClass(styles.testResult, "InstanceSheet.module.css", "testResult"),
+  modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
 };
 
 const LITERAL_HEADER_ERROR =
   "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
+// A provider such as OpenRouter lists hundreds of models. The sheet mounts at
+// most this many switches at once and offers a search to reach the rest; the
+// phone makes the same decision (ProvidersPage's MODEL_LIST_CAP), so one long
+// list is handled the same way on both clients (issue #3279).
+const MODEL_LIST_CAP = 50;
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -233,6 +239,7 @@ export function InstanceSheet({
   const [draft, setDraft] = useState<InstanceDraft | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
   // The rename of this sheet's own that went out, held with the request that
   // carries its destination. The old name leaves the store when the response
   // lands, a beat before the section re-selects the new one, so for that beat
@@ -694,6 +701,12 @@ export function InstanceSheet({
   // instance whose live listing has not arrived yet still offers a manual
   // re-fetch; only the toggles need rows.
   const models = instance?.models ?? [];
+  // Filter by substring, then cap what is mounted; the search field below
+  // appears only when the list is long enough to need it, so a short list is
+  // unchanged.
+  const modelQuery = modelSearch.trim().toLowerCase();
+  const matchingModels = modelQuery ? models.filter((row) => row.id.toLowerCase().includes(modelQuery)) : models;
+  const shownModels = matchingModels.slice(0, MODEL_LIST_CAP);
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)
     : undefined;
@@ -857,7 +870,17 @@ export function InstanceSheet({
                 </Button>
               </div>
               <div className={CLASS.actionRows}>
-                {models.map((row) => (
+                {models.length > MODEL_LIST_CAP && (
+                  <FormRow label="Search models" htmlFor={`${ids}-model-search`}>
+                    <Input
+                      id={`${ids}-model-search`}
+                      type="search"
+                      value={modelSearch}
+                      onChange={(event) => setModelSearch(event.target.value)}
+                    />
+                  </FormRow>
+                )}
+                {shownModels.map((row) => (
                   <div key={row.id} className={CLASS.fullRow}>
                     <Switch
                       label={row.id}
@@ -868,6 +891,14 @@ export function InstanceSheet({
                     />
                   </div>
                 ))}
+                {modelQuery !== "" && matchingModels.length === 0 && (
+                  <p className={CLASS.modelNote}>No matching models.</p>
+                )}
+                {shownModels.length < matchingModels.length && (
+                  <p className={CLASS.modelNote}>
+                    Showing {shownModels.length} of {matchingModels.length} models — search to narrow.
+                  </p>
+                )}
               </div>
             </>
           )}
