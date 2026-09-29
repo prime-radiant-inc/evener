@@ -101,3 +101,28 @@ it("checks nothing, and leaves Network out, until the hub says its default", asy
 	expect(page.level("Read-only")?.props.accessibilityState.selected).toBe(true);
 	expect(page.network()?.props.value).toBe(true);
 });
+
+it("lets Network go back to following the hub", async () => {
+	const page = await mount({ sandbox: "workspace-write" });
+	act(() => page.network()?.props.onValueChange(false));
+	expect(page.store.getState().launchOverrides).toEqual({ sandboxNet: false });
+	act(() => page.network()?.props.onValueChange(true));
+	expect(page.store.getState().launchOverrides).toEqual({});
+	const hubOff = await mount({ sandbox: "read-only", sandboxNet: false });
+	act(() => hubOff.network()?.props.onValueChange(true));
+	expect(hubOff.store.getState().launchOverrides).toEqual({ sandboxNet: true });
+	act(() => hubOff.network()?.props.onValueChange(false));
+	expect(hubOff.store.getState().launchOverrides).toEqual({});
+});
+
+it("keeps Network as the session's own while the hub's default is unknown", async () => {
+	const page = await mount({}, { sandbox: "read-only" }, true);
+	act(() => page.network()?.props.onValueChange(true));
+	expect(page.store.getState().launchOverrides).toEqual({ sandbox: "read-only", sandboxNet: true });
+});
+
+it("drops Network when the session leaves the sandbox", async () => {
+	const page = await mount({ sandbox: "workspace-write" }, { sandbox: "read-only", sandboxNet: false });
+	act(() => page.level("Full access")?.props.onPress());
+	expect(page.store.getState().launchOverrides).toEqual({ sandbox: "off" });
+});

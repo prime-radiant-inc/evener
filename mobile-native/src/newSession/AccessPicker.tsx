@@ -1,7 +1,8 @@
 // New session's Access (spec 11; ruling 14): the four access levels, checked
 // on the one the session gets once that is known, and Network inside a sandbox. Access is the
-// launch override `sandbox`; choosing the level the hub already defaults to
-// for this project drops the override, so the setup keeps following the hub.
+// launch override `sandbox` and Network is `sandboxNet`; choosing what the hub
+// already defaults to for this project drops the override, so the setup keeps
+// following the hub.
 import { useStore } from "zustand";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
@@ -21,6 +22,16 @@ export function AccessPicker() {
 		const next = { ...launchOverrides };
 		if (mode === hubMode) delete next.sandbox;
 		else next.sandbox = mode;
+		// Network has no effect outside a sandbox, so it doesn't outlive one.
+		if (mode === NO_SANDBOX) delete next.sandboxNet;
+		setLaunchOverrides(next);
+	};
+	// The schema's sandbox_net is on unless the hub says otherwise.
+	const hubNetwork = defaults ? (defaults.sandboxNet ?? true) : null;
+	const setNetwork = (on: boolean) => {
+		const next = { ...launchOverrides };
+		if (on === hubNetwork) delete next.sandboxNet;
+		else next.sandboxNet = on;
 		setLaunchOverrides(next);
 	};
 	return (
@@ -46,9 +57,9 @@ export function AccessPicker() {
 						<SwitchRow
 							label="Network"
 							sub="Lets the session's commands reach the internet"
-							value={launchOverrides.sandboxNet ?? defaults?.sandboxNet ?? true}
+							value={launchOverrides.sandboxNet ?? hubNetwork ?? true}
 							disabled={submitting}
-							onChange={(on) => setLaunchOverrides({ ...launchOverrides, sandboxNet: on })}
+							onChange={setNetwork}
 						/>
 					</Group>
 				</>
