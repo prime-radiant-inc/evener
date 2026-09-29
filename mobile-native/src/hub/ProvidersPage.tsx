@@ -7,7 +7,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, TextInput } from "react-native";
+import { ActivityIndicator, Alert } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
 	activeSourceLabel,
@@ -36,11 +36,10 @@ import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
 import { Connecting, SheetStatus } from "../sheet/SheetStatus";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 
@@ -206,8 +205,6 @@ function Providers({
 	onFocused(): void;
 	onSignIn(name: string): void;
 }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
 	// The store triple is what binds React to the credential core: every field
 	// read below is the core's own state, with no projection in between.
 	const core = useSyncExternalStore(store.subscribe, store.getState, store.getInitialState);
@@ -229,6 +226,7 @@ function Providers({
 	const stale = staleListingHeld(core);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [configuration, setConfiguration] = useState<"create" | "edit" | null>(null);
+	const editorSaving = useRef(false);
 	const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
 	// The instance the credential editor was opened for, with the endpoint it
 	// resolved to then: a key typed for that destination is never saved against a
@@ -488,7 +486,13 @@ function Providers({
 					</>
 				) : null}
 			</GroupedPage>
-			<ModalFrame visible={!!instance || configuration === "create"} onRequestClose={close}>
+			<ModalFrame
+				visible={!!instance || configuration === "create"}
+				onRequestClose={() => {
+					// A swipe down waits out a save in flight, as Cancel does.
+					if (!editorSaving.current) close();
+				}}
+			>
 				{/* The native modal covers the page's status line, so each sheet in it
 				    carries its own - and the draft stays in reach of neither a
 				    dismissal nor a missed recovery. */}
@@ -520,6 +524,9 @@ function Providers({
 							if (configuration === "create") close();
 							else setConfiguration(null);
 						}}
+						onSavingChange={(saving) => {
+							editorSaving.current = saving;
+						}}
 						accessory={<SheetStatus />}
 					/>
 				) : (
@@ -531,29 +538,16 @@ function Providers({
 									{editingCredential ? (
 										<>
 											<Group>
-												<TextInput
-													accessibilityLabel={
-														editingCredential === "credentialJson" ? "Google credential JSON" : "API key"
-													}
+												<TextFieldRow
+													label={editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}
 													placeholder={
 														editingCredential === "credentialJson" ? "Paste the credential JSON" : "Paste the API key"
 													}
-													placeholderTextColor={palette.inkLow}
-													allowFontScaling={allowFontScaling}
 													multiline={editingCredential === "credentialJson"}
-													secureTextEntry={editingCredential === "apiKey"}
-													autoCapitalize="none"
-													autoCorrect={false}
+													secure={editingCredential === "apiKey"}
 													value={key}
 													onChangeText={setKey}
-													editable={!surface.busy}
-													style={{
-														color: palette.inkHi,
-														fontSize: 17 * scale,
-														minHeight: editingCredential === "credentialJson" ? 120 : 44,
-														paddingHorizontal: 16,
-														paddingVertical: 11,
-													}}
+													disabled={surface.busy}
 												/>
 												<Row
 													label="Save"

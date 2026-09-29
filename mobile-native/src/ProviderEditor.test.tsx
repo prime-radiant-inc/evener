@@ -187,3 +187,98 @@ it("edits a provider's base URL under an Edit title, and says an emptied URL res
 	act(() => tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.onChangeText(""));
 	expect(renderedText(tree)).toContain("Resets the endpoint to the provider’s default.");
 });
+
+function mountCreate(overrides: Partial<Parameters<typeof ProviderEditor>[0]> = {}) {
+	return render(
+		<ProviderEditor
+			providers={providers}
+			onCreate={async () => true}
+			onEdit={async () => true}
+			disabled={false}
+			canUseConnection={() => true}
+			onSaved={() => {}}
+			onEndpointConflict={() => {}}
+			onCancel={() => {}}
+			{...overrides}
+		/>,
+	);
+}
+
+const headerButton = (tree: ReturnType<typeof render>, label: string) =>
+	tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: label });
+
+it("won't save a new provider until it has a base and a name", () => {
+	const tree = mountCreate();
+	expect(headerButton(tree, "Save").props.disabled).toBe(true);
+	pressLabel(tree, "Choose base provider");
+	pressLabel(tree, "Anthropic");
+	expect(headerButton(tree, "Save").props.disabled).toBe(true);
+	act(() => tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("work"));
+	expect(headerButton(tree, "Save").props.disabled).toBe(false);
+});
+
+it("says Saving, busy, and holds Cancel while a save is in flight", async () => {
+	let finish = (_applied: boolean) => {};
+	const onEdit = vi.fn(() => new Promise<boolean>((resolve) => (finish = resolve)));
+	const onCancel = vi.fn();
+	const tree = render(
+		<ProviderEditor
+			instance={instance}
+			providers={[]}
+			onCreate={async () => true}
+			onEdit={onEdit}
+			disabled={false}
+			canUseConnection={() => true}
+			onSaved={() => {}}
+			onEndpointConflict={() => {}}
+			onCancel={onCancel}
+		/>,
+	);
+	pressLabel(tree, "Save");
+	await act(async () => {});
+	const saving = headerButton(tree, "Saving…");
+	expect(saving.props.accessibilityState).toEqual({ disabled: true, busy: true });
+	expect(headerButton(tree, "Cancel").props.disabled).toBe(true);
+	await act(async () => finish(true));
+	expect(headerButton(tree, "Save").props.disabled).toBe(false);
+});
+
+it("puts a refused save's reason at the top of the form, where VoiceOver hears it", async () => {
+	const tree = mountCreate();
+	pressLabel(tree, "Choose base provider");
+	pressLabel(tree, "Anthropic");
+	act(() => tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("work"));
+	act(() => tree.root.findByProps({ accessibilityLabel: "Credential header" }).props.onChangeText("Bearer sk-live"));
+	pressLabel(tree, "Save");
+	await act(async () => {});
+	const page = tree.root.findByType("ScrollView" as never);
+	const first = page.findAll((node) => String(node.type) === "Text")[0];
+	expect(first?.props.children).toBe(
+		"Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
+	);
+	expect(first?.props.accessibilityLiveRegion).toBe("polite");
+});
+
+it("says when no provider matches the search, and a second tap on the base row folds the picker", () => {
+	const tree = mountCreate();
+	pressLabel(tree, "Choose base provider");
+	act(() => tree.root.findByProps({ accessibilityLabel: "Find provider" }).props.onChangeText("zzz"));
+	expect(renderedText(tree)).toContain("No providers match.");
+	pressLabel(tree, "Choose base provider");
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Find provider")).toHaveLength(0);
+});
+
+it("leads from each field to the next, and saves from the last", async () => {
+	const onCreate = vi.fn(async () => true);
+	const tree = mountCreate({ onCreate });
+	pressLabel(tree, "Choose base provider");
+	pressLabel(tree, "Azure OpenAI");
+	const keys = ["Instance name", "Base URL", "AZURE_RESOURCE", "API key environment variable", "Credential header"];
+	const inputs = keys.map((key) => tree.root.findByProps({ accessibilityLabel: key }));
+	expect(inputs.map((input) => input.props.returnKeyType)).toEqual(["next", "next", "next", "next", "done"]);
+	act(() => inputs[0]?.props.onChangeText("work"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Credential header" }).props.onSubmitEditing();
+	});
+	expect(onCreate).toHaveBeenCalledOnce();
+});

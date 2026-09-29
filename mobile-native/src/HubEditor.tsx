@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
+import type { TextInput } from "react-native";
 import type { HubProfile, HubUpdate } from "./connection";
-import { Group, GroupedPage, GroupFooter, Row, SwitchRow, TextFieldRow } from "./sheet/Grouped";
+import { FormError, Group, GroupedPage, GroupFooter, Row, SwitchRow, TextFieldRow } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 
 const TOKEN_REPLACED = "Leave empty to remove the saved token.";
@@ -23,8 +24,10 @@ export function HubEditor({
 	const [saving, setSaving] = useState(false);
 	const pending = useRef(false);
 	const [error, setError] = useState<string | null>(null);
+	const tokenInput = useRef<TextInput>(null);
 	async function submit() {
-		if (pending.current) return;
+		// The return key reaches here too, so it holds a blank name as Save does.
+		if (pending.current || !name.trim()) return;
 		pending.current = true;
 		setSaving(true);
 		setError(null);
@@ -47,12 +50,26 @@ export function HubEditor({
 			title="Edit hub"
 			onCancel={cancel}
 			cancelDisabled={saving}
-			done={{ label: "Save", disabled: saving || !name.trim(), onPress: () => void submit() }}
+			done={{
+				label: saving ? "Saving…" : "Save",
+				disabled: saving || !name.trim(),
+				busy: saving,
+				onPress: () => void submit(),
+			}}
 			onRequestClose={cancel}
 		>
 			<GroupedPage>
+				<FormError message={error} />
 				<Group label="Name">
-					<TextFieldRow label="Hub name" value={name} onChangeText={setName} machine={false} disabled={saving} />
+					<TextFieldRow
+						label="Hub name"
+						value={name}
+						onChangeText={setName}
+						machine={false}
+						disabled={saving}
+						returnKeyType={replaceToken ? "next" : "done"}
+						onSubmitEditing={replaceToken ? () => tokenInput.current?.focus() : () => void submit()}
+					/>
 				</Group>
 				<Group label="Address">
 					<Row label={profile.origin} machineLabel accessibilityLabel={`Address, ${profile.origin}`} />
@@ -68,11 +85,13 @@ export function HubEditor({
 							onChangeText={setToken}
 							secure
 							disabled={saving}
+							returnKeyType="done"
+							onSubmitEditing={() => void submit()}
+							ref={tokenInput}
 						/>
 					) : null}
 				</Group>
 				<GroupFooter>{replaceToken ? TOKEN_REPLACED : TOKEN_KEPT}</GroupFooter>
-				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 			</GroupedPage>
 		</ModalSheet>
 	);

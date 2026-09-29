@@ -14,7 +14,17 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, Segmented, TextFieldRow } from "./sheet/Grouped";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	Segmented,
+	TextFieldRow,
+} from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
@@ -534,9 +544,16 @@ export function MarketplaceBrowser({
 
 type MarketplaceKind = "url" | "github" | "directory";
 
-const MARKETPLACE_KINDS: readonly { value: MarketplaceKind; label: string }[] = [
-	{ value: "url", label: "Git URL" },
-	{ value: "github", label: "GitHub" },
+/** Each kind's segment, and what its source row asks for. A hub directory is
+ * picked with the hub path browser instead of a typed row. */
+const MARKETPLACE_KINDS: readonly {
+	value: MarketplaceKind;
+	label: string;
+	sourceLabel?: string;
+	placeholder?: string;
+}[] = [
+	{ value: "url", label: "Git URL", sourceLabel: "Git URL", placeholder: "https://example.com/plugins.git" },
+	{ value: "github", label: "GitHub", sourceLabel: "Repository", placeholder: "owner/repo" },
 	{ value: "directory", label: "Hub directory" },
 ];
 
@@ -568,6 +585,7 @@ export function AddMarketplace({
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const nameInput = useRef<TextInput>(null);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while
 	// disconnected on its own.
@@ -612,18 +630,25 @@ export function AddMarketplace({
 			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
 		else onClose();
 	}
+	const add = whenReady(canUseConnection, () => {
+		void submit();
+	});
+	const typed = MARKETPLACE_KINDS.find((option) => option.value === kind);
 	return (
 		<ModalSheet
 			title="Add marketplace"
 			onCancel={onClose}
+			cancelDisabled={busy}
 			done={{
-				label: "Add",
+				label: busy ? "Adding…" : "Add",
 				disabled: disabled || !source.trim(),
-				onPress: whenReady(canUseConnection, () => {
-					void submit();
-				}),
+				busy,
+				onPress: add,
 			}}
-			onRequestClose={onClose}
+			onRequestClose={() => {
+				// A swipe down waits out an add in flight, as Cancel does.
+				if (!busy) onClose();
+			}}
 			accessory={
 				<>
 					<Text
@@ -642,6 +667,7 @@ export function AddMarketplace({
 			}
 		>
 			<GroupedPage>
+				<FormError message={error} />
 				<GroupGap />
 				<Segmented<MarketplaceKind>
 					label="Kind"
@@ -669,21 +695,30 @@ export function AddMarketplace({
 						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
 					</>
 				) : (
-					<Group label={kind === "url" ? "Git URL" : "GitHub repository"}>
+					<Group label={typed?.sourceLabel ?? ""}>
 						<TextFieldRow
 							label="Marketplace source"
-							placeholder={kind === "url" ? "https://example.com/plugins.git" : "owner/repo"}
+							placeholder={typed?.placeholder}
 							value={source}
 							onChangeText={setSource}
 							disabled={busy}
+							returnKeyType="next"
+							onSubmitEditing={() => nameInput.current?.focus()}
 						/>
 					</Group>
 				)}
 				<Group label="Name">
-					<TextFieldRow label="Marketplace name" value={name} onChangeText={setName} disabled={busy} />
+					<TextFieldRow
+						label="Marketplace name"
+						value={name}
+						onChangeText={setName}
+						disabled={busy}
+						returnKeyType="done"
+						onSubmitEditing={add}
+						ref={nameInput}
+					/>
 				</Group>
 				<GroupFooter>Optional.</GroupFooter>
-				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 			</GroupedPage>
 		</ModalSheet>
 	);

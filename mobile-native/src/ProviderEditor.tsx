@@ -8,7 +8,8 @@ import {
 } from "@evener/appwire-client";
 import type { LiveReadiness } from "./connectionDisplay";
 import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SearchField, TextFieldRow } from "./sheet/Grouped";
+import type { TextInput } from "react-native";
+import { FormError, Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, TextFieldRow } from "./sheet/Grouped";
 import { Sheet } from "./sheet/Sheet";
 
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
@@ -23,6 +24,7 @@ export function ProviderEditor({
 	onSaved,
 	onEndpointConflict,
 	onCancel,
+	onSavingChange,
 	accessory,
 }: {
 	instance?: InstanceEntry;
@@ -45,6 +47,9 @@ export function ProviderEditor({
 	onSaved(name: string): void;
 	onEndpointConflict(name: string): void;
 	onCancel(): void;
+	/** Told when a save starts and ends, so the modal around the editor can
+	 * hold a swipe down while one is in flight. */
+	onSavingChange?: (saving: boolean) => void;
 	/** Pinned under the title, such as the connection's status line. */
 	accessory?: ReactNode;
 }) {
@@ -80,6 +85,11 @@ export function ProviderEditor({
 	const [query, setQuery] = useState("");
 	const [saving, setSaving] = useState(false);
 	const busy = disabled || saving;
+	const savingChanged = useRef(onSavingChange);
+	savingChanged.current = onSavingChange;
+	useEffect(() => savingChanged.current?.(saving), [saving]);
+	// A save that lands closes the editor before it can clear `saving`.
+	useEffect(() => () => savingChanged.current?.(false), []);
 	async function save() {
 		// The invocation-time readiness guard, ahead of every state change: a
 		// save that cannot be sent bails before clearing the error slot or
@@ -134,25 +144,60 @@ export function ProviderEditor({
 		}
 	}
 	const base = providers.find((provider) => provider.id === draft.base);
+	const baseName = base ? base.name || base.id : null;
 	const matches = providers.filter((provider) =>
 		`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
 	);
+	const varFields = Object.entries(base?.vars ?? {}).sort(([a], [b]) => a.localeCompare(b));
+	// The form's fields in order, so each one's return key leads to the next
+	// and the last one's saves.
+	const order = instance
+		? ["baseUrl"]
+		: ["name", "baseUrl", ...varFields.map(([template]) => template), "apiKeyEnv", "credentialHeader"];
+	const inputs = useRef<Record<string, TextInput | null>>({});
+	function chain(key: string) {
+		const next = order[order.indexOf(key) + 1];
+		return {
+			ref: (input: TextInput | null) => {
+				inputs.current[key] = input;
+			},
+			returnKeyType: next ? ("next" as const) : ("done" as const),
+			onSubmitEditing: next ? () => inputs.current[next]?.focus() : () => void save(),
+		};
+	}
+	const incomplete = !instance && (!base || !draft.name.trim());
 	return (
 		<Sheet
 			title={instance ? `Edit ${instance.name}` : "Add provider"}
 			onCancel={onCancel}
 			cancelDisabled={saving}
-			done={{ label: "Save", disabled: busy, onPress: () => void save() }}
+			done={{
+				label: saving ? "Saving…" : "Save",
+				disabled: busy || incomplete,
+				busy: saving,
+				onPress: () => void save(),
+			}}
 			accessory={accessory}
 		>
 			<GroupedPage>
-				{!instance &&
-					(choosing || !base ? (
-						<>
-							<GroupLabel>Base provider</GroupLabel>
-							{choosing ? (
-								<>
-									<SearchField label="Find provider" query={query} onChange={setQuery} />
+				<FormError message={error} />
+				{!instance && (
+					<>
+						<Group label="Base provider">
+							<Row
+								label={baseName ?? "Choose a provider"}
+								accessibilityLabel={baseName ? `Base provider, ${baseName}` : "Choose base provider"}
+								tone={baseName ? "normal" : "accent"}
+								chevron
+								disabled={busy}
+								onPress={() => setChoosing(!choosing)}
+							/>
+						</Group>
+						{choosing ? (
+							<>
+								<GroupGap />
+								<SearchField label="Find provider" query={query} onChange={setQuery} />
+								{matches.length > 0 ? (
 									<Group>
 										{matches.map((provider) => (
 											<Row
@@ -168,40 +213,21 @@ export function ProviderEditor({
 											/>
 										))}
 									</Group>
-								</>
-							) : (
-								<Group>
-									<Row
-										label="Choose a provider"
-										accessibilityLabel="Choose base provider"
-										tone="accent"
-										chevron
-										disabled={busy}
-										onPress={() => setChoosing(true)}
-									/>
-								</Group>
-							)}
-						</>
-					) : (
-						<Group label="Base provider">
-							<Row
-								label={base.name || base.id}
-								accessibilityLabel={`Base provider, ${base.name || base.id}`}
-								chevron
+								) : (
+									<GroupFooter>No providers match.</GroupFooter>
+								)}
+							</>
+						) : null}
+						<Group label="Name">
+							<TextFieldRow
+								label="Instance name"
+								value={draft.name}
+								onChangeText={(name) => setDraft({ ...draft, name })}
 								disabled={busy}
-								onPress={() => setChoosing(true)}
+								{...chain("name")}
 							/>
 						</Group>
-					))}
-				{!instance && (
-					<Group label="Name">
-						<TextFieldRow
-							label="Instance name"
-							value={draft.name}
-							onChangeText={(name) => setDraft({ ...draft, name })}
-							disabled={busy}
-						/>
-					</Group>
+					</>
 				)}
 				<Group label="Base URL">
 					<TextFieldRow
@@ -209,6 +235,7 @@ export function ProviderEditor({
 						value={draft.baseUrl}
 						onChangeText={(baseUrl) => setDraft({ ...draft, baseUrl })}
 						disabled={busy}
+						{...chain("baseUrl")}
 					/>
 				</Group>
 				<GroupFooter>
@@ -218,24 +245,24 @@ export function ProviderEditor({
 				</GroupFooter>
 				{!instance && (
 					<>
-						{Object.entries(base?.vars ?? {})
-							.sort(([a], [b]) => a.localeCompare(b))
-							.map(([template, environment]) => (
-								<Group key={template} label={environment} machineLabel>
-									<TextFieldRow
-										label={environment}
-										value={draft.vars[template] ?? ""}
-										onChangeText={(value) => setDraft({ ...draft, vars: { ...draft.vars, [template]: value } })}
-										disabled={busy}
-									/>
-								</Group>
-							))}
+						{varFields.map(([template, environment]) => (
+							<Group key={template} label={environment} machineLabel>
+								<TextFieldRow
+									label={environment}
+									value={draft.vars[template] ?? ""}
+									onChangeText={(value) => setDraft({ ...draft, vars: { ...draft.vars, [template]: value } })}
+									disabled={busy}
+									{...chain(template)}
+								/>
+							</Group>
+						))}
 						<Group label="API key variable">
 							<TextFieldRow
 								label="API key environment variable"
 								value={draft.apiKeyEnv}
 								onChangeText={(apiKeyEnv) => setDraft({ ...draft, apiKeyEnv })}
 								disabled={busy}
+								{...chain("apiKeyEnv")}
 							/>
 						</Group>
 						<GroupFooter>Optional.</GroupFooter>
@@ -245,12 +272,12 @@ export function ProviderEditor({
 								value={draft.credentialHeader}
 								onChangeText={(credentialHeader) => setDraft({ ...draft, credentialHeader })}
 								disabled={busy}
+								{...chain("credentialHeader")}
 							/>
 						</Group>
 						<GroupFooter>{CREDENTIAL_HEADER_HELP}</GroupFooter>
 					</>
 				)}
-				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
 			</GroupedPage>
 		</Sheet>
 	);

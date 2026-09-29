@@ -2674,11 +2674,44 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 	expect(source.props.style.fontFamily).toBe("Menlo");
 	act(() => source.props.onChangeText("acme/plugins"));
 	// The source's section label names what the kind asks for.
-	expect(renderedText(tree)).toContain("GitHub repository");
+	expect(renderedText(tree)).toContain("Repository");
+	expect(source.props.returnKeyType).toBe("next");
+	expect(tree.root.findByProps({ accessibilityLabel: "Marketplace name" }).props.returnKeyType).toBe("done");
 	await act(async () => {
 		add().props.onPress();
 	});
 	expect(onAdd).toHaveBeenCalledWith({ name: "", source: { kind: "github", repo: "acme/plugins" } });
+	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("holds Add marketplace open, and says Adding, while the add is in flight", async () => {
+	let finish = () => {};
+	const onAdd = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={onAdd}
+		/>,
+	);
+	const source = tree.root.findByProps({ accessibilityLabel: "Marketplace source" });
+	act(() => source.props.onChangeText("https://example.test/plugins.git"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+	});
+	const adding = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Adding…" });
+	expect(adding.props.accessibilityState).toEqual({ disabled: true, busy: true });
+	const cancel = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" });
+	expect(cancel.props.disabled).toBe(true);
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).not.toHaveBeenCalled();
+	await act(async () => finish());
 	expect(onClose).toHaveBeenCalledOnce();
 });
 

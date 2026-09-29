@@ -454,6 +454,55 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	expect(hasControl(tree, "Remove")).toBe(true);
 });
 
+it("goes back to the provider's detail when its edit is cancelled", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Base URL");
+	press(tree, (label) => label === "Cancel");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(hasControl(tree, "Edit")).toBe(true);
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+});
+
+it("won't let a swipe down drop an edit whose save is still in flight", async () => {
+	const hub = scriptedClient(rows);
+	let answer = (_rows: InstanceListResponse) => {};
+	const request = hub.client.request as (method: string, params?: unknown) => Promise<unknown>;
+	hub.client.request = ((method: string, params?: unknown) =>
+		method === "evener/instance/edit"
+			? new Promise((resolve) => (answer = resolve))
+			: request(method, params)) as typeof hub.client.request;
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(renderedText(tree)).toContain("Base URL");
+	await act(async () => answer(rows));
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
 // The editor was opened on one row of the listing, so its save asserts that
 // row's endpoint; the hub's refusal of the assertion is its own class, not a
 // generic save failure: the editor clears, the provider list is re-read, and
