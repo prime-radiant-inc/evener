@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
+import { firstLine, formatCharCount, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
 
 // --- formatTokenCount -----------------------------------------------------
 // The one token count formatter both clients use (spec 5's compact numbers):
@@ -140,4 +140,17 @@ test("formatClockTime: undefined input yields undefined, so a header with no tim
 test("formatClockTime: an unparseable string yields undefined rather than a guess", () => {
   expect(formatClockTime("not a timestamp")).toBeUndefined();
   expect(formatClockTime("")).toBeUndefined();
+});
+
+// --- formatCharCount ----------------------------------------------------------
+// Counts characters with the same uppercase K the token counts use.
+
+test.each([
+  [0, "0 chars"],
+  [999, "999 chars"],
+  [1_000, "1K chars"],
+  [2_500, "2.5K chars"],
+  [8_234, "8.2K chars"],
+])("formatCharCount(%d) reads %s", (n, text) => {
+  expect(formatCharCount(n)).toBe(text);
 });

@@ -37,9 +37,7 @@
 import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
-	CONTEXT_SUMMARY_LABEL,
 	configFingerprint,
-	contextCompactedText,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
@@ -52,11 +50,11 @@ import {
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
 	pendingTextJoined,
-	pluginLoadedText,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
 	stripSystemReminder,
+	systemEventWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -705,27 +703,11 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		origin: "system",
 		family,
 		tone,
+		// What it says: the package's systemEventWords, which the web reads too.
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
-}
-
-// What a system event says (spec 8.2 "System event"). A plugin load carries
-// its summary in the description and no text; a compaction pass's text is the
-// engine's "Layer/Turns/Estimated tokens" report; a compaction's summary is a
-// whole markdown document. Each reads from its structured detail instead.
-function systemEventWords(it: ItemModel): { text: string; label?: string; rendersMarkdown?: boolean } {
-	switch (it.eventKind) {
-		case "plugin_loaded":
-			return { text: pluginLoadedText(it.raw) };
-		case "context_compaction":
-			return { text: contextCompactedText(it.raw) };
-		case "compaction":
-			return { text: it.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
-		default:
-			return { text: it.text };
-	}
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web

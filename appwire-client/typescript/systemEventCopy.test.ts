@@ -1,52 +1,73 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 import {
-  CONTEXT_SUMMARY_LABEL,
-  contextCompactedText,
-  ERROR_EVENT_KIND,
-  echoesTurnError,
-  pluginLoadedText,
-} from "./systemEventCopy";
-import {
+  type SystemEventWireCase,
   systemEventWireFailedTurn,
   systemEventWireFailedTurnWithOtherError,
   systemEventWireItem,
 } from "./testing/systemEventWireFixtures";
+import type { ThreadItem } from "./types.gen";
 
 // Every case reads what the daemon actually sends
-// (agent/testdata/systemeventwire).
+// (agent/testdata/systemeventwire), as the clients' item model carries it.
+function modelOf(item: ThreadItem) {
+  return { type: item.type, eventKind: item.eventKind, text: item.text ?? "", raw: item.raw };
+}
+
+const words = (name: SystemEventWireCase) => systemEventWords(modelOf(systemEventWireItem(name)));
 
 test("names a loaded plugin, or says a plugin loaded, with no counts", () => {
-  expect(pluginLoadedText(systemEventWireItem("plugin-loaded").raw)).toBe("Plugin superpowers loaded");
-  expect(pluginLoadedText(systemEventWireItem("plugin-loaded-unnamed").raw)).toBe("Plugin loaded");
-  expect(pluginLoadedText(undefined)).toBe("Plugin loaded");
+  expect(words("plugin-loaded")).toEqual({ text: "Plugin superpowers loaded" });
+  expect(words("plugin-loaded-unnamed")).toEqual({ text: "Plugin loaded" });
 });
 
 test("says how far a compaction brought the context: tokens, else turns, else just that it ran", () => {
-  expect(contextCompactedText(systemEventWireItem("context-compaction").raw)).toBe(
-    "Context compacted · 412K → 38K tokens",
-  );
-  expect(contextCompactedText(systemEventWireItem("context-compaction-turns").raw)).toBe(
-    "Context compacted · 40 → 5 turns",
-  );
-  expect(contextCompactedText(systemEventWireItem("context-compaction-bare").raw)).toBe("Context compacted");
+  expect(words("context-compaction")).toEqual({ text: "Context compacted · 412K → 38K tokens" });
+  expect(words("context-compaction-turns")).toEqual({ text: "Context compacted · 40 → 5 turns" });
+  expect(words("context-compaction-bare")).toEqual({ text: "Context compacted" });
 });
 
-test("folds a compaction's summary under one label", () => {
-  expect(CONTEXT_SUMMARY_LABEL).toBe("Context summary");
+// A daemon that sends no structured raw still said something in its text.
+test("keeps a plugin's or a compaction's own text when raw carries no structure", () => {
+  expect(systemEventWords({ eventKind: "plugin_loaded", text: "Loaded plugin tools", raw: undefined })).toEqual({
+    text: "Loaded plugin tools",
+  });
+  expect(systemEventWords({ eventKind: "plugin_loaded", text: "", raw: { other: 1 } })).toEqual({
+    text: "Plugin loaded",
+  });
+  expect(
+    systemEventWords({ eventKind: "context_compaction", text: "Layer: summary\nTurns: 40 -> 5", raw: undefined }),
+  ).toEqual({ text: "Layer: summary\nTurns: 40 -> 5" });
 });
 
-test("knows the error that echoes its turn's failure, and no other", () => {
+test.each(["compaction-summary", "compaction-checkpoint"] as const)(
+  "folds a %s under Context summary, opening to its markdown",
+  (name) => {
+    expect(words(name)).toEqual({
+      text: systemEventWireItem(name).text,
+      label: "Context summary",
+      rendersMarkdown: true,
+    });
+  },
+);
+
+test("leaves every other event's text as it is", () => {
+  expect(words("tool-repair")).toEqual({ text: systemEventWireItem("tool-repair").text });
+});
+
+test("knows an error event, and the one that echoes its turn's failure", () => {
   const failed = systemEventWireFailedTurn();
-  const echo = (failed.items ?? []).find((item) => item.eventKind === ERROR_EVENT_KIND);
+  const echo = (failed.items ?? []).map(modelOf).find(isErrorEvent);
   if (!echo || !failed.error) throw new Error("the failed turn carries no error pair");
   expect(echoesTurnError(echo, failed.error)).toBe(true);
 
   const withOther = systemEventWireFailedTurnWithOtherError();
-  const errors = (withOther.items ?? []).filter((item) => item.eventKind === ERROR_EVENT_KIND);
-  if (!withOther.error) throw new Error("the failed turn carries no error");
   const turnError = withOther.error;
+  if (!turnError) throw new Error("the failed turn carries no error");
+  const errors = (withOther.items ?? []).map(modelOf).filter(isErrorEvent);
   expect(errors.map((item) => echoesTurnError(item, turnError))).toEqual([false, true]);
   expect(echoesTurnError(echo, undefined)).toBe(false);
+  expect(isErrorEvent(modelOf(systemEventWireItem("tool-repair")))).toBe(false);
 });

@@ -141,7 +141,7 @@ assert.deepEqual(
 );
 assert.equal(client.formatTokenCount(41200), "41.2K");
 assert.equal(client.formatDurationMs(1500), "1.5s");
-assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatCharCount(2500), "2.5K chars");
 assert.equal(client.formatClockTime(undefined), undefined);
 assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
 assert.equal(client.formatElapsed(65000), "1m05s");

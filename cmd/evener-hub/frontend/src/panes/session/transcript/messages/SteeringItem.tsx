@@ -15,8 +15,8 @@
 //     routing stays content-driven, since structured markup can't
 //     false-positive the way a prose pattern could, so it still fires for a
 //     steer projected before the wire carried a kind. Everything else keeps
-//     the collapsible divider, labeled from the shared steeringKindLabel
-//     table - an unrecognized or absent kind renders unlabelled rather than
+//     the collapsible divider, labeled by the shared steeringLabel - an
+//     unrecognized or absent kind reads a bare "System steered" rather than
 //     inventing a label from a raw slug.
 //
 // The label table and the suppression (@evener/appwire-client steeringLabels)

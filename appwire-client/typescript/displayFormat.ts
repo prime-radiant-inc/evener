@@ -13,12 +13,13 @@ const TOKEN_UNITS = [
 export function formatTokenCount(n: number): string {
   const value = Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
   if (value < 1000) return String(value);
+  let text = "";
   for (const [unit, size] of TOKEN_UNITS) {
     const scaled = value / size;
-    const text = (scaled < 100 ? scaled.toFixed(1) : scaled.toFixed(0)).replace(/\.0$/, "");
-    if (Number(text) < 1000 || unit === "B") return `${text}${unit}`;
+    text = `${(scaled < 100 ? scaled.toFixed(1) : scaled.toFixed(0)).replace(/\.0$/, "")}${unit}`;
+    if (Number.parseFloat(text) < 1000) break;
   }
-  return String(value);
+  return text;
 }
 
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.
@@ -47,7 +48,7 @@ export function firstLine(text: string, maxLen: number): string {
 export function formatCharCount(n: number): string {
   const clamped = Number.isFinite(n) && n > 0 ? n : 0;
   if (clamped < 1000) return `${clamped} chars`;
-  return `${(clamped / 1000).toFixed(1).replace(/\.0$/, "")}k chars`;
+  return `${(clamped / 1000).toFixed(1).replace(/\.0$/, "")}K chars`;
 }
 
 // Local 24-hour time; missing or invalid timestamps stay absent.

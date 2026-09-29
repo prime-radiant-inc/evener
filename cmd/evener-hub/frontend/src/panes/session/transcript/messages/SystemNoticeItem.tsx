@@ -25,14 +25,13 @@
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
 import {
-  CONTEXT_SUMMARY_LABEL,
-  contextCompactedText,
   echoesTurnError,
   firstLine,
   formatCharCount,
   formatDurationMs,
-  pluginLoadedText,
+  isErrorEvent,
   scopedDisclosureId,
+  systemEventWords,
 } from "@evener/appwire-client";
 import {
   disclosureScopeForSession,
@@ -46,7 +45,7 @@ import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { roundTimingsSummary } from "./roundTimingsView";
-import { isTurnFailureItem, type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
+import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 
 const CLASS = {
@@ -87,14 +86,12 @@ function isScaffoldItem(item: ItemModel): boolean {
 // provide.
 const FALLBACK_LABEL = "System event";
 
-// What a quiet line says. A plugin load carries its summary in the
-// description and no text, and a compaction pass's text is the engine's
-// "Layer / Turns / Estimated tokens" report, so both read their structured
-// raw through the package's systemEventCopy, as the phone does.
+// What a quiet line says: the package's systemEventWords, which the phone
+// reads too. A plugin load carries its summary in the description and no
+// text, and a compaction pass's text is the engine's "Layer / Turns /
+// Estimated tokens" report, so both read their structured raw there.
 function noticeText(item: ItemModel): string {
-  if (item.eventKind === "plugin_loaded") return pluginLoadedText(item.raw);
-  if (item.eventKind === "context_compaction") return contextCompactedText(item.raw);
-  return item.text || FALLBACK_LABEL;
+  return systemEventWords(item).text || FALLBACK_LABEL;
 }
 
 // scaffoldLabel names the disclosure's collapsed summary: the system
@@ -106,14 +103,13 @@ function noticeText(item: ItemModel): string {
 // own summary.
 function scaffoldLabel(item: ItemModel): string {
   if (item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
-  // A compaction's summary or checkpoint: the label the phone folds it under.
-  if (item.eventKind === "compaction") return CONTEXT_SUMMARY_LABEL;
-  return firstLine(noticeText(item), 60) || FALLBACK_LABEL;
+  // A compaction's summary or checkpoint folds under the label the phone uses.
+  return systemEventWords(item).label ?? (firstLine(noticeText(item), 60) || FALLBACK_LABEL);
 }
 
 // ScaffoldDisclosure is the collapsed-by-default treatment for the system
 // prompt and any other long system-injected text (webui-ux-transcript C1):
-// collapsed to one quiet line ("System prompt · 8.2k chars") by default;
+// collapsed to one quiet line ("System prompt · 8.2K chars") by default;
 // expanding renders the FULL text through the same Markdown pipeline every
 // other message body uses, since the wire's own text is markdown (## headers
 // etc.) that would otherwise show as literal, unformatted characters.
@@ -271,7 +267,7 @@ function SystemLine({
   sessionRef?: string;
   metadata: TranscriptMetadataVisibility;
 }) {
-  if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
+  if (isErrorEvent(item)) return <FailureLine item={item} turn={turn} />;
   if (isCompactHookFailure(item, metadata.hookExits)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
