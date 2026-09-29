@@ -96,7 +96,24 @@ func (d *stallDriver) releaseKick(t *testing.T) {
 	case <-time.After(stallHandshakeTimeout):
 		t.Fatal("drain did not reach the next iteration's kick")
 	}
-	d.release <- struct{}{}
+	d.releaseKickSend(t)
+}
+
+// releaseKickSend completes a handshake step after the caller has observed
+// d.top. The kick goroutine (newStallDriverWithProcess) has finished its
+// `d.top <- struct{}{}` and its very next statement is `<-d.release`, so this is
+// an immediate rendezvous in any correct run. It is still bounded, so a kick
+// goroutine that is never scheduled again fails the test cleanly instead of
+// hanging the process — the same guard stallHandshakeTimeout gives every step.
+func (d *stallDriver) releaseKickSend(t *testing.T) {
+	t.Helper()
+	select {
+	case d.release <- struct{}{}:
+	case <-d.done:
+		t.Fatal("drain returned before the kick was released")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("drain did not accept the kick release")
+	}
 }
 
 // TestDrainStallWatchdogFiresOnGenuineStall verifies the defense-in-depth
@@ -377,7 +394,7 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 		t.Fatal("drain did not reach the give-up pass")
 	}
 	sess.notify()
-	d.release <- struct{}{}
+	d.releaseKickSend(t)
 
 	// The pass saw a mid-scan wake: it must re-run, not return.
 	select {
@@ -389,7 +406,7 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	case <-time.After(stallHandshakeTimeout):
 		t.Fatal("drain neither returned nor re-ran the pass")
 	}
-	d.release <- struct{}{}
+	d.releaseKickSend(t)
 
 	// The confirming pass finds the edge clear and the stall persisting: NOW it
 	// gives up, with the one warning.
