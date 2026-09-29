@@ -4,6 +4,7 @@
 // and the phone's step lines read these.
 
 import type { ItemModel } from "./model";
+import { composeStepWords, type StepWords, withDetail } from "./stepWords";
 import { clip, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, toolJSONResult } from "./toolEvidence";
 
@@ -78,15 +79,15 @@ function isJobRead(item: TranscriptStep): boolean {
 }
 
 // What was read, in the reader's terms: a job's output log, an API-log record,
-// or a session conversation - and whose.
-function target(item: TranscriptStep): string {
+// or a session conversation - and whose (the id, which a client sets apart).
+function target(item: TranscriptStep): { what: string; id?: string } {
   const args = parseArgs(item.argumentsJSON);
   const ref = resolvedRef(item);
-  if (ref.startsWith("job:")) return `job log ${refId(ref)}`;
-  if (str(args, "source") === "api_log") return `API log ${refId(ref)}`;
+  if (ref.startsWith("job:")) return { what: "job log", id: refId(ref) };
+  if (str(args, "source") === "api_log") return { what: "API log", id: refId(ref) };
   // An absent/"current" ref means the session the agent is already in.
-  if (ref === "" || ref === "current") return "this session's transcript";
-  return `transcript ${refId(ref)}`;
+  if (ref === "" || ref === "current") return { what: "this session's transcript" };
+  return { what: "transcript", id: refId(ref) };
 }
 
 // How much was read - the honest span, straight off the envelope. Absent when
@@ -109,14 +110,20 @@ function extent(item: TranscriptStep): string | undefined {
 }
 
 /** "Read transcript 02wMz5… · all 12 turns", "Read job log job_x". */
+export function readTranscriptWords(step: TranscriptStep): StepWords {
+  const { what, id } = target(step);
+  return withDetail(id ? { verb: `Read ${what}`, target: id } : { verb: `Read ${what}` }, extent(step));
+}
+
+/** The read's words as one line. */
 export function readTranscriptSummary(step: TranscriptStep): string {
-  const how = extent(step);
-  return how === undefined ? `Read ${target(step)}` : `Read ${target(step)} · ${how}`;
+  return composeStepWords(readTranscriptWords(step));
 }
 
 /** "Reading transcript 02wMz5…", while the read runs. */
 export function readTranscriptProgress(step: Pick<TranscriptStep, "argumentsJSON">): string {
-  return `Reading ${target(step)}`;
+  const { what, id } = target(step);
+  return id ? `Reading ${what} ${id}` : `Reading ${what}`;
 }
 
 // --- find_session_transcripts ---------------------------------------------------
@@ -156,19 +163,24 @@ function findSessionsCount(output: string | undefined): number | undefined {
 }
 
 /** 'Searched sessions for "settle" · 2 matches', "Listed recent sessions · 1 session". */
-export function findSessionsSummary(step: TranscriptStep): string {
+export function findSessionsWords(step: TranscriptStep): StepWords {
   const search = sessionsSearch(step);
-  const lead =
+  const lead: StepWords =
     search.kind === "children"
-      ? `Searched sessions spawned by ${search.ref}`
+      ? { verb: "Searched sessions spawned by", target: search.ref }
       : search.kind === "query"
-        ? `Searched sessions for "${clip(search.query, 60)}"`
-        : "Listed recent sessions";
+        ? { verb: "Searched sessions for", target: `"${clip(search.query, 60)}"` }
+        : { verb: "Listed recent sessions" };
   const count = findSessionsCount(step.output);
   if (count === undefined) return lead;
   // A listing reports sessions; a search, matches.
   const noun = search.kind === "catalog" ? (count === 1 ? "session" : "sessions") : count === 1 ? "match" : "matches";
-  return `${lead} · ${count} ${noun}`;
+  return { ...lead, detail: `${count} ${noun}` };
+}
+
+/** The search's words as one line. */
+export function findSessionsSummary(step: TranscriptStep): string {
+  return composeStepWords(findSessionsWords(step));
 }
 
 /** 'Searching sessions for "settle"', "Listing recent sessions", while it runs. */

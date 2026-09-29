@@ -11,6 +11,7 @@
 // because nothing was torn down to discard.
 
 import type { ItemModel } from "./model";
+import { composeStepWords, type StepWords, withDetail } from "./stepWords";
 import { parseArgs, str } from "./toolCallText";
 import { toolJSONResult } from "./toolEvidence";
 
@@ -22,7 +23,7 @@ export type WorktreeStep = Pick<ItemModel, "argumentsJSON" | "output">;
 // discard uncommitted changes" per the tool's own parameter description —
 // claiming otherwise on the row would be the same dishonesty in the other
 // direction.
-const DISCARD_NOTE = " · discarded uncommitted changes";
+const DISCARD_NOTE = "discarded uncommitted changes";
 
 // Parsed core of a manage_worktree call's arguments: which operation it
 // requested, and whether force_dirty was set. This is deliberately narrower
@@ -39,12 +40,16 @@ function parseWorktreeCallArgs(argumentsJSON: string | undefined): WorktreeCallA
   return { operation: str(args, "operation") ?? "", forceDirty: args.force_dirty === true };
 }
 
-// The worktree a call names, as the line says it: `name` for
-// create/remove/switch, or `path`, switch's and adopt's other accepted form;
-// "a worktree" when the call names none, so no line ends in a dangling space.
-function worktreeNamed(args: Record<string, unknown>): string {
-  const named = str(args, "name") || str(args, "path");
-  return named ? `worktree ${named}` : "a worktree";
+// The worktree a call names: `name` for create/remove/switch, or `path`,
+// switch's and adopt's other accepted form.
+function worktreeName(args: Record<string, unknown>): string | undefined {
+  return str(args, "name") || str(args, "path") || undefined;
+}
+
+// "<verb> worktree <name>", the name its target, or "<verb> a worktree" when
+// the call names none, so no line ends in a dangling space.
+function onWorktree(verb: string, name: string | undefined): StepWords {
+  return name ? { verb: `${verb} worktree`, target: name } : { verb: `${verb} a worktree` };
 }
 
 function countOf(result: Record<string, unknown> | undefined, key: string): number | undefined {
@@ -53,55 +58,62 @@ function countOf(result: Record<string, unknown> | undefined, key: string): numb
 }
 
 /** "Created worktree settle-fix (from main)", "Already in worktree settle-fix". */
-export function worktreeSummary(item: WorktreeStep): string {
+export function worktreeWords(item: WorktreeStep): StepWords {
   const args = parseArgs(item.argumentsJSON);
   const { operation, forceDirty } = parseWorktreeCallArgs(item.argumentsJSON);
   const result = toolJSONResult(item.output);
   const status = result ? str(result, "status") : undefined;
-  const target = worktreeNamed(args);
-  const dirty = forceDirty ? DISCARD_NOTE : "";
+  const name = worktreeName(args);
+  const dirty = forceDirty ? DISCARD_NOTE : undefined;
 
   switch (operation) {
     case "create": {
       const base = str(args, "base_ref");
-      return `Created ${target}${base ? ` (from ${base})` : ""}`;
+      const words = onWorktree("Created", name);
+      return base ? { ...words, after: `(from ${base})` } : words;
     }
     case "list": {
       const found = countOf(result, "entries");
-      return `Listed worktrees${found === undefined ? "" : ` · ${found} found`}`;
+      return withDetail({ verb: "Listed worktrees" }, found === undefined ? undefined : `${found} found`);
     }
     case "switch":
       // The daemon reports `unchanged` when the session was already there.
-      return status === "unchanged" ? `Already in ${target}` : `Switched to ${target}`;
+      return onWorktree(status === "unchanged" ? "Already in" : "Switched to", name);
     case "exit": {
       const left = result ? str(result, "left_path") : undefined;
-      return `Exited worktree${left ? ` at ${left}` : ""}`;
+      return left ? { verb: "Exited worktree at", target: left } : { verb: "Exited worktree" };
     }
     case "remove":
-      return `Removed ${target}${dirty}`;
+      return withDetail(onWorktree("Removed", name), dirty);
     case "prune": {
       const removed = countOf(result, "removed");
       const skipped = countOf(result, "skipped");
-      if (removed === undefined && skipped === undefined) return "Pruned worktrees";
-      return `Pruned worktrees · ${removed ?? 0} removed, ${skipped ?? 0} skipped`;
+      if (removed === undefined && skipped === undefined) return { verb: "Pruned worktrees" };
+      return { verb: "Pruned worktrees", detail: `${removed ?? 0} removed, ${skipped ?? 0} skipped` };
     }
     case "adopt": {
       // The result names the managed worktree the adopted path became.
-      const name = result ? str(result, "name") : undefined;
-      return `Adopted ${name ? `worktree ${name}` : target}`;
+      const adopted = result ? str(result, "name") : undefined;
+      return onWorktree("Adopted", adopted || name);
     }
     case "dispose": {
-      const id = str(args, "id") || "a worktree";
+      const id = str(args, "id");
       // Idempotent no-op: the lane was already gone, so no work was discarded
       // however the call was flagged.
-      if (status === "already_disposed") return `Already disposed ${id}`;
-      return `Disposed ${id}${dirty}`;
+      const disposed = status === "already_disposed" ? "Already disposed" : "Disposed";
+      const words = id ? { verb: disposed, target: id } : { verb: `${disposed} a worktree` };
+      return status === "already_disposed" ? words : withDetail(words, dirty);
     }
     default:
       // A future operation this build has never heard of still says which one
       // it was, in words, never as the bare tool name.
-      return operation ? `Used manage worktree: ${operation}` : "Used manage worktree";
+      return { verb: operation ? `Used manage worktree: ${operation}` : "Used manage worktree" };
   }
+}
+
+/** The operation's words as one line. */
+export function worktreeSummary(item: WorktreeStep): string {
+  return composeStepWords(worktreeWords(item));
 }
 
 /** What the operation says it did, in its own words (its result's
@@ -115,7 +127,8 @@ export function worktreeMessage(output: string | undefined): string | undefined 
 export function worktreeProgress(item: Pick<WorktreeStep, "argumentsJSON">): string {
   const args = parseArgs(item.argumentsJSON);
   const { operation } = parseWorktreeCallArgs(item.argumentsJSON);
-  const target = worktreeNamed(args);
+  const name = worktreeName(args);
+  const target = name ? `worktree ${name}` : "a worktree";
   switch (operation) {
     case "create":
       return `Creating ${target}`;
