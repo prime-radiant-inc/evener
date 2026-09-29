@@ -396,7 +396,7 @@ func sampleRenders() []tuiSampleRender {
 		{name: "session-streaming", width: 100, contains: []string{"EVENER / SESSION", "The running agent harness", "all task steps completed"}},
 		{name: "session-busy-steer", width: 100, contains: []string{"EVENER / SESSION", "queue", "ctrl+s", "steer", "Please also check", "work 3m", "tok ↑46k ↓12k"}},
 		{name: "session-busy-readonly", width: 100, contains: []string{"EVENER / SESSION", "read-only", "source does not advertise queue"}},
-		{name: "session-browse", width: 100, contains: []string{"EVENER / SESSION", "esc/i/q: compose", "f: fork"}},
+		{name: "session-browse", width: 100, contains: []string{"EVENER / SESSION", "esc: compose", "ctrl+f: fork"}},
 		{name: "session-fork", width: 100, contains: []string{"EVENER / SESSION", "fork draft", "edited prompt"}},
 		{name: "ask-card-pending", width: 100, contains: []string{
 			"[DB choice]", "Postgres", "SQLite", "(recommended)", "why:", "if unanswered:", "(pick any)",

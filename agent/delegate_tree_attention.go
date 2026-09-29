@@ -317,6 +317,17 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 	c.attentionWakeIDs[delegateID] = ids
 }
 
+// owesDelegateAttention reports whether delegateID still has attention the
+// driver has yet to deliver, escalate or forget.
+func (c *delegateTreeController) owesDelegateAttention(delegateID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.attentionWakeIDs[delegateID]) != 0
+}
+
 func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 	if c == nil {
 		return false

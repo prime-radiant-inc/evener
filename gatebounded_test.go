@@ -200,6 +200,29 @@ run_enumeration . /tmp/unused
 	}
 }
 
+// TestRunBoundedBuildHandsTheTargetToGoBuild pins the wiring that lets the gate
+// prebuild a shard runner under a bound: the build's directory and target must
+// reach `go build` through run_bounded, so the compile `go run` used to perform
+// inside an unbounded invocation is bounded instead. A regression that called
+// `go build` directly, or dropped the cd that makes the relative target resolve,
+// would reintroduce the unbounded compile with every helper test still green.
+func TestRunBoundedBuildHandsTheTargetToGoBuild(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+run_bounded() { shift 4; printf 'argv:%s\ncwd_match:%s\n' "$*" "$([ "$PWD" = "$DIR" ] && echo yes || echo no)"; }
+dir=$(mktemp -d)
+DIR="$dir" run_bounded_build 300 "agent-shards build" agent "$dir/log" "$dir/out" "$dir" ./cmd/evener-dev/bin
+rm -rf "$dir"
+`)
+	if !strings.Contains(got, "argv:go build -o ") || !strings.Contains(got, "./cmd/evener-dev/bin") {
+		t.Fatalf("run_bounded_build argv = %q, want a `go build -o <out> ./cmd/evener-dev/bin`", got)
+	}
+	if !strings.Contains(got, "cwd_match:yes") {
+		t.Fatalf("run_bounded_build = %q, want the build to run in the directory it was handed", got)
+	}
+}
+
 // TestStopCommandReapsALateFork is the reason run_bounded uses a process group:
 // a parent that forks a child after cleanup has begun puts that child behind any
 // PID snapshot, but the child is still inside the command's process group, so

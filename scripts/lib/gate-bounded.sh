@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # gate-bounded.sh — the bounded process runner and process-tree stopper the test
-# gate uses for its `go list` enumerations and its evener-dev flag derivation.
+# gate uses for its `go list` enumerations, its evener-dev flag derivation, and
+# the prebuild of the shard runners its `go run` calls would otherwise compile
+# inside an unbounded invocation.
 #
 # Sourced, never executed. It sets no variables and launches nothing on its own,
 # so a caller can source it and drive the functions directly.
@@ -141,6 +143,17 @@ run_enumeration() {
 		enum_argv+=("$enum_arg")
 	done < <(enumeration_argv)
 	run_bounded "${ROOT_PACKAGE_LIST_TIMEOUT:-30}" 'go list ./...' "$module" "$out_file" "${enum_argv[@]}"
+}
+
+# run_bounded_build <bound> <what> <module> <log-file> <output> <dir> <target> —
+# build target from dir to output under run_bounded's bound, so a compile that
+# would otherwise happen inside an unbounded `go run` is stopped on a stalled
+# cache like every other discovery-adjacent step. A relative target must resolve
+# against the tree the caller names, so the cd lives here; run_bounded captures
+# the build's stdout in log-file and replays its stderr on a nonzero exit.
+run_bounded_build() {
+	local bound="$1" what="$2" module="$3" log_file="$4" output="$5" dir="$6" target="$7"
+	( cd "$dir" && run_bounded "$bound" "$what" "$module" "$log_file" go build -o "$output" "$target" )
 }
 
 # run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the
