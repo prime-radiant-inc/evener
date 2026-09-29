@@ -306,14 +306,17 @@ function Providers({
 	// write, and its answer lands in the listing like any other.
 	const [checkingModels, setCheckingModels] = useState<string | null>(null);
 	async function checkModels(name: string) {
+		// Like `act`, a check the user has left behind reports nothing: closing
+		// the detail bumps the version and forgets the check.
+		const version = editorVersion.current;
 		setActionError(null);
 		setCheckingModels(name);
 		try {
 			await surface.checkModels(name);
 		} catch {
-			setActionError(MODELS_NOT_CHECKED);
+			if (version === editorVersion.current) setActionError(MODELS_NOT_CHECKED);
 		} finally {
-			setCheckingModels((current) => (current === name ? null : current));
+			if (version === editorVersion.current) setCheckingModels(null);
 		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
@@ -328,6 +331,7 @@ function Providers({
 		setCredentialTarget(null);
 		setKey("");
 		setActionError(null);
+		setCheckingModels(null);
 	}
 	async function act(
 		action: () => Promise<unknown>,
@@ -571,7 +575,7 @@ function Providers({
 									<ProviderFacts
 										instance={instance}
 										auth={auth}
-										togglesHeld={surface.busy || core.writesRefused || stale || !ready}
+										togglesHeld={writeHeld}
 										onToggleModel={(model, disabled) => {
 											void act(() => surface.setModelDisabled(instance.name, model, disabled));
 										}}
@@ -804,7 +808,6 @@ function ProviderFacts({
 					<SwitchRow
 						key={model.id}
 						label={model.id}
-						switchLabel={`${model.id} on`}
 						value={!model.disabled}
 						disabled={togglesHeld}
 						onChange={(on) => onToggleModel(model.id, !on)}
