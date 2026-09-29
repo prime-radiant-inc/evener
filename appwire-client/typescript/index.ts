@@ -251,6 +251,17 @@ export {
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export {
+  type DelegateSendFooterInfo,
+  type DelegateSendRawState,
+  type DelegateSendStep,
+  delegateSendBase,
+  delegateSendFooter,
+  delegateSendSummary,
+  delegateSendTarget,
+  isDelegateSendResult,
+  statusWordFromText,
+} from "./delegateSteps";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   createdWatchNote,
@@ -576,6 +587,7 @@ export {
   applyPatchSummary,
   askUserSummary,
   BINARY_PAYLOAD_HEADER,
+  delegateSummary,
   editFileSummary,
   fallbackToolSummary,
   filePathArg,

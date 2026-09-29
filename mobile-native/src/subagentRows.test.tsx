@@ -245,6 +245,13 @@ describe("a message sent to a subagent", () => {
 		expect(rows.filter(isSubagent)).toHaveLength(1);
 		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
 		expect(steps.map((step) => step.label)).toContain("delegate_send");
+		// Its line names the delegate it messaged, set apart, and the status
+		// the send's footer reports.
+		expect(steps.find((step) => step.label === "delegate_send")?.detail?.words).toEqual({
+			verb: "Sent a message to delegate",
+			target: RECEIPT.delegate_id,
+			detail: "running",
+		});
 	});
 });
 

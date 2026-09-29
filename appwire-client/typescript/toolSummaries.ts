@@ -9,6 +9,7 @@
 
 import { parseAskUserQuestions } from "./askShared";
 import { diffStats, editDiffText } from "./editDiff";
+import { delegateSendWords } from "./delegateSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
@@ -31,7 +32,7 @@ export interface ToolSummaryContext {
 }
 
 /** The parts of a step its summary reads. */
-export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw">;
+export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw" | "description">;
 
 /** The family a run's summary counts a step under. */
 export type ToolFamily =
@@ -481,7 +482,21 @@ const TOOLS: Record<string, ToolEntry> = {
   job_list: { family: "jobs", words: jobListWords },
   job_stop: { family: "jobs", words: jobStopWords },
   job_watch: { family: "jobs", words: jobWatchWords },
+  delegate: { family: "tool", words: delegateWords },
+  delegate_send: { family: "tool", words: delegateSendWords },
+  // The retired name for sending a delegate a message; old transcripts still
+  // carry it.
+  job_send_message: { family: "jobs", words: delegateSendWords },
 };
+
+// A delegate call's line is its intent, the model's own words for the
+// subagent it starts; the prompt it hands over is far too long for one line.
+function delegateWords(step: ToolStep): StepWords {
+  const intent = step.description?.trim();
+  return { verb: intent || fallbackToolSummary(step) };
+}
+
+export const delegateSummary = summaryOf(delegateWords);
 
 export const readFileSummary = summaryOf(readFileWords);
 export const grepSummary = summaryOf(grepWords);

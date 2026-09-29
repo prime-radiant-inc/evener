@@ -12,7 +12,10 @@
 
 import subagentCalls from "../../../agent/testdata/subagentwire/calls.json?raw";
 import subagentOutcomes from "../../../agent/testdata/subagentwire/outcomes.json?raw";
-import type { JobsListResponse, ThreadItem } from "../types.gen";
+import type { ItemModel, ThreadModel } from "../model";
+import { hydrateThread } from "../reducer";
+import type { JobsListResponse, Thread, ThreadItem } from "../types.gen";
+import { wireThread } from "./notifications";
 
 /** The recorded call and result items, in the order history carries them. */
 export function subagentCallItems(): ThreadItem[] {
@@ -26,4 +29,23 @@ export function subagentCallItems(): ThreadItem[] {
  * delegate itself. */
 export function subagentOutcomesResponse(): JobsListResponse {
   return (JSON.parse(subagentOutcomes) as { response: JobsListResponse }).response;
+}
+
+let model: ThreadModel | undefined;
+
+/** One settled step: the recorded call merged with its result, as a client
+ * holds it. Hydrated once; treat it as read-only. */
+export function subagentWireStep(callId: string): ItemModel {
+  model ??= hydrateThread(
+    {
+      thread: wireThread("ref-subagents", {
+        turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: subagentCallItems() }],
+      } as Partial<Thread>),
+    },
+    "ref-subagents",
+    0,
+  );
+  const item = model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === callId);
+  if (!item) throw new Error(`no ${callId} step in agent/testdata/subagentwire/calls.json`);
+  return item;
 }
