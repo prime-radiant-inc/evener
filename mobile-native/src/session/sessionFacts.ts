@@ -35,7 +35,9 @@ export interface SessionHost {
 /** Names each host a session can run on. The hub's own machine goes by the
  * hub's name, as Hub > Hosts names it, where the manifest calls it "this
  * host", and is as connected as the hub; any other host goes by its manifest
- * label and state, or by its id while the manifest doesn't list it. */
+ * label and state, or by its id while the manifest doesn't list it. While the
+ * hub is away every host it lists reads offline, since the phone can't reach
+ * any of them. */
 export function sessionHosts(
 	sources: readonly { id: string; label: string; online: boolean }[] | undefined,
 	hubName: string | null,
@@ -45,7 +47,7 @@ export function sessionHosts(
 	return (hostId) => {
 		const source = byId.get(hostId);
 		if (hostId === "local") return { label: hubName ?? source?.label ?? hostId, online: hubConnected };
-		return { label: source?.label ?? hostId, online: source ? source.online : null };
+		return { label: source?.label ?? hostId, online: source ? hubConnected && source.online : null };
 	};
 }
 

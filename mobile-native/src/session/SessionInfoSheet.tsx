@@ -122,8 +122,8 @@ function SessionInfoBody({
 	const state = useControlsState(host.controls);
 	const { session, ready } = host;
 	const capabilities = session.capabilities;
-	const where = whereFacts(session, (hostId) => host.host(hostId).label);
-	const hostOnline = host.host(hostIdOf(session.ref)).online;
+	const sessionHost = host.host(hostIdOf(session.ref));
+	const where = whereFacts(session, () => sessionHost.label);
 	const plugins = pluginsLine(session);
 	const access = accessFacts(session);
 	const usage = usageFacts(session);
@@ -170,9 +170,9 @@ function SessionInfoBody({
 				<Row
 					icon="server.rack"
 					label={where.host}
-					value={hostOnline === null ? undefined : <ConnectionDot online={hostOnline} />}
+					value={sessionHost.online === null ? undefined : <ConnectionDot online={sessionHost.online} />}
 					accessibilityLabel={
-						hostOnline === null ? where.host : `${where.host}, ${hostOnline ? "connected" : "offline"}`
+						sessionHost.online === null ? where.host : `${where.host}, ${sessionHost.online ? "connected" : "offline"}`
 					}
 				/>
 				{where.project ? <Row icon="folder" label={where.project} /> : null}

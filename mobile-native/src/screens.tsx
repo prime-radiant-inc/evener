@@ -347,7 +347,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState } = useConnection();
+	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -1991,8 +1991,9 @@ export function ConversationScreen({
 	});
 	// The hub's own machine goes by the hub's name, as Hub > Hosts names it;
 	// any other host by the manifest's label, or its id until the manifest
-	// has loaded (sessionHosts).
-	const hubName = activeProfile?.id === route.params.hubId ? activeProfile.name : null;
+	// has loaded (sessionHosts). The hub list names this hub even while
+	// another hub is the active one.
+	const hubName = profiles.find((profile) => profile.id === route.params.hubId)?.name ?? null;
 	const host = useMemo(() => sessionHosts(fleet.sources, hubName, connected), [fleet.sources, hubName, connected]);
 	// The Board row names the model too (S17), for while the catalog is away.
 	const modelLabel = conversation
@@ -2050,10 +2051,13 @@ export function ConversationScreen({
 	useEffect(() => {
 		if (controls && hasConversation && sessionOpen) void controls.loadModels();
 	}, [controls, hasConversation, sessionOpen]);
-	const catalog = controlsState?.catalog;
+	// The screen keeps what the current controls know of the catalog, so the
+	// controls made after a pushed screen closes start from it: a catalog they
+	// read, or none after a failed read cleared it.
+	const catalog = controlsState?.catalog ?? null;
 	useEffect(() => {
-		if (catalog) knownCatalog.current = catalog;
-	}, [catalog]);
+		if (controls) knownCatalog.current = catalog;
+	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20).
 	const notice =
