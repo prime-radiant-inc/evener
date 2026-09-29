@@ -110,6 +110,12 @@ func mkdirVerifiedDir(path string) (created bool, err error) {
 // residue, while one with a job store, transcript, or metadata keeps its
 // evidence. A missing directory is not an error.
 func removeDelegateArtifacts(stateDir, childSessionID string) error {
+	// A session with no durable state dir never had an artifacts directory, so
+	// there is nothing to clean and no failure to report. (Creation still fails
+	// closed in ensureDelegateArtifactsDir, where durability is required.)
+	if strings.TrimSpace(stateDir) == "" {
+		return nil
+	}
 	dir, err := delegateArtifactsDir(stateDir, childSessionID)
 	if err != nil {
 		return err

@@ -245,6 +245,19 @@ func TestRemoveDelegateArtifacts_SymlinkedSessionsDirRefused(t *testing.T) {
 	}
 }
 
+// TestRemoveDelegateArtifacts_EmptyStateDirIsNoOp pins that disposing a child in
+// a session with no durable state dir (a supported non-durable mode) reports no
+// cleanup failure, since no artifacts directory was ever created.
+func TestRemoveDelegateArtifacts_EmptyStateDirIsNoOp(t *testing.T) {
+	t.Parallel()
+	if err := removeDelegateArtifacts("", "sess_none"); err != nil {
+		t.Fatalf("removeDelegateArtifacts with empty state dir = %v, want nil", err)
+	}
+	if err := removeDelegateArtifacts("   ", "sess_none"); err != nil {
+		t.Fatalf("removeDelegateArtifacts with blank state dir = %v, want nil", err)
+	}
+}
+
 // TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir pins that a delegate
 // disposed before adoption takes its artifacts with it, via the existing
 // unadopted-child disposal path.
