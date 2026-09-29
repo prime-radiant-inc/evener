@@ -1441,17 +1441,17 @@ func limitNavigationTier(tier hubapi.NavigationTier, budget int) (hubapi.Navigat
 // from anywhere but that location and the ref, so it is coherent with the core
 // the root came from. Live state and the title are not carried: the pane gets
 // them from thread/read.
-func navigationAliasLocation(id string, root hubapi.NavigationSessionLocation) hubapi.NavigationSessionLocation {
+func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocation) (hubapi.NavigationSessionLocation, bool) {
 	ref, err := navigationRef(id)
 	if err != nil {
-		return hubapi.NavigationSessionLocation{}
+		return hubapi.NavigationSessionLocation{}, false
 	}
 	summary := hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
 		SessionID: ref.SessionID,
 		State:     "ended",
-		Kind:      "subagent",
+		Kind:      kind,
 		Children:  hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 	if root.Session != nil {
@@ -1466,7 +1466,7 @@ func navigationAliasLocation(id string, root hubapi.NavigationSessionLocation) h
 		ProjectKey:   root.ProjectKey,
 		Tier:         root.Tier,
 		Session:      &summary,
-	}
+	}, true
 }
 
 func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLocation, bool) {

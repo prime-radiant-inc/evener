@@ -2400,7 +2400,7 @@ func TestNavigationNextStatesChecksContextWhileCreatingTombstones(t *testing.T) 
 	// One entry check plus all 100 previous-key union checks means this expires
 	// inside the final per-key transition loop that creates tombstones.
 	ctx := &cancelAfterChecksContext{Context: context.Background(), limit: 150}
-	changes, next, err := navigationNextStatesContext(ctx, previous, nil, nil, nil)
+	changes, next, err := navigationNextStatesContext(ctx, previous, nil, nil, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("transition error = %v, want cancellation", err)
 	}

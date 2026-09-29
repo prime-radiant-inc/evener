@@ -97,10 +97,11 @@ type navigationServiceConfig struct {
 	// tests set them to force eviction with small fixtures.
 	historyEntries int
 	historyBytes   int64
-	// SubagentParent names the row a session hangs under: a subagent's parent,
-	// or a fork original's continuation. The location alias walks it to find
-	// the top-level row for a ref that is not indexed. Nil disables the alias.
-	SubagentParent func(ref string) (parent string, ok bool)
+	// SubagentParent names the row a session hangs under and how: kind is
+	// "subagent" for a subagent's parent and "fork" for a fork original's
+	// continuation. The location alias walks it to find the top-level row for
+	// a ref that is not indexed. Nil disables the alias.
+	SubagentParent func(ref string) (parent, kind string, ok bool)
 }
 
 type navigationTimer interface {
@@ -119,6 +120,16 @@ type navigationResourceState struct {
 	Present      bool
 	Dependencies []navigationResourceKey // semantic target-bearing keys
 }
+
+type navigationAliasServed struct {
+	revision    uint64
+	topLevelRef string
+	gone        bool
+}
+
+// maxNavigationAliasServed bounds aliasServed. Past it the memory resets:
+// revisions of keys it forgot fall back to the stateless bound.
+const maxNavigationAliasServed = 4096
 
 type navigationCoreSnapshot struct {
 	projection   navigationProjection // immutable deep snapshot; never source aliases
@@ -168,7 +179,12 @@ type NavigationService struct {
 	retryAfter   time.Duration
 	history      *navigationHistory
 	// subagentParent is the alias resolver's hop function; nil disables it.
-	subagentParent func(ref string) (string, bool)
+	subagentParent func(ref string) (string, string, bool)
+	// aliasServed remembers, per location key that is not a present row, the
+	// last revision an alias or gone answer used, so revisions never move
+	// backward when the answer changes shape. It is bounded; entries drop once
+	// the key becomes a present row.
+	aliasServed map[navigationResourceKey]navigationAliasServed
 
 	core                *navigationCoreSnapshot
 	resources           map[navigationResourceKey]navigationResourceState // includes tombstones
@@ -236,6 +252,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		subagentParent:   cfg.SubagentParent,
+		aliasServed:      make(map[navigationResourceKey]navigationAliasServed),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
 		wake:             make(chan struct{}, 1),
 		publicationReady: make(chan struct{}, 1),
@@ -334,67 +351,89 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 		return nil, navigationResourceKey{}, navigationProjection{}, err
 	}
 	semantic := key.Semantic()
-	// The parent chain comes from the source of truth outside the core, so it
-	// is walked before taking s.mu. It only names candidate ancestors; which
-	// one is indexed, and everything served for it, is decided from the core
-	// selected under the lock below.
-	var chain []string
-	if semantic.Kind == navigationResourceLocation && s.subagentParent != nil && !s.locationPresent(semantic) {
+	var chain *navigationAliasChain
+	for {
+		versioned, projection, needChain, err := s.selectLocked(key, semantic, chain)
+		if !needChain {
+			if err != nil {
+				return nil, navigationResourceKey{}, navigationProjection{}, err
+			}
+			return flight, versioned, projection, nil
+		}
+		// The parent chain comes from the source of truth outside the core, so
+		// it is walked without s.mu. It only names candidate ancestors; which
+		// one is indexed, and everything served for it, is decided from the
+		// core selected under the lock on the next pass.
 		chain = s.subagentChain(semantic.ID)
 	}
+}
+
+// selectLocked binds key to the current core and its version. It reports
+// needChain when the key is a location that is not a present row and the
+// alias's parent chain has not been walked yet.
+func (s *NavigationService) selectLocked(key, semantic navigationResourceKey, chain *navigationAliasChain) (navigationResourceKey, navigationProjection, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.core == nil {
-		return nil, navigationResourceKey{}, navigationProjection{}, errors.New("navigation core unavailable")
+		return navigationResourceKey{}, navigationProjection{}, false, errors.New("navigation core unavailable")
 	}
 	state, ok := s.resources[semantic]
 	isLocation := semantic.Kind == navigationResourceLocation
+	versioned := key.canonical()
+	versioned.Generation = s.generation
 	if isLocation && !state.Present {
-		if projection, revision, found := s.aliasProjectionLocked(semantic, state.Revision, chain); found {
-			versioned := key.canonical()
-			versioned.Generation = s.generation
-			versioned.Revision = revision
-			return flight, versioned, projection, nil
+		if s.subagentParent != nil && chain == nil {
+			return navigationResourceKey{}, navigationProjection{}, true, nil
 		}
-	}
-	if !ok && !isLocation {
-		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{kind: semantic.Kind}
-	}
-	if !state.Present {
+		if projection, revision, found := s.aliasProjectionLocked(semantic, state.Revision, chain); found {
+			versioned.Revision = revision
+			return versioned, projection, false, nil
+		}
 		// A location that is neither indexed nor reachable through a root is
 		// gone, not unavailable: retrying will not change the answer.
-		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{
+		return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{
+			kind:       semantic.Kind,
+			known:      true,
+			generation: s.generation,
+			revision:   s.goneRevisionLocked(semantic, state.Revision),
+		}
+	}
+	if !ok {
+		return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{kind: semantic.Kind}
+	}
+	if !state.Present {
+		return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{
 			kind:       semantic.Kind,
 			known:      true,
 			generation: s.generation,
 			revision:   state.Revision,
 		}
 	}
-	versioned := key.canonical()
-	versioned.Generation = s.generation
 	versioned.Revision = state.Revision
 	// navigationProjection retains only deep-cloned input and derived maps. A
 	// value copy is enough to bind this request to the exact core selected above.
-	return flight, versioned, s.core.projection, nil
-}
-
-func (s *NavigationService) locationPresent(key navigationResourceKey) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.resources[key].Present
+	return versioned, s.core.projection, false, nil
 }
 
 // maxNavigationAliasHops bounds the parent walk, matching the tree's own
 // nesting depth limit.
 const maxNavigationAliasHops = 32
 
-// subagentChain lists the ancestors of ref, nearest first, ending where the
-// resolver has no further hop or a hop repeats.
-func (s *NavigationService) subagentChain(ref string) []string {
+// navigationAliasChain is the ancestry of a ref that is not an indexed row.
+type navigationAliasChain struct {
+	// kind is how the ref itself hangs under its parent ("subagent" or "fork").
+	kind string
+	// ancestors are the ref's ancestors, nearest first.
+	ancestors []string
+}
+
+// subagentChain walks the resolver from ref, ending where it has no further
+// hop or a hop repeats. Without a resolver the chain is empty.
+func (s *NavigationService) subagentChain(ref string) *navigationAliasChain {
+	chain := &navigationAliasChain{}
 	seen := map[string]bool{ref: true}
-	var chain []string
-	for current := ref; len(chain) < maxNavigationAliasHops; {
-		next, ok := s.subagentParent(current)
+	for current := ref; s.subagentParent != nil && len(chain.ancestors) < maxNavigationAliasHops; {
+		next, kind, ok := s.subagentParent(current)
 		if !ok {
 			break
 		}
@@ -402,11 +441,39 @@ func (s *NavigationService) subagentChain(ref string) []string {
 		if err != nil || seen[parsed.String()] {
 			break
 		}
+		if len(chain.ancestors) == 0 {
+			chain.kind = kind
+		}
 		current = parsed.String()
 		seen[current] = true
-		chain = append(chain, current)
+		chain.ancestors = append(chain.ancestors, current)
 	}
 	return chain
+}
+
+// rememberAliasServedLocked records what a non-row location read was answered
+// with. The memory is bounded; on overflow it starts over.
+func (s *NavigationService) rememberAliasServedLocked(key navigationResourceKey, served navigationAliasServed) {
+	if len(s.aliasServed) >= maxNavigationAliasServed {
+		clear(s.aliasServed)
+	}
+	s.aliasServed[key] = served
+}
+
+// goneRevisionLocked is the revision of a gone answer for a location that is
+// not a present row. It stays above any alias revision served for the key, and
+// stays put while the answer stays gone.
+func (s *NavigationService) goneRevisionLocked(key navigationResourceKey, tombstoneRevision uint64) uint64 {
+	served, ok := s.aliasServed[key]
+	if !ok || served.revision < tombstoneRevision {
+		return tombstoneRevision
+	}
+	if served.gone {
+		return served.revision
+	}
+	served.revision, served.gone = served.revision+1, true
+	s.rememberAliasServedLocked(key, served)
+	return served.revision
 }
 
 // aliasProjectionLocked answers a location read for a ref that is not an
@@ -415,13 +482,16 @@ func (s *NavigationService) subagentChain(ref string) []string {
 //
 // The content is the top-level row's own indexed location plus the ref's
 // identity, so it comes entirely from the selected core. The revision is the
-// top-level location's revision plus the ref's own tombstone revision: it moves
-// exactly when the top-level location moves, and it stays above any revision
-// the key had while it was an indexed row. Commit gives a row that appears
-// later a revision above the alias it replaces (see navigationNextStatesContext).
-func (s *NavigationService) aliasProjectionLocked(key navigationResourceKey, tombstoneRevision uint64, chain []string) (navigationProjection, uint64, bool) {
+// top-level location's revision plus the ref's own tombstone revision, raised
+// where needed to stay above what the key was last answered with: it moves
+// when the top-level location moves and never backward. Commit gives a row that
+// appears later a revision above the alias it replaces (see aliasFloor).
+func (s *NavigationService) aliasProjectionLocked(key navigationResourceKey, tombstoneRevision uint64, chain *navigationAliasChain) (navigationProjection, uint64, bool) {
+	if chain == nil {
+		return navigationProjection{}, 0, false
+	}
 	projection := s.core.projection
-	for _, hop := range chain {
+	for _, hop := range chain.ancestors {
 		ancestor, indexed := projection.locations[hop]
 		if !indexed {
 			continue
@@ -431,9 +501,22 @@ func (s *NavigationService) aliasProjectionLocked(key navigationResourceKey, tom
 		if !ok || !rootState.Present {
 			return navigationProjection{}, 0, false
 		}
-		alias := navigationAliasLocation(key.ID, root)
+		alias, ok := navigationAliasLocation(key.ID, chain.kind, root)
+		if !ok {
+			return navigationProjection{}, 0, false
+		}
+		revision := tombstoneRevision + rootState.Revision
+		if served, seen := s.aliasServed[key]; seen {
+			switch {
+			case (served.gone || served.topLevelRef != root.TopLevelRef) && revision <= served.revision:
+				revision = served.revision + 1
+			case revision < served.revision:
+				revision = served.revision
+			}
+		}
+		s.rememberAliasServedLocked(key, navigationAliasServed{revision: revision, topLevelRef: root.TopLevelRef})
 		projection.alias = &alias
-		return projection, tombstoneRevision + rootState.Revision, true
+		return projection, revision, true
 	}
 	return navigationProjection{}, 0, false
 }
@@ -739,7 +822,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			expected = after
 			continue
 		}
-		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations)
+		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations, s.aliasServed)
 		if err != nil {
 			s.mu.Unlock()
 			if ctx.Err() != nil {
@@ -759,6 +842,11 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			return
 		}
 		s.resources = states
+		for key := range s.aliasServed {
+			if states[key].Present {
+				delete(s.aliasServed, key)
+			}
+		}
 		s.buildID++
 		flight.id = s.buildID
 		flight.changes = changes
@@ -812,21 +900,22 @@ func (s *NavigationService) completeRefreshTicketsLocked(flight *navigationBuild
 	}
 }
 
-// aliasFloor is the revision a location read could have been served at through
-// the alias while the key was not a present row: the previous revision of the
-// top-level row it routes to. A row that appears must start above it.
-func aliasFloor(previous map[navigationResourceKey]navigationResourceState, locations map[string]hubapi.NavigationSessionLocation, key navigationResourceKey) uint64 {
+// aliasFloor is the highest revision a location read could have been answered
+// with while the key was not a present row: what the alias or gone answer last
+// used, or the top-level row's previous revision on top of the key's tombstone.
+// A row that appears must start above it.
+func aliasFloor(previous map[navigationResourceKey]navigationResourceState, served map[navigationResourceKey]navigationAliasServed, locations map[string]hubapi.NavigationSessionLocation, key navigationResourceKey) uint64 {
 	if key.Kind != navigationResourceLocation {
 		return 0
 	}
-	location, ok := locations[key.ID]
-	if !ok || location.TopLevel {
-		return 0
+	floor := previous[key].Revision
+	if location, ok := locations[key.ID]; ok && !location.TopLevel {
+		floor += previous[navigationResourceKey{Kind: navigationResourceLocation, ID: location.TopLevelRef}].Revision
 	}
-	return previous[navigationResourceKey{Kind: navigationResourceLocation, ID: location.TopLevelRef}].Revision
+	return max(floor, served[key].revision)
 }
 
-func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey, locations map[string]hubapi.NavigationSessionLocation) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
+func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey, locations map[string]hubapi.NavigationSessionLocation, served map[navigationResourceKey]navigationAliasServed) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -852,7 +941,7 @@ func navigationNextStatesContext(ctx context.Context, previous map[navigationRes
 		old, existed := previous[key]
 		fingerprint, present := fingerprints[key]
 		if !existed {
-			next[key] = navigationResourceState{Revision: 1 + aliasFloor(previous, locations, key), Fingerprint: fingerprint, Present: present, Dependencies: cloneNavigationDependencies(dependencies[key])}
+			next[key] = navigationResourceState{Revision: 1 + aliasFloor(previous, served, locations, key), Fingerprint: fingerprint, Present: present, Dependencies: cloneNavigationDependencies(dependencies[key])}
 			changes[key] = true
 			continue
 		}
@@ -863,7 +952,7 @@ func navigationNextStatesContext(ctx context.Context, previous map[navigationRes
 			}
 			old.Revision++
 			if present && !old.Present {
-				old.Revision += aliasFloor(previous, locations, key)
+				old.Revision = max(old.Revision, 1+aliasFloor(previous, served, locations, key))
 			}
 			changes[key] = true
 		}
@@ -1415,10 +1504,10 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 // fork-superseded original under the continuation that superseded it, and an
 // in-process child under the live session that runs it. Remote sessions and
 // unknown ids have no hop, so their aliases resolve to gone.
-func (w *WebServer) navigationSubagentParent(ref string) (string, bool) {
+func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, ok bool) {
 	parsed, err := hubapi.ParseRef(ref)
 	if err != nil || parsed.HostID != "local" {
-		return "", false
+		return "", "", false
 	}
 	id := parsed.SessionID
 	if w.cfg.Past != nil {
@@ -1426,25 +1515,28 @@ func (w *WebServer) navigationSubagentParent(ref string) (string, bool) {
 			meta := entry.Meta
 			switch {
 			case meta.IsSubagent && meta.ParentSessionID != "":
-				return meta.ParentSessionID, true
+				return meta.ParentSessionID, "subagent", true
 			case meta.ForkLabel != "":
+				// The tree attaches the original under the latest continuation.
+				continuation := ""
 				for _, candidate := range w.cfg.Past.AllMetas() {
 					if candidate.ParentSessionID == id && !candidate.IsSubagent {
-						return candidate.ID, true
+						continuation = candidate.ID
 					}
 				}
+				return continuation, "fork", continuation != ""
 			}
-			return "", false
+			return "", "", false
 		}
 	}
 	if w.cfg.Roster != nil {
 		for _, entry := range w.cfg.Roster.Snapshot().Live {
 			if !entry.Crashed && entry.SessionID != "" && slices.Contains(entry.RunningSubagentIDs, id) {
-				return entry.SessionID, true
+				return entry.SessionID, "subagent", true
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // webNavigationSource takes a fresh deep snapshot at the service clock. It

@@ -25,10 +25,14 @@ const (
 // continuation).
 type aliasParents map[string]string
 
-func (p aliasParents) parent(ref string) (string, bool) {
+func (p aliasParents) parent(ref string) (string, string, bool) {
 	ref = hubRefFromTreeNodeID(ref).SessionID
 	next, ok := p[ref]
-	return next, ok
+	kind := "subagent"
+	if ref == aliasForkOrigID {
+		kind = "fork"
+	}
+	return next, kind, ok
 }
 
 func aliasNode(id, title string, now time.Time, children ...hubcore.TreeNode) hubcore.TreeNode {
@@ -295,23 +299,59 @@ func TestWebNavigationSubagentParentHops(t *testing.T) {
 	web := &WebServer{cfg: hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(parent, crashed)}}
 
 	cases := []struct {
-		ref, want string
-		ok        bool
+		ref, want, kind string
+		ok              bool
 	}{
-		{"local:" + sub, root, true},
-		{"local:" + orig, cont, true},
-		{"local:" + inproc, live, true},
-		{"local:" + root, "", false},
-		{"local:" + cont, "", false},
-		{"local:" + lone, "", false},
-		{"local:" + stale, "", false},
-		{"local:" + unknown, "", false},
-		{"remote:" + sub, "", false},
+		{"local:" + sub, root, "subagent", true},
+		{"local:" + orig, cont, "fork", true},
+		{"local:" + inproc, live, "subagent", true},
+		{"local:" + root, "", "", false},
+		{"local:" + cont, "", "", false},
+		{"local:" + lone, "", "", false},
+		{"local:" + stale, "", "", false},
+		{"local:" + unknown, "", "", false},
+		{"remote:" + sub, "", "", false},
 	}
 	for _, tc := range cases {
-		got, ok := web.navigationSubagentParent(tc.ref)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("navigationSubagentParent(%q) = %q, %v; want %q, %v", tc.ref, got, ok, tc.want, tc.ok)
+		got, kind, ok := web.navigationSubagentParent(tc.ref)
+		if got != tc.want || ok != tc.ok || (ok && kind != tc.kind) {
+			t.Errorf("navigationSubagentParent(%q) = %q, %q, %v; want %q, %q, %v", tc.ref, got, kind, ok, tc.want, tc.kind, tc.ok)
 		}
+	}
+}
+
+// An alias that later stops resolving answers gone at a revision the client
+// accepts (never below the alias it replaces), and stays put while gone.
+func TestNavigationLocationAliasToGoneIsMonotonic(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service, source := aliasService(t, aliasParents{aliasSubID: aliasRootID}, aliasNode(aliasRootID, "root", now))
+	for _, title := range []string{"one", "two", "three"} {
+		aliasSetRows(source, aliasNode(aliasRootID, title, now))
+		aliasRefresh(t, service)
+	}
+	alias := aliasRead(t, service, aliasSubID, nil)
+	aliasSetRows(source, aliasNode(aliasOtherID, "other", now))
+	aliasRefresh(t, service)
+	gone := aliasRead(t, service, aliasSubID, aliasBase(alias))
+	if gone.Status != "gone" || gone.Revision <= alias.Revision {
+		t.Fatalf("gone = %+v, want a revision past alias %d", gone, alias.Revision)
+	}
+	if again := aliasRead(t, service, aliasSubID, aliasBase(gone)); again.Status != "not_modified" {
+		t.Fatalf("gone re-read = %+v, want not_modified", again)
+	}
+	aliasSetRows(source, aliasNode(aliasRootID, "back", now))
+	aliasRefresh(t, service)
+	back := aliasRead(t, service, aliasSubID, aliasBase(gone))
+	if back.Status != "ok" || back.Revision <= gone.Revision {
+		t.Fatalf("resolved again = %+v, want a revision past gone %d", back, gone.Revision)
+	}
+}
+
+func TestNavigationLocationAliasKeepsForkKind(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service, _ := aliasService(t, aliasParents{aliasForkOrigID: aliasContID}, aliasNode(aliasContID, "continuation", now))
+	location := aliasLocation(t, service, aliasForkOrigID)
+	if location.Session == nil || location.Session.Kind != "fork" || location.TopLevelRef != "local:"+aliasContID {
+		t.Fatalf("alias = %+v, want a fork routed to the continuation", location)
 	}
 }
