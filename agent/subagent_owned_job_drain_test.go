@@ -789,8 +789,8 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		t.Fatalf("child-owned shell record = status %s reason %q, want cancelled/stopped_by_parent", rec.Status, rec.Reason)
 	}
 	aggregate := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
-	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "failed" {
-		t.Fatalf("stable delegate outcome = %#v, want failed", aggregate.LatestOutcome)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "run_error" {
+		t.Fatalf("stable delegate outcome = %#v, want failed with reason run_error", aggregate.LatestOutcome)
 	}
 	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
 	var message string
