@@ -1006,12 +1006,20 @@ it("changes nothing in a form whose start is on its way (#3104)", async () => {
 	store.getState().setReasoning("high");
 	store.getState().selectModel(model);
 	store.getState().setLaunchOverrides({ maxRounds: 3 });
+	store.getState().addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
+	await store.getState().changeHost("paradise-park", "paradise-park");
+	store.getState().applySetup({ host: "paradise-park", cwd: "/elsewhere", model: null, effort: "high", overrides: {} });
+	store.getState().applySeed({ host: "paradise-park", cwd: "/elsewhere" });
+	store.getState().discard();
 	expect(store.getState()).toMatchObject({
+		source: before.source,
 		cwd: before.cwd,
 		prompt: before.prompt,
+		images: before.images,
 		reasoning: before.reasoning,
 		model: before.model,
 		launchOverrides: before.launchOverrides,
+		submitting: true,
 	});
 	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
 	await started;

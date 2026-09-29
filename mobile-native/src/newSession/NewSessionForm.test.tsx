@@ -13,7 +13,7 @@ import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
-import { creationStore, forgetCreationForHub } from "./creations";
+import { creationStore, forgetCreationForHub, formFront } from "./creations";
 import { NewSessionForm } from "./NewSessionForm";
 import type { NewSessionRoutes } from "./newSessionContext";
 import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
@@ -949,4 +949,11 @@ it("says once why Start holds a draft whose last start may have worked (#3104)",
 	expect(rebound.text()).toContain("Creation could not be confirmed");
 	await act(async () => rebound.releaseStart());
 	rebound.dispose();
+});
+
+it("stops being the store's form in front once it unmounts (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
+	expect(formFront(form.store)).toBeDefined();
+	act(() => form.dispose());
+	expect(formFront(form.store)).toBeUndefined();
 });
