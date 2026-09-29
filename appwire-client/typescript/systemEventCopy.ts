@@ -15,6 +15,11 @@ export const ERROR_EVENT_KIND = "error";
  * the summary. */
 const CONTEXT_SUMMARY_LABEL = "Context summary";
 
+// What a failure with no message reads as: apptranscript's
+// FailedTurnFallbackText, the failure item's text and turn.error's message
+// both.
+const FAILED_TURN_FALLBACK_TEXT = "The turn failed.";
+
 // What apptranscript's ContextCompactionAnnouncement says when a pass carries
 // no numbers (and so no raw): the pass ran, which "Context compacted" says.
 const COMPACTION_RAN_TEXT = "Context compaction ran";
@@ -99,5 +104,5 @@ export function echoesTurnError(
   error: { message?: string | null } | null | undefined,
 ): boolean {
   if (!error || !isErrorEvent(item)) return false;
-  return item.text.trim() === (error.message ?? "").trim();
+  return item.text.trim() === ((error.message ?? "").trim() || FAILED_TURN_FALLBACK_TEXT);
 }

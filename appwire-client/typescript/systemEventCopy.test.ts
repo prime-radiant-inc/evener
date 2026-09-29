@@ -71,3 +71,13 @@ test("knows an error event, and the one that echoes its turn's failure", () => {
   expect(echoesTurnError(echo, undefined)).toBe(false);
   expect(isErrorEvent(modelOf(systemEventWireItem("tool-repair")))).toBe(false);
 });
+
+// apptranscript writes "The turn failed." as the failure item's text when the
+// failure carries no message, so a turn.error with none is still echoed.
+test("knows the echo of a failure that carries no message", () => {
+  const fallback = { type: "systemMessage", eventKind: "error", text: "The turn failed." };
+  expect(echoesTurnError(fallback, { message: "" })).toBe(true);
+  expect(echoesTurnError(fallback, { message: null })).toBe(true);
+  expect(echoesTurnError(fallback, {})).toBe(true);
+  expect(echoesTurnError({ ...fallback, text: "Another error" }, { message: "" })).toBe(false);
+});
