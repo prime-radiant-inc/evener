@@ -6,7 +6,7 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from "react-native";
-import type { WhyLine } from "../board/attention";
+import type { BoardState, WhyLine } from "../board/attention";
 import { StateMark } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Alert, Banner } from "./alertCenter";
@@ -15,6 +15,19 @@ import { swipeDismisses } from "./bannerGesture";
 const COALESCED_LINE = "Tap to see them on the Board.";
 const STARTED_LINE = "Session started. Tap to open it.";
 const START_FAILED_HINT = "Tap to open New session.";
+
+/** Each session alert's mark: its Board state, a session you started as
+ * working, and a start that failed as failed. */
+const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
+	failed: "failed",
+	question: "question",
+	approval: "approval",
+	warning: "warning",
+	restartNeeded: "restartNeeded",
+	finished: "finished",
+	started: "working",
+	startFailed: "failed",
+};
 
 /** What the banner's two lines say: the title, and the why line for one
  * session, the prototype's hint for several, or nothing for a notice or a
@@ -76,7 +89,7 @@ function Mark({ banner }: { banner: Banner }) {
 		);
 	if (only.kind === "notice")
 		return <SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />;
-	return <StateMark state={only.kind === "started" ? "working" : only.kind === "startFailed" ? "failed" : only.kind} />;
+	return <StateMark state={MARK_STATE[only.kind]} />;
 }
 
 export function AlertBanner({

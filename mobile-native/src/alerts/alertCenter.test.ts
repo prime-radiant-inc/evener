@@ -8,6 +8,7 @@ import {
 	type Haptic,
 	RELEASE_MS,
 	type SessionAlert,
+	sessionRef,
 } from "./alertCenter";
 
 const timer = {
@@ -32,9 +33,7 @@ function center() {
 function shown(alerts: AlertCenter): string[] | undefined {
 	return alerts
 		.getSnapshot()
-		.banner?.alerts.map((alert) =>
-			alert.kind === "notice" ? alert.key : alert.kind === "startFailed" ? alert.kind : alert.ref,
-		);
+		.banner?.alerts.map((alert) => sessionRef(alert) ?? (alert.kind === "notice" ? alert.key : alert.kind));
 }
 
 beforeEach(() => {
@@ -645,6 +644,18 @@ describe("a New session start that failed after its sheet closed (#3104)", () =>
 		release();
 		vi.advanceTimersByTime(RELEASE_MS);
 		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("keeps a failed start on each hub, one after the other", () => {
+		const { alerts } = center();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer({ kind: "startFailed", hubId: "hub-b", hubName: "paradise-park", uncertain: true });
+		expect(alerts.getSnapshot().held).toBe(2);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-b", hubName: "paradise-park" });
 	});
 
 	it("goes once New session is opened, which shows the same reason", () => {

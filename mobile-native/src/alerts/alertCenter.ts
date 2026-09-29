@@ -110,10 +110,21 @@ export const COALESCE_MS = 5_000;
 export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
+const NEEDS_YOU_KINDS: ReadonlySet<Alert["kind"]> = new Set<NeedsYouKind>([
+	"failed",
+	"question",
+	"approval",
+	"warning",
+	"restartNeeded",
+]);
+
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return (
-		alert.kind !== "notice" && alert.kind !== "finished" && alert.kind !== "started" && alert.kind !== "startFailed"
-	);
+	return NEEDS_YOU_KINDS.has(alert.kind);
+}
+
+/** The session an alert is about, or null for a notice or a failed start. */
+export function sessionRef(alert: Alert): string | null {
+	return alert.kind === "notice" || alert.kind === "startFailed" ? null : alert.ref;
 }
 
 /** An alert about what you did yourself in New session: it never joins or
@@ -123,9 +134,8 @@ function followsInTurn(alert: Alert): boolean {
 	return alert.kind === "started" || alert.kind === "startFailed";
 }
 
-/** Alerts about one session, as against a notice or a start that failed. */
 function aboutSession(alert: Alert, ref: string): boolean {
-	return alert.kind !== "notice" && alert.kind !== "startFailed" && alert.ref === ref;
+	return sessionRef(alert) === ref;
 }
 
 /** An alert that brings news rather than asks for you: no haptic, and it
@@ -136,8 +146,8 @@ function quiet(alert: Alert): boolean {
 
 function subject(alert: Alert): string {
 	if (alert.kind === "notice") return `notice:${alert.key}`;
-	// One failed start at a time: the newest says it.
-	if (alert.kind === "startFailed") return "startFailed";
+	// One failed start per hub: the newest on a hub says it.
+	if (alert.kind === "startFailed") return `startFailed:${alert.hubId}`;
 	return `session:${alert.ref}`;
 }
 
