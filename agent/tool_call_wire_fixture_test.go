@@ -33,6 +33,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -286,20 +287,58 @@ func withFixedJobClock(res tool.ExecResult) tool.ExecResult {
 	return res
 }
 
-// jobTarget targets the job an earlier call's result names.
-func jobTarget(callID string) func(map[string]tool.ExecResult) map[string]any {
+// jobTarget targets the job an earlier call's result names, failing the
+// test when that result names none.
+func jobTarget(t *testing.T, callID string) func(map[string]tool.ExecResult) map[string]any {
 	return func(earlier map[string]tool.ExecResult) map[string]any {
-		return map[string]any{"target": toolWireJobID.FindString(earlier[callID].Output)}
+		job := toolWireJobID.FindString(earlier[callID].Output)
+		if job == "" {
+			t.Fatalf("%s's result names no job: %q", callID, earlier[callID].Output)
+		}
+		return map[string]any{"target": job}
 	}
 }
 
-// withFixedJob records a shell result whose command became a job: its job id
-// fixed, the wait's elapsed seconds fixed, and its state (which carries the
-// elapsed milliseconds) left off.
+// withFixedJob records a shell result whose command became a job: the
+// wait's elapsed seconds fixed, and its state (which carries the elapsed
+// milliseconds) left off. Its job id is fixed with every other in the items
+// (toolWireJobsNumbered).
 func withFixedJob(res tool.ExecResult) tool.ExecResult {
-	res.Output = toolWireJobID.ReplaceAllString(res.Output, "job_fixture")
 	res.Output = toolWireWaitElapsed.ReplaceAllString(res.Output, "the foreground wait ended after 2s")
 	return withoutState(res)
+}
+
+// toolWireJobsNumbered fixes each distinct job id in text as job_fixture_1,
+// job_fixture_2, … in the order the ids first appear, so two jobs stay two.
+func toolWireJobsNumbered(text string) string {
+	numbers := map[string]string{}
+	return toolWireJobID.ReplaceAllStringFunc(text, func(id string) string {
+		if fixed, ok := numbers[id]; ok {
+			return fixed
+		}
+		fixed := fmt.Sprintf("job_fixture_%d", len(numbers)+1)
+		numbers[id] = fixed
+		return fixed
+	})
+}
+
+// withFixedJobList records job_list's listing with its clock fixed and its
+// rows in a stable order: the tool orders them by activity time, which ties
+// for jobs started together and breaks the tie at random. Rows sort by their
+// text with the random ids left out.
+func withFixedJobList(res tool.ExecResult) tool.ExecResult {
+	res = withFixedJobClock(res)
+	lines := strings.Split(res.Output, "\n")
+	end := 1
+	for end < len(lines) && lines[end] != "" {
+		end++
+	}
+	rows := lines[1:end]
+	sort.SliceStable(rows, func(i, j int) bool {
+		return toolWireJobID.ReplaceAllString(rows[i], "") < toolWireJobID.ReplaceAllString(rows[j], "")
+	})
+	res.Output = strings.Join(lines, "\n")
+	return res
 }
 
 func TestToolCallWireFixtures(t *testing.T) {
@@ -394,26 +433,26 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_shell_timeout", tool: "shell",
-			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off).",
-			args:      map[string]any{"command": "printf 'started\\n'; sleep 10"},
+			note:      "A command still running when its foreground wait timed out (the session's command timeout is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
+			args:      map[string]any{"command": "printf 'started\\n'; sleep 600"},
 			normalize: withFixedJob,
 		},
 		{
 			id: "call_job_status", tool: "job_status",
-			note:      "The job the timed-out command left running, checked straight after (it runs 8s more): its id read from that call's result, then fixed.",
-			argsFrom:  jobTarget("call_shell_timeout"),
+			note:      "The job the timed-out command left running, checked: its id read from that call's result, then fixed.",
+			argsFrom:  jobTarget(t, "call_shell_timeout"),
 			normalize: withFixedJobClock,
 		},
 		{
 			id: "call_job_list", tool: "job_list",
-			note:      "The session's jobs, that one running.",
+			note:      "The session's jobs, that one running (rows in a stable order).",
 			args:      map[string]any{},
-			normalize: withFixedJobClock,
+			normalize: withFixedJobList,
 		},
 		{
 			id: "call_job_stop", tool: "job_stop",
 			note:      "The same job stopped.",
-			argsFrom:  jobTarget("call_shell_timeout"),
+			argsFrom:  jobTarget(t, "call_shell_timeout"),
 			normalize: withFixedJobClock,
 		},
 		{
@@ -613,7 +652,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Notes: notes,
 		Items: toolWireRelocated(t, items, func(text string) string {
 			// A job's id is random, in a call's arguments as in its result.
-			text = toolWireJobID.ReplaceAllString(strings.ReplaceAll(text, dir, toolWireCwd), "job_fixture")
+			text = toolWireJobsNumbered(strings.ReplaceAll(text, dir, toolWireCwd))
 			return toolWireRepoRelocated(repo, text)
 		}),
 	}, "the AppWire package and mobile-native tests that read it")
