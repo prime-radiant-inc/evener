@@ -16,7 +16,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import { Alert } from "react-native";
+import { Alert, View } from "react-native";
 import type {
 	AnyNotification,
 	ConnectionState,
@@ -38,8 +38,10 @@ import {
 	type PluginMutationGate,
 } from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
+import { space } from "../design/tokens";
+import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
+import { SearchField } from "../sheet/SearchField";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
@@ -506,7 +508,9 @@ function Plugins({
 					{state.plugins === null && state.pluginsLoading ? <Spinner label="Loading installed plugins" /> : null}
 					{/* The field stays while a filter is set, so it can always be cleared. */}
 					{state.plugins?.length || query !== "" ? (
-						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
+						<View style={{ marginHorizontal: space.margin }}>
+							<SearchField label="Filter installed plugins" value={query} onChangeText={setQuery} />
+						</View>
 					) : null}
 					{state.plugins?.length === 0 && query === "" ? (
 						<GroupFooter>No plugins installed on this hub.</GroupFooter>
