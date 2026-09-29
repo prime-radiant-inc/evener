@@ -61,10 +61,18 @@ describe("providers", () => {
 		const demo = setup();
 		const lunaroute = (list: { instances: { name: string; models?: { id: string; disabled?: boolean }[] }[] }) =>
 			list.instances.find((instance) => instance.name === "lunaroute")?.models;
-		const off = demo.answer("evener/instance/setModelDisabled", { name: "lunaroute", model: "glm-5.3", disabled: true });
+		const off = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: true,
+		});
 		expect(lunaroute(off)).toContainEqual({ id: "glm-5.3", disabled: true });
 		expect(lunaroute(demo.answer("evener/instance/list", {}))).toContainEqual({ id: "glm-5.3", disabled: true });
-		const on = demo.answer("evener/instance/setModelDisabled", { name: "lunaroute", model: "glm-5.3", disabled: false });
+		const on = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: false,
+		});
 		expect(lunaroute(on)).toContainEqual({ id: "glm-5.3" });
 	});
 

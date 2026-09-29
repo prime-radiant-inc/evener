@@ -1740,7 +1740,15 @@ it("holds the model switches while a write runs, and takes the next flip once it
 	expect(control(tree, "gpt-5.5").props.disabled).toBe(true);
 	await act(async () =>
 		answers[0]?.({
-			instances: [{ ...withModels(), models: [{ id: "gpt-5.6", disabled: true }, { id: "gpt-5.5", disabled: true }] }],
+			instances: [
+				{
+					...withModels(),
+					models: [
+						{ id: "gpt-5.6", disabled: true },
+						{ id: "gpt-5.5", disabled: true },
+					],
+				},
+			],
 			availableProviders: [],
 		}),
 	);
