@@ -79,6 +79,17 @@ function interruptIntent(targetRef = TARGET): MutationIntent {
 	};
 }
 
+function noteIntent(note: string, targetRef = TARGET): MutationIntent {
+	return {
+		targetRef,
+		threadId: "thread-1",
+		method: "notes/human/set",
+		payload: { ref: targetRef, expectedInstanceId: "instance-1", note },
+		attachments: [],
+		optimisticDisplay: null,
+	};
+}
+
 // Oracle: "reload restores the complete persisted intent" (mutationOutbox.test.ts:105).
 test("enqueueIntent persists a submitting record with the full intent", async () => {
 	const persisted = await storage.enqueueIntent(intent("survive reload"));
@@ -485,6 +496,28 @@ test("settleReceipt drops a receipt-only control with no optimistic input to car
 
 test("settleReceipt reports false for a record that is in none of the three tables", async () => {
 	await expect(storage.settleReceipt("missing", "pending")).resolves.toBe(false);
+});
+
+// The note supersede rides settleReceipt's own savepoint (the port's shared
+// settlement contract), so a sweep fault leaves NO part of the settlement
+// behind: the refused earlier note survives and the settling note is still in
+// the outbox, instead of the sweep half-applying and the record retiring. The
+// web adapter proves the same atomicity through its beforeCommit seam
+// (mutationOutbox.test.ts).
+test("a failed superseded-note sweep rolls the whole settlement back", async () => {
+	const older = await storage.enqueueIntent(noteIntent("refused older"));
+	await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
+	const settling = await storage.enqueueIntent(noteIntent("accepted now"));
+
+	database.exec(
+		`CREATE TRIGGER reject_supersede BEFORE DELETE ON mutation_recovery
+		 WHEN OLD.client_mutation_id = '${older.clientMutationId}'
+		 BEGIN SELECT RAISE(ABORT, 'supersede failed'); END`,
+	);
+
+	await expect(storage.settleReceipt(settling.clientMutationId, "pending")).rejects.toThrow("supersede failed");
+	expect(rawRow("mutation_recovery", older.clientMutationId)).toMatchObject({ method: "notes/human/set" });
+	expect(rawRow("mutation_outbox", settling.clientMutationId)).toMatchObject({ method: "notes/human/set" });
 });
 
 // Oracle: settleReceipt resolves "outbox ?? recovery ?? optimistic" as its

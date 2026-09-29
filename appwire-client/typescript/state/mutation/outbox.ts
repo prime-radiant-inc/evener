@@ -123,7 +123,18 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
     state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean>;
+  // Records an authoritative receipt. One semantic side effect is part of the
+  // contract, not a host extra: settling a notes/human/set record must, in the
+  // SAME transaction, discard the ref's earlier refused notes/human/set
+  // recovery rows - those with the same targetRef and a lower intentSequence -
+  // because the user's later save is the note editor's only retry. Every other
+  // method, every other target, and every newer row (a note saved after this
+  // one) is preserved. The port declares no separate discard method for this:
+  // it is the settlement's own side effect, so structural interface
+  // conformance alone does not prove it.
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
+  // Records an authoritative apply, with the same notes/human/set supersede
+  // side effect as settleReceipt.
   settleApplied(clientMutationId: string): Promise<boolean>;
   // Records the authoritative snapshot proves never landed, restored for
   // another dispatch attempt; returns the ids restored.

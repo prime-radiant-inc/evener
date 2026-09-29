@@ -354,6 +354,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
 			const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
 			if (!source) return false;
+			this.discardSupersededNoteRecovery(source);
 			const retainsOptimisticDisplay = projectionState === "pending" && carriesOptimisticInput(source);
 			if (retainsOptimisticDisplay) {
 				// The package's acceptedRecord is the one whitelist both adapters
@@ -374,12 +375,36 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// of the three tables currently holds it.
 	async settleApplied(clientMutationId: string): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_applied", () => {
+			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
+			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
+			const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
+			if (!source) return false;
+			this.discardSupersededNoteRecovery(source);
 			let removed = false;
 			for (const table of Object.values(TABLES)) {
 				if (this.delete(table, clientMutationId)) removed = true;
 			}
 			return removed;
 		});
+	}
+
+	// The shared settlement contract's note supersede, run inside the same
+	// settlement transaction (the web adapter's #discardSupersededNoteRecovery):
+	// a settled notes/human/set supersedes the SAME ref's earlier refused-note
+	// recovery rows - a later save is the note editor's only retry - and
+	// nothing else. Every other method, every other target, and every newer
+	// row (including a note saved after this one) stays; the port declares no
+	// separate discard method for it, because it is the settlement's own side
+	// effect.
+	protected discardSupersededNoteRecovery(source: MutationRecord<A>): void {
+		if (source.method !== "notes/human/set") return;
+		this.db.runSync(
+			`DELETE FROM ${TABLES.recovery}
+			 WHERE method = 'notes/human/set' AND target_ref = ? AND intent_sequence < ?`,
+			source.targetRef,
+			source.intentSequence,
+		);
 	}
 
 	async transferToRecovery(
