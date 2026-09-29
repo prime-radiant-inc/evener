@@ -148,12 +148,17 @@ func removeDelegateArtifacts(stateDir, childSessionID string) error {
 	}
 	// Drop the now-empty session dir; a populated one (the child's job store,
 	// transcript, or metadata) is expected to remain, so only an attempt on an
-	// empty directory is made, and a non-empty result is not an error. Any other
-	// removal failure is surfaced.
-	if entries, rerr := os.ReadDir(parent); rerr == nil && len(entries) == 0 {
+	// empty directory is made, and a non-empty result is not an error. A read
+	// failure other than a missing parent is surfaced rather than reported as
+	// success with residue left behind.
+	entries, rerr := os.ReadDir(parent)
+	switch {
+	case rerr == nil && len(entries) == 0:
 		if err := os.Remove(parent); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("delegate artifacts dir: remove empty %s: %w", parent, err)
 		}
+	case rerr != nil && !os.IsNotExist(rerr):
+		return fmt.Errorf("delegate artifacts dir: read %s: %w", parent, rerr)
 	}
 	return nil
 }
