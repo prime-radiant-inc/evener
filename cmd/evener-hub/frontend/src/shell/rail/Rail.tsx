@@ -1006,6 +1006,7 @@ function NavigationRail({
   scrollOwner = "rail",
 }: RailProps = {}) {
   const client = useClient();
+  const isMobile = useIsMobile();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -1453,9 +1454,12 @@ function NavigationRail({
           topNotesStore.getState().openAndFocus(session.ref);
         } else if (pane === "activity") {
           // Desktop Activity everywhere is the zoom system's sidebar, scoped
-          // by the just-focused session. Same idempotent navigate: the rail
-          // opens, it does not toggle closed.
-          activitySidebarStore.getState().openWith();
+          // by the just-focused session. On mobile there is no sidebar (the
+          // rail lives in the tree drawer), so the sessionActivity pane keeps
+          // its pre-sidebar behavior. Both idempotent opens: the rail
+          // navigates, it never toggles closed.
+          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+          else activitySidebarStore.getState().openWith();
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
@@ -1617,7 +1621,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, isMobile],
   );
   function closeDeleteDialog() {
     setDeleteTarget(null);

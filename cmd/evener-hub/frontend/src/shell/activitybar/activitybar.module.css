@@ -24,53 +24,6 @@
   flex: none;
 }
 
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.crumbWrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.crumbSep {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-}
-
-.crumbCurrent {
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crumbBtn {
-  border: none;
-  background: none;
-  padding: 0;
-  font: inherit;
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crumbBtn:hover {
-  color: var(--ink-hi);
-  text-decoration: underline;
-}
-
 .tabs {
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--edge);

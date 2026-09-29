@@ -1,7 +1,9 @@
 // The Watches tab: the scope's watches with the shared cadence/meta wording,
 // plus the honest "+N more · M armed" line when the hub omitted rows (the
-// rail's watchCountLabel grammar, so the two surfaces cannot disagree).
+// rail's watchCountLabel grammar, so the two surfaces cannot disagree). The
+// clock is the shared useNowTick, ticking only while this tab is mounted.
 
+import { useNowTick } from "../../panes/session/liveness";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activeWatchCount, watchCountLabel } from "../rail/railNodes";
 import type { ActivityScope } from "../statusbar/statusScope";
@@ -14,7 +16,8 @@ const CLASS = {
   passiveMore: requireClass(styles.passiveMore, "activitybar.module.css", "passiveMore"),
 };
 
-export function WatchesTab({ scope, now }: { scope: ActivityScope; now: number }) {
+export function WatchesTab({ scope }: { scope: ActivityScope }) {
+  const now = useNowTick(30_000);
   const watches = scope.leaf.watches ?? [];
   const omitted = scope.leaf.omitted_watches ?? 0;
   if (watches.length === 0 && omitted === 0) {

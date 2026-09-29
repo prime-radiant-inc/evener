@@ -48,18 +48,26 @@ export function scopeCounts(session: NavigationSessionSummary): ScopeCounts {
   };
 }
 
-/** The title path from the root that contains `leafRef` down to it, walking
- * the root's loaded children. A tree that doesn't contain the ref (a
- * partially loaded project) degrades to the leaf alone rather than throwing,
- * and a ref the store has never heard of returns null. */
-export function scopePath(navigation: NavigationStoreState, leafRef: string): ScopeCrumb[] | null {
+function resolveLeaf(
+  navigation: NavigationStoreState,
+  leafRef: string,
+): { leaf: NavigationSessionSummary; topLevelRef: string | null } | null {
   const location = locationOf(leafRef, navigation);
   const leaf = location?.session ?? selectSessionSummary(leafRef, navigation);
   if (!leaf) return null;
-  if (!location || location.top_level || location.top_level_ref === leafRef) {
+  return { leaf, topLevelRef: location?.top_level_ref ?? null };
+}
+
+function pathFor(
+  navigation: NavigationStoreState,
+  leafRef: string,
+  resolved: { leaf: NavigationSessionSummary; topLevelRef: string | null },
+): ScopeCrumb[] {
+  const { leaf, topLevelRef } = resolved;
+  if (topLevelRef === null || topLevelRef === leafRef) {
     return [{ ref: leaf.ref, title: leaf.title }];
   }
-  const root = selectSessionSummary(location.top_level_ref, navigation);
+  const root = selectSessionSummary(topLevelRef, navigation);
   const walk = (node: NavigationSessionSummary, ancestors: ScopeCrumb[]): ScopeCrumb[] | null => {
     const here = [...ancestors, { ref: node.ref, title: node.title }];
     if (node.ref === leafRef) return here;
@@ -73,9 +81,20 @@ export function scopePath(navigation: NavigationStoreState, leafRef: string): Sc
   return full ?? [{ ref: leaf.ref, title: leaf.title }];
 }
 
+/** The title path from the root that contains `leafRef` down to it, walking
+ * the root's loaded children. A tree that doesn't contain the ref (a
+ * partially loaded project) degrades to the leaf alone rather than throwing,
+ * and a ref the store has never heard of returns null. */
+export function scopePath(navigation: NavigationStoreState, leafRef: string): ScopeCrumb[] | null {
+  const resolved = resolveLeaf(navigation, leafRef);
+  if (!resolved) return null;
+  return pathFor(navigation, leafRef, resolved);
+}
+
 export function deriveScope(navigation: NavigationStoreState, leafRef: string): ActivityScope | null {
-  const path = scopePath(navigation, leafRef);
-  const leaf = selectSessionSummary(leafRef, navigation);
-  if (!path || !leaf) return null;
-  return { leaf, path, counts: scopeCounts(leaf) };
+  // One resolution feeds both the path and the counts (a second full-store
+  // DFS for the leaf was the review's efficiency finding).
+  const resolved = resolveLeaf(navigation, leafRef);
+  if (!resolved) return null;
+  return { leaf: resolved.leaf, path: pathFor(navigation, leafRef, resolved), counts: scopeCounts(resolved.leaf) };
 }

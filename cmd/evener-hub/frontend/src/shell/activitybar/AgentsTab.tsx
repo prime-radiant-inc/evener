@@ -32,8 +32,13 @@ function drill(leaf: NavigationSessionSummary, sub: NavigationSessionSummary): v
 
 export function AgentsTab({ scope }: { scope: ActivityScope }) {
   const children = scope.leaf.children ?? [];
-  const current = children.filter(subagentIsCurrent);
-  const inactive = children.filter((child) => !subagentIsCurrent(child));
+  // One pass: subagentIsCurrent walks the child's subtree, so two filter()
+  // passes would pay that walk twice (railNodes' splitChildren precedent).
+  const current: NavigationSessionSummary[] = [];
+  const inactive: NavigationSessionSummary[] = [];
+  for (const child of children) {
+    (subagentIsCurrent(child) ? current : inactive).push(child);
+  }
   const more = scope.leaf.more_subagents ?? 0;
   const [foldOpen, setFoldOpen] = useState(false);
   const [shown, setShown] = useState(PAGE);

@@ -5,6 +5,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { focusedActivityScopeRef } from "../focusedSession";
 import type { ActivityTab } from "../statusbar/statusScope";
 
 export interface ActivitySidebarState {
@@ -27,6 +28,22 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set) =>
 
 export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarState) => T): T {
   return useStore(activitySidebarStore, selector);
+}
+
+/** The Activity ✓ semantics, shared by the rail row and the session chrome:
+ * the sidebar is open AND scoped to this session (the sidebar always describes
+ * the focused session, so a bare "open" would mark every row). Subscribes to
+ * the sidebar store alone - a toggle re-renders the menu's owner, and the
+ * selector re-reads the scope (imperatively) at that render and at every
+ * subsequent one. No workspace subscription: focus changes don't need to
+ * re-render rows for a marker that's only read when a menu is open. */
+export function useActivitySidebarOpenFor(ref: string): boolean {
+  return useActivitySidebarStore((state) => state.open && focusedActivityScopeRef() === ref);
+}
+
+/** The imperative twin for non-React call sites. */
+export function activitySidebarOpenFor(ref: string): boolean {
+  return activitySidebarStore.getState().open && focusedActivityScopeRef() === ref;
 }
 
 // resetActivitySidebarStoreForTests restores the initial state between tests -

@@ -821,7 +821,9 @@ test("desktop Activity menu item toggles the activity sidebar", async () => {
     component: lazy(() => Promise.resolve({ default: () => null })),
   });
   try {
-    workspaceStore.getState().openPane("session", { ref: "ref_inline" });
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_inline" });
+    });
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Activity" }));
     expect(activitySidebarStore.getState().open).toBe(true);

@@ -23,6 +23,7 @@ import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } 
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -1820,6 +1821,42 @@ describe("resource-backed Rail", () => {
       restoreSessionPane();
       // The reset updates a store the row subscribes to; unwrapped it lands
       // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Activity action on mobile keeps the old pane (no sidebar exists there)", async () => {
+    // The sidebar is desktop chrome; on the phone the rail lives in the tree
+    // drawer and Activity keeps its pre-sidebar behavior: the sessionActivity
+    // pane. The desktop retarget must not leak into the mobile rail.
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreActivityPane = registerPaneForTests({
+      id: "sessionActivity",
+      title: () => "activity",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      await waitFor(() => {
+        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(true);
+      });
+      expect(activitySidebarStore.getState().open).toBe(false);
+    } finally {
+      restoreViewport();
+      restoreSessionPane();
+      restoreActivityPane();
       act(() => resetActivitySidebarStoreForTests());
     }
   });

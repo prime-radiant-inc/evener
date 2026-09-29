@@ -5,15 +5,17 @@
 //
 // focusedSessionRef is AppShell's original strict reading: the focused pane
 // IS a session pane, else null (Mod+I's "no-op when the focused pane isn't a
-// session" contract, Mod+J's cycle starting point). focusedActivityScopeRef
-// is the wider reading the activity surfaces want: a focused transcript pane
-// of a SESSION (a drilled subagent) scopes the surfaces to it, and a pane of
-// neither kind (settings, docs, welcome) keeps the LAST session scope - the
-// bar and sidebar describe what you were reading, not nothing, while you
-// check a setting.
+// session" contract, Mod+J's cycle starting point). The activity surfaces
+// read the workspace's OWN currentSessionRef instead of a parallel mechanism:
+// the session the workspace is showing (a transcript pane's subject, a job
+// log's parent, a doc's session, falling back to the main pane's session when
+// the focused pane is about none) is also what the rail marks as the selected
+// row - so the rail's selection and the surfaces' scope can never disagree,
+// and a pure focus switch re-renders the hook's readers (the workspace store
+// subscription does it; nothing reads a stale imperative value).
 
 import { refParam } from "./routing";
-import { type WorkspaceStoreState, workspaceStore } from "./workspace";
+import { currentSessionRef, useWorkspaceStore, workspaceStore } from "./workspace";
 
 export function focusedSessionRef(): string | null {
   const state = workspaceStore.getState();
@@ -22,36 +24,14 @@ export function focusedSessionRef(): string | null {
   return refParam(pane.params);
 }
 
-function currentActivityScopeRef(state: WorkspaceStoreState): string | null {
-  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
-  const params = pane?.params as { ref?: unknown; parentRef?: unknown } | undefined;
-  const ref = typeof params?.ref === "string" ? params.ref : null;
-  const parentRef = typeof params?.parentRef === "string" ? params.parentRef : null;
-  if (pane?.type === "session") return ref;
-  if (pane?.type === "transcript" && ref !== null) {
-    // A job log keeps its parent session's scope; a session's transcript
-    // (a drilled subagent) scopes the surfaces to itself.
-    return ref.startsWith("job:") ? parentRef : ref;
-  }
-  return null;
-}
-
-// The sticky memory: updated by subscription, not on read, so the last
-// session scope survives any focus excursion no matter when (or whether)
-// anyone is mid-render of a reader. Null until a session has been focused.
-let lastScopeRef: string | null = null;
-
-workspaceStore.subscribe((state) => {
-  const current = currentActivityScopeRef(state);
-  if (current !== null) lastScopeRef = current;
-});
-
 export function focusedActivityScopeRef(): string | null {
-  return lastScopeRef;
+  return currentSessionRef(workspaceStore.getState());
 }
 
-/** Test-only: drop the sticky last-scope memory between tests. App code never
- * calls this. */
-export function resetFocusedActivityScopeForTests(): void {
-  lastScopeRef = null;
+export function useFocusedActivityScopeRef(): string | null {
+  return useWorkspaceStore(currentSessionRef);
 }
+
+/** Test-only: kept for the reset symmetry the suite files expect; the store
+ * has no memory to clear (the scope derives fresh from the workspace). */
+export function resetFocusedActivityScopeForTests(): void {}

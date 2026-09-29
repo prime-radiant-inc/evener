@@ -16,49 +16,6 @@
   flex: none;
 }
 
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.crumbWrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.crumbSep {
-  color: var(--ink-low);
-}
-
-.crumbCurrent {
-  color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crumbBtn {
-  border: none;
-  background: none;
-  padding: 0;
-  font: inherit;
-  color: var(--ink-mid);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crumbBtn:hover {
-  color: var(--ink-hi);
-  text-decoration: underline;
-}
-
 .chips {
   margin-left: auto;
   display: flex;
@@ -89,10 +46,4 @@
   display: inline-flex;
   align-items: center;
   color: var(--ink-low);
-}
-
-.watchGlyph {
-  width: 12px;
-  height: 12px;
-  display: block;
 }

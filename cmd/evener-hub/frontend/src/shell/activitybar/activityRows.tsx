@@ -5,10 +5,10 @@
 // sidebar can never drift from the rail or the activity panel.
 
 import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
-import { jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import { humanizeState, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { WatchGlyph } from "../rail/RailRow";
+import { cadenceStateFor, WatchGlyph } from "../rail/RailRow";
 import { activeWatchCount, displayState } from "../rail/railNodes";
 import styles from "./activitybar.module.css";
 
@@ -50,10 +50,14 @@ function jobTone(status: string): Tone {
 }
 
 function agentTone(sub: NavigationSessionSummary): Tone {
-  switch (displayState(sub)) {
-    case "active":
+  // The rail's own two-step: displayState folds approval/ask into the wire
+  // state (a subagent's bare "awaiting" is idle), cadenceStateFor maps that
+  // to the hue family. Same composition as RailRow, so the sidebar's rows
+  // can never drift from the rail's.
+  switch (cadenceStateFor(displayState(sub))) {
+    case "working":
       return "alive";
-    case "awaiting":
+    case "needs-you":
       return "attention";
     case "failed":
       return "danger";
@@ -63,18 +67,7 @@ function agentTone(sub: NavigationSessionSummary): Tone {
 }
 
 function agentStateText(sub: NavigationSessionSummary): string {
-  switch (displayState(sub)) {
-    case "active":
-      return "working";
-    case "awaiting":
-      return "waiting on you";
-    case "failed":
-      return "failed";
-    case "idle":
-      return "idle";
-    default:
-      return displayState(sub);
-  }
+  return humanizeState(displayState(sub), sub.ask_pending === true, sub.approval_pending === true);
 }
 
 /** The one-line rollup an agent row carries, so a parent row says what is

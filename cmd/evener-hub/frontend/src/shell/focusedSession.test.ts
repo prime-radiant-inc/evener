@@ -3,9 +3,15 @@
 // Pane-registration scaffolding mirrors sessionCycle.test.ts (fixture
 // descriptors over the shared paneRegistry singleton).
 
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { focusedActivityScopeRef, focusedSessionRef, resetFocusedActivityScopeForTests } from "./focusedSession";
+import {
+  focusedActivityScopeRef,
+  focusedSessionRef,
+  resetFocusedActivityScopeForTests,
+  useFocusedActivityScopeRef,
+} from "./focusedSession";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -26,6 +32,7 @@ const restorePaneFixtures: Array<() => void> = [];
 beforeAll(() => {
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("transcript")));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("doc")));
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("settings", { singleton: true })));
 });
 
@@ -34,6 +41,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
+  cleanup();
   resetWorkspaceStoreForTests();
   resetFocusedActivityScopeForTests();
 });
@@ -68,13 +76,40 @@ describe("focusedActivityScopeRef", () => {
     expect(focusedActivityScopeRef()).toBe("local:a");
   });
 
-  test("focusing settings keeps the last session's scope instead of blanking", () => {
+  test("focusing settings with the session still open in a secondary tab keeps its scope", () => {
     workspaceStore.getState().openPane("session", { ref: "local:a" });
-    workspaceStore.getState().openPane("settings", {});
+    workspaceStore.getState().openPane("doc", { session: "local:a", path: "README.md" }, { slot: "secondary" });
+    workspaceStore.getState().openPane("settings", {}, { slot: "secondary" });
+    // The focused secondary tab is settings, but the main pane still shows the
+    // session: the scope is what's showing (the rail's selected row agrees).
     expect(focusedActivityScopeRef()).toBe("local:a");
   });
 
-  test("is null until any session has been focused", () => {
+  test("is null when no session is open anywhere", () => {
+    workspaceStore.getState().openPane("settings", {});
     expect(focusedActivityScopeRef()).toBeNull();
+  });
+
+  test("a doc pane scopes to the session it documents", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    workspaceStore.getState().openPane("doc", { session: "local:a", path: "README.md" }, { slot: "secondary" });
+    expect(focusedActivityScopeRef()).toBe("local:a");
+  });
+
+  test("the hook re-renders subscribers on a pure focus switch, no pane-set change needed", () => {
+    const { result } = renderHook(() => useFocusedActivityScopeRef());
+    let main = "";
+    act(() => {
+      main = workspaceStore.getState().openPane("session", { ref: "local:a" });
+    });
+    expect(result.current).toBe("local:a");
+    act(() => {
+      workspaceStore.getState().openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+    });
+    expect(result.current).toBe("local:b");
+    // The sticky-✓ bug the altitude review caught: focusing an EXISTING pane
+    // changes nothing but focusedPaneId; readers must still update.
+    act(() => workspaceStore.getState().focusPane(main));
+    expect(result.current).toBe("local:a");
   });
 });
