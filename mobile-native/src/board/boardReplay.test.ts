@@ -205,7 +205,7 @@ it("won't cancel a held action while it is being sent", async () => {
 	const held = hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
 	const running = replay.sendImmediate(client, isLive);
 	await vi.waitFor(() => expect(methods(client)).toEqual(["evener/thread/name/set"]));
-	expect(hold.cancelable(held.id)).toBe(false);
+	expect(hold.isSending(held.id)).toBe(true);
 	answer();
 	await running;
 	expect(hold.getSnapshot()).toEqual([]);
@@ -308,6 +308,15 @@ describe("through the organization journal", () => {
 		expect(hold.getSnapshot()).toEqual([]);
 	});
 
+	it("leaves a change another replay is sending to that replay", async () => {
+		const { hold, replay, isLive } = setup();
+		const { organization, sent } = journal();
+		const held = hold.hold({ kind: "pin", target: { sessionRef: "local:a", sectionId: "s1" } }, 1);
+		hold.claim(held.id);
+		await replay.organize(organization, isLive);
+		expect(sent).toEqual([]);
+	});
+
 	it("keeps a change the journal didn't take, and doesn't hand it to the journal", async () => {
 		const { hold, replay, isLive } = setup();
 		const { organization, actions, sent } = journal({ takes: false });
@@ -316,8 +325,24 @@ describe("through the organization journal", () => {
 		expect(sent).toEqual([]);
 		expect(actions.reconcile).not.toHaveBeenCalled();
 		expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["archive"]);
-		expect(hold.cancelable(hold.getSnapshot()[0]?.id ?? "")).toBe(true);
+		expect(hold.isSending(hold.getSnapshot()[0]?.id ?? "")).toBe(false);
 	});
+});
+
+it("leaves a record another replay is sending to that replay, sending nothing twice", async () => {
+	// A Board unmounted mid-send leaves its replay's request out while a new
+	// Board's replay starts over the same hold.
+	const { hold, client, replay, isLive } = setup();
+	client.on("thread/shutdown", () => ({}) as never);
+	const first = hold.hold({ kind: "shutDown", ref: "c1", title: "C1", seen: { turnEndedAt: ended, running: true } }, 1);
+	hold.hold({ kind: "shutDown", ref: "c2", title: "C2", seen: { turnEndedAt: ended, running: true } }, 2);
+	hold.claim(first.id);
+	await replay.sendImmediate(client, isLive);
+	expect(methods(client)).toEqual([]);
+	// Its sender settles it, and the next replay goes on from there.
+	hold.settled(first.id);
+	await replay.sendImmediate(client, isLive);
+	expect(methods(client)).toEqual(["thread/shutdown"]);
 });
 
 it("runs one replay at a time", async () => {

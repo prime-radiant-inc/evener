@@ -85,10 +85,15 @@ export function heldVerb(action: HeldAction): string {
 	return action.kind === "stop" ? "Stop" : "Shut down";
 }
 
-/** A row's second line while something waits for it: the latest held
- * action (spec 14), or null when nothing does. */
+/** A row's second line while something waits for it: the action held last
+ * (spec 14), or null when nothing does. A replacement keeps the first one's
+ * place in the order, so the latest is the one held last, not the last in
+ * the order. */
 export function waitingLine(records: readonly HeldRecord[], ref: string): string | null {
-	const latest = heldFor(records, ref).at(-1);
+	const latest = heldFor(records, ref).reduce<HeldRecord | null>(
+		(last, record) => (last === null || record.heldAt >= last.heldAt ? record : last),
+		null,
+	);
 	return latest ? `${heldVerb(latest.action)} waits for the connection` : null;
 }
 
@@ -230,11 +235,12 @@ export class BoardHold {
 
 	/** You took it back, unless it is on its way. */
 	cancel(id: string): void {
-		if (this.cancelable(id)) this.remove(id);
+		if (!this.isSending(id)) this.remove(id);
 	}
 
-	cancelable(id: string): boolean {
-		return !this.sending.has(id);
+	/** Whether a replay is sending it now: on its way, it can't be taken back. */
+	isSending(id: string): boolean {
+		return this.sending.has(id);
 	}
 
 	/** A replay is sending it. */

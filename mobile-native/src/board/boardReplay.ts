@@ -70,7 +70,9 @@ export class BoardReplay {
 		for (;;) {
 			if (this.#disposed || !isLive()) return;
 			const record = this.hold.getSnapshot().find((held) => AT_ONCE.has(held.action.kind));
-			if (!record || !(await this.#sendAtOnce(client, record, isLive))) return;
+			// One another replay is sending (a Board unmounted mid-send) is that
+			// replay's: its settling runs this stream again.
+			if (!record || this.hold.isSending(record.id) || !(await this.#sendAtOnce(client, record, isLive))) return;
 		}
 	}
 
@@ -86,7 +88,7 @@ export class BoardReplay {
 			const actions = organization.actions;
 			if (this.#disposed || !actions || !isLive() || !organizationOpen(organization)) return;
 			const record = this.hold.getSnapshot().find((held) => !AT_ONCE.has(held.action.kind));
-			if (!record) return;
+			if (!record || this.hold.isSending(record.id)) return;
 			this.hold.claim(record.id);
 			const outcome = await organizationChange(actions, record.action);
 			// Not taken, or the Board went away or the connection dropped: it

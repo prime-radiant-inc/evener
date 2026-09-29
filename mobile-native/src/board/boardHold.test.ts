@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { BoardHold, boardHoldKey, type HeldAction, heldFor, turnSeen, turnStillSeen } from "./boardHold";
+import { BoardHold, boardHoldKey, type HeldAction, heldFor, turnSeen, turnStillSeen, waitingLine } from "./boardHold";
 
 function memory(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
@@ -117,7 +117,7 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		const hold = new BoardHold(memory(), "hub-1");
 		const sending = hold.hold(archive("local:a"), 1);
 		hold.claim(sending.id);
-		expect(hold.cancelable(sending.id)).toBe(false);
+		expect(hold.isSending(sending.id)).toBe(true);
 		hold.cancel(sending.id);
 		// The opposite change can't undo a request already on its way, so it
 		// waits its turn.
@@ -125,9 +125,19 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		expect(kinds(hold)).toEqual(["archive:local:a", "unarchive:local:a"]);
 		// Released, it is an ordinary held record again.
 		hold.release(sending.id);
-		expect(hold.cancelable(sending.id)).toBe(true);
+		expect(hold.isSending(sending.id)).toBe(false);
 		hold.hold(archive("local:a"), 3);
 		expect(kinds(hold)).toEqual(["archive:local:a"]);
+	});
+
+	it("names the action last chosen on a row's line, whatever its place in the order", () => {
+		const hold = new BoardHold(memory(), "hub-1");
+		hold.hold({ kind: "rename", ref: "local:a", title: "A", name: "One" }, 1);
+		hold.hold(stop("local:a"), 2);
+		expect(waitingLine(hold.getSnapshot(), "local:a")).toBe("Stop waits for the connection");
+		// The second rename takes the first one's place, but it is the latest word.
+		hold.hold({ kind: "rename", ref: "local:a", title: "A", name: "Two" }, 3);
+		expect(waitingLine(hold.getSnapshot(), "local:a")).toBe("Rename waits for the connection");
 	});
 
 	it("finds what waits for one session", () => {

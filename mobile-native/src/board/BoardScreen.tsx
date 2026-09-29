@@ -772,7 +772,7 @@ function Board({
 			// What is on its way can't be taken back, so it offers no Cancel.
 			held: (item) =>
 				heldFor(heldNow.current, item.row.ref)
-					.filter((record) => hold.cancelable(record.id))
+					.filter((record) => !hold.isSending(record.id))
 					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
 			cancel: (id) => hold.cancel(id),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
