@@ -17,6 +17,7 @@ import {
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
+import { unreadableDraftDiscardDisabled } from "../keybindingOfflineRecovery";
 import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
@@ -125,10 +126,13 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				<>
 					<GroupFooter tone="danger">A saved change to this setting couldn't be read on this phone.</GroupFooter>
 					<Group>
+						{/* Discarding an unreadable record touches only this phone, so the
+						    hub being away must not hold it - the same rule the keybindings
+						    screen applies. */}
 						<Row
 							label="Discard it"
 							tone="danger"
-							disabled={!connected || state.loading || state.saving || writeUncertain}
+							disabled={unreadableDraftDiscardDisabled(connected, state)}
 							onPress={() => run(() => model.discardTranscriptDraft())}
 						/>
 					</Group>
