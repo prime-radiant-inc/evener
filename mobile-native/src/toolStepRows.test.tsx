@@ -122,7 +122,11 @@ describe("a question put to you, with the answer you gave", () => {
 		const rows = rowsAt(level);
 		const asked = rows.find((row) => row.kind === "activity" && row.label === "ask_user");
 		expect(asked).toBeDefined();
-		expect(runsAt(level).flatMap((run) => run.steps).some((step) => step.label === "ask_user")).toBe(false);
+		expect(
+			runsAt(level)
+				.flatMap((run) => run.steps)
+				.some((step) => step.label === "ask_user"),
+		).toBe(false);
 		expect(answerTo(toolWireModel(), asked?.id ?? "")).toBe('"Ship tonight"');
 		expect(rows.some((row) => row.kind === "user" && row.text.startsWith("[answers]"))).toBe(false);
 	});
