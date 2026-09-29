@@ -59,7 +59,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Choose images to attach to your Evener conversations.",
-          "cameraPermission": "Take photos to attach to your Evener conversations.",
+          "cameraPermission": "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
           "microphonePermission": false
         }
       ],
@@ -76,7 +76,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Scan the pairing code shown in Evener on your computer.",
+          "cameraPermission": "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
