@@ -16,7 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { alertRequests, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -890,6 +890,19 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 		vi.useRealTimers();
 	}
 	tree.unmount();
+});
+
+// While you type in the composer, the chips and the note row step aside so
+// the transcript keeps its room; the nav bar stays (spec 8.1).
+it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	expect(session.block().props.hidden).toBe(false);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(false);
 });
 
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {

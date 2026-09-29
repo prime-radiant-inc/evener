@@ -2095,6 +2095,16 @@ describe("queued messages above the composer (spec 8.5)", () => {
 
 	// With the dock in the composer's place, a keyboard up is for something
 	// else (the find bar, say), so the queue stays as it is.
+	// The keyboard is up for the find bar's field, not the composer.
+	it("keeps the queue open while you type in the find bar", async () => {
+		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
 	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
 		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
 		expect(field(tree)).toBeUndefined();
