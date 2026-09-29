@@ -33,6 +33,17 @@ cd "$root"
 # are per-call flags so they do not leak into the chained hook.
 git() { command git --literal-pathspecs -c core.quotePath=false "$@"; }
 
+# Git still C-quotes a name holding a backslash, quote, tab, or newline, and the
+# name lists here are newline-delimited, so such a name cannot be routed. Refuse
+# it rather than let it reach the commit unformatted.
+quoted=$(git diff --cached --name-only --diff-filter=ACMR | grep '^"' || true)
+if [ -n "$quoted" ]; then
+	echo "pre-commit: staged names with a backslash, quote, tab, or newline are not supported:" >&2
+	printf '%s\n' "$quoted" | sed 's/^/  /' >&2
+	echo "  Fix: rename them." >&2
+	exit 1
+fi
+
 # formattable lists the staged added/copied/modified/renamed files under
 # $1 (an extended-regex path prefix) that Biome formats, one per line.
 formattable() {

@@ -145,6 +145,36 @@ func TestPreCommitHookFormatsNonASCIIAndGlobNamedFiles(t *testing.T) {
 	}
 }
 
+func TestPreCommitHookRefusesNamesItCannotRoute(t *testing.T) {
+	repo := hookRepo(t)
+	installStubBiome(t, repo, "mobile-native", filepath.Join(t.TempDir(), "biome.log"))
+	stageFile(t, repo, "mobile-native/src/a\\b.ts", "a\n")
+
+	output, err := runInErr(repo, "git", "commit", "-q", "-m", "x")
+
+	if err == nil || !strings.Contains(output, "not supported") {
+		t.Errorf("want a refusal of the backslash name; err = %v, output = %s", err, output)
+	}
+}
+
+func TestPreCommitHookAbortsAndRestagesNothingWhenBiomeFails(t *testing.T) {
+	repo := hookRepo(t)
+	log := filepath.Join(t.TempDir(), "biome.log")
+	installStubBiome(t, repo, "mobile-native", log)
+	failing := "#!/bin/sh\necho 'boom: syntax error' >&2\nfor arg in \"$@\"; do case \"$arg\" in /*) echo '// half formatted' >> \"$arg\";; esac; done\nexit 1\n"
+	writeTestFile(t, filepath.Join(repo, "mobile-native", "node_modules", ".bin", "biome"), []byte(failing), 0o755)
+	stageFile(t, repo, "mobile-native/src/a.ts", "a\n")
+
+	output, err := runInErr(repo, "git", "commit", "-q", "-m", "x")
+
+	if err == nil || !strings.Contains(output, "Biome failed in mobile-native") {
+		t.Fatalf("want the commit refused with the Biome failure; err = %v, output = %s", err, output)
+	}
+	if staged := runIn(t, repo, "git", "show", ":mobile-native/src/a.ts"); staged != "a\n" {
+		t.Errorf("index holds %q after a Biome failure, want the original staged content", staged)
+	}
+}
+
 func TestPreCommitHookLeavesMergeCommitsAlone(t *testing.T) {
 	repo := hookRepo(t)
 	installStubBiome(t, repo, "mobile-native", filepath.Join(t.TempDir(), "biome.log"))
