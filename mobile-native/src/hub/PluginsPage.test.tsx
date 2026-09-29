@@ -21,7 +21,11 @@ import {
 	type MarketplaceEntry,
 	type PluginEntry,
 } from "@evener/appwire-client";
-import { MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
+import {
+	HUB_WRITE_BUSY,
+	HubWriteBusyError,
+	MARKETPLACE_REFETCH_DEBOUNCE_MS,
+} from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { AddMarketplace } from "../MarketplaceBrowser";
@@ -3193,6 +3197,26 @@ function mountAdd(onClose = vi.fn()) {
 	);
 	return { tree, onClose };
 }
+
+it("shows the busy copy when the shared gate refuses the add", async () => {
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			ready
+			canUseConnection={() => true}
+			onClose={vi.fn()}
+			onAdd={() => Promise.reject(new HubWriteBusyError())}
+		/>,
+	);
+	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+	});
+	// A refusal is not a failure: the modal stays open on the busy copy.
+	expect(renderedText(tree)).toContain(HUB_WRITE_BUSY);
+});
 
 it("closes an untouched Add marketplace at once, by Cancel or a swipe", () => {
 	alertRequests.length = 0;

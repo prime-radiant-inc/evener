@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
+import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import {
@@ -23,19 +24,9 @@ function storeWithFake(gate: HubWriteGate = createHubWriteGate()) {
   return { fake, store: createMarketplacesStore(fake, gate) };
 }
 
-// The revision fence's ordering cases issue two writes at once: they pin what
-// a store does when writes overlap, which the shared gate normally prevents
-// but the fence must still get right for a read that outruns a write. This
-// gate double lets both writes through so those cases test the fence in
-// isolation; every other case uses the real gate.
-const permissiveGate: HubWriteGate = {
-  isBusy: () => false,
-  run: async (action) => {
-    await action();
-    return true;
-  },
-  subscribe: () => () => {},
-};
+// The revision fence's ordering cases issue two writes at once; see
+// testing/hubWriteGate.ts for why they use a permissive gate double.
+const permissiveGate = permissiveHubWriteGate();
 
 function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> = {}): WireError {
   return new WireError("clone could not be removed", -32603, {

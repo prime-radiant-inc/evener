@@ -32,6 +32,10 @@ export interface HubWriteGate {
   run(action: () => Promise<void>): Promise<boolean>;
   /** Fires on every transition of isBusy(); returns the unsubscribe. */
   subscribe(listener: () => void): () => void;
+  /** Test/host reset: opens the gate whatever write was in flight. A real
+   * write always settles through run()'s finally, so production never needs
+   * this; it exists for a test harness that abandons an in-flight write. */
+  reset(): void;
 }
 
 export function createHubWriteGate(): HubWriteGate {
@@ -53,6 +57,9 @@ export function createHubWriteGate(): HubWriteGate {
     },
     subscribe(listener) {
       return store.subscribe(() => listener());
+    },
+    reset() {
+      store.setState({ busy: false });
     },
   };
 }

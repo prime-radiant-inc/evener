@@ -413,6 +413,9 @@ export function resetExtensionsStoreForTests(): void {
   localInstance.marketplaces.reset();
   localInstance.plugins.reset();
   localInstance.launchLayer.reset();
+  // A write a test abandoned in flight leaves the gate busy; the cores' own
+  // reset does not touch it, so clear it here or the next test starts busy.
+  localInstance.gate.reset();
   // The cores' fields are written here as well as by their resets: the mirror
   // above forwards only what a core changed, so a value a test seeded
   // straight into this store, over a core already at its initial state,

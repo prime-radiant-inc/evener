@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../client";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import { answerRequests, callsTo, FakeClient, failRequests, gateSettlements } from "../../testing/fakeClient";
+import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MethodName } from "../../types.gen";
 import { createHubWriteGate, type HubWriteGate } from "./hubWriteGate";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
@@ -146,19 +147,9 @@ interface LifecycleKit<S> {
   fence(...states: ConnectionState[]): FakeClient;
 }
 
-// The revision fence's ordering cases issue two writes at once: they pin what
-// a store does when writes overlap, which the shared gate normally prevents
-// but the fence must still get right for a read that outruns a write. This
-// gate double lets both writes through so those cases test the fence in
-// isolation; every other case uses the real gate.
-const permissiveGate: HubWriteGate = {
-  isBusy: () => false,
-  run: async (action) => {
-    await action();
-    return true;
-  },
-  subscribe: () => () => {},
-};
+// The revision fence's ordering cases issue two writes at once; see
+// testing/hubWriteGate.ts for why they use a permissive gate double.
+const permissiveGate = permissiveHubWriteGate();
 
 function createLifecycleKit<S>(
   lifecycle: LifecycleCase<S>,
