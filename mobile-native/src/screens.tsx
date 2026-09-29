@@ -1331,16 +1331,18 @@ export function ConversationScreen({
 	// resets, so a failing page never loops. Both a reading position restored
 	// above the loaded rows and a scroll near the top ask for it.
 	function loadOlderPage() {
-		const cursor = olderPage;
+		// Which page this is, for guarding repeat attempts; the store asks for it
+		// from its own cursor and trim boundary.
+		const pageKey = olderPage;
 		const pageAttempts = readerPageAttempts.current;
-		if (!service || !connected || !cursor || snapshot.loadingOlder || pageAttempts.has(cursor)) return;
-		pageAttempts.add(cursor);
+		if (!service || !connected || !pageKey || snapshot.loadingOlder || pageAttempts.has(pageKey)) return;
+		pageAttempts.add(pageKey);
 		void store
 			.getState()
 			.loadOlder(service)
 			.then((result) => {
 				if (result.status === "ignored" || (result.status === "loaded" && result.itemKeys.length > 0))
-					pageAttempts.delete(cursor);
+					pageAttempts.delete(pageKey);
 			})
 			.catch(() => {
 				// Keep failed page attempts guarded until a binding or route reset.
@@ -1378,15 +1380,15 @@ export function ConversationScreen({
 			return;
 		}
 		if (snapshot.loadingOlder) return;
-		const cursor = olderPage;
-		if (!cursor) {
+		const pageKey = olderPage;
+		if (!pageKey) {
 			// Stepped past the oldest match: say so. With none at all, the
 			// label already reads "No matches".
 			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
 			return;
 		}
 		// Offline, or this page already failed: stop, and the next step asks again.
-		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
+		if (!service || !connected || readerPageAttempts.current.has(pageKey)) {
 			setFind({ ...find, seeking: false });
 			return;
 		}
