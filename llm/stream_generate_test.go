@@ -1076,6 +1076,28 @@ func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
 	}
 }
 
+// TestStreamResult_TextStream_CloseUnblocksIdleForwarder pins shutdown while the
+// forwarder is idle: parked waiting for the next event, it must still stop when
+// the stream is closed, even if Events() never closes. CloseSend releases the
+// constructed stream when the test ends.
+func TestStreamResult_TextStream_CloseUnblocksIdleForwarder(t *testing.T) {
+	stream := NewChanStream(nil)
+	defer stream.CloseSend()
+	res := &StreamResult{stream: stream, done: make(chan struct{})}
+
+	ch := res.TextStream() // nothing queued: the forwarder waits on Events().
+	close(stream.closing)  // Close signalled, but Events() stays open.
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("idle TextStream forwarded a delta, want none")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle forwarder did not stop when the stream was closed")
+	}
+}
+
 func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 	c := NewClient()
 	a := &scriptedStreamAdapter{

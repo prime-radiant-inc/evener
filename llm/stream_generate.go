@@ -47,21 +47,35 @@ func (r *StreamResult) TextStream() <-chan string {
 	ch := make(chan string, 16)
 	go func() {
 		defer close(ch)
-		for ev := range r.stream.Events() {
-			if ev.Type == StreamEventTextDelta {
-				// If the stream was already closed before this delta was
-				// processed, stop now instead of forwarding it. (A Close racing
-				// with the send below may still let this one delta through.)
-				select {
-				case <-r.stream.closing:
-					return
-				default:
-				}
-				select {
-				case ch <- ev.Delta:
-				case <-r.stream.closing:
+		events := r.stream.Events()
+		for {
+			// Wait for the next event or for the stream to close: an idle
+			// forwarder must stop on Close even if Events() never closes.
+			var ev StreamEvent
+			select {
+			case <-r.stream.closing:
+				return
+			case e, ok := <-events:
+				if !ok {
 					return
 				}
+				ev = e
+			}
+			if ev.Type != StreamEventTextDelta {
+				continue
+			}
+			// If the stream was already closed before this delta was processed,
+			// stop now instead of forwarding it. (A Close racing with the send
+			// below may still let this one delta through.)
+			select {
+			case <-r.stream.closing:
+				return
+			default:
+			}
+			select {
+			case ch <- ev.Delta:
+			case <-r.stream.closing:
+				return
 			}
 		}
 	}()
