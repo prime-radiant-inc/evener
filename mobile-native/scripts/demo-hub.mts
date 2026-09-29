@@ -14,6 +14,7 @@ import type {
 	NavigationInvalidatedPayload,
 	NotesHumanSetParams,
 	Thread,
+	ThreadItem,
 	Turn,
 	TurnStartParams,
 	UrlsRemoveParams,
@@ -280,6 +281,7 @@ export async function createDemoHub(
 	}
 	// "grow": one finished shell step lands in s-pr2138's running turn at a
 	// time, each announced with a resync, as the hub announces a new round.
+	const growTimers = new Set<ReturnType<typeof setInterval>>();
 	let grown = 0;
 	function grow() {
 		const thread = threads.get(fleetSessionRef("s-pr2138"));
@@ -290,27 +292,32 @@ export async function createDemoHub(
 			grown += 1;
 			landed += 1;
 			const now = Date.now();
-			turn.items = [
-				...(turn.items ?? []),
-				{
-					id: `demo-grow-${grown}`,
-					type: "commandExecution",
-					toolName: "shell",
-					callId: `demo-grow-call-${grown}`,
-					description: `Ran check ${grown}`,
-					argumentsJson: JSON.stringify({ command: `go test ./agent/grow${grown}/...` }),
-					status: "completed",
-					startedAt: now - 3000,
-					completedAt: now,
-					output: "ok",
-				} as never,
-			];
-			resync(thread);
-			if (landed >= GROW_STEPS) clearInterval(timer);
+			const step = {
+				id: `demo-grow-${grown}`,
+				type: "commandExecution",
+				toolName: "shell",
+				callId: `demo-grow-call-${grown}`,
+				description: `Ran check ${grown}`,
+				argumentsJson: JSON.stringify({ command: `go test ./agent/grow${grown}/...` }),
+				status: "completed",
+				startedAt: now - 3000,
+				completedAt: now,
+				output: "ok",
+			} satisfies ThreadItem;
+			turn.items = [...(turn.items ?? []), step];
+			if (landed >= GROW_STEPS) {
+				clearInterval(timer);
+				growTimers.delete(timer);
+			}
+			// A step that can't be announced says so; the timer runs on.
+			try {
+				resync(thread);
+			} catch (error) {
+				console.error("grow: resync failed:", error);
+			}
 		}, modes.growEveryMs ?? 2000);
 		growTimers.add(timer);
 	}
-	const growTimers = new Set<ReturnType<typeof setInterval>>();
 	// The command input: a step's name plays it, "burst" plays three at once.
 	const commandLines =
 		demoFleet && modes.commands

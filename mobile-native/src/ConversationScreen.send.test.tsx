@@ -960,15 +960,19 @@ function scrollTo(tree: ReactTestRenderer, y: number) {
 }
 
 describe("following the live end (spec 8.2)", () => {
-	// A drag the way a finger makes one: it begins, the list scrolls to y, and
-	// it ends.
-	function drag(tree: ReactTestRenderer, y: number) {
-		act(() => transcriptList(tree).props.onScrollBeginDrag());
-		scrollTo(tree, y);
-		act(() => transcriptList(tree).props.onScrollEndDrag());
-	}
 	// scrollTo's list is 4,000pt tall in a 600pt viewport: 3,400 is its end.
 	const END = 3_400;
+	const at = (y: number, content = 4_000) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: content }, layoutMeasurement: { height: 600 } },
+	});
+	const list = (tree: ReactTestRenderer) => transcriptList(tree);
+	// A drag the way a finger makes one: it begins, the list scrolls through
+	// each offset, and it ends at the last.
+	function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
+		for (const y of offsets) scrollTo(tree, y);
+		act(() => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+	}
 	// A reply streaming into the session: a new row below whatever you read.
 	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
 		const key = `stream:${id}:agentMessage`;
@@ -990,11 +994,11 @@ describe("following the live end (spec 8.2)", () => {
 			} as unknown as AnyNotification),
 		);
 	}
-	// The list growing, as it does when a row lands: while following, the
-	// screen answers by scrolling to the end.
-	function grow(tree: ReactTestRenderer, height: number) {
+	// The list growing, as it does when a row lands. Whether the screen
+	// answered by scrolling to the end says whether it follows.
+	function contentGrows(tree: ReactTestRenderer, height: number) {
 		flatListCalls.length = 0;
-		act(() => transcriptList(tree).props.onContentSizeChange(390, height));
+		act(() => list(tree).props.onContentSizeChange(390, height));
 		return flatListCalls.some((call) => call.method === "scrollToEnd");
 	}
 	beforeEach(() => {
@@ -1021,32 +1025,97 @@ describe("following the live end (spec 8.2)", () => {
 		drag(tree, 100);
 		stream(hub, served, "s1");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
-		expect(grow(tree, 4_200)).toBe(false);
+		expect(contentGrows(tree, 4_200)).toBe(false);
 	});
 
-	it("follows again once you scroll back down to the end by hand", async () => {
+	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
 		const served = working("ref-follow-again");
 		const { tree, hub } = await mount(served);
 		drag(tree, 100);
-		drag(tree, END);
-		expect(pill(tree)).toBeUndefined();
+		act(() => list(tree).props.onScrollBeginDrag(at(100)));
+		scrollTo(tree, END);
 		stream(hub, served, "s2");
-		expect(grow(tree, 4_200)).toBe(true);
+		// A row landing mid-drag doesn't pull the list from under the finger.
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onScrollEndDrag(at(END)));
 		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "s2b");
+		expect(contentGrows(tree, 4_400)).toBe(true);
+	});
+
+	it("doesn't follow after a drag that reached the end and came back up", async () => {
+		const served = working("ref-follow-back-up");
+		const { tree } = await mount(served);
+		drag(tree, 100, END, 1_000);
+		expect(contentGrows(tree, 4_200)).toBe(false);
 	});
 
 	it("follows again when a flick's momentum carries you to the end", async () => {
 		const served = working("ref-follow-flick");
 		const { tree, hub } = await mount(served);
 		drag(tree, 100);
-		act(() => transcriptList(tree).props.onScrollBeginDrag());
-		scrollTo(tree, 1_000);
-		act(() => transcriptList(tree).props.onScrollEndDrag());
-		act(() => transcriptList(tree).props.onMomentumScrollBegin());
+		drag(tree, 1_000);
+		act(() => list(tree).props.onMomentumScrollBegin());
 		scrollTo(tree, END);
-		act(() => transcriptList(tree).props.onMomentumScrollEnd());
+		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
 		stream(hub, served, "s3");
-		expect(grow(tree, 4_200)).toBe(true);
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("follows a transcript shorter than the screen once you let go", async () => {
+		const served = working("ref-follow-short");
+		const { tree } = await mount(served);
+		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
+		act(() => list(tree).props.onScrollEndDrag(at(0, 300)));
+		expect(contentGrows(tree, 320)).toBe(true);
+	});
+
+	it("stays unfollowed when the app itself scrolls to the end", async () => {
+		const served = working("ref-follow-app-scroll");
+		const { tree } = await mount(served);
+		drag(tree, 100);
+		// No finger: a restore or the list settling lands at the end.
+		scrollTo(tree, END);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("counts what landed since you last left the end", async () => {
+		const served = working("ref-follow-counts");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "c1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		drag(tree, END);
+		expect(pill(tree)).toBeUndefined();
+		drag(tree, 100);
+		stream(hub, served, "c2");
+		stream(hub, served, "c3");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
+	});
+
+	it("follows again from the pill, which then goes", async () => {
+		const served = working("ref-follow-pill");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "p1");
+		flatListCalls.length = 0;
+		act(() => pill(tree)?.props.onPress());
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "p2");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("keeps the end in view when the viewport changes while following, as the keyboard does", async () => {
+		const served = working("ref-follow-viewport");
+		const { tree } = await mount(served);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		drag(tree, 100);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
 	});
 });
 

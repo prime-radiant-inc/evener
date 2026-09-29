@@ -1,0 +1,109 @@
+// Following the transcript's live end (spec 8.2), as a pure state machine:
+// whether new rows scroll into view, whether a finger or its momentum is
+// moving the list, and the rows that were there when you left the end (what
+// "↓ N new" counts against).
+import { describe, expect, it } from "vitest";
+import { AT_END_PT, atEnd, type LiveEndFollow, nextFollow } from "./liveEndFollow";
+
+const scrolled = (y: number, content = 4_000, viewport = 600) => ({
+	contentOffset: { y },
+	contentSize: { height: content },
+	layoutMeasurement: { height: viewport },
+});
+
+const rows = new Set(["a", "b"]);
+const keys = () => rows;
+const following: LiveEndFollow = { following: true, touch: "none", away: null };
+
+describe("atEnd", () => {
+	it("is true within the end band and false above it", () => {
+		expect(atEnd(scrolled(4_000 - 600))).toBe(true);
+		expect(atEnd(scrolled(4_000 - 600 - AT_END_PT))).toBe(true);
+		expect(atEnd(scrolled(4_000 - 600 - AT_END_PT - 1))).toBe(false);
+	});
+
+	it("is true when everything fits in the viewport", () => {
+		expect(atEnd(scrolled(0, 300, 600))).toBe(true);
+	});
+});
+
+describe("nextFollow", () => {
+	it("stops following the moment a drag begins", () => {
+		expect(nextFollow(following, { type: "dragBegin" })).toEqual({ following: false, touch: "dragging", away: null });
+	});
+
+	it("follows again when the drag ends at the end, and not before", () => {
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "scroll", atEnd: true, keys });
+		expect(state.following).toBe(false);
+		state = nextFollow(state, { type: "dragEnd", atEnd: true });
+		expect(state).toEqual({ following: true, touch: "none", away: null });
+	});
+
+	it("doesn't follow after a drag that reached the end and came back up", () => {
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "scroll", atEnd: true, keys });
+		state = nextFollow(state, { type: "scroll", atEnd: false, keys });
+		state = nextFollow(state, { type: "dragEnd", atEnd: false });
+		expect(state).toEqual({ following: false, touch: "none", away: rows });
+	});
+
+	it("follows again when a flick's momentum settles at the end", () => {
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "scroll", atEnd: false, keys });
+		state = nextFollow(state, { type: "dragEnd", atEnd: false });
+		state = nextFollow(state, { type: "momentumBegin" });
+		expect(state.touch).toBe("momentum");
+		state = nextFollow(state, { type: "momentumEnd", atEnd: true });
+		expect(state).toEqual({ following: true, touch: "none", away: null });
+	});
+
+	it("stops following when momentum carries you off the end", () => {
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "dragEnd", atEnd: true });
+		state = nextFollow(state, { type: "momentumBegin" });
+		state = nextFollow(state, { type: "momentumEnd", atEnd: false });
+		expect(state.following).toBe(false);
+	});
+
+	it("remembers the rows there when you leave the end, once, and forgets them at the end", () => {
+		let state = nextFollow(following, { type: "dragBegin" });
+		state = nextFollow(state, { type: "scroll", atEnd: false, keys });
+		expect(state.away).toBe(rows);
+		state = nextFollow(state, { type: "scroll", atEnd: false, keys: () => new Set(["c"]) });
+		expect(state.away).toBe(rows);
+		state = nextFollow(state, { type: "scroll", atEnd: true, keys });
+		expect(state.away).toBeNull();
+	});
+
+	it("leaves nothing away while the app scrolls a followed list itself", () => {
+		// Following, a row landing scrolls the list for you; the scroll events
+		// on the way pass above the end band and mustn't flash the pill.
+		expect(nextFollow(following, { type: "scroll", atEnd: false, keys })).toBe(following);
+	});
+
+	it("stays unfollowed when the app scrolls to the end on its own", () => {
+		const reading: LiveEndFollow = { following: false, touch: "none", away: rows };
+		expect(nextFollow(reading, { type: "scroll", atEnd: true, keys })).toEqual({
+			following: false,
+			touch: "none",
+			away: null,
+		});
+	});
+
+	it("follows on Jump to live, and stops for a restore or a find", () => {
+		const reading: LiveEndFollow = { following: false, touch: "none", away: rows };
+		expect(nextFollow(reading, { type: "follow" })).toEqual({ following: true, touch: "none", away: null });
+		expect(nextFollow(following, { type: "unfollow" })).toEqual({ following: false, touch: "none", away: null });
+	});
+
+	it("starts over for a new session", () => {
+		const dragging: LiveEndFollow = { following: false, touch: "dragging", away: rows };
+		expect(nextFollow(dragging, { type: "reset", following: true })).toEqual(following);
+		expect(nextFollow(dragging, { type: "reset", following: false })).toEqual({
+			following: false,
+			touch: "none",
+			away: null,
+		});
+	});
+});
