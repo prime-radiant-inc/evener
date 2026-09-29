@@ -263,16 +263,17 @@ export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
-  createdWatchNote,
   endReasonPhrase,
   isRecognizedWatchResult,
-  isTerminalCatchup,
   type JobWatchStep,
+  jobWatchEvidence,
   jobWatchOperation,
   jobWatchSummary,
+  rowConditionPhrase,
   type TimerSpec,
   timerSpec,
   WATCH_DELIVERY_BUDGET,
+  watchRowStateWord,
 } from "./jobWatchSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";

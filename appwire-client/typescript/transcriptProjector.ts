@@ -303,11 +303,14 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
 
-  // A repair notice shows only where informationalNoticesVisible says the
-  // level is high verbosity, exactly like an informational warning; where it
-  // does show, the systemMessage renderer already gives it the quiet
-  // one-liner every lifecycle notice gets (SystemNoticeItem's plain line).
-  if (isToolRepairNotice(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
+  // A repair notice, and a coded "no action needed" warning notice (the
+  // daemon's context-budget notices arrive this way), show only where
+  // informationalNoticesVisible says so, at full. Where a repair does show,
+  // the systemMessage renderer already gives it the quiet one-liner every
+  // lifecycle notice gets (SystemNoticeItem's plain line).
+  if (isToolRepairNotice(item) || isInformationalWarning(item)) {
+    return informationalNoticesVisible(vector) ? "critical" : "hidden";
+  }
 
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
 
@@ -371,8 +374,8 @@ function decisionFor(
   // check by type also makes warnings and steering independent of their prose.
   // One exception: an informational warning (a coded "no action needed"
   // notice - budget arithmetic, not a failure) is quiet detail, so it shows
-  // only where informationalNoticesVisible says the level is high verbosity
-  // (the activity and full presets, and a custom vector that opted in).
+  // only where informationalNoticesVisible says so: the full preset, and a
+  // custom vector that shows reasoning.
   if (item.type === "warning") {
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";

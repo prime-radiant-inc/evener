@@ -144,7 +144,7 @@ describe("a failed turn (G5)", () => {
 });
 
 describe("system events (G7, G9)", () => {
-	// The shared projector shows a repair only at high verbosity.
+	// The shared projector shows a repair only at full.
 	it("reads a tool repair as a quiet event: never red, never an action", () => {
 		const row = rowFor("tool-repair", "full");
 		if (row?.kind !== "notice") throw new Error("no tool repair notice");

@@ -1654,7 +1654,7 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		}
 	});
 
-	it("bounds a watch's note like the rest of a step's text", () => {
+	it("bounds a watch's evidence like the rest of a step's text", () => {
 		const big = "x".repeat(MAX_ITEM_BYTES + 1);
 		const row: MobileTimelineItem = {
 			kind: "activity",
@@ -1662,11 +1662,11 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 			label: "job_watch",
 			family: "tool",
 			state: "completed",
-			detail: { watchNote: big },
+			detail: { watchEvidence: big },
 		};
 		const out = truncateItem(row, bound);
 		expect(out).not.toBe(row);
-		if (out.kind === "activity") expect(out.detail?.watchNote?.length).toBeLessThan(big.length);
+		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
 	});
 
 	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {
