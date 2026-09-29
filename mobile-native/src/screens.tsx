@@ -911,7 +911,7 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
-	const keyboardShown = false;
+	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
 	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
@@ -2509,7 +2509,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				typing={composerShown && find === null}
+				typing={typing}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
