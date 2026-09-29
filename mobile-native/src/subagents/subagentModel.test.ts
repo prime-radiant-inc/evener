@@ -8,6 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	countLabel,
+	endedInStop,
 	flattenSubagents,
 	matchesSearch,
 	sameModel,
@@ -96,6 +97,9 @@ describe("a subagent's state is its own (spec 9)", () => {
 		["stopped", done("e", { outcome: "stopped" }), "done"],
 		["cancelled", done("f", { outcome: "cancelled" }), "done"],
 		["resumed after a failure", running("g", { outcome: "failed" }), "running"],
+		// The daemon sets an outcome with every terminal run; a record that
+		// somehow carries only a failed status still reads as failed.
+		["failed, by its status alone", delegate("h", { terminal: true, status: "failed" }), "failed"],
 	] as const)("%s", (_name, subject, expected) => {
 		expect(subagentState(subject)).toBe(expected);
 	});
@@ -118,6 +122,15 @@ describe("a subagent's state is its own (spec 9)", () => {
 
 	it("says the state in the spec's words", () => {
 		expect((["running", "failed", "done"] as const).map(subagentStateWord)).toEqual(["Running", "Failed", "Done"]);
+	});
+
+	it("knows a subagent a stop ended, by its outcome or else its status", () => {
+		expect(endedInStop(done("s", { outcome: "stopped" }))).toBe(true);
+		expect(endedInStop(done("c", { outcome: "cancelled" }))).toBe(true);
+		expect(endedInStop(delegate("u", { terminal: true, status: "cancelled" }))).toBe(true);
+		expect(endedInStop(done("d"))).toBe(false);
+		expect(endedInStop(failed("f"))).toBe(false);
+		expect(endedInStop(running("r", { outcome: "stopped" }))).toBe(false);
 	});
 
 	it("knows a stopped subagent, or one whose subtree was stopped", () => {

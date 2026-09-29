@@ -12,6 +12,7 @@ import {
 	delegateModel,
 	delegateTiming,
 	firstLine,
+	isActivityFailure,
 	isFailedDelegateOutcome,
 	isTurnContainer,
 	jobIsFailed,
@@ -43,12 +44,12 @@ export interface SubagentRow {
 
 const STATE_WORDS: Record<SubagentState, string> = { running: "Running", failed: "Failed", done: "Done" };
 
-// A stop ends a run without failing it: a parent's stop settles as stopped, the
-// user's as cancelled (agent/internal/delegatestore and jobstore record.go).
-const STOPPED_STATUSES: ReadonlySet<string> = new Set(["stopped", "cancelled", "canceled"]);
+// A parent's stop settles a run or a command as stopped, and the user's as
+// cancelled (agent/internal/delegatestore and jobstore record.go).
+const STOPPED_STATUSES: ReadonlySet<string> = new Set(["stopped", "cancelled"]);
 
-/** True for the outcome a stop leaves a subagent's run, or the status it
- * leaves a command, with: a subagent that ended so is done, and says Stopped. */
+/** True when a stop, the parent's or the user's, is what ended a run or a
+ * command. */
 export function isStoppedStatus(status: string | undefined): boolean {
 	return STOPPED_STATUSES.has(status ?? "");
 }
@@ -57,7 +58,7 @@ export function isStoppedStatus(status: string | undefined): boolean {
  * ActivityDelegate (turns included); the Session chip passes an
  * EvenerDelegateInfo, which is always the stable "delegate" shape and so
  * carries no turns. `subagentState` is the one classifier for both. */
-export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "turns">;
+export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "status" | "turns">;
 
 /** Running, failed or done, as the hub's job counts are (active, failed,
  * completed; agent/jobs_activity.go aggregateActivity): the subagent's own
@@ -71,7 +72,20 @@ export function subagentState(delegate: SubagentStateSource): SubagentState {
 		return turns.some(jobIsFailed) ? "failed" : "done";
 	}
 	if (delegate.terminal !== true) return "running";
-	return isFailedDelegateOutcome(delegate.outcome) ? "failed" : "done";
+	// The daemon sets an outcome with every terminal run; a record with only a
+	// status still reads by that status.
+	const failed =
+		delegate.outcome === undefined
+			? isActivityFailure(undefined, delegate.status)
+			: isFailedDelegateOutcome(delegate.outcome);
+	return failed ? "failed" : "done";
+}
+
+/** A subagent that is done because a stop ended it, which says Stopped (its
+ * outcome, or else its status, names the stop). The one rule for the
+ * Subagents list's rows and the transcript's subagent row. */
+export function endedInStop(delegate: SubagentStateSource): boolean {
+	return subagentState(delegate) === "done" && isStoppedStatus(delegate.outcome ?? delegate.status);
 }
 
 export function subagentStateWord(state: SubagentState): string {
@@ -123,7 +137,7 @@ export function flattenSubagents(tree: ActivityTree): SubagentRow[] {
 				ref: delegate.childRef,
 				title,
 				state,
-				stopped: state === "done" && isStoppedStatus(delegate.outcome),
+				stopped: endedInStop(delegate),
 				active: delegateHasActiveWork(delegate),
 				...(parentTitle === undefined ? {} : { parentTitle }),
 				delegate,
