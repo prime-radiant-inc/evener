@@ -474,6 +474,14 @@ describe("a run's transcript reads and session searches", () => {
 	});
 });
 
+describe("a run's job steps", () => {
+	it("says how often a run managed jobs", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "job_status")])).toEqual(["managed jobs once"]);
+		expect(texts([step("a", "job_list"), step("b", "job_stop")])).toEqual(["managed jobs 2 times"]);
+	});
+});
+
 describe("a run's worktree steps", () => {
 	it("says how often a run managed worktrees", () => {
 		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);

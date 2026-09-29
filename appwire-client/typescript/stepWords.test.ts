@@ -41,6 +41,12 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_worktree_remove: "Removed worktree settle-fix",
   call_worktree_prune: "Pruned worktrees · 0 removed, 2 skipped",
   call_worktree_adopt: "Adopted worktree lane",
+  // The web's job rows' lines.
+  call_job_status: "Checked job_fixture · running",
+  call_job_list: "Listed jobs",
+  // The web read job_stop's whole footer ("· shell job_fixture · cancelled ·
+  // cancelled_by_request · stopped_by_parent"); the line now says the status.
+  call_job_stop: "Stopped job_fixture · cancelled",
   call_web_fetch: "Fetched https://example.com/release-notes · 48213 bytes",
   call_web_search: 'Searched the web for "go race detector settle drain" · 2 results',
   call_use_skill: "Activated skill: systematic-debugging",
@@ -86,6 +92,9 @@ test.each<[ToolWireCall, StepWords]>([
     },
   ],
   ["call_worktree_adopt", { verb: "Adopted worktree", target: "lane" }],
+  ["call_job_status", { verb: "Checked", target: "job_fixture", detail: "running" }],
+  ["call_job_list", { verb: "Listed jobs" }],
+  ["call_job_stop", { verb: "Stopped", target: "job_fixture", detail: "cancelled" }],
   // A line with nothing machine-shaped in it is its verb alone.
   ["call_task_list_add", { verb: "☐ Run the race detector again" }],
   ["call_task_list_view", { verb: "Checked the task list" }],

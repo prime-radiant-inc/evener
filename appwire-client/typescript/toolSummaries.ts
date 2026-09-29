@@ -8,6 +8,7 @@
 // ("Used github: create issue", "Used compact context"), never its raw name.
 
 import { diffStats, editDiffText } from "./editDiff";
+import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import type { ItemModel } from "./model";
 import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
@@ -43,6 +44,7 @@ export type ToolFamily =
   | "transcript"
   | "sessions"
   | "worktree"
+  | "jobs"
   | "mcp"
   | "tool";
 
@@ -416,6 +418,8 @@ function progressFor(
       return findSessionsProgress(step);
     case "worktree":
       return worktreeProgress(step);
+    case "jobs":
+      return jobProgress(name, step) ?? `Using ${toolInWords(name)}`;
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -453,6 +457,11 @@ const TOOLS: Record<string, ToolEntry> = {
   read_session_transcript: { family: "transcript", words: readTranscriptWords },
   find_session_transcripts: { family: "sessions", words: findSessionsWords },
   manage_worktree: { family: "worktree", words: worktreeWords },
+  job_status: { family: "jobs", words: jobStatusWords },
+  // The retired name for reading a job; old transcripts still carry it.
+  job_read_output: { family: "jobs", words: jobStatusWords },
+  job_list: { family: "jobs", words: jobListWords },
+  job_stop: { family: "jobs", words: jobStopWords },
 };
 
 export const readFileSummary = summaryOf(readFileWords);
@@ -467,8 +476,20 @@ export const webFetchSummary = summaryOf(webFetchWords);
 export const webSearchSummary = summaryOf(webSearchWords);
 export const useSkillSummary = summaryOf(useSkillWords);
 
+// Any other job_* tool, one this build has no words for, still counts as a
+// job step and says which operation it ran, in words.
+const JOB_FALLBACK: ToolEntry = {
+  family: "jobs",
+  words: (step) => {
+    const operation = str(parseArgs(step.argumentsJSON), "operation");
+    const verb = `Used ${toolInWords(step.toolName ?? "")}`;
+    return { verb: operation ? `${verb}: ${operation}` : verb };
+  },
+};
+
 function entryFor(toolName: string): ToolEntry | undefined {
-  return Object.hasOwn(TOOLS, toolName) ? TOOLS[toolName] : undefined;
+  if (Object.hasOwn(TOOLS, toolName)) return TOOLS[toolName];
+  return toolName.startsWith("job_") ? JOB_FALLBACK : undefined;
 }
 
 /** The family a run's summary counts a step of this tool under. */
