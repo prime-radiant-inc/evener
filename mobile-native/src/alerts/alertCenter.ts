@@ -11,7 +11,10 @@ import type { WhyLine } from "../board/attention";
 export type NeedsYouKind = "failed" | "question" | "approval" | "warning" | "restartNeeded";
 
 export interface SessionAlert {
-	kind: NeedsYouKind | "finished";
+	/** "started": a session you started opened while you were somewhere else
+	 * (New session's start landing after you left the sheet), so it could be
+	 * started twice without it. */
+	kind: NeedsYouKind | "finished" | "started";
 	ref: string;
 	title: string;
 	why: WhyLine | null;
@@ -95,7 +98,13 @@ export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return alert.kind !== "notice" && alert.kind !== "finished";
+	return alert.kind !== "notice" && alert.kind !== "finished" && alert.kind !== "started";
+}
+
+/** An alert that brings news rather than asks for you: no haptic, and it
+ * never joins, replaces or waits behind another banner. */
+function quiet(alert: Alert): boolean {
+	return alert.kind === "finished" || alert.kind === "started";
 }
 
 function subject(alert: Alert): string {
@@ -109,6 +118,10 @@ export class AlertCenter {
 	private releasing: unknown = null;
 	private touching = false;
 	private held: Alert[] = [];
+	/** Sessions you started that waited out a hold behind sessions needing
+	 * you, oldest first, and a held notice that came with them: each shows in
+	 * turn once the banner ahead of it goes, so none is lost. */
+	private afterBanner: Alert[] = [];
 	private recent: string[] = [];
 	private holds = new Map<symbol, HoldKind>();
 	private screen: AlertScreen = { kind: "other" };
@@ -138,6 +151,15 @@ export class AlertCenter {
 		// banner that is up, a notice's included, and never waits (spec 13.3;
 		// the prototype's EV.alert drops it behind any banner).
 		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
+		// A session you started never joins or replaces a banner that is up
+		// either, but it is never lost: it follows that banner, or waits out a
+		// hold. It lands while you're elsewhere, often reading or typing, and
+		// without it you may start it again.
+		if (alert.kind === "started" && this.banner !== null && !this.holding()) {
+			this.queueAfterBanner([alert]);
+			this.publish();
+			return;
+		}
 		if (this.holding()) {
 			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(alert)), alert];
 			this.publish();
@@ -196,7 +218,7 @@ export class AlertCenter {
 	dismiss(): void {
 		if (this.banner === null) return;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 	}
 
 	/** Tapped: the banner goes, and the caller opens where it points. */
@@ -204,7 +226,7 @@ export class AlertCenter {
 		const banner = this.banner;
 		if (banner === null) return null;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
 		return only.kind === "notice"
@@ -215,8 +237,11 @@ export class AlertCenter {
 	/** Next took you on: it serves the held sessions itself now, so they
 	 * don't drop in later (the prototype's goNext). */
 	nextUsed(): void {
-		if (this.held.length === 0) return;
-		this.held = [];
+		// Next serves sessions that need you; a session you started isn't one,
+		// so it keeps waiting.
+		const kept = this.held.filter((alert) => alert.kind === "started");
+		if (kept.length === this.held.length) return;
+		this.held = kept;
 		this.publish();
 	}
 
@@ -227,6 +252,7 @@ export class AlertCenter {
 		this.stopBanner();
 		this.cancelRelease();
 		this.held = [];
+		this.afterBanner = [];
 		this.recent = [];
 		this.screen = { kind: "other" };
 		this.publish();
@@ -239,11 +265,22 @@ export class AlertCenter {
 		const held = this.held.filter((alert) => !about(alert));
 		const shown = this.banner?.alerts ?? [];
 		const kept = shown.filter((alert) => !about(alert));
-		if (held.length === this.held.length && kept.length === shown.length) return false;
+		const afterBanner = this.afterBanner.filter((alert) => !about(alert));
+		if (
+			held.length === this.held.length &&
+			kept.length === shown.length &&
+			afterBanner.length === this.afterBanner.length
+		)
+			return false;
 		this.held = held;
+		this.afterBanner = afterBanner;
 		if (this.banner !== null) {
-			if (kept.length === 0) this.stopBanner();
-			else this.banner = { id: this.banner.id, alerts: kept };
+			if (kept.length > 0) this.banner = { id: this.banner.id, alerts: kept };
+			else {
+				// The banner was answered: what waited behind it is next.
+				this.stopBanner();
+				this.showAfterBanner();
+			}
 		}
 		return true;
 	}
@@ -282,9 +319,8 @@ export class AlertCenter {
 					: [...current.alerts, alert],
 			};
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts: [alert] };
-			if (alert.kind !== "finished") this.buzz(alert.kind === "failed" ? "warning" : "light");
+			this.replaceBanner([alert]);
+			if (!quiet(alert)) this.buzz(alert.kind === "failed" ? "warning" : "light");
 		}
 		this.shownAt = now;
 		this.armExpiry();
@@ -300,15 +336,31 @@ export class AlertCenter {
 		const current = this.banner;
 		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
+		// Sessions you started always follow in turn, never dropped.
+		this.queueAfterBanner(waiting.filter((alert) => alert.kind === "started"));
 		if (sessions.length === 0) {
-			// A held notice shows only when no session waits, a banner still up
-			// included, and then only the latest; the Board lists every notice
-			// either way (the prototype's releaseHeld).
+			// With no session waiting and no banner up, the oldest session you
+			// started shows first; else a held notice shows, only the latest. The
+			// Board lists both either way (the prototype's releaseHeld).
+			if (showing.length > 0) {
+				this.publish();
+				return;
+			}
 			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
-			if (notice === undefined || showing.length > 0) this.publish();
+			if (this.afterBanner.length > 0) {
+				// Sessions you started go first; a held notice follows them rather
+				// than being lost. They wait for any banner that is up to end.
+				if (notice !== undefined) this.queueAfterBanner([notice]);
+				if (current !== null) this.publish();
+				else this.showAfterBanner();
+				return;
+			}
+			if (notice === undefined) this.publish();
 			else this.show(notice);
 			return;
 		}
+		// Sessions that need you come first; the sessions you started follow
+		// their banner.
 		// Held banners show when you leave, combined (spec 13.3). A banner about
 		// sessions that need you that is still up takes them in, as a burst
 		// does, so nothing on it drops out.
@@ -323,8 +375,7 @@ export class AlertCenter {
 			this.show(only);
 			return;
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts };
+			this.replaceBanner(alerts);
 			this.buzz(alerts.some((alert) => alert.kind === "failed") ? "warning" : "light");
 		}
 		this.shownAt = this.timer.now();
@@ -355,7 +406,50 @@ export class AlertCenter {
 			return;
 		}
 		this.banner = null;
-		this.publish();
+		this.showAfterBanner();
+	}
+
+	/** Puts up a new banner in place of any that is up. A session you started
+	 * leaves only when its own banner ends or you look at it, so one the new
+	 * banner replaces goes back to the front of the queue, to show again when
+	 * this banner ends. */
+	private replaceBanner(alerts: readonly Alert[]): void {
+		const interrupted = (this.banner?.alerts ?? []).filter(
+			(other) => other.kind === "started" && !alerts.some((alert) => subject(alert) === subject(other)),
+		);
+		if (interrupted.length > 0)
+			this.afterBanner = [
+				...interrupted,
+				...this.afterBanner.filter((waiting) => !interrupted.some((other) => subject(other) === subject(waiting))),
+			];
+		this.stopBanner();
+		this.banner = { id: this.nextId++, alerts };
+	}
+
+	private queueAfterBanner(alerts: readonly Alert[]): void {
+		for (const alert of alerts)
+			this.afterBanner = [...this.afterBanner.filter((waiting) => subject(waiting) !== subject(alert)), alert];
+	}
+
+	/** A banner went: the oldest session you started that waited behind it
+	 * shows now, unless a hold began meanwhile (it then waits out that hold,
+	 * with the rest). */
+	private showAfterBanner(): void {
+		this.afterBanner = this.afterBanner.filter((alert) => this.wanted(alert));
+		const [next] = this.afterBanner;
+		if (next === undefined) {
+			this.publish();
+			return;
+		}
+		if (this.holding()) {
+			const waiting = this.afterBanner;
+			this.afterBanner = [];
+			this.held = [...this.held.filter((alert) => !waiting.some((w) => subject(w) === subject(alert))), ...waiting];
+			this.publish();
+			return;
+		}
+		this.afterBanner = this.afterBanner.slice(1);
+		this.show(next);
 	}
 
 	private stopBanner(): void {

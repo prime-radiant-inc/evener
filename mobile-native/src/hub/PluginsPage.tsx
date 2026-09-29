@@ -40,17 +40,7 @@ import {
 	type PluginMutationGate,
 } from "../pluginMutationGate";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import {
-	Group,
-	GroupedPage,
-	GroupFooter,
-	GroupGap,
-	GroupLabel,
-	Row,
-	SearchField,
-	Segmented,
-	SwitchRow,
-} from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
 import { Connecting, SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { HubRoutes } from "./hubSheetContext";
@@ -531,8 +521,7 @@ function Plugins({
 					) : null}
 					{byMarketplace(visible).map(([marketplace, plugins]) => (
 						<Fragment key={marketplace}>
-							<GroupLabel machine>{marketplace}</GroupLabel>
-							<Group>
+							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
 									const sub = item.broken
 										? "Broken"
@@ -618,7 +607,6 @@ function Plugins({
 							{entry.broken ? (
 								<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
 							) : null}
-							<GroupGap />
 							<Group>
 								<SwitchRow
 									label="On by default"
@@ -636,7 +624,6 @@ function Plugins({
 									}}
 								/>
 							</Group>
-							<GroupGap />
 							<Group>
 								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
 								<Row
@@ -650,8 +637,7 @@ function Plugins({
 							{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 							{notice ? <GroupFooter>{notice}</GroupFooter> : null}
 							{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
-							<GroupLabel>Details</GroupLabel>
-							<Group>
+							<Group label="Details">
 								<Row label="Version" value={entry.version || "Unknown version"} />
 								<Row label="Marketplace" sub={entry.marketplace} machineSub />
 								<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />

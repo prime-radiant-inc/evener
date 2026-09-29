@@ -1,13 +1,18 @@
 // The grouped list the Hub and New session sheets are built from (spec 12 and
 // 16): uppercase section labels, inset groups of rows on the surface color over
-// the canvas, and ink-low footers. A row carries a bare SF Symbol in ink-mid
+// the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { Children, Fragment, isValidElement, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { fonts } from "../design/tokens";
+import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+
+/** Above a section label. */
+const SECTION_TOP = 20;
+/** A row's leading glyph slot. */
+const GLYPH = 22;
 
 /** The scrolling page a grouped sheet page sits in. */
 export function GroupedPage({ children }: { children: ReactNode }) {
@@ -26,10 +31,12 @@ export function GroupedPage({ children }: { children: ReactNode }) {
 
 /** A section label: SF Pro semibold 12, uppercase, +0.06em (spec 16.2). A
  * machine label (a marketplace, a provider profile) is Menlo as typed and never
- * uppercased (spec 11). */
+ * uppercased (spec 11). A group takes its label as Group's `label`; this
+ * heads anything else, such as a segmented control or a footer. */
 export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { fontSize, lineHeight, ...sectionCase } = scaledType(uiType.sectionLabel, scale);
 	return (
 		<Text
 			accessibilityRole="header"
@@ -37,15 +44,13 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 			style={[
 				{
 					color: palette.inkMid,
-					fontSize: 12 * scale,
-					lineHeight: 16 * scale,
-					paddingHorizontal: 32,
-					paddingTop: 20,
+					fontSize,
+					lineHeight,
+					paddingHorizontal: space.labelInset,
+					paddingTop: SECTION_TOP,
 					paddingBottom: 6,
 				},
-				machine
-					? { fontFamily: fonts.mono }
-					: ({ fontWeight: "600", letterSpacing: 0.72, textTransform: "uppercase" } as const),
+				machine ? { fontFamily: fonts.mono } : sectionCase,
 			]}
 		>
 			{children}
@@ -53,35 +58,80 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 	);
 }
 
-/** An inset group of rows with hairlines between them, not around them. */
-export function Group({ children }: { children: ReactNode }) {
+/** Where a row's text starts when the row carries a symbol. */
+const ICON_ROW_TEXT = space.rowInset + GLYPH + space.rowGap;
+
+/** Reads a child's `icon` prop, so only a Row or SwitchRow placed directly in
+ * the group counts: a row wrapped in another component, or a custom child,
+ * gets the plain 16pt hairline inset even if it draws a symbol. */
+function carriesSymbol(row: ReactNode): boolean {
+	return isValidElement<{ icon?: unknown }>(row) && Boolean(row.props.icon);
+}
+
+/** An inset group of rows with hairlines between them, not around them. A
+ * group with a section label sits right under it; one without keeps the
+ * prototype's 16pt from whatever comes before it (`.group + .group`), so two
+ * groups in a row never touch. A hairline starts under the text when the rows
+ * on both sides of it carry a symbol, as iOS Settings draws it. */
+export function Group({
+	children,
+	label,
+	machineLabel = false,
+}: {
+	children: ReactNode;
+	label?: string;
+	/** The label is a marketplace or similar machine name (see GroupLabel). */
+	machineLabel?: boolean;
+}) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
-	return (
-		<View style={{ marginHorizontal: 16, borderRadius: 12, overflow: "hidden", backgroundColor: palette.surface }}>
+	const group = (
+		<View
+			style={{
+				marginHorizontal: space.margin,
+				marginTop: label ? 0 : space.groupGap,
+				borderRadius: 12,
+				overflow: "hidden",
+				backgroundColor: palette.surface,
+			}}
+		>
 			{rows.map((row, index) => (
 				<Fragment key={isValidElement(row) && row.key !== null ? row.key : `row-${index}`}>
 					{index > 0 ? (
-						<View testID="hairline" style={{ height: 0.5, marginLeft: 16, backgroundColor: palette.edge }} />
+						<View
+							testID="hairline"
+							style={{
+								height: 0.5,
+								marginLeft: carriesSymbol(rows[index - 1]) && carriesSymbol(row) ? ICON_ROW_TEXT : space.rowInset,
+								backgroundColor: palette.edge,
+							}}
+						/>
 					) : null}
 					{row}
 				</Fragment>
 			))}
 		</View>
 	);
+	if (!label) return group;
+	return (
+		<>
+			<GroupLabel machine={machineLabel}>{label}</GroupLabel>
+			{group}
+		</>
+	);
 }
 
-/** The space above a group that has no label: an action's group under the
- * fields it acts on, or a page's first group. */
+/** The space above a page's first block when that block isn't a group, such
+ * as the Plugins page's segmented control: a group keeps its own space. */
 export function GroupGap() {
-	return <View style={{ height: 20 }} />;
+	return <View style={{ height: space.groupGap }} />;
 }
 
 /** A row's leading slot: a bare symbol, or the empty space an unchecked
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 	return (
-		<View style={{ width: 22, alignItems: "center" }}>
+		<View style={{ width: GLYPH, alignItems: "center" }}>
 			{name ? <SymbolView name={name} tintColor={color} size={17} /> : null}
 		</View>
 	);
@@ -91,7 +141,7 @@ export interface RowProps {
 	label: string;
 	/** The label is a model id or similar machine text: Menlo. */
 	machineLabel?: boolean;
-	/** A second line in ink-low. */
+	/** A second line in ink-mid. */
 	sub?: string;
 	/** The second line is a path or an id: Menlo. */
 	machineSub?: boolean;
@@ -145,8 +195,7 @@ export function Row({
 					allowFontScaling={allowFontScaling}
 					style={{
 						color: labelColor,
-						fontSize: 17 * scale,
-						lineHeight: 22 * scale,
+						...scaledType(uiType.listRow, scale),
 						...(machineLabel ? { fontFamily: fonts.mono } : null),
 					}}
 				>
@@ -157,9 +206,8 @@ export function Row({
 						allowFontScaling={allowFontScaling}
 						style={[
 							{
-								color: subTone === "danger" ? palette.dangerInk : palette.inkLow,
-								fontSize: 13 * scale,
-								lineHeight: 18 * scale,
+								color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+								...scaledType(uiType.footnote, scale),
 							},
 							machineSub ? { fontFamily: fonts.mono } : null,
 						]}
@@ -175,10 +223,10 @@ export function Row({
 	const style = {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 12,
+		gap: space.rowGap,
 		minHeight: 44,
-		paddingHorizontal: 16,
-		paddingVertical: 11,
+		paddingHorizontal: space.rowInset,
+		paddingVertical: space.rowPadding,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
 	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
@@ -239,19 +287,15 @@ export function SwitchRow({
 	const scale = useTextScale();
 	const text = (
 		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
-			>
+			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}>
 				{label}
 			</Text>
 			{sub ? (
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						color: subTone === "danger" ? palette.dangerInk : palette.inkLow,
-						fontSize: 13 * scale,
-						lineHeight: 18 * scale,
+						color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+						...scaledType(uiType.footnote, scale),
 					}}
 				>
 					{sub}
@@ -264,9 +308,9 @@ export function SwitchRow({
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
-				gap: 12,
+				gap: space.rowGap,
 				minHeight: 44,
-				paddingHorizontal: 16,
+				paddingHorizontal: space.rowInset,
 				paddingVertical: 8,
 				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
@@ -335,10 +379,10 @@ export function TextFieldRow({
 			style={{
 				color: palette.inkHi,
 				fontFamily: fonts.mono,
-				fontSize: 15 * scale,
+				fontSize: uiType.subheadline.fontSize * scale,
 				minHeight: multiline ? 88 : 44,
-				paddingHorizontal: 16,
-				paddingVertical: 11,
+				paddingHorizontal: space.rowInset,
+				paddingVertical: space.rowPadding,
 				textAlignVertical: multiline ? "top" : "center",
 				opacity: disabled ? 0.4 : 1,
 			}}
@@ -346,7 +390,7 @@ export function TextFieldRow({
 	);
 }
 
-/** A group's footer: ink-low, or the attention or danger ink when it reports
+/** A group's footer: ink-mid, or the attention or danger ink when it reports
  * something a person must act on. */
 export function GroupFooter({
 	children,
@@ -360,16 +404,15 @@ export function GroupFooter({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkLow;
+	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkMid;
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
 			style={[
 				{
 					color,
-					fontSize: 13 * scale,
-					lineHeight: 18 * scale,
-					paddingHorizontal: 32,
+					...scaledType(uiType.footnote, scale),
+					paddingHorizontal: space.labelInset,
 					paddingTop: 6,
 					paddingBottom: 8,
 				},
@@ -405,7 +448,7 @@ export function Segmented<T extends string>({
 			style={{
 				flexDirection: "row",
 				gap: 2,
-				marginHorizontal: 16,
+				marginHorizontal: space.margin,
 				padding: 2,
 				borderRadius: 22,
 				backgroundColor: palette.inset,
@@ -438,7 +481,7 @@ export function Segmented<T extends string>({
 							numberOfLines={1}
 							style={{
 								color: chosen ? palette.accentInk : palette.inkHi,
-								fontSize: 15 * scale,
+								fontSize: uiType.subheadline.fontSize * scale,
 								fontWeight: chosen ? "600" : "400",
 							}}
 						>
@@ -505,7 +548,7 @@ export function RowValue({
 					allowFontScaling={allowFontScaling}
 					style={{
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
-						fontSize: 17 * scale,
+						fontSize: uiType.listRow.fontSize * scale,
 						fontVariant: ["tabular-nums"],
 					}}
 				>
@@ -534,7 +577,7 @@ export function SearchField({
 	return (
 		<View
 			style={{
-				marginHorizontal: 16,
+				marginHorizontal: space.margin,
 				minHeight: 36,
 				flexDirection: "row",
 				alignItems: "center",
@@ -553,7 +596,7 @@ export function SearchField({
 				onChangeText={onChange}
 				autoCorrect={false}
 				allowFontScaling={allowFontScaling}
-				style={{ flex: 1, color: palette.inkHi, fontSize: 17 * scale, paddingVertical: 8 }}
+				style={{ flex: 1, color: palette.inkHi, fontSize: uiType.listRow.fontSize * scale, paddingVertical: 8 }}
 			/>
 			{query ? (
 				<Pressable

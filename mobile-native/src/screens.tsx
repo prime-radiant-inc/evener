@@ -73,7 +73,7 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import type { SessionSeed } from "./newSession/launchSetup";
+import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites } from "./reader/documentReferences";
@@ -1040,6 +1040,16 @@ export function ConversationScreen({
 			case "aside":
 			case "archive":
 				void runSessionAction(action.kind).then(showSessionToast);
+				return;
+			case "like":
+				// Ruling 24: the sheet opens on this session's host, folder, model
+				// and effort; the menu shows only once the session has loaded.
+				if (!conversation) return;
+				navigation.navigate("NewSession", {
+					hubId: route.params.hubId,
+					hubName: activeProfile?.name ?? "Hub",
+					like: seedFromSession(route.params.ref, conversation),
+				});
 				return;
 			case "shutDown":
 				if (!controls) return;
