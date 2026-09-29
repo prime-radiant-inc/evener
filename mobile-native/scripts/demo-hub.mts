@@ -87,6 +87,9 @@ export interface DemoHubModes {
 	unconfirmed?: boolean;
 	// The handshake's protocolVersion, to show the phone a version mismatch.
 	protocolVersion?: string;
+	// thread/start answers this many seconds late, so New session can be
+	// swiped away before its session opens (the Session started banner).
+	startDelaySeconds?: number;
 	// How often "grow" lands a step (default two seconds).
 	growEveryMs?: number;
 }
@@ -154,6 +157,8 @@ export async function createDemoHub(
 	if (typeof address === "string" || !address)
 		throw new Error("Missing demo address");
 	const subscribers = new Map<WebSocket, Set<string>>();
+	// thread/start replies held for startDelaySeconds, cleared on close.
+	const heldReplies = new Set<ReturnType<typeof setTimeout>>();
 	const thread: Thread = {
 		id: "demo-thread",
 		sessionId: "demo-session",
@@ -834,7 +839,22 @@ export async function createDemoHub(
 				// What a fleet session offers follows every change to it.
 				if (changed && fleetRefs.has(changed.evener.ref))
 					refreshCapabilities(changed);
-				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+				const reply = JSON.stringify({ jsonrpc: "2.0", id, result });
+				if (request.method === "thread/start" && modes.startDelaySeconds) {
+					// Held, as a slow hub would; a client that leaves meanwhile takes
+					// the held reply with it.
+					const dropHeld = () => {
+						clearTimeout(held);
+						heldReplies.delete(held);
+					};
+					const held = setTimeout(() => {
+						heldReplies.delete(held);
+						socket.off("close", dropHeld);
+						socket.send(reply);
+					}, modes.startDelaySeconds * 1000);
+					heldReplies.add(held);
+					socket.once("close", dropHeld);
+				} else socket.send(reply);
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
 			} catch (error) {
@@ -862,6 +882,7 @@ export async function createDemoHub(
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
+				for (const held of heldReplies) clearTimeout(held);
 				for (const timer of growTimers) clearInterval(timer);
 				commandLines?.close();
 				for (const socket of server.clients) socket.terminate();
@@ -877,14 +898,16 @@ function inputText(input: InputItem[] | undefined): string {
 	return (input ?? []).map((item) => item.text ?? "").join("\n");
 }
 
-// EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a
-// typo worth stopping on rather than a demo that silently never changes.
-function askAfterSeconds(value: string | undefined): number | undefined {
+// EVENER_DEMO_FLEET_ASK_AFTER and EVENER_DEMO_START_DELAY are numbers of
+// seconds; anything else is a typo worth stopping on rather than a demo that
+// silently never changes.
+function secondsFrom(name: string): number | undefined {
+	const value = process.env[name];
 	if (value === undefined || value === "") return undefined;
 	const seconds = Number(value);
 	if (!Number.isFinite(seconds) || seconds < 0)
 		throw new Error(
-			`EVENER_DEMO_FLEET_ASK_AFTER must be a number of seconds, got ${JSON.stringify(value)}`,
+			`${name} must be a number of seconds, got ${JSON.stringify(value)}`,
 		);
 	return seconds;
 }
@@ -911,6 +934,7 @@ environment variables:
                                      (${COMMANDS})
   EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
   EVENER_DEMO_PROTOCOL=<version>     the handshake's protocol version
+  EVENER_DEMO_START_DELAY=<s>        thread/start answers s seconds late
 `;
 
 if (
@@ -932,7 +956,7 @@ if (
 			? {
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
-					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+					askAfterSeconds: secondsFrom("EVENER_DEMO_FLEET_ASK_AFTER"),
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
 					long: process.env.EVENER_DEMO_LONG === "1",
@@ -945,6 +969,7 @@ if (
 				process.env.EVENER_DEMO_COMMANDS === "1" ? process.stdin : undefined,
 			unconfirmed: process.env.EVENER_DEMO_UNCONFIRMED === "1",
 			protocolVersion: process.env.EVENER_DEMO_PROTOCOL || undefined,
+			startDelaySeconds: secondsFrom("EVENER_DEMO_START_DELAY"),
 		},
 	);
 	console.info(

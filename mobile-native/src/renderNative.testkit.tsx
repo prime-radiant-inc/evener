@@ -25,15 +25,60 @@ import {
 	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
+	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** The software keyboard as React Native's Keyboard module reports it: a
+ * screen subscribes through Keyboard.addListener, and a test raises or lowers
+ * it with show() and hide(). */
+export const keyboard = (() => {
+	const listeners = new Map<string, Set<() => void>>();
+	const emit = (event: string) => {
+		for (const listener of listeners.get(event) ?? []) listener();
+	};
+	let visible = false;
+	return {
+		get visible() {
+			return visible;
+		},
+		/** How many listeners are subscribed to `event`. */
+		listening(event: string) {
+			return listeners.get(event)?.size ?? 0;
+		},
+		/** Lowers the keyboard and forgets every listener, so a mount a test
+		 * left behind can't carry keyboard state into the next test. */
+		reset() {
+			visible = false;
+			listeners.clear();
+		},
+		/** Sends one Keyboard event on its own, as a platform would. */
+		emit,
+		addListener(event: string, listener: () => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return { remove: () => set.delete(listener) };
+		},
+		show() {
+			visible = true;
+			emit("keyboardWillShow");
+			emit("keyboardDidShow");
+		},
+		hide() {
+			visible = false;
+			emit("keyboardWillHide");
+			emit("keyboardDidHide");
+		},
+	};
+})();
 
 /** The slice of the `react-native` module the Providers screen and ui.tsx
  * import, as inert host elements: a host string is a valid element type for
@@ -150,7 +195,7 @@ export function nativeModuleMock() {
 
 	return {
 		AccessibilityInfo: {
-			announceForAccessibility: () => {},
+			announceForAccessibility: vi.fn(),
 			isReduceMotionEnabled: () => Promise.resolve(false),
 			addEventListener: () => ({ remove: () => {} }),
 		},
@@ -163,6 +208,11 @@ export function nativeModuleMock() {
 		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
 		Image: "Image",
+		Keyboard: {
+			addListener: keyboard.addListener,
+			dismiss: vi.fn(() => keyboard.hide()),
+			isVisible: () => keyboard.visible,
+		},
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
@@ -450,11 +500,13 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
-/** Mounts `element` and flushes its effects, returning the test renderer. */
-export function render(element: ReactElement): ReactTestRenderer {
+/** Mounts `element` and flushes its effects, returning the test renderer.
+ * `options.createNodeMock` hands host components' refs a stand-in, such as a
+ * ScrollView whose scrollTo a test records. */
+export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
-		tree = create(element);
+		tree = create(element, options);
 	});
 	return tree;
 }

@@ -132,14 +132,5 @@ func dialRemoteHost(ctx context.Context, cfg hubcore.WebConfig, host string) (*a
 	if err := guardRemoteHostDial(ctx); err != nil {
 		return nil, err
 	}
-	// §8's admission fence reaches this seam too: the explicit host-targeted
-	// thread/list attach is a second dial trigger, and a quarantined or
-	// orphan-unverified name must neither attach nor deploy/restart through the
-	// Ensure-triggered paths the dial starts.
-	if cfg.HostOrphanFence != nil {
-		if err := cfg.HostOrphanFence(host); err != nil {
-			return nil, err
-		}
-	}
 	return cfg.RemoteHostClient(ctx, host)
 }

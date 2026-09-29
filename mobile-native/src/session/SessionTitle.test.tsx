@@ -3,8 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { type PanGestureMock, render, renderedText } from "../renderNative.testkit";
 import { NAV_BAR_BUTTON_SPAN, SessionTitle } from "./SessionTitle";
 
+// The window the mocked react-native reports. useTextScale reads fontScale on
+// iOS, so a test raises it to stand at an accessibility text size (AX1-AX5).
+const mockWindow = vi.hoisted(() => ({ fontScale: 1 }));
+
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ fontScale: mockWindow.fontScale, scale: 2, width: 390, height: 844 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
@@ -15,6 +20,12 @@ const symbols = (tree: ReturnType<typeof render>) =>
 	tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name as string);
 
 const base = { onPress: () => {}, onSwipe: () => {}, neighbors: { previous: false, next: false } };
+
+const maxWidthOf = (tree: ReturnType<typeof render>) => {
+	const button = tree.root.find((node) => node.props.accessibilityRole === "button");
+	return (typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style)
+		.maxWidth;
+};
 
 describe("the Session's nav bar title (spec 8.1)", () => {
 	it("shows the title, the state line and the chevron", () => {
@@ -78,10 +89,43 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 				{...base}
 			/>,
 		);
-		const button = tree.root.find((node) => node.props.accessibilityRole === "button");
-		const style =
-			typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style;
-		expect(style.maxWidth).toBe(390 - 2 * NAV_BAR_BUTTON_SPAN);
+		expect(maxWidthOf(tree)).toBe(390 - 2 * NAV_BAR_BUTTON_SPAN);
+	});
+
+	it("widens the span with the Back count's digits, so a 3-digit count cannot overlap (#3063)", () => {
+		// Back's pill (BackButton.tsx) shows the count's digits at 17pt tabular
+		// figures, about 10pt each. The span measured for one digit is 80pt a
+		// side, so two more digits add 20pt a side: 390 - 2 * (80 + 20).
+		const tree = render(
+			<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} backCount={123} {...base} />,
+		);
+		expect(maxWidthOf(tree)).toBe(390 - 2 * 100);
+	});
+
+	it("widens the span with the accessibility text size, so the scaled Back pill cannot overlap (#3063)", () => {
+		// At fontScale 3 the chevron (20pt) and the one count digit (~10pt) are
+		// three times their default size, so the span grows by 2 * 30.
+		mockWindow.fontScale = 3;
+		try {
+			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} {...base} />);
+			expect(maxWidthOf(tree)).toBe(390 - 2 * (80 + 60));
+		} finally {
+			mockWindow.fontScale = 1;
+		}
+	});
+
+	it("never lets the reserved spans leave the title a negative width (#3063)", () => {
+		// A 3-digit count at the largest accessibility size wants more span than
+		// the window has; the title floors at zero instead of going negative.
+		mockWindow.fontScale = 3;
+		try {
+			const tree = render(
+				<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} backCount={123} {...base} />,
+			);
+			expect(maxWidthOf(tree)).toBe(0);
+		} finally {
+			mockWindow.fontScale = 1;
+		}
 	});
 
 	it("moves through Live order on a horizontal pan, without taking the tap or a vertical drag (spec 6)", () => {

@@ -19,11 +19,9 @@ package hub
 // after S4); this slice ships the epoch's persistence and validation — the
 // serving hub admits and persists the presented epoch before the write half and
 // refuses stale epochs without probing — and runs the write probe authorized by
-// that epoch under the caller's host gate. The orphan fence §10 cites
-// (an open `orphan-unverified` record or quarantine refusing the probe) is the
-// fencing slice's state too, and does not exist in this build; the fencing
-// slice adds the guard-file compare-and-advance, the takeover/kill/wait steps,
-// and that fence at the call site this file's comments name.
+// that epoch under the caller's host gate. The fencing slice adds the
+// guard-file compare-and-advance and the takeover/kill/wait steps at the call
+// site this file's comments name.
 
 import (
 	"context"

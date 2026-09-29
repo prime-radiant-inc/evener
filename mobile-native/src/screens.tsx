@@ -1076,6 +1076,7 @@ export function ConversationScreen({
 							<SessionTitle
 								title={children}
 								line={stateLine}
+								backCount={othersWaitingCount}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 								neighbors={{ previous: hasPrevious, next: hasNext }}
@@ -1132,6 +1133,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		hasPrevious,
 		hasNext,
+		othersWaitingCount,
 		menuLevel,
 		hasSubagents,
 		documents.length,
@@ -2565,6 +2567,10 @@ export function ConversationScreen({
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
+							// Dragging the transcript lowers the keyboard: following the finger
+							// as in Messages on iOS, and at the drag's start on Android, which
+							// has no interactive dismissal.
+							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
@@ -2832,6 +2838,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
+									composerUp={composerShown}
 								/>
 							) : null}
 						</View>
