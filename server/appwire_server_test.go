@@ -843,9 +843,18 @@ func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(
 	})
 	client := newTask2SubscribedClient(t, srv, "atomic", "local:root")
 
+	// A live task update follows its owner's SessionStart, which establishes the
+	// publication incarnation the update is fenced against.
+	feedBridge(srv, events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    1,
+		TaskPublicationRevision: 1,
+	}})
 	feedBridge(srv, events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
 		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "carrier task"},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    1,
+		TaskPublicationRevision: 2,
 	}})
 	awaitTask2Notification(t, client, appwire.NotifyEvenerTaskUpdated)
 	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
@@ -1003,6 +1012,11 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    1,
+		TaskPublicationRevision: 1,
+	}})
 	first := newTask2SubscribedClient(t, srv, "ordered-first", "local:root")
 	second := newTask2SubscribedClient(t, srv, "ordered-second", "local:root")
 
@@ -1022,6 +1036,8 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
 			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "first carrier"},
 			TaskStoreOwnerSessionID: "root",
+			TaskPublicationEpoch:    1,
+			TaskPublicationRevision: 2,
 		}})
 	}()
 	<-insideCommit
@@ -1248,33 +1264,17 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	}
 }
 
-func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
+func TestServerAppWireZeroMetadataTaskUpdateCannotBypassTheFence(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
-	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "zero metadata carrier"},
 		TaskStoreOwnerSessionID: "root",
-		TaskPublicationEpoch:    40,
-		TaskPublicationRevision: 5,
-		CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old"}}},
 	}})
-	cursor := srv.appNotifier.CurrentSequence()
-	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"},
-		TaskStoreOwnerSessionID: "root",
-		// Revision zero identifies a producer predating the ordering fence. Even
-		// with owner metadata, compatibility routing must remain source-only.
-	}})
-	child := readThreadOverWire(t, srv, "local:child")
-	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "legacy source only" {
-		t.Fatalf("legacy source tasks = %+v", child.Evener.Tasks)
-	}
 	root := readThreadOverWire(t, srv, "local:root")
 	if root.Evener.Tasks == nil || root.Evener.Tasks.Current == nil || root.Evener.Tasks.Current.Description != "root old" {
-		t.Fatalf("legacy producer changed root: %+v", root.Evener.Tasks)
-	}
-	if got := srv.AppNotificationsAfter(cursor, "root"); len(got) != 0 {
-		t.Fatalf("legacy producer notified root: %+v", got)
+		t.Fatalf("zero-metadata update bypassed the fence: %+v", root.Evener.Tasks)
 	}
 }
 

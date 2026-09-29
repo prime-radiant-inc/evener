@@ -420,11 +420,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				if item.TaskStoreOwnerSessionID != "" {
 					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
 				}
-				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
-					routeOwner = ""
-				}
-				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref
@@ -682,11 +678,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					continue
 				}
-				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
-					routeOwner = ""
-				}
-				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref
@@ -761,19 +753,12 @@ func sourceIDForProjection(sourceID string) string {
 	return sourceID
 }
 
-func legacyTaskPublication(ownerSessionID string, epoch, revision uint64) bool {
-	return ownerSessionID == "" || epoch == 0 || revision == 0
-}
-
 // acceptTaskStartPublicationLocked establishes an owner's active TaskStore
 // incarnation. A larger process-local epoch replaces the old incarnation even
 // when its revision restarts at one; a delayed start from a retired epoch cannot
 // replace it back. A start from the same shared store retains ordinary revision
 // ordering rather than resetting the fence.
 func (s *Server) acceptTaskStartPublicationLocked(ownerSessionID string, epoch, revision uint64) bool {
-	if legacyTaskPublication(ownerSessionID, epoch, revision) {
-		return true
-	}
 	if s.appTaskPublications == nil {
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 	}
@@ -792,12 +777,8 @@ func (s *Server) acceptTaskStartPublicationLocked(ownerSessionID string, epoch, 
 }
 
 // acceptTaskUpdatePublicationLocked accepts revisioned updates only from the
-// active incarnation established by SessionStart. Zero metadata remains the
-// old-producer compatibility path and is routed source-only by the caller.
+// active incarnation established by SessionStart.
 func (s *Server) acceptTaskUpdatePublicationLocked(ownerSessionID string, epoch, revision uint64) bool {
-	if legacyTaskPublication(ownerSessionID, epoch, revision) {
-		return true
-	}
 	current, exists := s.appTaskPublications[ownerSessionID]
 	if !exists || epoch != current.epoch || revision < current.revision {
 		return false
@@ -835,7 +816,7 @@ func (s *Server) taskAggregateForOwnerLocked(ownerSessionID string) *appwire.Tas
 
 // taskCarrierTargetsLocked computes one deterministic task-store fanout while
 // s.mu is held. The root, when selected, precedes lexically sorted descendants;
-// the source is always present exactly once, including for old ownerless events.
+// the source is always present exactly once, including for an ownerless event.
 func (s *Server) taskCarrierTargetsLocked(sourceThreadID, ownerSessionID string) []taskCarrierTarget {
 	rootID := s.appThreadID
 	sourceID := sourceIDForProjection(s.appSourceID)

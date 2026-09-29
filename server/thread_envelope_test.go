@@ -75,6 +75,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 	measured := 7
 	for _, tc := range []struct {
 		name  string
+		pre   []events.SessionEvent
 		move  func(*stubThreadEnvelopeSource)
 		event events.SessionEvent
 		want  func(*testing.T, appwire.Thread)
@@ -130,7 +131,16 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			move: func(e *stubThreadEnvelopeSource) {
 				e.tasks = &appwire.TaskAggregate{Total: 4, Done: 3}
 			},
-			event: events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{Total: 4, Done: 3}},
+			// The update is accepted only against the incarnation its owner's
+			// SessionStart established; feed it before the move so the start's
+			// facetAll sample cannot supply the value under test.
+			pre: []events.SessionEvent{{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{
+				TaskStoreOwnerSessionID: "th_1", TaskPublicationEpoch: 1, TaskPublicationRevision: 1,
+			}}},
+			event: events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
+				Total: 4, Done: 3, TaskStoreOwnerSessionID: "th_1",
+				TaskPublicationEpoch: 1, TaskPublicationRevision: 2,
+			}},
 			want: func(t *testing.T, thread appwire.Thread) {
 				if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 4 || thread.Evener.Tasks.Done != 3 {
 					t.Fatalf("tasks = %+v, want 4/3", thread.Evener.Tasks)
@@ -372,6 +382,9 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			srv.SetAppIdentity("local", "th_1")
 			src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
+			if len(tc.pre) > 0 {
+				feedBridge(srv, tc.pre...)
+			}
 			// The session moves its state, then emits the event announcing it.
 			// Nothing has told the daemon yet.
 			tc.move(src)
@@ -442,11 +455,16 @@ func TestTaskAndGoalCarrierEventsDoNotRepullEnvelopeStores(t *testing.T) {
 		tasks: &appwire.TaskAggregate{Total: 1},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale goal", Status: "active"}},
 	})
+	// The carrier only installs when the fence accepts it: the owner's
+	// SessionStart establishes the incarnation the update is fenced against.
+	feedBridge(srv, events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "th_1", TaskPublicationEpoch: 1, TaskPublicationRevision: 1,
+	}})
 	taskCalls, metaCalls := source.taskCalls, source.metaCalls
-
 	feedBridge(srv,
 		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
 			Total: 2, Done: 1, TaskStoreOwnerSessionID: "th_1",
+			TaskPublicationEpoch: 1, TaskPublicationRevision: 2,
 		}},
 		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{
 			Goal: &events.GoalStateData{Objective: "carrier goal", Status: "active", Iterations: 2},
@@ -465,10 +483,14 @@ func TestTaskAndGoalCarriersReplaceSeededRootState(t *testing.T) {
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "old goal", Status: "active", Iterations: 1}},
 	})
 
+	feedBridge(srv, events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "th_1", TaskPublicationEpoch: 1, TaskPublicationRevision: 1,
+	}})
 	feedBridge(srv,
 		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
 			Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "new carrier task"},
 			TaskStoreOwnerSessionID: "th_1",
+			TaskPublicationEpoch:    1, TaskPublicationRevision: 2,
 		}},
 		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}},
 	)
