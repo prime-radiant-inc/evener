@@ -14,8 +14,11 @@ export function perHub<T>(make: (hubId: string) => T) {
 			}
 			return instance;
 		},
-		forget(hubId: string): void {
+		/** Drops the hub's instance, returning it so its owner can close it. */
+		forget(hubId: string): T | undefined {
+			const instance = instances.get(hubId);
 			instances.delete(hubId);
+			return instance;
 		},
 	};
 }
