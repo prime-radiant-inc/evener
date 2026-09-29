@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
+import { ChipStrip } from "../design/ChipStrip";
 import { space } from "../design/tokens";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
@@ -154,7 +155,10 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				<SubagentStrip tally={tally} width={width - 32} />
 			</View>
 			{tally.total > 0 ? (
-				<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16 }}>
+				// One row, as spec 9 draws it: past the phone's width it scrolls
+				// sideways and fades at its trailing edge, as the Board's and the
+				// Session's chip rows do.
+				<ChipStrip testID="subagent-filters" onGlass={false}>
 					<FilterChip label="All" count={tally.total} selected={filter === "all"} onPress={() => setFilter("all")} />
 					{STATE_ORDER.filter((state) => tally[state] > 0).map((state) => (
 						<FilterChip
@@ -166,7 +170,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 							onPress={() => setFilter(state)}
 						/>
 					))}
-				</View>
+				</ChipStrip>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
 			{tally.total > SEARCH_AFTER || query !== "" ? (
