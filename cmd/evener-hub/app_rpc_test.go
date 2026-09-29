@@ -7767,42 +7767,29 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 	}
 }
 
-// relayResyncReportReserve is held back from the test deadline so a genuinely
-// absent resync surfaces as awaitRelayResync's clean one-line error rather than
-// the test runner's deadline panic, which buries it under a goroutine dump.
-const relayResyncReportReserve = 15 * time.Second
-
-// relayResyncGraceMax caps how far the test deadline can stretch a resync wait.
-// Uncapped, one genuinely absent resync would spend the whole package's budget.
-const relayResyncGraceMax = time.Minute
-
-// relayResyncGrace is how long awaitRelayResync may wait for a resync: the
-// requested timeout, extended to the time the test has left (less the reporting
-// reserve) so a slow-but-present resync is never called absent, and capped so a
-// genuinely absent one does not spend the whole budget. A caller with no
-// deadline, or one whose deadline is too near, keeps the requested timeout.
-// The zero deadline is checked explicitly: Sub on it overflows a Duration.
-func relayResyncGrace(requested time.Duration, deadline, now time.Time) time.Duration {
-	if deadline.IsZero() {
-		return requested
-	}
-	return min(max(deadline.Sub(now)-relayResyncReportReserve, requested), relayResyncGraceMax)
+// relayResyncTimeout is the bound awaitRelayResync waits: the requested timeout,
+// raised to relayResyncRaceFloor under the race detector. The relay's ordered
+// goroutines run ~10x slower under -race, so a request-sized bound can expire
+// while the resync is genuinely on its way (issue #2977). Outside -race the
+// requested bound stands. The floor is a build-tagged constant, not t.Deadline:
+// the CI shards run a prebuilt test binary directly with no -test.timeout, so a
+// test there has no deadline to scale against.
+func relayResyncTimeout(requested time.Duration) time.Duration {
+	return max(requested, relayResyncRaceFloor)
 }
 
 // awaitRelayResync is expectRelayResync for a client that also receives other
 // traffic (navigation invalidations, status frames): those are skipped, and
 // the resync may take as long as timeout to arrive.
 //
-// The resync is awaited on its channel; the timeout is only a tripwire. A fixed
-// wall-clock bound can expire before a resync that is genuinely on its way —
-// which is what failed under -race on a loaded runner — so the tripwire follows
-// the test's own deadline (relayResyncGrace) instead of a hardcoded bound, and
-// a slow-but-present resync gets every second the test can spare.
+// The resync is awaited on its channel; the bound is only a tripwire. It is
+// scaled under -race (relayResyncTimeout) because a fixed wall-clock bound can
+// expire before a resync that is genuinely on its way — which is what failed
+// under -race on a loaded runner.
 func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
 	t.Helper()
-	deadline, _ := t.Deadline()
-	grace := relayResyncGrace(timeout, deadline, time.Now())
-	timer := time.After(grace)
+	bound := relayResyncTimeout(timeout)
+	timer := time.After(bound)
 	for {
 		select {
 		case got := <-notifications:
@@ -7812,39 +7799,34 @@ func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, w
 			expectResyncParams(t, got, wantThreadID, wantRef)
 			return
 		case <-timer:
-			t.Fatalf("no thread resync for %s within %v", wantRef, grace)
+			t.Fatalf("no thread resync for %s within %v", wantRef, bound)
 		}
 	}
 }
 
-func TestRelayResyncGrace(t *testing.T) {
-	now := time.Now()
-	const requested = 5 * time.Second
-	cases := []struct {
-		name     string
-		deadline time.Time
-		want     time.Duration
-	}{
-		{"no deadline keeps the requested bound", time.Time{}, requested},
-		{"a deadline inside the reserve keeps the requested bound", now.Add(relayResyncReportReserve / 2), requested},
-		{"an expired deadline keeps the requested bound", now.Add(-time.Minute), requested},
-		{"less than the requested bound past the reserve keeps it", now.Add(relayResyncReportReserve + requested - time.Second), requested},
-		{"the remainder past the reserve becomes the grace", now.Add(relayResyncReportReserve + 30*time.Second), 30 * time.Second},
-		{"a distant deadline is capped", now.Add(relayResyncReportReserve + 9*time.Minute), relayResyncGraceMax},
+// TestRelayResyncTimeout pins the scaling in both build modes: under -race a
+// request-sized bound is raised to the floor, and a larger bound is untouched.
+func TestRelayResyncTimeout(t *testing.T) {
+	want := time.Millisecond
+	if raceDetectorEnabled {
+		want = relayResyncRaceFloor
 	}
-	for _, tc := range cases {
-		if got := relayResyncGrace(requested, tc.deadline, now); got != tc.want {
-			t.Errorf("%s: relayResyncGrace = %v, want %v", tc.name, got, tc.want)
-		}
+	if got := relayResyncTimeout(time.Millisecond); got != want {
+		t.Errorf("relayResyncTimeout(1ms) = %v, want %v", got, want)
+	}
+	if got := relayResyncTimeout(time.Hour); got != time.Hour {
+		t.Errorf("relayResyncTimeout(1h) = %v, want 1h", got)
 	}
 }
 
-// TestAwaitRelayResyncWaitsPastTheRequestedBound pins that the wait follows the
-// test's deadline rather than the fixed wall clock that failed under -race: a
-// resync delivered after the requested bound is still accepted while the test
-// has time. Under the old fixed time.After(bound) this 200ms-late delivery
-// against a 50ms bound failed at once.
+// TestAwaitRelayResyncWaitsPastTheRequestedBound pins the -race scaling: a
+// resync delivered after a small requested bound is still accepted because the
+// wait is raised to relayResyncRaceFloor. Under the old fixed time.After(bound)
+// this 200ms-late delivery against a 50ms bound failed at once (issue #2977).
 func TestAwaitRelayResyncWaitsPastTheRequestedBound(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("relay resync scaling is a -race guarantee; run with -race")
+	}
 	const (
 		threadID = "late"
 		ref      = "codex:late"
