@@ -120,20 +120,23 @@ test-native-bundle: native-preflight
 # and only the TestFlight workflow runs it, on a tag: #3252 added a native
 # dependency without its pod and every PR check stayed green (#3294). This
 # compares the lock with what autolinking resolves, on any host.
-## Check that mobile-native/Podfile.lock locks exactly the iOS native modules
+## Check that mobile-native/Podfile.lock locks exactly the iOS pods
 ## autolinking resolves.
-## proves: every module the Expo and React Native autolinking the generated
-##   Podfile runs would link has its pod in the lock's DEPENDENCIES, and every
-##   autolinked pod the lock lists is still linked.
+## proves: every pod the Expo and React Native autolinking the generated
+##   Podfile runs would link, Expo's companion pods included, is in the lock's
+##   DEPENDENCIES under the same name and directory, and every autolinked pod
+##   the lock lists is still linked.
 ## trigger: Native CI; local pre-merge when mobile-native/package.json,
 ##   package-lock.json or Podfile.lock change.
-## requires: Node 22.13+ and an already-installed mobile-native dependency
-##   tree; no macOS, CocoaPods, Xcode or generated ios/ project.
-## fails-when: an autolinked module has no pod in the lock, or the lock lists
-##   an autolinked pod nothing links; a version change inside an already
-##   locked pod is not checked.
+## requires: Node 22.13+ and an already-installed, real (not symlinked)
+##   mobile-native dependency tree; no macOS, CocoaPods, Xcode or generated
+##   ios/ project. Expo's precompiled mode and extraPods are not handled.
+## fails-when: an autolinked pod is not locked, or the lock lists an
+##   autolinked pod nothing links (a version change inside an already locked
+##   pod is not checked), or the script's own tests
+##   (check-podfile-lock.test.mjs) fail.
 check-podfile-lock: native-preflight
-	@scripts/native/check-podfile-lock.mjs
+	@scripts/native/check-podfile-lock.mjs && node --test scripts/native/check-podfile-lock.test.mjs
 
 # api-package-preflight turns the misleading failure a fresh checkout gets into
 # a message naming the missing install and the command to run (or repairs a
