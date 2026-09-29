@@ -15,7 +15,7 @@ import { SheetStatus } from "../sheet/SheetStatus";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 
 export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewSessionRoutes, "Browse">) {
-	const { store, client, ready } = useNewSession();
+	const { store, client, ready, hostLabel } = useNewSession();
 	const { source, cwd, setCwd } = useStore(store);
 	const [dir, setDir] = useState(route.params.dir);
 	const [createError, setCreateError] = useState<string | null>(null);
@@ -32,7 +32,11 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 		value: cwd,
 		recents: [],
 		showRecents: false,
-		listError: listing?.error ?? null,
+		// HubPaths' own sentence offers a retry and manual entry, which this page
+		// has neither of; moving to another folder reads again.
+		listError: listing?.error
+			? `Couldn't open this folder on ${hostLabel(source)}. Go up a folder or choose another.`
+			: null,
 	});
 	const open = (next: string) => {
 		setCreateError(null);

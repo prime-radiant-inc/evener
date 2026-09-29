@@ -33,13 +33,16 @@ function paradisePark() {
 		["/Users/jesse/git/evener/", []],
 	]);
 	const calls: { method: string; params: unknown }[] = [];
-	const refuse: { create?: Error } = {};
+	const refuse: { create?: Error; list?: boolean } = {};
 	const client = {
 		request: async (method: string, params: { host: string; method: string; params: Record<string, string> }) => {
 			calls.push({ method, params });
 			if (method !== "evener/host/request" || params.host !== "paradise-park")
 				throw new Error(`the hub's own machine was asked ${method}`);
-			if (params.method === "evener/paths/complete") return { data: folders.get(params.params.prefix) ?? [] };
+			if (params.method === "evener/paths/complete") {
+				if (refuse.list) throw new WireError("permission denied", -32000);
+				return { data: folders.get(params.params.prefix) ?? [] };
+			}
 			if (params.method === "evener/dirs/create") {
 				if (refuse.create) throw refuse.create;
 				const path = params.params.path;
@@ -53,8 +56,9 @@ function paradisePark() {
 	return { client, calls, refuse };
 }
 
-function mount(dir: string) {
+function mount(dir: string, setUp: (hub: ReturnType<typeof paradisePark>) => void = () => {}) {
 	const hub = paradisePark();
+	setUp(hub);
 	const store = createNewSessionStore("hub-1");
 	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
 	const navigation = { popTo: vi.fn() };
@@ -141,4 +145,13 @@ it("shows the hub's refusal to make a folder, and stays where it was", async () 
 	await settle();
 	expect(page.text()).toContain("permission denied");
 	expect(pressable(page.tree, "evener")).toBeDefined();
+});
+
+it("says a folder it couldn't open on the host, and offers only what the page can do", async () => {
+	const page = mount("/Users/jesse/git", (hub) => {
+		hub.refuse.list = true;
+	});
+	await settle();
+	expect(page.text()).toContain("Couldn't open this folder on paradise-park. Go up a folder or choose another.");
+	expect(page.text()).not.toMatch(/Try again|enter the path/);
 });
