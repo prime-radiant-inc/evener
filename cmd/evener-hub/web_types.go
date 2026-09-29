@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 )
@@ -29,8 +31,14 @@ const liveModelsTTL = 5 * time.Minute
 type launchModelsCache struct {
 	mu      sync.Mutex
 	entries map[string]*launchModelsEntry
-	// refreshing marks a working-dir key whose stale entry is being re-fetched
-	// in the background, so a burst of requests starts one refresh, not many.
+	// loading collapses concurrent loads of one working-dir key onto one launch
+	// check: a burst of cold picker opens, or a read racing the startup warm,
+	// would otherwise each spawn their own child and live provider listing.
+	loading singleflight.Group
+	// refreshing marks a key whose stale entry is already being re-fetched, so
+	// a stale read does not start a second refresh behind the first — the guard
+	// singleflight's own coalescing cannot give, because a later reader's
+	// goroutine may reach the group only after the earlier flight cleared.
 	refreshing map[string]bool
 }
 

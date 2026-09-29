@@ -157,7 +157,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
 	if s.beginLaunchModelsRefresh(workingDir) {
-		go s.refreshLaunchModels(workingDir)
+		go s.refreshLaunchModels(workingDir, gen)
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
@@ -182,14 +182,30 @@ func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
 }
 
 // loadLaunchModels runs the launch check for one working dir and caches the
-// answer. A failed load caches nothing, so the next request retries instead of
-// serving an empty list for the TTL.
+// answer, collapsing concurrent callers onto one child. A failed load caches
+// nothing, so the next request retries instead of serving an empty list.
 func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64) (appwire.ModelListResponse, error) {
-	resp, err := evenerLaunchModelList(ctx, s.cfg, workingDir)
+	v, err, _ := s.launchModels.loading.Do(workingDir, func() (any, error) {
+		resp, err := evenerLaunchModelList(ctx, s.cfg, workingDir)
+		if err != nil {
+			return nil, err
+		}
+		s.storeLaunchModels(workingDir, gen, resp)
+		return resp, nil
+	})
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
+	// Each caller gets its own copy: enrichment sorts Data, and singleflight
+	// hands every waiter the same value.
+	return cloneModelListResponse(v.(appwire.ModelListResponse)), nil
+}
+
+// storeLaunchModels publishes one load's answer, evicting the oldest key once
+// the cap is reached.
+func (s *WebServer) storeLaunchModels(workingDir string, gen uint64, resp appwire.ModelListResponse) {
 	s.launchModels.mu.Lock()
+	defer s.launchModels.mu.Unlock()
 	if _, exists := s.launchModels.entries[workingDir]; !exists && len(s.launchModels.entries) >= launchModelsMaxEntries {
 		evictOldestLaunchModelsEntry(s.launchModels.entries)
 	}
@@ -198,8 +214,6 @@ func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen
 		gen:      gen,
 		filledAt: time.Now(),
 	}
-	s.launchModels.mu.Unlock()
-	return resp, nil
 }
 
 // evictOldestLaunchModelsEntry drops the least-recently-filled entry so a
@@ -230,17 +244,13 @@ func launchModelsFetchContext(parent context.Context) (context.Context, context.
 	return context.WithTimeout(parent, evenerLaunchCheckTimeout+time.Minute)
 }
 
-// refreshLaunchModels re-fetches a stale entry in the background, on a context
-// detached from the request that noticed the staleness — that request returning
-// must not cancel the refresh. A failed refresh leaves the stale entry in place
-// for the next request to retry.
-func (s *WebServer) refreshLaunchModels(workingDir string) {
+// refreshLaunchModels re-fetches one working dir that a request was served a
+// stale entry from. Its parent is the hub's lifetime context, not the request's,
+// so the request returning does not cancel it and shutdown does. A failed
+// refresh leaves the stale entry in place for the next request to retry.
+func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
 	defer s.endLaunchModelsRefresh(workingDir)
-	gen, ok := liveModelsGeneration(s)
-	if !ok {
-		return
-	}
-	ctx, cancel := launchModelsFetchContext(context.Background())
+	ctx, cancel := launchModelsFetchContext(s.lifetime)
 	defer cancel()
 	_, _ = s.loadLaunchModels(ctx, workingDir, gen)
 }
@@ -248,7 +258,8 @@ func (s *WebServer) refreshLaunchModels(workingDir string) {
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
 // first picker open after hub start is served instantly instead of blocking on
 // the live provider listing. Best-effort: a failure leaves the cache cold and
-// the next picker open (or prefetch tick) retries.
+// the next picker open (or prefetch tick) retries. loadLaunchModels collapses
+// this pass with any request-triggered refresh already in flight.
 func (s *WebServer) warmLaunchModels(ctx context.Context) {
 	if !hasEvenerLaunchModelLister(s.cfg) {
 		return

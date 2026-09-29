@@ -580,22 +580,24 @@ type countLaunchContractSpawner struct {
 	fakeRPCSpawner
 	mu       sync.Mutex
 	calls    int
+	lastCtx  context.Context
 	modelsFn func(call int, workingDir string) appwire.ModelListResponse
 	err      error
 }
 
-func (f *countLaunchContractSpawner) ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error) {
-	return f.record("")
+func (f *countLaunchContractSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
+	return f.record(ctx, "")
 }
 
-func (f *countLaunchContractSpawner) ListLaunchModelContractForWorkingDir(_ context.Context, workingDir string) (appwire.ModelListResponse, error) {
-	return f.record(workingDir)
+func (f *countLaunchContractSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+	return f.record(ctx, workingDir)
 }
 
-func (f *countLaunchContractSpawner) record(workingDir string) (appwire.ModelListResponse, error) {
+func (f *countLaunchContractSpawner) record(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.lastCtx = ctx
 	if f.err != nil {
 		return appwire.ModelListResponse{}, f.err
 	}
@@ -611,6 +613,12 @@ func (f *countLaunchContractSpawner) callCount() int {
 	return f.calls
 }
 
+func (f *countLaunchContractSpawner) contextOf() context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCtx
+}
+
 // newLaunchModelsTestWeb builds the minimal WebServer fetchLaunchModels needs:
 // its cfg (with the spawner and, when asked, a holder whose generation a test
 // can bump) and the cache the constructor would have built.
@@ -623,6 +631,7 @@ func newLaunchModelsTestWeb(t *testing.T, spawner hubcore.Spawner, withRegistry 
 	web := &WebServer{
 		cfg:          cfg,
 		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.Background(),
 	}
 	// The constructor wires this; mirror it so a test that drives the RPC path
 	// exercises the same cached loader production does.
@@ -714,6 +723,7 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 	web := &WebServer{
 		cfg:          hubcore.WebConfig{Registry: reg, Spawner: spawner},
 		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.Background(),
 	}
 
 	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
@@ -762,7 +772,7 @@ func TestFetchLaunchModelsDoesNotCacheWithoutRegistry(t *testing.T) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, false)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
 			t.Fatalf("fetchLaunchModels: %v", err)
 		}
@@ -781,8 +791,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go startLaunchModelsPrefetch(ctx, web, time.Hour, func(fn func()) { fn() })
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -805,6 +814,101 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	}
 }
 
+// TestFetchLaunchModelsCoalescesColdLoads: concurrent reads of one uncached key
+// share a single launch check, so a burst of cold picker opens — or a read
+// racing the startup warm — spawns one child, not one per reader. RoboRev's
+// Medium finding on the cold-miss path; the second and later readers return the
+// leader's result instead of listing again.
+func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	web := newLaunchModelsTestWeb(t, spawner, true)
+
+	const readers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, readers)
+	read := func() {
+		resp, err := web.fetchLaunchModels(context.Background(), "")
+		if err != nil {
+			errs <- err
+			return
+		}
+		if len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5.5" {
+			errs <- fmt.Errorf("models=%+v", resp.Data)
+		}
+	}
+
+	// The first reader leads and blocks inside the launch check; the rest are
+	// started while its flight is in progress, so they must join it. The sleep
+	// gives them time to reach the shared flight before it completes.
+	wg.Go(read)
+	<-entered
+	for range readers - 1 {
+		wg.Go(read)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("cold reader: %v", err)
+	}
+	if got := spawner.callCount(); got != 1 {
+		t.Fatalf("launch contract called %d times for %d concurrent cold readers, want 1", got, readers)
+	}
+}
+
+// TestRefreshLaunchModelsUsesTheServerLifetime pins the shutdown-hygiene fix:
+// a request-triggered refresh hangs off the server's lifetime context, so hub
+// shutdown cancels an outstanding launch check instead of leaving the child to
+// outlive the hub. Before the fix the parent was context.Background(), which
+// carries no lifetime marker and outlives cancellation.
+func TestRefreshLaunchModelsUsesTheServerLifetime(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	reg := newBumpableProviderRegistry(t)
+	type lifetimeKey struct{}
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{Registry: reg, Spawner: spawner},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.WithValue(context.Background(), lifetimeKey{}, "hub-lifetime"),
+	}
+
+	// The first read is a cold load on the caller's context; the second, after a
+	// Reload retires the entry, is served stale and refreshes behind it.
+	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		t.Fatalf("fetchLaunchModels: %v", err)
+	}
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		t.Fatalf("fetchLaunchModels after bump: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for spawner.callCount() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the stale read never refreshed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
+		t.Fatalf("the refresh's context does not descend from the server lifetime: marker=%q, ctx=%v", got, spawner.contextOf())
+	}
+}
+
 // TestHubModelListServesLaunchContractFromCache pins that the model/list RPC
 // the picker calls goes through the cache, so opening a picker twice does not
 // spawn two launch checks.
@@ -814,7 +918,7 @@ func TestHubModelListServesLaunchContractFromCache(t *testing.T) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		resp, err := hubModelList(context.Background(), web.cfg, nil, appwire.ModelListParams{})
 		if err != nil {
 			t.Fatalf("hubModelList: %v", err)

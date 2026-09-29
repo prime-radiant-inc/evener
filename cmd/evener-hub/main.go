@@ -796,6 +796,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	signalCtx, cancelSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelSignals()
 	ctx, cancelBackground := context.WithCancel(signalCtx)
+	// The web server's request-triggered background work (the launch-model
+	// refresh) hangs off this context, so shutdown cancels an outstanding
+	// launch check instead of leaving it to outlive the hub.
+	web.lifetime = ctx
 	var background sync.WaitGroup
 	defer func() {
 		cancelBackground()

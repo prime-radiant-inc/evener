@@ -8987,7 +8987,7 @@ func TestHubRPCModelListCachesLaunchContract(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
 		if err != nil {
 			t.Fatalf("ModelList: %v", err)

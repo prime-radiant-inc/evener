@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -55,6 +56,12 @@ type WebServer struct {
 	// picker open does not re-run `evener launch-check --models` (a live
 	// provider listing that takes seconds) every time.
 	launchModels *launchModelsCache
+	// lifetime is the hub run's context. Background work a request triggers —
+	// the launch-model refresh — hangs off it rather than off the request, so
+	// shutdown cancels it instead of leaving the child to outlive the hub.
+	// runMain overrides the Background default; a WebServer built elsewhere
+	// (tests) keeps it.
+	lifetime context.Context
 	// treeCache memoizes the shared tree projection used by the remaining
 	// mutation handlers. NavigationService owns AppWire navigation generations
 	// and captures its source directly rather than using this cache.
@@ -167,6 +174,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		lastGoodThreads:           map[string][]appwire.Thread{},
 		liveModels:                &modelsCache{},
 		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:                  context.Background(),
 		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
