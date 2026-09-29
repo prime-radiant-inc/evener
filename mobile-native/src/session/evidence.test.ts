@@ -305,6 +305,28 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A title may be double- or single-quoted, and an apostrophe inside one does
+	// not close it; an angle-bracket destination may hold a literal ")" (#3289).
+	it("reads a contraction in a title and an angle-bracket destination to their alt text", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: '# Diagrams\n\n![a](https://x.test/x_(y).png "it\'s the diagram") and here',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and here" },
+		]);
+	});
+
+	it("strips an angle-bracket image destination holding a parenthesis", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![a](<https://x.test/a)b.png>) and here",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and here" },
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {

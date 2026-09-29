@@ -67,21 +67,29 @@ function rawOutput(text: string): Evidence[] {
 }
 
 // The index of the ")" that closes the "(" at start, counting nested balanced
-// pairs; undefined when the "(" never closes. A backslash escapes the next
-// character, and a parenthesis inside a quoted title is literal, so neither
-// counts toward the depth (CommonMark).
+// pairs; undefined when the "(" never closes. Only a parenthesis outside an
+// escaped character, an angle-bracket destination, or a quoted title (which a
+// quote after whitespace opens, and only its own delimiter closes) is
+// structural; the rest are literal (CommonMark).
 function balancedClose(markdown: string, start: number): number | undefined {
 	let depth = 0;
-	let quoted = false;
+	let quote: string | undefined;
 	for (let i = start; i < markdown.length; i++) {
 		const ch = markdown[i];
 		if (ch === "\\") {
 			i++;
-		} else if (ch === '"' || ch === "'") {
-			quoted = !quoted;
-		} else if (!quoted) {
-			if (ch === "(") depth++;
-			else if (ch === ")" && --depth === 0) return i;
+		} else if (quote !== undefined) {
+			if (ch === quote) quote = undefined;
+		} else if (ch === "<") {
+			const close = markdown.indexOf(">", i + 1);
+			if (close === -1) return undefined;
+			i = close;
+		} else if ((ch === '"' || ch === "'") && /\s/.test(markdown[i - 1] ?? "")) {
+			quote = ch;
+		} else if (ch === "(") {
+			depth++;
+		} else if (ch === ")" && --depth === 0) {
+			return i;
 		}
 	}
 	return undefined;
