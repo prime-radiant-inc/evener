@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -844,11 +843,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground(func() { refreshHubMessageSearch(ctx, messageSearch, past, cfg.PastIndexRebuild) })
 
 	// Attention watcher: derives each live session's attention level from the
-	// same roster/past-index/archive inputs the sidebar tree uses, and
-	// broadcasts evener/attention/changed whenever a session's level actually
-	// transitions (notifications.js drives the tab title/favicon badge and OS
-	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
-	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
+	// same remote-inclusive metas/live the sidebar tree uses (see
+	// web.navigationSnapshot), and broadcasts evener/attention/changed when a
+	// session's level actually transitions (notifications.js drives the tab
+	// title/favicon badge and OS notifications from it). Ticks every 5s and
+	// on-demand via attentionPoke.
+	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, web) })
 
 	// Notices watcher: re-derives the hub's notices every few seconds and
 	// broadcasts evener/notices/changed when they change (S11).
@@ -961,25 +961,8 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	}
 	if signal := store.Quarantine(); signal != nil {
 		_, _ = fmt.Fprintf(stderr,
-			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified records only, and every name that custody closed stays closed until orphan-resolve\n",
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports only, and every name that custody closed stays closed\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
-	}
-	// §7's boot order starts here: the store load plus the safety-critical local
-	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
-	// interrupted transition, and before anything serves. Crash-fencing §3
-	// (slice S19) owns that reap and `reapLocalOrphanBoundary` below fills this
-	// seam: it enumerates every open `pending-spawn` intent's persisted local
-	// boundary and converges it, touching no host and advancing no epoch. Its
-	// failure contract is fail-closed and durable, never a startup refusal: an
-	// unverifiable boundary keeps its `pending-spawn` intent open and marks the
-	// affected records `orphan-unverified` with the host admission-fenced,
-	// retried on every boot (crash-fencing §3's local-reap rule and §7's boot
-	// reaping order). The error below is what that implementation reports; the
-	// hub serves either way.
-	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
-	} else if reaped > 0 {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d local orphan boundary row(s)\n", reaped)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
@@ -1000,24 +983,6 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
 	return store, nil
-}
-
-// reapLocalOrphanBoundary is crash-fencing §3's safety-critical local reap: the
-// FIRST step of §7's boot order, run immediately after the operation store
-// loads and before hub.toml loads, the interrupted transition, or any request
-// is served. It delegates to the fencing package's pass, which resolves every
-// open `pending-spawn` intent's local boundary so a crashed incarnation's
-// orphan is never crossed locally.
-//
-// The reap's failure contract, per crash-fencing §3, is fail-closed and
-// durable, never a startup refusal: enumeration that cannot verify an orphan
-// keeps the boundary's `pending-spawn` intent open and marks the affected
-// records `orphan-unverified` with the host admission-fenced, and every
-// subsequent boot retries it (§7). The returned error names what the pass could
-// not converge; this call site logs it and serves, because a failed reap fences
-// affected hosts through the record, not through the hub's startup.
-func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
-	return hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{})
 }
 
 // hostOperationRetention maps the hub's owner knobs onto the operation store's

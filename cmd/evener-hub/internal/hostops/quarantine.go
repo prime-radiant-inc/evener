@@ -593,7 +593,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			return snapshot{}, 0, nil, err
 		}
 	}
-	replacement, err := replacementState(custody, custodyPath, artifacts.allocatorFloor)
+	replacement, err := replacementState(custody, artifacts.allocatorFloor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
@@ -639,7 +639,7 @@ func writeReplacement(fs afero.Fs, path string, state snapshot, faults storeFaul
 // replacement's last durable write funnels through here, so all of them open the
 // same state from the same evidence.
 func replacementFromCustody(fs afero.Fs, path, custodyPath string, custody custodyFile, floor uint64, epoch uint64, signal *QuarantineSignal, faults storeFaults) (snapshot, uint64, *QuarantineSignal, error) {
-	state, err := replacementState(custody, custodyPath, floor)
+	state, err := replacementState(custody, floor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
