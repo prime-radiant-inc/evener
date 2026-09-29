@@ -1653,6 +1653,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           <CurrentWork
             task={model.tasks?.current?.description}
             goal={model.goal?.objective}
+            goalStatus={model.goal?.status}
             onOpenTasks={showTasks}
             onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
           />
