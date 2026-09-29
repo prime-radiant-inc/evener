@@ -285,7 +285,13 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
   renderedRows: number;
   /** Older pages fetched through thread/turns/list (?paged=1 only). */
   listCalls: number;
-  paged: boolean;
+  /**
+   * Whether the paging row is actually mounted. Read from the DOM rather than
+   * the ?paged=1 flag: the flag only says how the runner navigated, while this
+   * says the open-with-history shape the pass exists for really rendered (the
+   * row mounts only once the model carries an olderCursor).
+   */
+  pagingRow: boolean;
   errors: string[];
 }
 
@@ -301,7 +307,7 @@ function metrics(): TranscriptScrollMetrics {
     turns: modelTurnCount,
     renderedRows: document.querySelectorAll('[data-testid="transcript-row"]').length,
     listCalls: olderPageCalls,
-    paged: PAGED,
+    pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
     errors: pageErrors(),
   };
 }
@@ -355,7 +361,13 @@ async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
     await nextFrame();
     throwOnPageErrors("paged open");
     const m = metrics();
-    const standing = m.scrollHeight === lastHeight && m.scrollTop === lastTop && m.turns === lastTurns;
+    // Not ready until the fixture's page has hydrated AND its paging row is
+    // mounted: before that every geometry value is 0 and holds still, so a
+    // quiescence run would "settle" on an empty page and the runner would read
+    // the open as correct without the shape this pass exists for ever
+    // rendering.
+    const ready = m.turns >= INITIAL_TURN_COUNT && m.pagingRow;
+    const standing = ready && m.scrollHeight === lastHeight && m.scrollTop === lastTop && m.turns === lastTurns;
     lastHeight = m.scrollHeight;
     lastTop = m.scrollTop;
     lastTurns = m.turns;

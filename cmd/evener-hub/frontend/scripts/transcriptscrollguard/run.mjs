@@ -246,7 +246,7 @@ async function main() {
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
       if (opened.errors.length > 0) failures.push(`page errors on the paged open: ${opened.errors.join("; ")}`);
-      if (!opened.paged) failures.push("the paged pass opened without an olderCursor");
+      if (!opened.pagingRow) failures.push("the paged pass opened without the paging row mounted (no olderCursor?)");
       if (opened.listCalls !== 0) {
         failures.push(
           `opening a session with older history auto-loaded ${opened.listCalls} older page(s); the automatic ` +
