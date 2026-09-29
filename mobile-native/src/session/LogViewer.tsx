@@ -1,9 +1,10 @@
 // A step's whole output, full screen (spec 8.2's "Show all 412 lines"). The
 // lines sit in a virtualized list, so a 10,000-line test run scrolls smoothly.
 import { useMemo } from "react";
-import { FlatList, Modal, View } from "react-native";
+import { FlatList, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { HoldingModal } from "../alerts/HoldingModal";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MAX_ITEM_BYTES, TRUNCATION_MARKER } from "../projectedRows";
 import { Action, Copy, styles, useColors } from "../ui";
@@ -14,7 +15,7 @@ export function LogViewer({ title, text, onClose }: { title: string; text: strin
 	// The store cuts a field at 64 KiB and ends it with its marker.
 	const cut = text.endsWith(TRUNCATION_MARKER);
 	return (
-		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+		<HoldingModal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16, gap: 12 }]}>
 					<View style={{ flex: 1, minWidth: 0 }}>
@@ -29,6 +30,6 @@ export function LogViewer({ title, text, onClose }: { title: string; text: strin
 					ListFooterComponent={cut ? <Copy muted>{`Showing the first ${MAX_ITEM_BYTES / 1024} KB`}</Copy> : null}
 				/>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

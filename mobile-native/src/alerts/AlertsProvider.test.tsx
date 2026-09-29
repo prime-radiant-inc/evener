@@ -22,7 +22,8 @@ const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> })
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
-import { AlertsProvider, useAlertSnapshot, useHeldAlertCount, useHoldAlerts, useReportRoutes } from "./AlertsProvider";
+import { AlertsProvider } from "./AlertsProvider";
+import { useAlertSnapshot, useHeldAlertCount, useHoldAlerts, useReportRoutes } from "./alertsContext";
 
 type Routes = Parameters<ReturnType<typeof useReportRoutes>>[0];
 const probe = {
