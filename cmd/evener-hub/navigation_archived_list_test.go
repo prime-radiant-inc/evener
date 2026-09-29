@@ -207,3 +207,24 @@ func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T)
 		assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
 	}
 }
+
+// An absent limit pages at the maximum, not the whole tier.
+func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
+	source := newTestNavigationSource(testNavigationNow())
+	old := testNavigationNow().Add(-30 * 24 * time.Hour)
+	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", maxNavigationSectionRows+10, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
+	service := newTestNavigationService(t, source)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerArchivedListHandler(server, service)
+	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: source.inputs.Tree.Projects[0].Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []hubapi.NavigationSessionSummary
+	if err := json.Unmarshal(response.Sessions, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != maxNavigationSectionRows || response.NextCursor == "" || response.Total != maxNavigationSectionRows+10 {
+		t.Fatalf("omitted limit served %d rows, cursor %q, total %d", len(rows), response.NextCursor, response.Total)
+	}
+}
