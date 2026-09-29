@@ -2,7 +2,7 @@
 // client and the connection's readiness. It lives apart from HubSheet.tsx, the
 // navigator, so the pages HubSheet mounts can read it without importing their
 // own navigator.
-import type { AppwireClient } from "@evener/appwire-client";
+import type { AppwireClient, HubUpdateController } from "@evener/appwire-client";
 import type { How } from "../hubs/AddHub";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
@@ -24,6 +24,9 @@ export interface HubSheetContextValue {
 	ready: boolean;
 	/** Whether a control that needs the hub may act right now. */
 	canUseConnection: () => boolean;
+	/** The hub's own update: the header's "up to date" or "Update available",
+	 * and About's "Update hub" (ruling 22). */
+	updates: HubUpdateController;
 }
 
 const HubSheetContext = createContext<HubSheetContextValue | null>(null);
