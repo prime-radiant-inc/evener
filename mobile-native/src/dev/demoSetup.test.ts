@@ -126,6 +126,28 @@ describe("providers", () => {
 	});
 });
 
+// The hub's notices (S11), as cmd/evener-hub/app_notices.go derives them: a
+// sign-in counts the live top-level sessions whose model runs on the provider
+// instance, and an offline host its sessions that were live when last reached.
+describe("notices", () => {
+	it("names the expired sign-in with the live sessions on its models, and no host while every host is attached", () => {
+		// s-retry is the one live top-level session on GPT-5.6; the other
+		// GPT-5.6 rows are subagents.
+		expect(setup().answer("evener/notices/list", {}).notices).toEqual([
+			{ id: "signInRequired:codex-jesse-fsck.com", kind: "signInRequired", subject: "codex-jesse-fsck.com", affectedSessions: 1 },
+		]);
+	});
+
+	it("adds paradise-park while it is offline, with its live sessions", () => {
+		const notices = setup(true).answer("evener/notices/list", {}).notices;
+		expect(notices.map((notice) => notice.id)).toEqual([
+			"signInRequired:codex-jesse-fsck.com",
+			"hostOffline:paradise-park",
+		]);
+		expect(notices[1]?.affectedSessions).toBeGreaterThan(0);
+	});
+});
+
 describe("plugins", () => {
 	it("lists the prototype's five marketplaces and a catalog to browse", () => {
 		const demo = setup();

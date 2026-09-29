@@ -253,11 +253,15 @@ export async function createDemoHub(
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
-		const notification = JSON.stringify({
-			jsonrpc: "2.0",
-			method: "evener/navigation/invalidated",
-			params: payload,
-		});
+		broadcast("evener/navigation/invalidated", payload);
+	}
+	// Tells every client the hub's notices changed, carrying the whole new
+	// list, as cmd/evener-hub/app_notices.go broadcasts evener/notices/changed.
+	function broadcastNotices() {
+		if (demoSetup) broadcast("evener/notices/changed", demoSetup.answer("evener/notices/list", {}));
+	}
+	function broadcast(method: string, params: unknown) {
+		const notification = JSON.stringify({ jsonrpc: "2.0", method, params });
 		for (const socket of server.clients) {
 			if (socket.readyState !== WebSocket.OPEN) continue;
 			// One socket that fails mid-send must not skip the rest of the
@@ -287,7 +291,10 @@ export async function createDemoHub(
 			return;
 		}
 		broadcastNavigation(requireFleet().step(step));
-		if (step === "host-offline" || step === "host-online") return;
+		if (step === "host-offline" || step === "host-online") {
+			broadcastNotices();
+			return;
+		}
 		// The session's own thread follows its row, as askQuestion's does.
 		const [id, state] = ROW_STEPS[step];
 		const thread = threads.get(fleetSessionRef(id));

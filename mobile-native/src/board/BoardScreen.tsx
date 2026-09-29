@@ -362,8 +362,8 @@ function Board({
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
 	const hubNotices = useMemo(
-		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
-		[snapshot.auth, sources, snapshot.plugins, loadedRows],
+		() => notices({ hubNotices: snapshot.notices, sources: sources ?? [] }),
+		[snapshot.notices, sources],
 	);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));

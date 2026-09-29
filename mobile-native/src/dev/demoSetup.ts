@@ -214,6 +214,7 @@ const SETUP_METHODS = [
 	"evener/instance/setModelDisabled",
 	"evener/instance/refreshModels",
 	"evener/auth/list",
+	"evener/notices/list",
 	"evener/auth/device/start",
 	"evener/auth/device/poll",
 	"evener/marketplace/list",
@@ -441,6 +442,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			}));
 			return { providers: [...fleetStatuses, ...signedIn] };
 		},
+		"evener/notices/list": () => fleet.answerNoticesList((model) => MODELS.find(([id]) => id === model)?.[2]),
 		"evener/marketplace/list": () => ({
 			marketplaces: MARKETPLACES.map((marketplace) => ({
 				name: marketplace.id,

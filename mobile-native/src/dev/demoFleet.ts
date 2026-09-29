@@ -18,6 +18,7 @@ import type {
 	ArchiveParams,
 	ArchiveResponse,
 	AuthListResponse,
+	NoticesListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
 	NavigationJobSummary,
@@ -970,6 +971,10 @@ interface FleetAnswers {
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
+	/** evener/notices/list (S11), derived as cmd/evener-hub/app_notices.go
+	 * derives it; `providerOf` names the provider instance a model id runs on,
+	 * which the fleet's rows don't say. */
+	answerNoticesList(providerOf: (model: string) => string | undefined): NoticesListResponse;
 }
 
 export interface DemoFleet extends FleetAnswers {
@@ -1129,6 +1134,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
+		answerNoticesList: (providerOf) => answers.answerNoticesList(providerOf),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		step,
 		setSessionState: (ref, state) => {
@@ -1494,5 +1500,33 @@ function fleetAnswers(
 		};
 	}
 
-	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList };
+	// The hub's notices: each expired sign-in with the live top-level sessions
+	// whose model runs on that provider instance, then each offline host with
+	// its sessions that were live when last reached. No demo plugin is broken.
+	function answerNoticesList(providerOf: (model: string) => string | undefined): NoticesListResponse {
+		const counted = (affected: number) => (affected > 0 ? { affectedSessions: affected } : {});
+		const signIns = answerAuthList()
+			.providers.filter((status) => status.needsLogin)
+			.map((status) => ({
+				id: `signInRequired:${status.provider}`,
+				kind: "signInRequired",
+				subject: status.provider,
+				// A session with no model of its own runs the default, which is
+				// lunaroute's (demoSessions.ts DEFAULT_MODEL), never an expired one.
+				...counted(
+					liveRaw.filter((raw) => raw.model !== undefined && providerOf(raw.model) === status.provider).length,
+				),
+			}));
+		const hosts = sources
+			.filter((source) => !source.online)
+			.map((source) => ({
+				id: `hostOffline:${source.id}`,
+				kind: "hostOffline",
+				subject: source.id,
+				...counted(liveSessions.filter((row) => row.host_id === source.id).length),
+			}));
+		return { notices: [...signIns, ...hosts] };
+	}
+
+	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList, answerNoticesList };
 }

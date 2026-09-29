@@ -1,17 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
-import type { PluginEntry } from "@evener/appwire-client";
+import { describe, expect, it } from "vitest";
 import { manifest } from "@evener/appwire-client/testing/navigation";
 import { type BoardSnapshot, createBoardController } from "./boardData";
 import {
 	answer,
-	answerAuth,
-	authUpdated,
+	answerNotices,
 	boundary,
-	expired,
 	fail,
 	type Hub,
+	hubNotice,
 	invalidate,
 	next,
+	noticesChanged,
+	noticesMethodNotFound,
 	readerOf,
 	requestsFor,
 	response,
@@ -571,12 +571,11 @@ it("pause holds re-reads, resume catches up", async () => {
 	board.resume();
 	await Promise.resolve();
 	expect(hub.requests.slice(before).map(readerOf).sort()).toEqual([
-		"auth",
 		"live",
 		"manifest",
 		"needs_you",
+		"notices",
 		"pin_catalog",
-		"plugins",
 	]);
 });
 
@@ -589,12 +588,11 @@ it("resume reads what a pause interrupted before its first answer", async () => 
 	board.resume();
 	await Promise.resolve();
 	expect(hub.requests.slice(before).map(readerOf).sort()).toEqual([
-		"auth",
 		"live",
 		"manifest",
 		"needs_you",
+		"notices",
 		"pin_catalog",
-		"plugins",
 	]);
 	const interrupted = hub.requests.slice(0, before);
 	for (const request of interrupted) request.answered = true;
@@ -612,7 +610,8 @@ it("a client given while paused waits for resume to read", async () => {
 	expect(hub.requests).toHaveLength(0);
 	board.resume();
 	await Promise.resolve();
-	expect(hub.requests).toHaveLength(6);
+	// Live, Needs you, the pin catalog, the manifest and the notices.
+	expect(hub.requests).toHaveLength(5);
 });
 
 it("dispose leaves no listeners", async () => {
@@ -633,259 +632,130 @@ it("dispose leaves no listeners", async () => {
 	expect(notified).toBe(after);
 });
 
-const brokenPlugin = (plugin: string): PluginEntry => ({
-	plugin,
-	marketplace: "evener",
-	version: "1.0.0",
-	enabled: true,
-	autoUpgrade: false,
-	broken: true,
-	installPath: `/plugins/${plugin}`,
-	installedAt: 0,
-	lastUpdated: 0,
-});
-function answerPlugins(hub: Hub, plugins: PluginEntry[]) {
-	next(hub, "plugins").resolve({ plugins } as never);
-}
-const FIVE_MINUTES = 5 * 60_000;
-/** Runs a test on fake timers, the plugin poll's clock. */
-async function withFakeTimers(test: () => Promise<void>) {
-	vi.useFakeTimers();
-	try {
-		await test();
-	} finally {
-		vi.useRealTimers();
-	}
-}
-const flush = () => vi.advanceTimersByTimeAsync(0);
+// The Board's notices come from the hub (S11): evener/notices/list when it
+// binds a client and on resume, and each evener/notices/changed after. A hub
+// without the method has no notices to show (Jesse, 2026-09-29: no
+// client-side fallback).
+const signIn = hubNotice("signInRequired", "openai", 2);
+const offline = hubNotice("hostOffline", "studio", 3);
 
-it("reads the hub's sign-ins and plugins when it gets a client, and their answers become the snapshot", async () => {
+it("reads the hub's notices when it gets a client, and the answer becomes the snapshot", async () => {
 	const hub = boundary();
 	const board = createBoardController();
-	expect(board.getSnapshot().auth).toEqual([]);
-	expect(board.getSnapshot().plugins).toEqual([]);
+	expect(board.getSnapshot()).toMatchObject({ notices: [], noticesRead: false });
 	board.setClient(hub.client);
-	expect(requestsFor(hub, "auth")).toHaveLength(1);
-	expect(requestsFor(hub, "plugins")).toHaveLength(1);
-	answerAuth(hub, [expired("openai")]);
-	answerPlugins(hub, [brokenPlugin("superpowers")]);
+	expect(requestsFor(hub, "notices")).toHaveLength(1);
+	answerNotices(hub, [signIn, offline]);
 	await tick();
-	expect(board.getSnapshot().auth).toEqual([expired("openai")]);
-	expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
+	expect(board.getSnapshot()).toMatchObject({ notices: [signIn, offline], noticesRead: true });
 });
 
-it("reads a list the hub sends as null as an empty list", async () => {
-	// Go's encoding/json sends a nil slice as null: a hub listing no
-	// providers answers evener/auth/list with {"providers": null}.
+it("reads a notice list the hub sends as null as an empty one", async () => {
+	// Go's encoding/json sends a nil slice as null.
 	const hub = boundary();
 	const board = createBoardController();
 	board.setClient(hub.client);
-	next(hub, "auth").resolve({ providers: null } as never);
-	next(hub, "plugins").resolve({ plugins: null } as never);
+	next(hub, "notices").resolve({ notices: null } as never);
 	await tick();
-	expect(board.getSnapshot().auth).toEqual([]);
-	expect(board.getSnapshot().plugins).toEqual([]);
+	expect(board.getSnapshot()).toMatchObject({ notices: [], noticesRead: true });
 });
 
-it("re-reads the sign-ins on any auth update, and only the sign-ins", async () => {
+it("takes each evener/notices/changed list as the notices, with no read", async () => {
 	const hub = boundary();
 	const board = createBoardController();
 	board.setClient(hub.client);
-	answerAuth(hub, [expired("openai")]);
-	answerPlugins(hub, []);
+	answerNotices(hub, [signIn]);
 	await tick();
-	authUpdated(hub, "openai");
-	authUpdated(hub);
-	expect(requestsFor(hub, "auth")).toHaveLength(3);
-	expect(requestsFor(hub, "plugins")).toHaveLength(1);
-	answerAuth(hub, [expired("openai")]);
-	answerAuth(hub, []);
-	await tick();
-	expect(board.getSnapshot().auth).toEqual([]);
+	noticesChanged(hub, [offline]);
+	expect(board.getSnapshot().notices).toEqual([offline]);
+	expect(requestsFor(hub, "notices")).toHaveLength(1);
 });
 
-it("drops a sign-in answer that lands after a newer one", async () => {
-	const hub = boundary();
-	const board = createBoardController();
-	board.setClient(hub.client);
-	authUpdated(hub);
-	const older = next(hub, "auth");
-	answerAuth(hub, []);
-	await tick();
-	older.resolve({ providers: [expired("openai")] } as never);
-	await tick();
-	expect(board.getSnapshot().auth).toEqual([]);
-});
-
-it("polls the plugins every 5 minutes while the Board is in view", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.setClient(hub.client);
-		answerPlugins(hub, []);
-		await flush();
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES - 1);
-		expect(requestsFor(hub, "plugins")).toHaveLength(1);
-		await vi.advanceTimersByTimeAsync(1);
-		expect(requestsFor(hub, "plugins")).toHaveLength(2);
-		answerPlugins(hub, [brokenPlugin("superpowers")]);
-		await flush();
-		expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		expect(requestsFor(hub, "plugins")).toHaveLength(3);
-		// The poll reads only the plugins.
-		expect(requestsFor(hub, "auth")).toHaveLength(1);
-	}));
-
-it("a poll that returns the same lists notifies nobody", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.setClient(hub.client);
-		answerAuth(hub, []);
-		answerPlugins(hub, [brokenPlugin("superpowers")]);
-		await flush();
-		const before = board.getSnapshot();
-		let notified = 0;
-		const stop = board.subscribe(() => {
-			notified += 1;
-		});
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		answerPlugins(hub, [brokenPlugin("superpowers")]);
-		await flush();
-		expect(notified).toBe(0);
-		expect(board.getSnapshot()).toBe(before);
-		stop();
-	}));
-
-it("keeps a read that was out when the Board paused", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.setClient(hub.client);
-		board.pause();
-		answerPlugins(hub, [brokenPlugin("superpowers")]);
-		await flush();
-		expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
-		expect(requestsFor(hub, "plugins")).toHaveLength(1);
-	}));
-
-it("reads no sign-ins or plugins while paused, and reads both again on resume", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.setClient(hub.client);
-		answerAuth(hub, []);
-		answerPlugins(hub, []);
-		await flush();
-		board.pause();
-		authUpdated(hub, "openai");
-		await vi.advanceTimersByTimeAsync(3 * FIVE_MINUTES);
-		expect(requestsFor(hub, "auth")).toHaveLength(1);
-		expect(requestsFor(hub, "plugins")).toHaveLength(1);
-		board.resume();
-		expect(requestsFor(hub, "auth")).toHaveLength(2);
-		expect(requestsFor(hub, "plugins")).toHaveLength(2);
-		// The poll starts over from the resume.
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		expect(requestsFor(hub, "plugins")).toHaveLength(3);
-	}));
-
-it("a client given while paused reads no sign-ins or plugins until resume", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.pause();
-		board.setClient(hub.client);
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		expect(requestsFor(hub, "auth")).toHaveLength(0);
-		expect(requestsFor(hub, "plugins")).toHaveLength(0);
-		board.resume();
-		expect(requestsFor(hub, "auth")).toHaveLength(1);
-		expect(requestsFor(hub, "plugins")).toHaveLength(1);
-	}));
-
-it("keeps failed sign-in and plugin reads out of the Board's error, retained and reading, and keeps the last lists", async () => {
+it("shows no notices and no error on a hub without evener/notices/list", async () => {
 	const hub = boundary();
 	const board = createBoardController();
 	board.setClient(hub.client);
 	await answerAll(hub);
-	// Unanswered, they hold up nothing.
-	expect(board.getSnapshot().reading).toBe(false);
-	answerAuth(hub, [expired("openai")]);
-	answerPlugins(hub, [brokenPlugin("superpowers")]);
+	noticesMethodNotFound(hub);
 	await tick();
-	authUpdated(hub);
-	next(hub, "auth").reject(new Error("The hub went away."));
-	await tick();
-	const snapshot = board.getSnapshot();
-	expect(snapshot.error).toBeNull();
-	expect(snapshot.retained).toBe(false);
-	expect(snapshot.reading).toBe(false);
-	expect(snapshot.auth).toEqual([expired("openai")]);
-	// The next auth update tries again.
-	authUpdated(hub);
-	answerAuth(hub, []);
-	await tick();
-	expect(board.getSnapshot().auth).toEqual([]);
+	expect(board.getSnapshot()).toMatchObject({ notices: [], noticesRead: true, error: null });
 });
 
-it("a failed first plugin read says nothing, and the next poll tries again", () =>
-	withFakeTimers(async () => {
-		const hub = boundary();
-		const board = createBoardController();
-		board.setClient(hub.client);
-		next(hub, "plugins").reject(new Error("request timed out"));
-		await flush();
-		expect(board.getSnapshot().error).toBeNull();
-		expect(board.getSnapshot().plugins).toEqual([]);
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		answerPlugins(hub, [brokenPlugin("superpowers")]);
-		await flush();
-		expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
-	}));
+it("never reads the sign-ins or the plugins for notices", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	board.pause();
+	board.resume();
+	await tick();
+	expect(hub.requests.map((request) => request.method)).not.toContain("evener/auth/list");
+	expect(hub.requests.map((request) => request.method)).not.toContain("evener/plugin/list");
+});
 
-it("keeps the sign-ins and plugins through a reconnect until the new connection's reads land", async () => {
+it("a changed list the same as the current one notifies nobody", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	answerNotices(hub, [signIn]);
+	await tick();
+	const before = board.getSnapshot();
+	let notified = 0;
+	const stop = board.subscribe(() => {
+		notified += 1;
+	});
+	noticesChanged(hub, [signIn]);
+	expect(notified).toBe(0);
+	expect(board.getSnapshot()).toBe(before);
+	stop();
+});
+
+it("reads no notices while paused, and reads them again on resume", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.pause();
+	board.setClient(hub.client);
+	expect(requestsFor(hub, "notices")).toHaveLength(0);
+	board.resume();
+	expect(requestsFor(hub, "notices")).toHaveLength(1);
+});
+
+it("keeps a failed notice read out of the Board's error and keeps the last list", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	answerNotices(hub, [signIn]);
+	await tick();
+	board.pause();
+	board.resume();
+	fail(hub, "notices", "The hub went away.");
+	await tick();
+	expect(board.getSnapshot()).toMatchObject({ notices: [signIn], error: null, reading: false, retained: false });
+});
+
+it("keeps the notices through a reconnect until the new connection's read lands, and drops the old one's", async () => {
 	const first = boundary();
 	const board = createBoardController();
 	board.setClient(first.client);
-	answerAuth(first, [expired("openai")]);
-	answerPlugins(first, [brokenPlugin("superpowers")]);
+	answerNotices(first, [signIn]);
 	await tick();
-	// A second auth read is still out when the connection goes.
-	authUpdated(first);
+	board.pause();
+	board.resume();
 	board.setClient(null);
-	expect(board.getSnapshot().auth).toEqual([expired("openai")]);
-	expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
+	expect(board.getSnapshot().notices).toEqual([signIn]);
 	const second = boundary();
 	board.setClient(second.client);
-	expect(board.getSnapshot().auth).toEqual([expired("openai")]);
-	// The old connection's late answer is dropped.
-	answerAuth(first, []);
+	// The old connection's late answer, and its notifications, are dropped.
+	answerNotices(first, []);
+	noticesChanged(first, []);
 	await tick();
-	expect(board.getSnapshot().auth).toEqual([expired("openai")]);
-	answerAuth(second, []);
-	answerPlugins(second, []);
+	expect(board.getSnapshot().notices).toEqual([signIn]);
+	answerNotices(second, [offline]);
 	await tick();
-	expect(board.getSnapshot().auth).toEqual([]);
-	expect(board.getSnapshot().plugins).toEqual([]);
+	expect(board.getSnapshot().notices).toEqual([offline]);
 });
 
-it("stops polling the plugins when the client goes and when disposed", () =>
-	withFakeTimers(async () => {
-		const first = boundary();
-		const board = createBoardController();
-		board.setClient(first.client);
-		board.setClient(null);
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		expect(requestsFor(first, "plugins")).toHaveLength(1);
-		const second = boundary();
-		board.setClient(second.client);
-		board.dispose();
-		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
-		expect(requestsFor(second, "plugins")).toHaveLength(1);
-		expect(vi.getTimerCount()).toBe(0);
-	}));
 const category = (id: string, count = 1) => ({ id, name: id, count });
 
 it("reads each category's first page once the catalog lands, and its answers become pinSections", async () => {
@@ -1088,36 +958,34 @@ it("dispose stops the category readers too", async () => {
 });
 
 describe("the attention scope, the in-app alerts' own reads (phase 6)", () => {
-	it("reads Live, Needs you, the manifest and the sign-ins, and never the pins, a category or the plugins", async () =>
-		withFakeTimers(async () => {
-			const hub = boundary();
-			const board = createBoardController({ scope: "attention" });
-			board.setClient(hub.client);
-			answer(hub, "live", { sessions: sessions("live-", 2), remaining: 0 });
-			answer(hub, "needs_you", { sessions: [session("ask-0")], remaining: 0 });
-			answer(hub, "manifest", manifest({ sources }));
-			answerAuth(hub, []);
-			await flush();
-			vi.advanceTimersByTime(FIVE_MINUTES * 2);
-			board.pause();
-			board.resume();
-			await flush();
-			expect(new Set(hub.requests.map(readerOf))).toEqual(new Set(["live", "needs_you", "manifest", "auth"]));
-			expect(board.getSnapshot()).toMatchObject({ loaded: true, pins: { rows: [] }, pinSections: {} });
-			expect(refs(board.getSnapshot().needsYou)).toEqual(["ask-0"]);
-		}));
-
-	it("says when its own first sign-in read has landed, even when it finds the same list", async () => {
+	it("reads Live, Needs you, the manifest and the notices, and never the pins or a category", async () => {
 		const hub = boundary();
 		const board = createBoardController({ scope: "attention" });
-		expect(board.getSnapshot().authRead).toBe(false);
 		board.setClient(hub.client);
-		fail(hub, "auth", "boom");
+		answer(hub, "live", { sessions: sessions("live-", 2), remaining: 0 });
+		answer(hub, "needs_you", { sessions: [session("ask-0")], remaining: 0 });
+		answer(hub, "manifest", manifest({ sources }));
+		answerNotices(hub, []);
 		await tick();
-		expect(board.getSnapshot().authRead).toBe(false);
-		authUpdated(hub);
-		answerAuth(hub, []);
+		board.pause();
+		board.resume();
 		await tick();
-		expect(board.getSnapshot()).toMatchObject({ authRead: true, auth: [] });
+		expect(new Set(hub.requests.map(readerOf))).toEqual(new Set(["live", "needs_you", "manifest", "notices"]));
+		expect(board.getSnapshot()).toMatchObject({ loaded: true, pins: { rows: [] }, pinSections: {} });
+		expect(refs(board.getSnapshot().needsYou)).toEqual(["ask-0"]);
+	});
+
+	it("says when its first notice read has landed, even when it finds no notices", async () => {
+		const hub = boundary();
+		const board = createBoardController({ scope: "attention" });
+		board.setClient(hub.client);
+		fail(hub, "notices", "boom");
+		await tick();
+		expect(board.getSnapshot().noticesRead).toBe(false);
+		board.pause();
+		board.resume();
+		answerNotices(hub, []);
+		await tick();
+		expect(board.getSnapshot()).toMatchObject({ noticesRead: true, notices: [] });
 	});
 });
