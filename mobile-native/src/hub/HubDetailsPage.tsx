@@ -1,0 +1,59 @@
+// A saved hub's details (spec 12's Hubs): its name, its address and removing
+// it. Removing the selected hub leaves the navigation to the sheet, which
+// leaves for the first-run screen once no hub is selected (Review Focus 5).
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useLayoutEffect, useState } from "react";
+import { Alert } from "react-native";
+import { useConnection } from "../ConnectionProvider";
+import { HubEditor } from "../HubEditor";
+import { Group, GroupedPage, GroupFooter, GroupGap, Row } from "../sheet/Grouped";
+import type { HubRoutes } from "./hubSheetContext";
+
+export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "HubDetails">) {
+	const { profiles, activeProfile, updateHub, removeHub } = useConnection();
+	const profile = profiles.find((candidate) => candidate.id === route.params.id);
+	const [editing, setEditing] = useState(false);
+	const [failure, setFailure] = useState<string | null>(null);
+	const name = profile?.name;
+
+	useLayoutEffect(() => {
+		if (name !== undefined) navigation.setOptions({ title: name });
+	}, [navigation, name]);
+
+	if (!profile) return null;
+
+	async function remove(id: string) {
+		const selected = id === activeProfile?.id;
+		setFailure(null);
+		try {
+			await removeHub(id);
+		} catch (error) {
+			setFailure(error instanceof Error ? error.message : "Couldn't remove this hub.");
+			return;
+		}
+		if (!selected) navigation.goBack();
+	}
+
+	function confirmRemove(id: string, label: string) {
+		Alert.alert(`Remove ${label}?`, "The saved hub, its token and its drafts are removed from this phone.", [
+			{ text: "Cancel", style: "cancel" },
+			{ text: "Remove", style: "destructive", onPress: () => void remove(id) },
+		]);
+	}
+
+	return (
+		<GroupedPage>
+			{editing ? <HubEditor profile={profile} save={updateHub} close={() => setEditing(false)} /> : null}
+			<GroupGap />
+			<Group>
+				<Row label="Name" value={profile.name} chevron onPress={() => setEditing(true)} />
+				<Row label="Address" sub={profile.origin} machineSub />
+			</Group>
+			<GroupGap />
+			<Group>
+				<Row label="Remove this hub" tone="danger" onPress={() => confirmRemove(profile.id, profile.name)} />
+			</Group>
+			{failure ? <GroupFooter tone="danger">{failure}</GroupFooter> : null}
+		</GroupedPage>
+	);
+}

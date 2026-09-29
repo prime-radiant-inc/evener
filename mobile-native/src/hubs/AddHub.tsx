@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { Linking, Text, TextInput, type TextInputProps, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { fonts } from "../design/tokens";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type PairingTarget, pairingFrom, suggestedHubName } from "./pairing";
 
@@ -254,9 +254,4 @@ function MachineRow({ text }: { text: string }) {
 			</Text>
 		</View>
 	);
-}
-
-/** The space between an action's group and the fields above it. */
-function GroupGap() {
-	return <View style={{ height: 20 }} />;
 }

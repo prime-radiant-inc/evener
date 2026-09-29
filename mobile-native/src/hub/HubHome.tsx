@@ -4,6 +4,7 @@
 import { StackActions } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Text } from "react-native";
+import { useConnection } from "../ConnectionProvider";
 import { Group, GroupedPage, GroupLabel, Row } from "../sheet/Grouped";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -14,6 +15,7 @@ type InterimScreen = "Providers" | "Plugins" | "TranscriptPreferences" | "HubSet
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId, ready } = useHubSheet();
+	const { profiles } = useConnection();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const line = hubStatusLine(ready, useConnectionStatusText(), null);
@@ -43,7 +45,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			<GroupLabel>This phone</GroupLabel>
 			<Group>
 				<Row icon="textformat.size" label="Display" chevron onPress={() => leaveFor("TranscriptPreferences")} />
-				<Row icon="point.3.connected.trianglepath.dotted" label="Hubs" chevron onPress={() => root?.navigate("Hubs")} />
+				<Row
+					icon="point.3.connected.trianglepath.dotted"
+					label="Hubs"
+					value={profiles.length}
+					chevron
+					onPress={() => navigation.navigate("Hubs")}
+				/>
 			</Group>
 			<GroupLabel>More</GroupLabel>
 			<Group>

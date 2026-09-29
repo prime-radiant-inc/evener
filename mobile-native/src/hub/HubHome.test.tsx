@@ -10,7 +10,16 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({
+		state: "ready",
+		fatal: false,
+		profiles: [
+			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
+			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
+		],
+	}),
+}));
 vi.mock("@react-navigation/native", () => ({
 	StackActions: {
 		replace: (name: string, params: unknown) => ({ type: "REPLACE", payload: { name, params } }),
@@ -32,7 +41,8 @@ const liveContext: HubSheetContextValue = {
 
 function mount() {
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const navigation = { getParent: () => root } as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
+	const sheet = { getParent: () => root, navigate: vi.fn() };
+	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -45,10 +55,10 @@ function mount() {
 		});
 	const disabled = (label: string) =>
 		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: label }).props.disabled;
-	return { tree, root, press, disabled };
+	return { tree, root, sheet, press, disabled };
 }
 
-const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Hub settings"];
+const ROWS = ["Providers", "Plugins", "Display", "Hubs, 2", "Hub settings"];
 
 beforeEach(() => {
 	status.line = null;
@@ -62,7 +72,7 @@ it("says the hub is connected and lists its pages", () => {
 });
 
 it("leaves the sheet for today's screens until their pages land (ruling 10)", () => {
-	const { root, press } = mount();
+	const { root, sheet, press } = mount();
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
@@ -76,8 +86,17 @@ it("leaves the sheet for today's screens until their pages land (ruling 10)", ()
 			payload: { name: screen, params: { hubId: "hub-1" } },
 		});
 	}
-	press("Hubs");
-	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+it("pushes Hubs inside the sheet, valued with the number of saved hubs", () => {
+	const { tree, root, sheet, press } = mount();
+	expect(renderedText(tree)).toContain("2");
+	press("Hubs, 2");
+	expect(sheet.navigate).toHaveBeenCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(root.dispatch).not.toHaveBeenCalled();
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", () => {

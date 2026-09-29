@@ -5,9 +5,13 @@
 import type { AppwireClient } from "@evener/appwire-client";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
-/** The Hub's pages. Every page names the hub it was opened for. */
+/** The Hub's pages. A page about the connected hub names the hub it was
+ * opened for; Hubs and its pages are about the phone's saved hubs. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
+	Hubs: undefined;
+	AddHub: { how: "scan" | "paste" | "address" };
+	HubDetails: { id: string };
 };
 
 export interface HubSheetContextValue {

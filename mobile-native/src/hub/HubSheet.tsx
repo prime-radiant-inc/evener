@@ -10,10 +10,19 @@ import { isReady } from "../connectionDisplay";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
+import { AddHubPage } from "./AddHubPage";
+import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
+import { HubsPage } from "./HubsPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 
 const HubStack = createNativeStackNavigator<HubRoutes>();
+
+const ADD_HUB_TITLES: Record<HubRoutes["AddHub"]["how"], string> = {
+	scan: "Scan pairing code",
+	paste: "Paste pairing link",
+	address: "Enter the address",
+};
 
 export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) {
 	const { activeProfile } = useConnection();
@@ -59,6 +68,13 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						),
 					}}
 				/>
+				<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
+				<HubStack.Screen
+					name="AddHub"
+					component={AddHubPage}
+					options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
+				/>
+				<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);

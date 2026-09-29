@@ -28,6 +28,7 @@ vi.mock("@react-navigation/elements", () => ({}));
 vi.mock("@react-navigation/native", () => ({}));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
 vi.mock("expo-status-bar", () => ({}));
+vi.mock("expo-camera", () => ({}));
 vi.mock("expo-clipboard", () => ({}));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "app-root-uuid" }));
 vi.mock("expo-sqlite", () => ({}));
