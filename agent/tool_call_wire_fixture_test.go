@@ -55,6 +55,11 @@ const toolWireFixturePath = "testdata/toolwire/calls.json"
 // toolWireCwd is the fixed path the temp workspace is recorded as.
 const toolWireCwd = "/home/jesse/git/evener"
 
+// toolWireAnswers is the user's reply to call_ask_user, choosing its
+// recommended option, in the [answers] form both clients compose
+// (appwire-client's composeAskAnswers; a test there pins the match).
+const toolWireAnswers = "[answers]\n1. [Deploy] → \"Ship tonight\""
+
 // toolWireEarlierSession is the earlier session in the project's state bucket.
 const toolWireEarlierSession = "02wMz5Txv5aIxgf9yVdd0N"
 
@@ -444,6 +449,18 @@ func TestToolCallWireFixtures(t *testing.T) {
 			args: map[string]any{"operation": "adopt", "path": lane},
 		},
 		{
+			id: "call_ask_user", tool: "ask_user",
+			note: "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
+			args: map[string]any{"questions": []map[string]any{{
+				"header":   "Deploy",
+				"question": "Ship the settle fix tonight, or wait for the race run?",
+				"options": []map[string]any{
+					{"label": "Ship tonight", "detail": "The fix is small and the drain test passes.", "recommended": true},
+					{"label": "Wait", "detail": "Let go test -race run overnight first."},
+				},
+			}}},
+		},
+		{
 			id: "call_web_fetch", tool: "web_fetch",
 			note:   "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
 			args:   map[string]any{"url": "https://example.com/release-notes", "question": "What changed in the settle pass?"},
@@ -522,6 +539,8 @@ func TestToolCallWireFixtures(t *testing.T) {
 	reg := apptranscript.NewToolCallRegistry()
 	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
 	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
+	// The user's reply to the ask_user question starts the next turn.
+	items = append(items, apptranscript.ProjectTurn("turn_2", 3, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(toolWireAnswers), Timestamp: wireFixtureStart.Add(60 * time.Second)}, reg, nil, nil)...)
 
 	checkWireFixture(t, toolWireFixturePath, struct {
 		Note  string               `json:"note"`
@@ -529,7 +548,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		Notes map[string]string    `json:"notes"`
 		Items []appwire.ThreadItem `json:"items"`
 	}{
-		Note:  "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
+		Note:  "One ASSISTANT entry announcing one call per tool, the TOOL_RESULTS entry answering them, and the user's reply to the ask_user question, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
 		Cwd:   toolWireCwd,
 		Notes: notes,
 		Items: toolWireRelocated(t, items, func(text string) string {

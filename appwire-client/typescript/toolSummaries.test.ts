@@ -189,6 +189,7 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   for (const name of ["read_transcript", "read_session_transcript"]) expect(toolFamily(name)).toBe("transcript");
   expect(toolFamily("find_session_transcripts")).toBe("sessions");
   expect(toolFamily("manage_worktree")).toBe("worktree");
+  expect(toolFamily("ask_user")).toBe("ask");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -266,6 +267,7 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
   ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
   ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
+  ["ask_user", { questions: [{ header: "Deploy", question: "Ship?", options: [] }] }, "Asking a question"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {
