@@ -41,6 +41,13 @@ import {
 	stageFleetState,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
+import {
+	cursorEnd,
+	itemCount,
+	itemPage,
+	olderCursorAt,
+	withOlderHistory,
+} from "../src/dev/demoOlderHistory.js";
 import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
@@ -202,6 +209,10 @@ export async function createDemoHub(
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
+	const olderHistoryThread = fleetOptions?.olderHistory
+		? threads.get(fleetSessionRef("s-pr2138"))
+		: undefined;
+	if (olderHistoryThread) withOlderHistory(olderHistoryThread);
 	const fleetRefs = new Set(fleetThreads.map((value) => value.evener.ref));
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
@@ -504,6 +515,21 @@ export async function createDemoHub(
 							refs.add(selected.evener.ref);
 							subscribers.set(socket, refs);
 						}
+						// EVENER_DEMO_FLEET_OLDER: the latest page of items, and a cursor
+						// to the pages before it.
+						if (
+							selected === olderHistoryThread &&
+							params.includeTurns &&
+							typeof params.itemLimit === "number"
+						) {
+							const total = itemCount(selected.turns);
+							const start = Math.max(0, total - params.itemLimit);
+							result = {
+								thread: { ...selected, turns: itemPage(selected.turns ?? [], start, total) },
+								...(olderCursorAt(start) ? { olderCursor: olderCursorAt(start) } : {}),
+							};
+							break;
+						}
 						result = {
 							thread: {
 								...selected,
@@ -515,9 +541,19 @@ export async function createDemoHub(
 						subscribers.get(socket)?.delete(params.ref);
 						result = {};
 						break;
-					case "thread/turns/list":
-						result = { data: [] };
+					case "thread/turns/list": {
+						const end = cursorEnd(params.cursor);
+						if (!selected || selected !== olderHistoryThread || end === null) {
+							result = { data: [] };
+							break;
+						}
+						const start = Math.max(0, end - (params.itemLimit ?? 40));
+						result = {
+							data: itemPage(selected.turns ?? [], start, end),
+							...(olderCursorAt(start) ? { nextCursor: olderCursorAt(start) } : {}),
+						};
 						break;
+					}
 					case "turn/queue":
 					case "turn/steer":
 					case "turn/cancelQueued":
@@ -821,6 +857,7 @@ if (
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
+					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
 				}
 			: undefined,
 		{

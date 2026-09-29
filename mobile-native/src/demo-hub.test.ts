@@ -1396,6 +1396,55 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	it("pages Get PR 2138's older history by item with EVENER_DEMO_FLEET_OLDER", async () => {
+		const hub = await createDemoHub(0, undefined, { olderHistory: true });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const ref = fleetSessionRef("s-pr2138");
+		const ids = (turns: { items?: { id: string }[] }[] | undefined) =>
+			(turns ?? []).flatMap((turn) => (turn.items ?? []).map((item) => item.id));
+		try {
+			await client.connect();
+			const full = await client.request("thread/read", { ref, includeTurns: true });
+			const all = ids(full.thread.turns);
+			expect(all.filter((id) => id.startsWith("demo-older-"))).toHaveLength(15 * 7);
+			const first = await client.request("thread/read", { ref, includeTurns: true, itemLimit: 40 });
+			const seen = ids(first.thread.turns);
+			expect(seen).toEqual(all.slice(-40));
+			let cursor = first.olderCursor;
+			const pages: string[][] = [];
+			while (cursor) {
+				const page = await client.request("thread/turns/list", { ref, cursor, itemLimit: 40 });
+				pages.unshift(ids(page.data));
+				cursor = page.nextCursor;
+			}
+			expect([...pages.flat(), ...seen]).toEqual(all);
+			// A page that starts inside a turn says so.
+			const partial = await client.request("thread/read", { ref, includeTurns: true, itemLimit: 3 });
+			expect(partial.thread.turns?.[0]).toMatchObject({ hasEarlierItems: true });
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("serves the whole history, with no cursor, without EVENER_DEMO_FLEET_OLDER", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const read = await client.request("thread/read", {
+				ref: fleetSessionRef("s-pr2138"),
+				includeTurns: true,
+				itemLimit: 3,
+			});
+			expect(read.olderCursor).toBeUndefined();
+			expect(read.thread.turns?.flatMap((turn) => turn.items ?? []).length).toBeGreaterThan(3);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("lists the commands when it doesn't know the one typed", async () => {
 		const commands = new PassThrough();
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
