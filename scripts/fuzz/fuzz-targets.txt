@@ -445,7 +445,6 @@ native:.:./cmd/evener-hub/internal/fspaths:FuzzResolveInRoot
 native:.:./cmd/evener-hub/internal/fspaths:FuzzSanitizeDirPrefix
 native:.:./cmd/evener-hub/internal/fspaths:FuzzFSPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/fspaths:FuzzAppPathsBehaviorProgram
-native:.:./cmd/evener-hub/internal/hostfence:FuzzHostfenceDecode
 native:.:./cmd/evener-hub/internal/hostlock:FuzzAcquireLock
 native:.:./cmd/evener-hub/internal/hostlock:FuzzHostLockBehaviorProgram
 native:.:./cmd/evener-hub/internal/hostops:FuzzLoadStore

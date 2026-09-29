@@ -1635,12 +1635,10 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			m.materializeHostRecords(fileRecords, hasFile)
 		}
 	}
-	// Spec 08b §7's remaining boot passes, in their fixed order, before the
+	// Spec 08b §7's boot passes, in their fixed order, before the
 	// manager serves: the tombstone-derived host-removed pass, the bidirectional
 	// generation-mirror reconciliation, and the cross-file intent
-	// reconciliation (§9). The local orphan-boundary reap (crash-fencing §3,
-	// S19) runs FIRST in the full order, at the store open — see the named seam
-	// in main.go's openHostOpsStore.
+	// reconciliation (§9).
 	m.reconcilePipelineBoot()
 	return m
 }
@@ -2993,12 +2991,6 @@ func sortedMapKeys[V any](m map[string]V) []string {
 // (§9), which runs the compensation arms before the generic intent rules. Each
 // pass writes nothing when it finds nothing to converge, so an untouched file
 // stays byte-identical.
-//
-// BOUNDARY (S19): crash-fencing §3's safety-critical local reap of the store's
-// local orphan boundary runs FIRST in the full boot order, before this pass —
-// at the store open (`openHostOpsStore` in main.go), where the named seam
-// `reapLocalOrphanBoundary` sits. S19 fills that seam; nothing here does its
-// work.
 func (m *hubHostManager) reconcilePipelineBoot() {
 	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return

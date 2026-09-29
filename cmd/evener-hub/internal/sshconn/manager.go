@@ -1844,15 +1844,6 @@ func (m *Manager) clearHostCaches(name string) {
 // which is the only place the first-attach bootstrap start may run; a reconnect
 // passes false so it never starts a hub.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
-	// A scope carried by the caller's context belongs to the caller's operation
-	// record, and this ladder is not that operation: the worker's scoped ctx
-	// reaches here through AttachUnderGate (and Ensure), so without this the
-	// ladder's read-only steps — the preflight, the probes, the post-phase
-	// re-reads — would arm their ssh children against the outer record and a
-	// crash mid-probe would leave it a pending spawn intent no work backs. Only
-	// the attempt's own deploy and restart legs are armed, from the scopes
-	// their hooks return.
-	ctx = WithoutSpawnScope(ctx)
 	// Address the executable this Manager already resolved for the host when the
 	// registry has no evener_path: a deploy target from an earlier attempt (or a
 	// discovered install) is the binary the host actually runs, and probing the
@@ -1947,13 +1938,10 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
-	// The restart leg a deploy plans is armed into that deploy's record, and a
-	// restart-only attempt mints its own record below: ArmSpawnIntent refuses a
-	// terminal record, so the record stays open until the leg's outcome lands
-	// and the leg's ssh subprocesses are armed into it. A deploy-only attempt
-	// finishes at the end of its deploy block, exactly where it always did.
+	// A deploy-only attempt finishes at the end of its deploy block; a planned
+	// restart leg runs under the same durable record, and a restart-only attempt
+	// mints its own record below.
 	var finishEnsureOp func(error)
-	var deployScope, restartScope *SpawnScope
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		// The Ensure-triggered deploy is a durable fenced operation (deploy
@@ -1968,19 +1956,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if hook == nil {
 			return nil, errors.New("sshconn: this Manager has no deploy recorder wired, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
 		}
-		scope, finish, err := hook(host)
+		finish, err := hook(host)
 		if err != nil {
 			return nil, err
 		}
-		if scope == nil {
-			return nil, errors.New("sshconn: the deploy recorder returned no durable record, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
-		}
-		deployScope, finishEnsureOp = scope, finish
+		finishEnsureOp = finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		// §3: the deploy step's ssh subprocesses are armed into the record the
-		// hook just persisted, so a crash between any pre-spawn intent and the
-		// deploy's completion is convergent at the next boot.
-		deployCtx = WithSpawnScope(deployCtx, deployScope)
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
@@ -2042,30 +2023,20 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if hook == nil {
 			return nil, errors.New("sshconn: this Manager has no restart recorder wired, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
 		}
-		scope, finish, err := hook(host)
+		finish, err := hook(host)
 		if err != nil {
 			return nil, err
 		}
-		if scope == nil {
-			return nil, errors.New("sshconn: the restart recorder returned no durable record, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
-		}
-		restartScope, finishEnsureOp = scope, finish
+		finishEnsureOp = finish
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
-		// Every restart leg runs under a durable record it can be armed into:
-		// the deploy's record when a deploy planned the leg, or the restart-only
-		// record the hook above minted (§6's "a reconnect with no durable record
-		// performs no mutating SSH command"). The leg's ssh subprocesses carry
-		// that record's scope, so a crash mid-restart is convergent at the next
-		// boot instead of leaving an unowned ssh child. Both arms refuse when
-		// their recorder is unwired or returns no record, so there is no
-		// restart leg that runs unarmed by omission.
-		if restartScope == nil {
-			restartScope = deployScope
-		}
-		restartCtx = WithSpawnScope(restartCtx, restartScope)
+		// Every restart leg runs under a durable record: the deploy's record
+		// when a deploy planned the leg, or the restart-only record the hook
+		// above minted (§6's "a reconnect with no durable record performs no
+		// mutating SSH command"). Both arms refuse when their recorder is
+		// unwired, so there is no restart leg that runs unrecorded by omission.
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
@@ -3189,16 +3160,15 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 }
 
 // EnsureRestartHook records one restart-only Ensure attempt as a durable
-// operation (deploy pipeline 08b §6, crash-fencing §6: "a reconnect with no
-// durable record performs no mutating SSH command"). It mirrors
-// EnsureDeployHook: called with the host's per-host gate already held and
-// before the restart leg's first remote command, it persists the record
-// carrying the attempt's fencing epoch and returns the finish the leg's
-// outcome is recorded through, plus the spawn scope (crash-fencing §3) the
-// leg's ssh subprocesses are armed under. A non-nil error means no durable
-// record could be persisted, so nothing may be restarted; with no hook wired
-// at all, the attempt is refused for the same reason.
-type EnsureRestartHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
+// operation (deploy pipeline 08b §6: "a reconnect with no durable record
+// performs no mutating SSH command"). It mirrors EnsureDeployHook: called with
+// the host's per-host gate already held and before the restart leg's first
+// remote command, it persists the record carrying the attempt's fencing epoch
+// and returns the finish the leg's outcome is recorded through. A non-nil
+// error means no durable record could be persisted, so nothing may be
+// restarted; with no hook wired at all, the attempt is refused for the same
+// reason.
+type EnsureRestartHook func(host hostreg.Host) (finish func(err error), err error)
 
 // SetEnsureRestartHook wires the deploy pipeline's restart recorder into this
 // Manager's Ensure path. It is a setter for the same reason
@@ -3227,13 +3197,10 @@ func (m *Manager) ensureRestartHook() EnsureRestartHook {
 // (deploy pipeline 08b §6). It is called with the host's per-host gate already
 // held and before any remote write of the deploy step; it mints and persists
 // the operation record carrying the deploy's fencing epoch and returns the
-// finish the step's outcome is recorded through, plus the spawn scope (crash-
-// fencing §3) the deploy step's ssh subprocesses are armed under — the record
-// the hook persisted is the record their pre-spawn intents bind to, so a crash
-// mid-deploy leaves state the boot reap converges. A non-nil error means no
+// finish the step's outcome is recorded through. A non-nil error means no
 // durable record could be persisted, so nothing may be launched; with no hook
 // wired at all, the deploy is refused for the same reason.
-type EnsureDeployHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
+type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error)
 
 // SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
 // Ensure path. It is a setter rather than an Options field because the hub's
