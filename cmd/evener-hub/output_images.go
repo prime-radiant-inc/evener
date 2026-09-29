@@ -363,9 +363,10 @@ func readOutputImageFile(abs string) ([]byte, os.FileInfo, bool) {
 }
 
 // readOutputImageInRoot reads abs, a path fspaths.ResolveInRoot accepted for
-// root, for the image routes. abs is symlink-resolved, as ResolveInRoot returns
-// it: the open measures it against root's own resolved path, so one named
-// through a symlink (macOS's /var for /private/var) reads as outside and is
+// root, for the image routes. root may be reached through a symlink: the open
+// resolves it. abs must be symlink-resolved, as ResolveInRoot returns it, since
+// the open measures it against that resolved root: an unresolved abs (named
+// through macOS's /var rather than /private/var, say) reads as outside and is
 // refused. The open goes through root again (docOpen, i.e. openDocInRoot), so a
 // symlink swapped in after the containment check cannot lead it outside root;
 // the stat is of the open descriptor, so a non-regular file or one over
