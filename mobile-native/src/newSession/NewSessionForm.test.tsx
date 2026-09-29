@@ -957,3 +957,27 @@ it("stops being the store's form in front once it unmounts (#3104)", async () =>
 	act(() => form.dispose());
 	expect(formFront(form.store)).toBeUndefined();
 });
+
+it("says a changed draft's failed start couldn't start, not that it may have (#3104)", async () => {
+	const form = await mount({
+		draft: {
+			cwd: "/home/jesse/git/evener",
+			prompt: "go",
+			unconfirmed: true,
+			launchOverrides: { enabledPlugins: ["superpowers"] },
+		},
+		plugins: new Error("plugin cache locked"),
+	});
+	await debounce();
+	// Changed, the draft is a new start: its earlier start's doubt isn't this one's.
+	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
+	await act(async () => {
+		void form.header("headerRight").props.onPress();
+		form.focus.focused = false;
+		form.dispose();
+	});
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
+	]);
+});

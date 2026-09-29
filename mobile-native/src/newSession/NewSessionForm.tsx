@@ -113,9 +113,11 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		if (outcome.status !== "created") {
 			// A form in front shows the store's error itself; else an alert says
 			// it. With no error there is nothing to say: nothing was started.
-			const { error, unconfirmedCreation } = store.getState();
+			// Uncertain only while a start of this very draft may exist, the same
+			// measure Start holds on: a changed draft's failure is a plain one.
+			const { error, startMayRepeat } = store.getState();
 			if (inFront || !error) return;
-			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: unconfirmedCreation });
+			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: startMayRepeat() });
 			return;
 		}
 		try {
