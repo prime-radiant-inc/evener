@@ -498,6 +498,7 @@ export interface EvenerDelegateInfo {
   status: string;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable: boolean;
   needsAttention: boolean;
@@ -1757,6 +1758,7 @@ export interface JobActivityDelegate {
   projectionRevision?: number;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable?: boolean;
   notResumableReason?: string;

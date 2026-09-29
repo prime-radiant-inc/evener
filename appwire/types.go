@@ -1626,6 +1626,7 @@ type EvenerDelegateInfo struct {
 	Status              string               `json:"status"`
 	Outcome             string               `json:"outcome,omitempty"`
 	Reason              string               `json:"reason,omitempty"`
+	Error               string               `json:"error,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	NeedsAttention      bool                 `json:"needsAttention"`
@@ -2733,6 +2734,7 @@ type JobActivityDelegate struct {
 	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
+	Error               string                 `json:"error,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
 	Resumable           bool                   `json:"resumable,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`

@@ -60,7 +60,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 		{
 			id:     "dlg_failed",
 			title:  "Update the lockfile",
-			inputs: delegateTerminalRunInputs{runErr: errors.New("provider returned 500")},
+			inputs: delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")},
 		},
 	}
 	for i, run := range runs {
@@ -82,6 +82,27 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	for _, run := range runs {
 		stableReadonlyActivityRow(t, tree, run.id)
+	}
+	// A failed run's cause rides beside its reason code: the error's first
+	// line, on the activity tree, the status roster and delegate/updated.
+	if got := stableReadonlyActivityRow(t, tree, "dlg_failed"); got["reason"] != "failed" || got["error"] != "provider returned 500" {
+		t.Fatalf("failed row reason=%v error=%v, want reason failed and error %q", got["reason"], got["error"], "provider returned 500")
+	}
+	if got := stableReadonlyActivityRow(t, tree, "dlg_reported"); got["error"] != nil {
+		t.Fatalf("reported row error=%v, want none", got["error"])
+	}
+	var failedRow delegateSnapshot
+	for _, row := range s.delegateController.Snapshot().rows {
+		if row.id == "dlg_failed" {
+			failedRow = row
+		}
+	}
+	status := delegateStatusInfoFromSnapshot(wireFixtureStart, s.ID(), failedRow)
+	if status.Error != "provider returned 500" {
+		t.Fatalf("status error=%q, want %q", status.Error, "provider returned 500")
+	}
+	if updated := delegateUpdatedDataFromStatus(status); updated.Error != "provider returned 500" {
+		t.Fatalf("delegate/updated error=%q, want %q", updated.Error, "provider returned 500")
 	}
 	// The session's id is minted per run; the corpus names it "root".
 	encoded, err := json.Marshal(appwire.JobsListResponse{Data: tree})

@@ -427,6 +427,26 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 	}
 }
 
+// A run that failed and prepared its terminal packet, then lost its process
+// before settling, keeps its cause through the restart's repair (#3327): the
+// packet's metadata carries the error, and the repaired outcome has it.
+func TestDelegateControllerRestartRepairKeepsAFailedRunsError(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
+	if _, _, err := c.prepareSettlementForTest(delegateLease{delegateID: "dlg_target", generation: 1}, finish.packet); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	restarted := reopenDelegateController(t, c, path)
+	if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	outcome := restarted.durable["dlg_target"].LatestOutcome
+	if outcome == nil || outcome.Status != delegatestore.OutcomeFailed || outcome.Error != "provider returned 500" {
+		t.Fatalf("repaired outcome = %#v, want failed with the run's error", outcome)
+	}
+}
+
 func TestDelegateControllerRestartCompletesStopBeforeAdmission(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
