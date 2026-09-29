@@ -95,7 +95,12 @@ function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activ
 }
 
 function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
-	return item.detail.description?.trim() || writeFileActionSummary(item) || ACTION_SUMMARY_UNAVAILABLE;
+	return (
+		item.detail.description?.trim() ||
+		writeFileActionSummary(item) ||
+		item.detail.summary ||
+		ACTION_SUMMARY_UNAVAILABLE
+	);
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality

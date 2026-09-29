@@ -11,11 +11,16 @@ import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
 	type ItemModel,
+	mcpToolParts,
 	parseArgs,
 	parseAskUserQuestions,
+	skillName,
 	str,
 	type ThreadModel,
+	type ToolFamily,
 	type TurnModel,
+	toolFamily,
+	toolStepSummary,
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
@@ -277,9 +282,11 @@ export function timeMarkerText(at: number, now: number, timeZone?: string): stri
 }
 
 export interface RunPart {
-	/** The kind of step the part counts. A run has one part per family, so
-	 * this is the part's identity while its words change as the run grows. */
-	family: Family;
+	/** The part's identity while its words change as the run grows: its
+	 * family, or for an MCP server or a tool no summary covers, that server or
+	 * tool, since each gets a part of its own. */
+	key: string;
+	family: ToolFamily;
 	text: string;
 	/** Drawn after the text as "(2 failed)", in red ink even when folded. */
 	failed: number;
@@ -292,21 +299,6 @@ export interface RunSummary {
 	failed: number;
 }
 
-export type Family = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "other";
-
-const FAMILIES: Record<string, Family> = {
-	read_file: "read",
-	edit_file: "edit",
-	write_file: "edit",
-	apply_patch: "edit",
-	grep: "search",
-	glob: "search",
-	list_dir: "search",
-	web_fetch: "fetch",
-	web_search: "webSearch",
-	shell: "shell",
-};
-
 /** What a step acted on: the command for a shell step, else the file or path
  * it named. `parsed` is the arguments already decoded, for a caller that read
  * them itself. */
@@ -316,14 +308,31 @@ export function stepTarget(
 	parsed?: Record<string, unknown>,
 ): string | undefined {
 	const args = parsed ?? parseArgs(argumentsJSON);
-	return FAMILIES[label] === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
+	return toolFamily(label) === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
+}
+
+/** What a tool step says it did, never its raw tool name: the words its row
+ * was built with (projectedRows reads them from the whole step), else the
+ * package's toolStepSummary over what the row still carries. Any other
+ * activity keeps its label. */
+export function stepWords(step: Pick<RunStep, "label" | "family" | "detail">): string {
+	if (step.family !== "tool") return step.label;
+	return (
+		step.detail.summary ??
+		toolStepSummary({ toolName: step.label, argumentsJSON: step.detail.arguments, output: step.detail.output })
+	);
 }
 
 interface Group {
-	family: Family;
+	key: string;
+	family: ToolFamily;
+	/** What an MCP part or a tool part names: the server, or the tool, in words. */
+	name: string;
 	count: number;
 	failed: number;
-	programs: Set<string>;
+	/** The programs a shell part's commands ran, or the skills a skill part
+	 * activated. */
+	names: Set<string>;
 	unnamed: number;
 }
 
@@ -334,10 +343,36 @@ function programOf(command: string | undefined): string | undefined {
 	return second && /^[a-z][\w-]*$/i.test(second) ? `${first} ${second}` : first;
 }
 
+// A step's part: one per family, except that each MCP server, and each tool
+// no summary covers, gets its own ("used github 3 times").
+function partOf(label: string): { key: string; family: ToolFamily; name: string } {
+	const family = toolFamily(label);
+	if (family === "mcp") {
+		const server = mcpToolParts(label)?.server ?? label;
+		return { key: `mcp:${server}`, family, name: server };
+	}
+	if (family === "tool") {
+		const name = label.replaceAll("_", " ").trim() || "a tool";
+		return { key: `tool:${name}`, family, name };
+	}
+	return { key: family, family, name: "" };
+}
+
+// What a step contributes to its part's words: the program a shell command
+// ran, or the skill a skill step activated.
+function namedBy(family: ToolFamily, step: RunStep): string | undefined {
+	if (family === "shell") return programOf(stepTarget(step.label, step.detail.arguments));
+	if (family === "skill") return skillName({ argumentsJSON: step.detail.arguments }) || undefined;
+	return undefined;
+}
+
 function partText(group: Group): string {
 	const n = group.count;
 	const plural = (one: string, many: string) => (n === 1 ? one : many);
 	const times = n === 1 ? "once" : `${n} times`;
+	// Named only when every step in the part is known and the same.
+	const [only] = [...group.names];
+	const oneName = group.names.size === 1 && group.unnamed === 0 ? only : undefined;
 	switch (group.family) {
 		case "read":
 			return `read ${n} ${plural("file", "files")}`;
@@ -349,15 +384,13 @@ function partText(group: Group): string {
 			return `fetched ${n} ${plural("page", "pages")}`;
 		case "webSearch":
 			return `searched the web ${times}`;
-		case "shell": {
-			// Named only when every command in the run is known and the same.
-			const [only] = [...group.programs];
-			return group.programs.size === 1 && group.unnamed === 0 && only
-				? `ran ${only}`
-				: `ran ${n} ${plural("command", "commands")}`;
-		}
-		default:
-			return `${n} other ${plural("step", "steps")}`;
+		case "shell":
+			return oneName ? `ran ${oneName}` : `ran ${n} ${plural("command", "commands")}`;
+		case "skill":
+			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
+		case "mcp":
+		case "tool":
+			return `used ${group.name} ${times}`;
 	}
 }
 
@@ -377,23 +410,23 @@ function runDuration(steps: readonly RunStep[]): number | undefined {
 }
 
 export function runSummary(steps: readonly RunStep[]): RunSummary {
-	const groups = new Map<Family, Group>();
+	const groups = new Map<string, Group>();
 	let failed = 0;
 	for (const step of steps) {
-		const family = FAMILIES[step.label] ?? "other";
-		let group = groups.get(family);
+		const part = partOf(step.label);
+		let group = groups.get(part.key);
 		if (!group) {
-			group = { family, count: 0, failed: 0, programs: new Set(), unnamed: 0 };
-			groups.set(family, group);
+			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0 };
+			groups.set(part.key, group);
 		}
 		group.count += 1;
 		if (step.state === "failed") {
 			group.failed += 1;
 			failed += 1;
 		}
-		if (family === "shell") {
-			const program = programOf(stepTarget(step.label, step.detail.arguments));
-			if (program) group.programs.add(program);
+		if (part.family === "shell" || part.family === "skill") {
+			const name = namedBy(part.family, step);
+			if (name) group.names.add(name);
 			else group.unnamed += 1;
 		}
 	}
@@ -401,7 +434,12 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	return {
 		steps: steps.length,
 		...(durationMs === undefined ? {} : { durationMs }),
-		parts: [...groups.values()].map((group) => ({ family: group.family, text: partText(group), failed: group.failed })),
+		parts: [...groups.values()].map((group) => ({
+			key: group.key,
+			family: group.family,
+			text: partText(group),
+			failed: group.failed,
+		})),
 		failed,
 	};
 }

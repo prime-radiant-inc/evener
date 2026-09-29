@@ -55,6 +55,7 @@ import {
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
+	toolStepSummary,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -107,6 +108,10 @@ export type ActivityFamily = "tool" | "reasoning" | "unknown";
 // the default collapsed row.
 export interface ActivityDetail {
 	description?: string;
+	// A tool step's words when it has no intent of its own ("Read agent/tree.go
+	// · lines 1-40"): the package's toolStepSummary, the web's words, read once
+	// here from the whole step, since a summary-only row keeps no output.
+	summary?: string;
 	arguments?: string;
 	output?: string;
 	error?: string;
@@ -237,6 +242,9 @@ export type MobileTimelineItem =
 export interface ProjectedRowContext {
 	readonly turnStatus?: string;
 	readonly asks?: ReadonlyMap<string, AskQuestionRef[]>;
+	// The session's directory, which a shell step's leading "cd <cwd> && "
+	// only repeats (toolStepSummary strips it).
+	readonly cwd?: string;
 }
 
 // One ProjectedEntry becomes one row (or none, for a warning with nothing to
@@ -305,14 +313,16 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary } = row.detail;
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
 	};
+	// With no rationale of its own, the row keeps the step's words, read from
+	// the whole step before its output goes.
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments, ...metadata }
+			? { arguments: row.detail.arguments, ...metadata, ...(summary !== undefined ? { summary } : {}) }
 			: { description: entry.rationale, ...metadata };
 	return {
 		...row,
@@ -384,7 +394,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: toolLabel(it),
 			family: "tool",
 			state: activityState(it, context.turnStatus),
-			detail: activityDetail(it),
+			detail: { ...activityDetail(it), summary: toolStepSummary(it, { cwd: context.cwd }) },
 			...identity,
 		};
 	}
@@ -897,7 +907,7 @@ function rowsForProjectedTurn(
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks, cwd: model.cwd });
 		if (plain === null) continue;
 		const row = withRoundKey(plain, entry.item, keyedRounds);
 		// Only an activity row joins a cluster run; everything else is final.
@@ -999,7 +1009,9 @@ export function projectTimeline(
 	const fingerprint = configFingerprint(config);
 	const ordered: Ordered[] = [];
 	for (const turn of model.turns) {
-		ordered.push(...rowsForProjectedTurn(model, turn, asks, config, fingerprint));
+		// The session's directory shapes a shell step's summary, so a turn's
+		// cached rows are its rows for this directory.
+		ordered.push(...rowsForProjectedTurn(model, turn, asks, config, `${fingerprint}\u0000${model.cwd}`));
 	}
 
 	// Second pass: cluster consecutive activity rows that share a family, then
@@ -1200,6 +1212,7 @@ export type BoundText = (text: string) => string;
 // as much as the output is.
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
+	const summary = detail.summary ? bound(detail.summary) : detail.summary;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
@@ -1207,6 +1220,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	// identity across publishes (see truncateItem).
 	if (
 		description === detail.description &&
+		summary === detail.summary &&
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error
@@ -1216,6 +1230,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	return {
 		...detail,
 		description,
+		summary,
 		arguments: args,
 		output,
 		error,
