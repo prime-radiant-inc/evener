@@ -2,7 +2,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render, textOf } from "../renderNative.testkit";
-import { NextCapsule } from "./NextCapsule";
+import { NextCapsule, nextCapsuleMaxWidth } from "./NextCapsule";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -52,6 +52,14 @@ describe("the Next capsule (spec 8.3)", () => {
 		const title = tree.root.findAll((node) => String(node.type) === "Text")[1];
 		expect(title.props.style).toMatchObject({ flexShrink: 1 });
 		expect(title.props.style.maxWidth).toBeUndefined();
+	});
+
+	// On a wide window (an iPad, landscape) 60% is no longer small: the
+	// capsule stops at 320pt.
+	it("stops at 320pt on a wide window", () => {
+		expect(nextCapsuleMaxWidth(390)).toBe(234);
+		expect(nextCapsuleMaxWidth(402)).toBe(241);
+		expect(nextCapsuleMaxWidth(1024)).toBe(320);
 	});
 
 	it("opens the session on a tap, and the list on a hold", () => {
