@@ -20,10 +20,11 @@ import { isPlainObject } from "./plainObject";
 export const WarningCodeContextBudget = "context_budget";
 
 /**
- * A failed restore of a cold delegate's runtime to deliver the attention it
- * owes. The daemon retries it on its own and warns once per failure episode,
- * so it is detail for Full, not an alarm at every level. Bound by test to
- * agent/events/payloads.go.
+ * A failed attempt to get a delegate's owed attention where it belongs:
+ * restoring its cold runtime to deliver it, or escalating it to the root when
+ * a closed ancestor fences it off. The daemon retries on its own and warns
+ * once per failure episode, so it is detail for Full, not an alarm at every
+ * level. Bound by test to agent/events/payloads.go.
  */
 export const WarningCodeDelegateAttentionRestore = "delegate_attention_restore";
 

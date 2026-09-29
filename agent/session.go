@@ -999,11 +999,11 @@ type Session struct {
 	// clamp applies.
 	outputReductionMu     sync.Mutex
 	outputReductionWarned string
-	// attentionRestoreWarnMu guards attentionRestoreWarned alone: per
-	// delegate, the restore error the session last warned about (see
-	// warnDelegateAttentionRestoreFailed).
-	attentionRestoreWarnMu    sync.Mutex
-	attentionRestoreWarned    map[string]string
+	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
+	// failing delegate-attention action and delegate, the error the session
+	// last warned about (see warnDelegateAttentionFailed).
+	delegateAttentionWarnMu   sync.Mutex
+	delegateAttentionWarned   map[delegateAttentionWarning]string
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry

@@ -115,9 +115,9 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.releaseRetryMu.Lock()
 		return s.releaseRetryMu.Unlock
 	}},
-	{owner: "Session", field: "attentionRestoreWarnMu", hold: func(s *Session) func() {
-		s.attentionRestoreWarnMu.Lock()
-		return s.attentionRestoreWarnMu.Unlock
+	{owner: "Session", field: "delegateAttentionWarnMu", hold: func(s *Session) func() {
+		s.delegateAttentionWarnMu.Lock()
+		return s.delegateAttentionWarnMu.Unlock
 	}},
 	{owner: "Session", field: "outputReductionMu", hold: func(s *Session) func() {
 		s.outputReductionMu.Lock()
