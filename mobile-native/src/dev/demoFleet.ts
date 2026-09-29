@@ -916,6 +916,9 @@ export interface DemoFleetOptions {
 	// settle-race plan's revision rather than its first text, so a Reader that
 	// read the plan before the restart shows what changed (frame 17).
 	planRevised?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_OLDER: demo-hub.mts puts fifteen older turns
+	// ahead of s-pr2138's and pages them by item (dev/demoOlderHistory.ts).
+	olderHistory?: boolean;
 	// Mirrors EVENER_DEMO_LONG: demo-hub.mts serves the sessions' long content
 	// (demoSessions.ts LONG_CONTENT) in place of the usual.
 	long?: boolean;
