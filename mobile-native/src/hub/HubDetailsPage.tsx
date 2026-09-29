@@ -20,7 +20,15 @@ export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<Hub
 		if (name !== undefined) navigation.setOptions({ title: name });
 	}, [navigation, name]);
 
-	if (!profile) return null;
+	// A removal can drop the hub and still fail on its local data
+	// (removeSavedHub): the page's hub is gone, but the reason stays on screen.
+	if (!profile)
+		return failure ? (
+			<GroupedPage>
+				<GroupGap />
+				<GroupFooter tone="danger">{failure}</GroupFooter>
+			</GroupedPage>
+		) : null;
 
 	async function remove(id: string) {
 		const selected = id === activeProfile?.id;

@@ -11,9 +11,7 @@ import { useConnection } from "../ConnectionProvider";
 import type { Routes } from "../screens";
 import { Group, GroupedPage, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { AddHub } from "./AddHub";
-
-type How = "scan" | "paste" | "address";
+import { AddHub, type How } from "./AddHub";
 
 export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
 	const { profiles, selectHub } = useConnection();

@@ -146,6 +146,19 @@ it("says why a hub couldn't be removed, and stays", async () => {
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 });
 
+it("says so when the hub was removed but its cleanup failed, rather than going blank", async () => {
+	// removeSavedHub drops the hub, then rejects about the local data it
+	// couldn't delete (src/removeHub.ts), so the page's hub is already gone.
+	connection.removeHub.mockImplementation(async () => {
+		connection.profiles = [MAGIC];
+		throw new Error("The hub was removed, but some local data could not be deleted.");
+	});
+	const { tree } = mount("hub-2");
+	await press(tree, "Remove this hub");
+	await confirmRemove();
+	expect(renderedText(tree)).toContain("The hub was removed, but some local data could not be deleted.");
+});
+
 it("renders nothing once the hub is gone", () => {
 	connection.profiles = [MAGIC];
 	const { tree } = mount("hub-2");

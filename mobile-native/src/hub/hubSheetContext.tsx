@@ -3,6 +3,7 @@
 // navigator, so the pages HubSheet mounts can read it without importing their
 // own navigator.
 import type { AppwireClient } from "@evener/appwire-client";
+import type { How } from "../hubs/AddHub";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 /** The Hub's pages. A page about the connected hub names the hub it was
@@ -10,7 +11,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 export type HubRoutes = {
 	HubHome: { hubId: string };
 	Hubs: undefined;
-	AddHub: { how: "scan" | "paste" | "address" };
+	AddHub: { how: How };
 	HubDetails: { id: string };
 };
 

@@ -12,7 +12,8 @@ import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../s
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type PairingTarget, pairingFrom, suggestedHubName } from "./pairing";
 
-type How = "scan" | "paste" | "address";
+/** The ways to add a hub: scan its code, paste its link, or type its address. */
+export type How = "scan" | "paste" | "address";
 
 interface Review {
 	target: PairingTarget;
