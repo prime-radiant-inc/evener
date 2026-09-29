@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { palettes } from "../design/tokens";
+import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group, GroupFooter, GroupLabel, Row, Segmented, SwitchRow, Tag } from "./Grouped";
+import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag, TextFieldRow } from "./Grouped";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -60,6 +60,12 @@ describe("a row", () => {
 		const path = render(<Row label="evener" sub="/home/jesse/git/evener" machineSub />);
 		expect(merged(texts(path)[1]?.props.style).fontFamily).toBe("Menlo");
 	});
+
+	it("sets a machine label, such as a model id, in Menlo", () => {
+		const model = render(<Row label="gpt-5.6" machineLabel />);
+		expect(merged(texts(model)[0]?.props.style).fontFamily).toBe("Menlo");
+		expect(merged(texts(render(<Row label="Status" />))[0]?.props.style).fontFamily).toBeUndefined();
+	});
 });
 
 describe("a group", () => {
@@ -95,6 +101,35 @@ describe("a switch row", () => {
 		// iOS draws the off track from ios_backgroundColor, not trackColor.false.
 		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
 		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
+	});
+
+	it("opens a detail from its text while its switch flips on its own, and says a problem in danger ink", () => {
+		const onPress = vi.fn();
+		const onChange = vi.fn();
+		const tree = render(
+			<SwitchRow
+				label="cracked"
+				sub="Broken"
+				subTone="danger"
+				accessibilityLabel="cracked, core, Broken"
+				switchLabel="cracked on by default"
+				value
+				disabled
+				onChange={onChange}
+				onPress={onPress}
+			/>,
+		);
+		const button = tree.root.findByProps({ accessibilityRole: "button" });
+		expect(button.props.accessibilityLabel).toBe("cracked, core, Broken");
+		button.props.onPress();
+		expect(onPress).toHaveBeenCalledTimes(1);
+		const toggle = tree.root.findByType("Switch" as never);
+		expect(toggle.props.accessibilityLabel).toBe("cracked on by default");
+		expect(toggle.props.disabled).toBe(true);
+		// The detail still opens while the switch waits, so the row doesn't dim.
+		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(1);
+		const broken = texts(tree).find((node) => node.props.children === "Broken");
+		expect(merged(broken?.props.style).color).toBe(light.dangerInk);
 	});
 });
 
@@ -133,9 +168,20 @@ describe("labels, footers and tags", () => {
 	});
 
 	it("colors a footer by what it reports", () => {
-		expect(
-			texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style.color,
-		).toBe(light.dangerInk);
+		const style = texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style;
+		expect(merged(style).color).toBe(light.dangerInk);
+		expect(merged(style).fontFamily).toBeUndefined();
+	});
+
+	it("sets a machine footer, such as an error the hub reported, in Menlo", () => {
+		const style = texts(
+			render(
+				<GroupFooter tone="danger" machine>
+					ssh: connect refused
+				</GroupFooter>,
+			),
+		)[0]?.props.style;
+		expect(merged(style)).toMatchObject({ color: light.dangerInk, fontFamily: fonts.mono });
 	});
 
 	it("draws version drift as a gray tag", () => {
@@ -143,5 +189,51 @@ describe("labels, footers and tags", () => {
 			color: light.inkMid,
 			backgroundColor: light.inset,
 		});
+	});
+});
+
+describe("a row's value with a tag", () => {
+	it("sets the value in ink-mid tabular figures beside its tag, and reads as both", () => {
+		const tree = render(<Row label="Hosts" value={<RowValue text="2" tag={{ text: "1 offline", tone: "amber" }} />} />);
+		const [value, tag] = texts(tree).slice(1);
+		expect(merged(value?.props.style)).toMatchObject({ color: light.inkMid, fontVariant: ["tabular-nums"] });
+		expect(value?.props.children).toBe("2");
+		expect(tag?.props.style).toMatchObject({ color: light.attentionInk, backgroundColor: light.attentionBg });
+		expect(tag?.props.children).toBe("1 offline");
+	});
+
+	it("sets a value that needs a human in the attention ink", () => {
+		const tree = render(<RowValue text="Offline" tone="attention" />);
+		expect(merged(texts(tree)[0]?.props.style)).toMatchObject({ color: light.attentionInk });
+	});
+
+	it("shows the tag alone when there is no value", () => {
+		const tree = render(<RowValue tag={{ text: "Hub runs 0.9.412", tone: "gray" }} />);
+		expect(texts(tree).map((node) => node.props.children)).toEqual(["Hub runs 0.9.412"]);
+	});
+});
+
+describe("a text field row", () => {
+	it("edits a machine value in Menlo, named for VoiceOver, without capitalizing or correcting it", () => {
+		const changes: string[] = [];
+		const tree = render(
+			<TextFieldRow label="SSH address" value="attic.lan" onChangeText={(text) => changes.push(text)} />,
+		);
+		const input = tree.root.findByType("TextInput" as never);
+		expect(input.props.accessibilityLabel).toBe("SSH address");
+		expect(input.props.value).toBe("attic.lan");
+		expect(input.props.autoCapitalize).toBe("none");
+		expect(input.props.autoCorrect).toBe(false);
+		expect(merged(input.props.style)).toMatchObject({ fontFamily: fonts.mono, color: light.inkHi });
+		input.props.onChangeText("attic.local");
+		expect(changes).toEqual(["attic.local"]);
+	});
+
+	it("takes several lines when asked, and holds while disabled", () => {
+		const input = render(
+			<TextFieldRow label="Roots" value="" onChangeText={() => {}} multiline disabled />,
+		).root.findByType("TextInput" as never);
+		expect(input.props.multiline).toBe(true);
+		expect(input.props.editable).toBe(false);
 	});
 });

@@ -19,7 +19,6 @@ import {
 import {
 	AccessibilityInfo,
 	ActionSheetIOS,
-	ActivityIndicator,
 	Alert,
 	AppState,
 	FlatList,
@@ -30,7 +29,6 @@ import {
 	ScrollView,
 	Text,
 	TextInput,
-	useWindowDimensions,
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -46,11 +44,12 @@ import {
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationState, createConversationStore } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
+import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
@@ -64,9 +63,7 @@ import {
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls, queueActionRefusal } from "./conversationControls";
-import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
-import { HubEditor } from "./HubEditor";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
@@ -82,7 +79,6 @@ import { documentReferences, fileWrites } from "./reader/documentReferences";
 import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
-import { editPairingInput, importPairing as importReviewedPairing, reviewPairingInput } from "./pairingImport";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
@@ -124,7 +120,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -147,6 +143,8 @@ import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { outboxFlush } from "./outbox/nativeOutboxFlush";
+import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
@@ -175,6 +173,7 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -212,10 +211,7 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	Providers: { hubId: string };
-	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
-	TranscriptPreferences: { hubId: string };
 	KeybindingPreferences: {
 		hubId: string;
 		editor?: { actionId: string; chord: string };
@@ -287,221 +283,6 @@ export type Routes = {
 /** A document's comments and its review: the document, and the session the
  * review goes to. */
 type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
-
-export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
-	const { profiles, activeProfile, saveHub, updateHub, selectHub, removeHub, loading } = useConnection();
-	const colors = useColors();
-	const headerHeight = useHeaderHeight();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
-	const [editing, setEditing] = useState<HubProfile | null>(null);
-	const [name, setName] = useState("");
-	const [origin, setOrigin] = useState("");
-	const [token, setToken] = useState("");
-	const [pairingReview, setPairingReview] = useState(editPairingInput(""));
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const inputStyle = [
-		styles.input,
-		{
-			color: colors.text,
-			borderColor: colors.border,
-			backgroundColor: colors.surface,
-		},
-	];
-	async function save() {
-		if (saving) return;
-		setSaving(true);
-		setError(null);
-		try {
-			const selected = await saveHub({ name, origin, token });
-			setName("");
-			setOrigin("");
-			setToken("");
-			setPairingReview(editPairingInput(""));
-			if (selected) navigation.navigate("Sessions");
-		} catch {
-			setError("Could not save this hub. Check the name and http(s) origin, and try again.");
-		} finally {
-			setSaving(false);
-		}
-	}
-	function reviewPairingURL() {
-		const review = reviewPairingInput(pairingReview.input);
-		setPairingReview(review);
-		setError(review.error);
-	}
-	function importPairing() {
-		const imported = importReviewedPairing(pairingReview);
-		if (!imported) return;
-		setOrigin(imported.origin);
-		setToken(imported.token);
-		setPairingReview(imported.state);
-		setError(null);
-	}
-	function remove(id: string, label: string) {
-		Alert.alert(
-			`Remove ${label}?`,
-			"The saved hub, its credentials, and its local drafts will be removed from this device.",
-			[
-				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Remove",
-					style: "destructive",
-					onPress: () => {
-						void removeHub(id).catch((error: unknown) =>
-							setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
-						);
-					},
-				},
-			],
-		);
-	}
-	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			{editing ? <HubEditor profile={editing} save={updateHub} close={() => setEditing(null)} /> : null}
-			<KeyboardAvoidingView
-				style={styles.fill}
-				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
-			>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-							},
-						]}
-					>
-						Saved hubs
-					</Text>
-					{loading ? (
-						<ActivityIndicator accessibilityLabel="Loading saved hubs" />
-					) : profiles.length === 0 ? (
-						<Copy muted>Add a hub to browse your sessions.</Copy>
-					) : null}
-					{profiles.map((profile) => (
-						<View
-							key={profile.id}
-							style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}
-						>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={`Open ${profile.name}`}
-								onPress={() => {
-									selectHub(profile.id);
-									navigation.navigate("Sessions");
-								}}
-								style={{ gap: 8, minHeight: 44 }}
-							>
-								<Copy>
-									{profile.name}
-									{activeProfile?.id === profile.id ? " · Selected" : ""}
-								</Copy>
-								<Copy muted>{profile.origin}</Copy>
-							</Pressable>
-							<View style={[styles.row, { justifyContent: "flex-end", flexWrap: "wrap" }]}>
-								<Action onPress={() => setEditing(profile)} label={`Edit ${profile.name}`}>
-									Edit
-								</Action>
-								<Action onPress={() => remove(profile.id, profile.name)} label={`Remove ${profile.name}`}>
-									Remove
-								</Action>
-							</View>
-						</View>
-					))}
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-								marginTop: 16,
-							},
-						]}
-					>
-						Add hub
-					</Text>
-					<Copy muted>Enter the hub’s origin, such as https://hub.example.com:9180.</Copy>
-					<TextInput
-						accessibilityLabel="Hub name"
-						placeholder="Hub name"
-						placeholderTextColor={colors.secondary}
-						value={name}
-						onChangeText={setName}
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Pairing URL"
-						placeholder="Paste pairing URL"
-						placeholderTextColor={colors.secondary}
-						value={pairingReview.input}
-						onChangeText={(value) => {
-							setPairingReview(editPairingInput(value));
-							setError(null);
-						}}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						secureTextEntry
-						style={inputStyle}
-					/>
-					{pairingReview.preview ? (
-						<View style={{ gap: 8 }}>
-							<Copy muted>Pairing target: {pairingReview.preview.origin}</Copy>
-							<Action disabled={saving} onPress={importPairing}>
-								Import pairing link
-							</Action>
-						</View>
-					) : (
-						<Action disabled={saving || !pairingReview.input.trim()} onPress={reviewPairingURL}>
-							Review pairing link
-						</Action>
-					)}
-					<TextInput
-						accessibilityLabel="Hub origin"
-						placeholder="https://hub.example.com:9180"
-						placeholderTextColor={colors.secondary}
-						value={origin}
-						onChangeText={setOrigin}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Bearer token, optional"
-						placeholder="Bearer token (optional)"
-						placeholderTextColor={colors.secondary}
-						value={token}
-						onChangeText={setToken}
-						autoCapitalize="none"
-						autoCorrect={false}
-						secureTextEntry
-						style={inputStyle}
-					/>
-					<ErrorMessage message={error} />
-					<Action
-						onPress={() => {
-							void save();
-						}}
-						disabled={saving || loading || !name.trim() || !origin.trim()}
-					>
-						{saving ? "Saving…" : "Save and connect"}
-					</Action>
-				</ScrollView>
-			</KeyboardAvoidingView>
-		</SafeAreaView>
-	);
-}
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
@@ -718,6 +499,13 @@ export function ConversationScreen({
 	);
 	const othersWaiting = useMemo(() => othersNeedingYou(fleet.bands, route.params.ref), [fleet.bands, route.params.ref]);
 	const othersWaitingCount = othersWaiting.length;
+	// Next serves whichever session alerted you most recently first (spec 8.3).
+	const alertedRecently = useAlertedRecently();
+	const queue = useMemo(
+		() => nextQueue(fleet.bands, route.params.ref, alertedRecently),
+		[fleet.bands, route.params.ref, alertedRecently],
+	);
+	const nextUsed = useNextUsed();
 	useEffect(() => {
 		// iPhone only: Android keeps its own back arrow.
 		if (Platform.OS !== "ios") return;
@@ -727,12 +515,16 @@ export function ConversationScreen({
 	}, [navigation, othersWaitingCount]);
 	// Leaving for another session marks it seen, the way the Board marks a
 	// row it opens (spec 8.3).
+	// Next and a title-bar swipe both move to another session (spec 16.6's
+	// lateral move).
 	function leaveFor(target: NavigationSessionSummary) {
+		haptic("selection");
 		Keyboard.dismiss();
 		fleet.seen.markRead(connected ? client : null, [target]);
 	}
 	function openNext(target: NavigationSessionSummary) {
 		leaveFor(target);
+		nextUsed();
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -763,7 +555,7 @@ export function ConversationScreen({
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
 		if (Platform.OS !== "ios") return;
-		const choices = othersWaiting.slice(0, 8);
+		const choices = queue.slice(0, 8);
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
 				options: [...choices.map((row) => row.title), "Cancel"],
@@ -810,6 +602,10 @@ export function ConversationScreen({
 		return () => {
 			if (mutationHostRef.current === host) mutationHostRef.current = null;
 			host.dispose();
+			// Letting go writes nothing to storage, so ask the flush to look: a
+			// message still waiting here would otherwise wait for the next
+			// connection.
+			void outboxFlush.flush();
 		};
 	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
@@ -1207,6 +1003,7 @@ export function ConversationScreen({
 	function chooseSessionAction(action: SessionMenuAction) {
 		switch (action.kind) {
 			case "level":
+				haptic("selection");
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
@@ -1865,14 +1662,21 @@ export function ConversationScreen({
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
+		// Offline, the answers wait in the phone's outbox as a message would
+		// (spec 8.5), fenced to the instance this phone last read.
+		const offline = !connectionReady.current;
+		const online = service;
+		const target = offline ? offlineTarget(current) : null;
+		const offlineAction = offline ? offlineSendAction(current) : "none";
 		if (
-			!service ||
-			!ready ||
-			!connectionReady.current ||
+			(offline
+				? target === null || offlineAction === "none"
+				: !service ||
+					!ready ||
+					current.status !== "open" ||
+					current.conversationGeneration !== bindingGeneration ||
+					current.conversation?.instanceId !== bindingInstance) ||
 			!screenInFront(navigation, route.key) ||
-			current.status !== "open" ||
-			current.conversationGeneration !== bindingGeneration ||
-			current.conversation?.instanceId !== bindingInstance ||
 			controls?.getSnapshot().pending != null ||
 			current.pendingMutation?.status === "pending" ||
 			!(current.conversation && conversationControls(current.conversation).send) ||
@@ -1885,26 +1689,39 @@ export function ConversationScreen({
 		try {
 			await document.submitText(text, async (input) => {
 				if (!questionBatches.begin(batch)) return false;
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState().send(service, [{ type: "text", text: input }]);
-				const accepted = store.getState().lastAcceptedMutation;
-				if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				if (target !== null && offlineAction !== "none") {
+					await getNativeMutationRuntime().submit(
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+					);
+				} else if (online) {
+					const previous = store.getState().lastAcceptedMutation;
+					await store.getState().send(online, [{ type: "text", text: input }]);
+					const accepted = store.getState().lastAcceptedMutation;
+					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				} else return false;
 				questionBatches.finish(batch.id, true);
 				acceptedAnswers = true;
 				return true;
 			});
-			if (acceptedAnswers)
+			// Kept offline isn't sent yet: its ghost says it waits, and the
+			// haptic is Send's.
+			if (acceptedAnswers && offline) haptic("light");
+			else if (acceptedAnswers) {
+				haptic("success");
 				toaster.show({
 					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
 				});
+			}
 			if (
 				acceptedAnswers &&
+				online &&
+				!offline &&
 				connectionReady.current &&
 				screenInFront(navigation, route.key) &&
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
-				await store.getState().rehydrate(service, activitySink);
+				await store.getState().rehydrate(online, activitySink);
 		} catch {
 			setAnswerError("Could not confirm delivery. Your answers are retained; check delivery before trying again.");
 		} finally {
@@ -2130,8 +1947,24 @@ export function ConversationScreen({
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
 	const action = conversation ? sendAction(conversation, snapshot.pendingMutations, connected) : "none";
+	// What Send does once the connection is there, which the placeholder
+	// describes offline too: it describes the session, not the outbox.
+	const onlineAction = connected
+		? action
+		: conversation
+			? sendAction(conversation, snapshot.pendingMutations, true)
+			: "none";
+	// Offline, Send keeps the message in the phone's outbox, for a session
+	// this phone has read since launch (ruling 12).
+	const offlineAdmits =
+		!connected && focused && offlineTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
-		ready && draft.loaded && !draft.error && !draft.submitting && unconfirmedSend === null && !imageState.busy;
+		(ready || offlineAdmits) &&
+		draft.loaded &&
+		!draft.error &&
+		!draft.submitting &&
+		unconfirmedSend === null &&
+		!imageState.busy;
 	// While a question waits, Send answers it with your text (ruling 14).
 	const answering = questionBatch !== null;
 	const sendEnabled = answering
@@ -2142,14 +1975,16 @@ export function ConversationScreen({
 			// Your text answers against the saved answers, so it waits for them.
 			questionDraft.loaded
 		: command !== null
-			? composerReady &&
+			? // A command asks the hub, so it waits for the connection.
+				ready &&
+				composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
 				composerCommandAvailable(command.command, conversation)
 			: composerReady && (!!draft.record.draft.trim() || !!draft.record.images?.length) && action !== "none";
 	const composerSendLabel =
 		answering || command === null
-			? sendLabel(action, answering)
+			? sendLabel(action, answering, connected)
 			: command.command.id === "compact"
 				? "Compact transcript"
 				: command.command.id === "goal"
@@ -2167,6 +2002,10 @@ export function ConversationScreen({
 			return;
 		}
 		if (imageSelection.getSnapshot().busy) return;
+		if (!connectionReady.current) {
+			await sendOffline();
+			return;
+		}
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -2179,6 +2018,41 @@ export function ConversationScreen({
 			// A refused Send adds no text of its own: the draft stays, and the
 			// unconfirmed ghost document.submit leaves says what happened and
 			// what to do.
+		}
+	}
+	// The session a message sent offline is fenced to: the instance this
+	// phone last read (ruling 12), exactly as an online send's durable request
+	// carries it. A session not read since launch has none, so Send waits.
+	function offlineTarget(state: ConversationState): OfflineTarget | null {
+		const read = state.conversation;
+		if (!read || state.ref !== route.params.ref) return null;
+		return {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			threadId: read.threadId,
+			instanceId: read.instanceId ?? read.threadId,
+		};
+	}
+	function offlineSendAction(state: ConversationState) {
+		return state.conversation ? sendAction(state.conversation, state.pendingMutations, false) : "none";
+	}
+	// Send while offline (spec 8.5): the message goes straight into the
+	// phone's outbox, which sends it once the connection returns and this
+	// session reads again.
+	async function sendOffline() {
+		const live = store.getState();
+		const target = offlineTarget(live);
+		const kind = offlineSendAction(live);
+		if (target === null || kind === "none") return;
+		setActionError(null);
+		try {
+			await document.submit(async (text, images) => {
+				await getNativeMutationRuntime().submit(offlineRequest(target, kind, buildComposerInput(text, images)));
+				haptic("light");
+				return true;
+			});
+		} catch {
+			// As Send's: the draft stays, and its ghost says what happened.
 		}
 	}
 	// Your text as the free answer to the question the dock is on. When that
@@ -2235,7 +2109,10 @@ export function ConversationScreen({
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
-			return accepted != null && accepted !== previous && accepted.kind === kind;
+			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
+			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
+			if (admitted) haptic("light");
+			return admitted;
 		},
 		[store],
 	);
@@ -2254,7 +2131,9 @@ export function ConversationScreen({
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn") navigation.navigate("Providers", { hubId: route.params.hubId });
+			else if (errorAction === "signIn")
+				// The error doesn't name the provider, so the Hub opens at Providers.
+				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
@@ -2299,6 +2178,7 @@ export function ConversationScreen({
 						sentText: translateAttachmentMarkers(unconfirmedSend, draft.record.unconfirmedImages),
 					},
 			recoveryRows,
+			connected,
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
@@ -2328,6 +2208,17 @@ export function ConversationScreen({
 		if (origin.kind === "queue") return queuedGhostAction(origin.entry, action);
 		if (action === "check") {
 			await checkDelivery();
+			return null;
+		}
+		if (origin.kind === "pending") {
+			// The phone's own message: Discard or Cancel drops it from the
+			// outbox, Send now releases one a Stop held. A press that finds the
+			// row already changed does nothing; the ghosts re-render from storage.
+			const runtime = getNativeMutationRuntime();
+			const targetKey = nativeMutationTargetKey(route.params.hubId, route.params.ref);
+			if (action === "discard" || action === "cancel")
+				await runtime.discardUndelivered(origin.clientMutationId, targetKey);
+			else if (action === "sendNow") await runtime.releaseCanceled(origin.clientMutationId, targetKey);
 			return null;
 		}
 		if (origin.kind === "draft") {
@@ -2463,8 +2354,7 @@ export function ConversationScreen({
 	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
-	const nextTarget =
-		approval === null && questionBatch === null && find === null ? nextSession(fleet.bands, route.params.ref) : null;
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2868,14 +2758,24 @@ export function ConversationScreen({
 									// waits, without Allow or Deny.
 									controls={approvalControls}
 									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
-									onDecided={(allowed) => toaster.show({ text: allowed ? "Allowed once" : "Denied" })}
+									onDecided={(allowed) => {
+										if (allowed) haptic("success");
+										toaster.show({ text: allowed ? "Allowed once" : "Denied" });
+									}}
 								/>
 							) : null}
 							{(bottom.dock === "question" || bottom.dock === "foldedQuestion") && questionBatch ? (
 								<QuestionDock
 									questions={questionBatch.questions}
 									draft={questionDraft}
-									ready={ready && !!permitted?.send && draft.loaded && !draft.error && unconfirmedSend === null}
+									ready={
+										(ready || offlineAdmits) &&
+										!!permitted?.send &&
+										draft.loaded &&
+										!draft.error &&
+										unconfirmedSend === null
+									}
+									waitsForConnection={!connected}
 									sending={draft.submitting || questionBatch.sending}
 									folded={bottom.dock === "foldedQuestion"}
 									onFold={setQuestionFolded}
@@ -2927,7 +2827,7 @@ export function ConversationScreen({
 										document.edit(text);
 									}}
 									inputRef={composerInput}
-									placeholder={composerPlaceholder(action, answering)}
+									placeholder={composerPlaceholder(onlineAction, answering)}
 									// Under an open dock, whose own button reads "Send answer",
 									// this Send says it sends what you typed.
 									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}

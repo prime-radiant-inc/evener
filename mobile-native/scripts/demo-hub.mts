@@ -37,7 +37,7 @@ import {
 	setHumanNote,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
-import { createDemoSetup } from "../src/dev/demoSetup.js";
+import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -323,6 +323,9 @@ export async function createDemoHub(
 					case "ping":
 						result = {};
 						break;
+					case "evener/update/check":
+						result = demoUpdateCheck();
+						break;
 					case "evener/projects/recent":
 						result = { data: ["/demonstration"] };
 						break;
@@ -351,7 +354,9 @@ export async function createDemoHub(
 						created.sessionId = `demo-session-created-${sessionNumber}`;
 						// Another host's session is named by that host, as a real
 						// hub qualifies a remote ref (appwire/refs.go).
-						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
+						const source = params.source || "demo";
+						created.evener.ref = `${source}:created-${sessionNumber}`;
+						created.source = source;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";

@@ -182,20 +182,10 @@ func hostSettingsUIGate(short bool, ui, master, dest string) string {
 	return ""
 }
 
-// hostSettingsUIGuardedCredentials is the host file the check proves was never
-// touched: the host's REAL credential store under its real config root.
-//
-// EVENER_SSH_E2E_UI_GUARD_DISPOSABLE is a falsification hook, and the reason
-// the guard can be trusted at all: a guard never seen to fail proves nothing. It
-// points the guard at the test-owned disposable store instead of the real one,
-// which the check's own write WOULD then touch, so the guard must fire. It is
-// off in a normal run and never risks the host's real file either way.
-func hostSettingsUIGuardedCredentials(home, hostDir string) string {
-	if os.Getenv("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE") == "1" {
-		return hostDir + "/evener/credentials.toml"
-	}
-	return home + "/.config/evener/credentials.toml"
-}
+// The non-mutation guard this check uses is the shared one in
+// app_host_disposable_e2e_test.go: hostGuardedCredentialsPath, parameterised by
+// this check's own EVENER_SSH_E2E_UI_GUARD_DISPOSABLE falsification hook, over
+// the host's ACTUAL resolved credential path (hostRealCredentialsPath).
 
 func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	if reason := hostSettingsUIGate(testing.Short(), os.Getenv("EVENER_SSH_E2E_UI"), os.Getenv("EVENER_SSH_E2E"), os.Getenv("EVENER_SSH_E2E_HOST")); reason != "" {
@@ -233,19 +223,55 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	configPath := hostDir + "/" + hostSettingsUIToml
 	hostAgentsDocPath := cfgRoot + "/AGENTS.md"
 
-	// The per-run token makes the name unique, and an existing path is refused
-	// HERE, before anything is created: `mkdir -p` on a name already present
-	// would adopt a directory this run did not make, and the cleanup would then
-	// delete whatever was already inside it.
-	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
-		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
-	}
+	// The per-run token makes the name unique. The directory is created with a
+	// bare `mkdir` — not a `test -e` followed by `mkdir -p` — so the creation is
+	// one atomic, exclusive step: an existing name fails it and can never be
+	// adopted (its contents would then be deleted by the cleanup below).
+	host.mustRun("mkdir " + shellquote.RemoteWord(hostDir))
+
+	// Remove the test-owned directory on EVERY exit path. It is registered here,
+	// immediately after the exclusive creation and before any other host
+	// operation, so a failure resolving the guard paths or hashing below cannot
+	// strand the directory (or a staged binary or credential files) on the host.
+	// The guard comparison registers its own cleanup just after; by t.Cleanup's
+	// LIFO order that one runs FIRST, so the guarded files are read before this
+	// removal.
+	t.Cleanup(func() {
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+	})
+
+	// The two files this check must leave untouched: the host's REAL credential
+	// store and its real install. They are hashed BEFORE anything is written or
+	// launched. The credential path is resolved from the host's own environment
+	// (hostRealCredentialsPath), so the guard follows the host's actual
+	// credential store rather than an assumed ~/.config default.
+	realCredsPath := hostGuardedCredentialsPath("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE",
+		hostRealCredentialsPath(t, host, home), hostDir+"/evener/credentials.toml")
+	realCredsBefore := host.sha256IfFile(realCredsPath)
+	installPath := home + "/.local/bin/evener"
+	installBefore := host.sha256IfFile(installPath)
+	t.Cleanup(func() {
+		stopHostListener(t, host, hostSettingsUIAddr, configPath)
+		// Read the guarded files BEFORE removing the directory: with the
+		// falsification hook the guarded path can live inside hostDir, and
+		// hashing after the removal would fire on "absent", not "changed".
+		realCredsAfter := host.sha256IfFile(realCredsPath)
+		installAfter := host.sha256IfFile(installPath)
+		assertGuardedFileIntact(t, host, "this check", realCredsPath,
+			"it must write only the test-owned "+credsPath, realCredsBefore, realCredsAfter)
+		assertGuardedFileIntact(t, host, "this check", installPath,
+			"it must install nothing, only run the host's own binary", installBefore, installAfter)
+	})
+
 	hostBin := hostDir + "/bin/evener"
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(cfgRoot))
 
 	// The disposable host hub runs a build of THIS checkout (carrying the host
 	// half of 07b's agents-doc/proxy handlers). The host's own install at
-	// ~/.local/bin/evener is never touched (hashed before/after below).
+	// ~/.local/bin/evener is never touched (hashed before/after in the guard just
+	// above).
 	host.writeFile(hostBin, stageHostTargetBinary(t, goos, goarch))
 	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostBin))
 
@@ -288,43 +314,6 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	host.writeFile(filepath.Join(pluginStoreDir, hostSettingsUIMarketplacesFileName), hostSettingsUIHostKnownMarketplacesJSON(hostDir))
 	host.writeFile(filepath.Join(marketDir, ".claude-plugin", "marketplace.json"), hostSettingsUIHostMarketplaceCatalogJSON())
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostSettingsUIAddr, hostDir+"/state")))
-
-	// The two files this check must leave untouched: the host's REAL credential
-	// store and its real install. They are hashed before anything is launched,
-	// and the comparison is registered BEFORE the hub starts so it runs on every
-	// exit path — including a failure.
-	realCredsPath := hostSettingsUIGuardedCredentials(home, hostDir)
-	realCredsBefore := host.sha256IfFile(realCredsPath)
-	installPath := home + "/.local/bin/evener"
-	installBefore := host.sha256IfFile(installPath)
-
-	t.Cleanup(func() {
-		stopHostListener(t, host, hostSettingsUIAddr, configPath)
-		// Read the guarded files BEFORE removing the directory: with the
-		// falsification hook the guarded path can live inside hostDir, and
-		// hashing after the removal would fire on "absent", not "changed".
-		realCredsAfter := host.sha256IfFile(realCredsPath)
-		installAfter := host.sha256IfFile(installPath)
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-		}
-		if realCredsBefore == "" {
-			if realCredsAfter != "" {
-				t.Errorf("this check created the host's real credential store %s on host %s (sha256 %s); it must write only the test-owned %s", realCredsPath, host.target, realCredsAfter, credsPath)
-			}
-		} else if realCredsAfter != realCredsBefore {
-			t.Errorf("the host's REAL credential store %s on %s changed during the check (sha256 %s -> %s); it must write only the test-owned %s", realCredsPath, host.target, realCredsBefore, realCredsAfter, credsPath)
-		}
-		if installBefore == "" {
-			if installAfter != "" {
-				t.Errorf("this check created %s on host %s (sha256 %s); it must install nothing, only run the host's own binary", installPath, host.target, installAfter)
-			}
-			return
-		}
-		if installAfter != installBefore {
-			t.Errorf("the host's own install %s changed during the check (sha256 %s -> %s); the check must not deploy over it", installPath, installBefore, installAfter)
-		}
-	})
 
 	// The controller hub runs from a binary built AFTER the frontend (the embed
 	// constraint) on an isolated HOME, so the controller's own AGENTS.md,
@@ -788,14 +777,19 @@ func TestHostSettingsUIGateSkipsWithoutOptIn(t *testing.T) {
 	}
 
 	// The non-mutation guard's default target: the host's REAL credential store.
+	// The hook is CLEARED first so an ambient EVENER_SSH_E2E_UI_GUARD_DISPOSABLE
+	// cannot make the default assertion fail spuriously.
 	const home = "/Users/dev"
 	const hostDir = "/Users/dev/evener-settings-ui-e2e-123"
-	if got, want := hostSettingsUIGuardedCredentials(home, hostDir), home+"/.config/evener/credentials.toml"; got != want {
-		t.Fatalf("default guard target = %q, want the host's real store %q", got, want)
+	const realPath = home + "/.config/evener/credentials.toml"
+	const disposablePath = hostDir + "/evener/credentials.toml"
+	t.Setenv("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE", "")
+	if got := hostGuardedCredentialsPath("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE", realPath, disposablePath); got != realPath {
+		t.Fatalf("default guard target = %q, want the host's real store %q", got, realPath)
 	}
 	t.Setenv("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE", "1")
-	if got, want := hostSettingsUIGuardedCredentials(home, hostDir), hostDir+"/evener/credentials.toml"; got != want {
-		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, want)
+	if got := hostGuardedCredentialsPath("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE", realPath, disposablePath); got != disposablePath {
+		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, disposablePath)
 	}
 }
 

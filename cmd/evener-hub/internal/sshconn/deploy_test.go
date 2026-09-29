@@ -170,10 +170,9 @@ func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 }
 
 // TestDeployRefusesARunTargetThatCannotServeAHub pins the round-22 decision that
-// the run target must be `evener`. Release archives carry both `evener` and
-// `evener-dev`, but `evener-dev` is the development/test tooling binary
-// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a host
-// configured to run it installs "successfully" and then fails preflight, health,
+// the run target must be `evener`. `evener-dev` is the development/test tooling
+// binary (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a
+// host configured to run it installs "successfully" and then fails preflight, health,
 // and restart, with the controller having already written to the host. Any other
 // basename is no better: the manager records this one path as the host's run
 // target and probes, restarts, and attaches the binary at it. The refusal is
@@ -346,11 +345,11 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
 	}
 
-	// Round 22: release archives still carry evener-dev, but it is the development
-	// tooling binary and can never serve a hub, so it is not a run target the
-	// installer may be pointed at (component-04 criterion 17). The refusal is
-	// the terminal run-target sentinel the installer shares with the push path
-	// (checkRunTarget), so no retry of the install can change it.
+	// Round 22: evener-dev is the development tooling binary and can never
+	// serve a hub, so it is not a run target the installer may be pointed at
+	// (component-04 criterion 17). The refusal is the terminal run-target
+	// sentinel the installer shares with the push path (checkRunTarget), so no
+	// retry of the install can change it.
 	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
 		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
 	} else if bindir != "" || share != "" || target != "" {

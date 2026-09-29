@@ -13,7 +13,9 @@ import {
 	flatListCalls,
 	flatListScrollFailures,
 	alertRequests,
+	dropped as droppedConnection,
 	type PanGestureMock,
+	playedHaptics,
 	pressable,
 	render,
 	renderedText,
@@ -60,6 +62,8 @@ const navigationState = vi.hoisted(() => ({
 }));
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// Who alerted you most recently, and Next's word that it moved you on.
+const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -162,6 +166,11 @@ vi.mock("expo-secure-store", () => ({
 }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
+}));
+vi.mock("./alerts/alertsContext", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./alerts/alertsContext")>()),
+	useAlertedRecently: () => alerts.recent,
+	useNextUsed: () => alerts.nextUsed,
 }));
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
@@ -424,7 +433,7 @@ async function mount(
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	mountedScreens.push(tree);
 	if (settled) await settle();
-	return { tree, hub };
+	return { tree, hub, route };
 }
 
 function field(tree: ReactTestRenderer) {
@@ -464,8 +473,11 @@ it("sends a message when the agent is at rest", async () => {
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
 	expect(send?.findByType("SymbolView" as never).props.name).toBe("paperplane.fill");
+	playedHaptics.length = 0;
 	await press(tree, "Send");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, once the hub took it.
+	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
 it("stops the running turn from the tray and says so", async () => {
@@ -545,7 +557,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends the option chosen in the dock, and says so", async () => {
 		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
 		await press(tree, "Drop them");
+		playedHaptics.length = 0;
 		await press(tree, "Send answer");
+		// Spec 16.6: success on answer sent.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const starts = hub.requests.filter((request) => request.method === "turn/start");
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
@@ -736,6 +751,52 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	expect(renderedText(tree)).not.toContain("Stopped");
 	// No error text of any kind: the screen reads exactly as it did.
 	expect(renderedText(tree)).toBe(before);
+});
+
+it("brings back messages a Stop held before they left the phone: Cancel drops one, Send now sends one (phase 6)", async () => {
+	const ref = "ref-held";
+	const { tree, hub } = await mount(thread(ref, "idle"));
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const yours = (text: string) =>
+		runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text }] },
+			attachments: [],
+			optimisticDisplay: { text },
+		});
+	const dropped = await yours("drop this one");
+	const kept = await yours("send this one");
+	// A Stop commits before either left the phone, and holds them both.
+	await runtime.storage.enqueueInterruptAndCancel({
+		targetRef: targetKey,
+		method: "turn/interrupt",
+		payload: { ref },
+		attachments: [],
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	await act(async () => {
+		await runtime.discardRecovery("no-such-row", targetKey);
+	});
+	await settle();
+	const text = renderedText(tree);
+	expect(text).toContain("drop this one");
+	expect(text).toContain("send this one");
+	expect(text).toContain("Held · you stopped this turn");
+
+	// Cancel drops the first from the phone's outbox; it never reaches the hub.
+	await press(tree, "Cancel");
+	await settle();
+	expect(await runtime.storage.getOutbox(dropped.clientMutationId)).toBeUndefined();
+	expect(renderedText(tree)).not.toContain("drop this one");
+
+	// Send now releases the second behind the Stop that held it.
+	await press(tree, "Send now");
+	await settle();
+	await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/queue"]));
+	const sent = hub.requests.find((request) => request.method === "turn/queue");
+	expect(sent?.params).toMatchObject({ clientMutationId: kept.clientMutationId });
 });
 
 it("holds Stop while a queued message is handed to the outbox", async () => {
@@ -929,8 +990,11 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	];
 	const { tree, hub } = await mount(served);
 	await type(tree, "keep this");
+	playedHaptics.length = 0;
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, a retry's included.
+	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
@@ -1181,7 +1245,12 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
 	await press(tree, "Sign in");
-	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	// The error doesn't name the provider, so the Hub opens at Providers.
+	expect(navigation.navigate).toHaveBeenCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: "hub-1" },
+		initial: false,
+	});
 });
 
 it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
@@ -1546,12 +1615,23 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("allows the one file, and says so", async () => {
 		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
+		playedHaptics.length = 0;
 		await press(tree, "Allow this file only");
+		// Spec 16.6: success on approval allowed.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
 		expect(resolves.map((request) => request.params)).toEqual([
 			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
 		]);
 		expect(renderedText(tree)).toContain("Allowed once");
+	});
+
+	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
+		const { tree } = await mount(withApproval("ref-approval-deny"));
+		playedHaptics.length = 0;
+		await press(tree, "Deny");
+		expect(renderedText(tree)).toContain("Denied");
+		expect(playedHaptics).toEqual([]);
 	});
 });
 
@@ -1998,6 +2078,8 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		vi.mocked(navigation.replace).mockClear();
 		vi.mocked(navigation.goBack).mockClear();
 		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		alerts.recent = [];
+		alerts.nextUsed.mockClear();
 	});
 
 	/** The Back the screen set last, rendered as the header renders it. */
@@ -2031,8 +2113,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree, hub } = await mount(thread("ref-next", "idle"));
 		const next = capsule(tree);
 		if (!next) throw new Error("no Next capsule");
+		playedHaptics.length = 0;
 		await act(async () => next.props.onPress());
 		await settle();
+		// Spec 16.6: a selection tick on a lateral session move.
+		expect(playedHaptics).toEqual(["selection"]);
 		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
 			hubId: "hub-1",
 			ref: "local:fail",
@@ -2074,6 +2159,31 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		});
 		act(() => choose(2));
 		expect(navigation.push).toHaveBeenCalledTimes(1);
+	});
+
+	it("serves what alerted you first, on Next and on its list, and tells alerts it moved you on (spec 8.3)", async () => {
+		alerts.recent = ["local:ask"];
+		const { tree } = await mount(thread("ref-alerted", "idle"));
+		const next = pressable(tree, "Next, Pick a name");
+		if (!next) throw new Error("no Next capsule for the session that alerted");
+		act(() => next.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Pick a name", "Fix retry loop", "Cancel"]);
+		act(() => choose(2));
+		expect(alerts.nextUsed).not.toHaveBeenCalled();
+		act(() => choose(1));
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(1);
+		await act(async () => next.props.onPress());
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(2);
+		expect(navigation.push).toHaveBeenLastCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
 	});
 
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
@@ -2690,5 +2800,123 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");
+	});
+});
+
+describe("Send while offline (phase 6, spec 8.5)", () => {
+	type Route = ConversationScreenProps["route"];
+	/** The connection drops, or comes back with the same client. */
+	async function reach(tree: ReactTestRenderer, route: Route, live: boolean) {
+		harness.connection = live
+			? { ...harness.connection, state: "ready", downSince: null }
+			: { ...harness.connection, ...droppedConnection(harness.connection) };
+		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		await settle();
+	}
+	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
+
+	it("keeps a message sent offline, and sends it exactly once when the connection returns", async () => {
+		const ref = "ref-train";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "sent on the train");
+		playedHaptics.length = 0;
+		await press(tree, "Send when you're back online");
+		expect(field(tree)?.props.value).toBe("");
+		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
+		expect(renderedText(tree)).toContain("Will send when you're back online");
+		expect(playedHaptics).toEqual(["impact:light"]);
+		expect(hub.mutations()).toEqual([]);
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/queue"]));
+		const sent = hub.requests.find((request) => request.method === "turn/queue");
+		expect(sent?.params.input).toEqual([{ type: "text", text: "sent on the train" }]);
+		await settle();
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+	});
+
+	it("keeps Send off, and the draft, for a session this phone hasn't read since launch", async () => {
+		const read = await mount(thread("ref-read", "idle"));
+		await reach(read.tree, read.route, false);
+		const ref = "ref-never-read";
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		} as unknown as Route;
+		navigationState.state = { index: 0, routes: [route] };
+		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		mountedScreens.push(tree);
+		await settle();
+		await type(tree, "not yet");
+		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({
+			disabled: true,
+		});
+		expect(field(tree)?.props.value).toBe("not yet");
+		expect(await outbox(ref)).toEqual([]);
+	});
+
+	it("answers a question offline, and sends the answer once when the connection returns", async () => {
+		const ref = "ref-question-offline";
+		const { tree, hub, route } = await mount(thread(ref, "awaiting", true));
+		await reach(tree, route, false);
+		await press(tree, "Drop them");
+		await press(tree, "Send answer when you're back online");
+		const records = await outbox(ref);
+		expect(records).toHaveLength(1);
+		expect((records[0]?.payload as { input: unknown }).input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+		// The batch is answered: the dock gives way.
+		expect(pressable(tree, "Send answer when you're back online")).toBeUndefined();
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toHaveLength(1));
+		await settle();
+		// Queued, it runs as your next turn: the daemon runs queued input
+		// ahead of everything else while awaiting, superseding the question
+		// as an online answer's turn/start does.
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(hub.requests.find((request) => request.method === "turn/queue")?.params.input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+	});
+
+	it("offers no Send offline where the session can't take it when it arrives", async () => {
+		const ref = "ref-cannot-queue";
+		const served = thread(ref, "awaiting", true);
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, queue: false };
+		const { tree, route } = await mount(served);
+		await reach(tree, route, false);
+		// Nothing there can act, so nothing offers to (Calm).
+		for (const label of ["Drop them", "Send answer when you're back online"])
+			expect(pressable(tree, label)?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(await outbox(ref)).toEqual([]);
+	});
+
+	it("shows a held message refused once a restarted session answers it, with Discard", async () => {
+		const ref = "ref-restarted";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "for the old instance");
+		await press(tree, "Send when you're back online");
+		const request = hub.client.request;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method !== "turn/queue") return request(method, params);
+			hub.requests.push({ method, params });
+			// The daemon's answer to a stale fence (MutationNotAccepted).
+			throw new WireError("thread instance is stale", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't send this · thread instance is stale"));
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(pressable(tree, "Discard")).toBeDefined();
 	});
 });

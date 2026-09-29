@@ -128,6 +128,9 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// alias, when set on a per-request copy, is the location served for a ref
+	// that is not an indexed row. See NavigationService.aliasProjectionLocked.
+	alias *hubapi.NavigationSessionLocation
 	// offlineSources is the set of manifest source IDs whose connection state
 	// is down, indexed once per projection so every row can answer "is my
 	// source unreachable?" from the same capture the manifest serves.
@@ -1433,7 +1436,46 @@ func limitNavigationTier(tier hubapi.NavigationTier, budget int) (hubapi.Navigat
 	return rows, tier.Remaining + dropped
 }
 
+// navigationAliasLocation is the location of a ref that is not an indexed row,
+// routed through its top-level row's indexed location. Nothing in it is read
+// from anywhere but that location and the ref, so it is coherent with the core
+// the root came from. Live state and the title are not carried: the pane gets
+// them from thread/read.
+func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocation) (hubapi.NavigationSessionLocation, bool) {
+	ref, err := navigationRef(id)
+	if err != nil {
+		return hubapi.NavigationSessionLocation{}, false
+	}
+	summary := hubapi.NavigationSessionSummary{
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+		State:     "ended",
+		Kind:      kind,
+		Children:  hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+	}
+	if root.Session != nil {
+		summary.Project = root.Session.Project
+		summary.Offline = root.Session.Offline
+	}
+	return hubapi.NavigationSessionLocation{
+		GenerationID: root.GenerationID,
+		Revision:     root.Revision,
+		Ref:          ref.String(),
+		TopLevelRef:  root.TopLevelRef,
+		ProjectKey:   root.ProjectKey,
+		Tier:         root.Tier,
+		Session:      &summary,
+	}, true
+}
+
 func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLocation, bool) {
+	if p.alias != nil && p.alias.Ref == ref {
+		location := *p.alias
+		summary := cloneNavigationSummary(*location.Session)
+		location.Session = &summary
+		return location, true
+	}
 	location, ok := p.locations[ref]
 	if !ok {
 		return hubapi.NavigationSessionLocation{}, false

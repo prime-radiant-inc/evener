@@ -14,6 +14,12 @@
 // that come and go. Keyboard chords live in each control's Tooltip rather than
 // as boxed <kbd> runs inside the buttons.
 //
+// Below the phone-width boundary that cluster no longer fits beside the
+// session-status row, and the row that used to wrap it below (issue #1339's
+// provisional rule) reads badly - so per Jesse's 2026-09-28 design ruling the
+// narrow layout holds Send alone in the row and offers Stop and Steer through
+// the session menu instead (turnVerbs below; narrowComposer.ts owns the gate).
+//
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
 // protocol/sendQueueAvailability's deriveSendQueueAvailability +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
@@ -54,6 +60,7 @@ import {
 } from "react";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
@@ -64,11 +71,19 @@ import {
   liveThreadModel,
   pressLocalRecoveryFenced,
   pressRefusal,
+  recoveryFence,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { STORAGE_WEDGED_GUIDANCE } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
+import {
+  hasBlockedUnknown,
+  hasQueuedNonSend,
+  type InputAttachment,
+  type ResumeOnlySignals,
+  threadsStore,
+  useThreadsStore,
+} from "../../../stores/threads";
 import {
   Button,
   ConfirmDialog,
@@ -101,6 +116,7 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
+import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
@@ -108,6 +124,7 @@ import {
   resendRecoveryPendingTurn,
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
+  useBlockedMutationEntries,
   useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
@@ -192,9 +209,21 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // restartRequired/resumeRequired) cannot be acted on at all until the explicit
 // Resume action clears the fence.
 
+// The wide layout's turnVerbs offering: one frozen object, because a fresh
+// {} on every recompute would defeat MemoizedSessionChrome's
+// shallow-equality bailout for a value that carries no information.
+const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
+
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  // Delivery-uncertain rows: while any exist the hub's explicit Resume still
+  // performs reconciliation, so the resume-only carve-out does not apply and
+  // Send stays fenced (see isResumeOnlyLocal's hasUncertainMessages).
+  const blockedMutations = useBlockedMutationEntries(ref);
+  // A Force stop this page started is still draining: the hub refuses even
+  // turn/start for that window, so the resume-only carve-out does not apply.
+  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const mutationStorageWedged = useThreadsStore((s) => s.mutationStorageWedged);
   const submitting = useComposerSubmitting(ref);
@@ -277,6 +306,58 @@ export function Composer({ ref, focused }: ComposerProps) {
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+
+  // Jesse's 2026-09-28 ruling on the #1339 phone-width verb wrap: below the
+  // phone-width boundary the verb cluster leaves this row for the session
+  // menu instead of wrapping below the status row. narrowComposer.ts says
+  // why the gate reads a ResizeObserver rather than the viewport or CSS.
+  const [narrow, composerRootRef] = useNarrowComposer();
+
+  // The session menu's turn-verb items press the same handlers the row
+  // buttons press. Those handlers are recreated every render (they close
+  // over per-render press-time state), and this component's SessionChrome
+  // mount is memoized against exactly that (#2490), so the menu's onSelect
+  // closures are identity-stable and read whichever handler is current at
+  // the press through these refs. The refs are assigned during render -
+  // widgets/tree's own latest-ref pattern (its handlersRef) - so a press
+  // can never read the previous render's handlers. The assignments sit
+  // ahead of the null-model guard because hooks cannot go behind a
+  // conditional return, and the function declarations they read are
+  // hoisted to this function's top.
+  const interruptClickRef = useRef<() => Promise<void>>(async () => {});
+  const steerClickRef = useRef<() => void>(() => {});
+  interruptClickRef.current = handleInterruptClick;
+  steerClickRef.current = handleSteerClick;
+
+  // The narrow layout's turn-verb offerings. Identity-stable across draft
+  // keystrokes - the deps are the model, the gate, and our own in-flight
+  // request, none of which a keystroke moves - so the memoized chrome sees a
+  // new prop only when the offering actually changed. Presence mirrors the
+  // row buttons' own gate (controlsFor), recomputed here because the row's
+  // own `controls` binding sits behind the null-model guard. Steer's
+  // recovery fence is deliberately NOT a disabled state here: the press
+  // re-reads the fence live and toasts the reason (kata 2f41), which a
+  // disabled menu item cannot explain.
+  const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
+    if (!narrow || !model) return NO_TURN_VERBS;
+    const available = controlsFor(model);
+    const items: SessionMenuTurnVerbs = {};
+    if (available.stop) {
+      items.stop = {
+        onSelect: () => {
+          void interruptClickRef.current();
+        },
+        disabled: actionPending,
+      };
+    }
+    if (available.steer) {
+      items.steer = {
+        onSelect: () => steerClickRef.current(),
+        disabled: actionPending,
+      };
+    }
+    return items;
+  }, [narrow, model, actionPending]);
 
   // Inline slash-command completion (slashCompletion.ts's own header
   // comment - ported from Beautiful UI's prompt-bar). slashToken is the
@@ -798,12 +879,23 @@ export function Composer({ ref, focused }: ComposerProps) {
   const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = SHUT_DOWN_STATUSES.has(model.status.type);
-  // A stopped local session is recovery-fenced. It keeps its follow-up card so
-  // the retained draft and the recovery notice's explicit Resume action stay
-  // reachable, but Send and Queue are NOT offered: turn/start no longer carries
-  // an implicit resume on this branch, and the wire already advertises
-  // send=false for this snapshot. The explicit Resume action is what resumes it.
-  const recoveryFencedLocal = isLocalRecoveryFenced(ref, recoveryRequired) && model.status.type === "notLoaded";
+  // The recovery fence as ONE reading (stores/liveControls.ts's recoveryFence),
+  // so its three faces cannot drift:
+  //   resumeOnly    - a merely-resumable local session: the hub folds the resume
+  //                   into a send (turn/start is admitted while only
+  //                   ResumeRequired stands), so its card keeps the Send surface
+  //                   and it needs no separate Resume action.
+  //   stillFenced   - the fence still blocks Send/Queue.
+  //   fencedLocal   - a stopped local session that is STILL fenced (a Stop in
+  //                   flight, active drain, or an incompatible restartRequired
+  //                   daemon) keeps its follow-up card so the retained draft
+  //                   stays reachable, but Send and Queue are not offered.
+  const resumeOnlySignals: ResumeOnlySignals = {
+    uncertainMessages: blockedMutations.length > 0,
+    stopInFlight: stopping,
+    queuedNonSend: hasQueuedNonSend(ref),
+  };
+  const fence = recoveryFence(ref, model, recoveryRequired, resumeOnlySignals);
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -828,29 +920,34 @@ export function Composer({ ref, focused }: ComposerProps) {
   // the subscribed value (so the availability updates with the store instead of
   // reading it behind the subscription's back), the submit passes a live store
   // read like the rest of its re-derivation. It is the raw obligation, not the
-  // render's recoveryFencedLocal: the fence here covers every status, active
+  // render's fence.fencedLocal: the fence here covers every status, active
   // included, not only the stopped one.
   function availabilityFor(
     target: ThreadModel,
     pendingSend: boolean,
     restartObligated: boolean,
+    signals: ResumeOnlySignals,
   ): { canSend: boolean; canQueue: boolean } {
-    // A recovery-fenced local session has no send/queue until the user resumes
-    // it, in WHATEVER status the snapshot carries - active included. The
+    // A recovery-fenced local session has no send/queue in WHATEVER status the
+    // snapshot carries - active included - EXCEPT a merely-resumable one. The
     // fence's own window is exactly one where an ACTIVE snapshot can carry
     // it: a live read during a Stop relays the daemon's still-active status
     // while the hub overlays resumeRequired beside it
     // (applyThreadResumeRequirement), and the store arms the obligation on
-    // that very hydration. The hub's recovery admission then refuses
-    // turn/start AND turn/queue for the whole window
-    // (sessionActionRecoveryError keys on the resume locks, never the
-    // projected status), so the availability table's queue-mode answer for
-    // the still-running turn could only mint durable intent that parks
-    // until the explicit Resume action clears the fence. The explicit
-    // Resume action is the only thing that resumes it.
-    if (isLocalRecoveryFenced(target.ref, restartObligated)) {
-      return { canSend: false, canQueue: false };
-    }
+    // that very hydration. The hub's recovery admission still refuses
+    // turn/queue for the whole window (sessionActionRecoveryError keys on the
+    // resume locks, never the projected status), so the availability table's
+    // queue-mode answer for the still-running turn could only mint durable
+    // intent that parks. turn/start is the exception the hub now admits: a
+    // merely-resumable session (shut-down snapshot, no Stop in flight) folds
+    // the resume into the send, so Send is offered while Queue is not.
+    const targetFence = recoveryFence(target.ref, target, restartObligated, signals);
+    if (targetFence.stillFenced) return { canSend: false, canQueue: false };
+    // A pending send is already on its way; offering a second one here would
+    // route it to turn/start during the resume window instead of waiting. This
+    // mirrors the ended-session substitution's `!tableAvailability.canSend`
+    // guard below, which never offers Send while the table already has one.
+    if (targetFence.resumeOnly) return { canSend: !pendingSend, canQueue: false };
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
       capabilities: target.capabilities,
@@ -875,7 +972,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       ? { canSend: true, canQueue: false }
       : tableAvailability;
   }
-  const availability = availabilityFor(model, hasPendingSend, recoveryRequired);
+  const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
@@ -909,7 +1006,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // card for exactly the sessions the hub says are resumable. When the wire
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
-  const showFollowUpCard = ended && (canSendWhenEnded || recoveryFencedLocal);
+  const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.resumeOnly);
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not
@@ -918,7 +1015,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // control row reachable while the fence stands, which is the whole point of
   // keeping the card at all. Every OTHER local notLoaded snapshot rests exactly
   // like a non-local one.
-  const followUpEngaged = recoveryFencedLocal || followUpFocused || hasContent;
+  const followUpEngaged = fence.fencedLocal || fence.resumeOnly || followUpFocused || hasContent;
   // While the card rests, its control row - and with it the composer chrome
   // that opts into initial activity discovery - is not mounted. A saved
   // notLoaded session with send enabled is exactly that shape, so mount a
@@ -1306,6 +1403,17 @@ export function Composer({ ref, focused }: ComposerProps) {
         liveThreadModel(ref) ?? renderedModel,
         ownPendingSend(pendingTurnEntries(ref, "send")),
         threadsStore.getState().restartBlockingObligations.has(ref),
+        {
+          // Read live, like stopInFlight and queuedNonSend beside it: the
+          // render-time blockedMutations snapshot cannot have caught a row
+          // published between the render and the press, while the store-wide
+          // predicate resumeOnlyLocalModel (which enqueue and dispatch use) reads
+          // hasBlockedUnknown fresh. Routing both sides through the same live
+          // read keeps the press from folding a resume ahead of an uncertain row.
+          uncertainMessages: hasBlockedUnknown(ref),
+          stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
+          queuedNonSend: hasQueuedNonSend(ref),
+        },
       ),
     });
     if (route === "none") {
@@ -1488,7 +1596,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   }
 
   return (
-    <div className={CLASS.composer}>
+    <div className={CLASS.composer} ref={composerRootRef}>
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
@@ -1552,6 +1660,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           <CurrentWork
             task={model.tasks?.current?.description}
             goal={model.goal?.objective}
+            goalStatus={model.goal?.status}
             onOpenTasks={showTasks}
             onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
           />
@@ -1578,8 +1687,8 @@ export function Composer({ ref, focused }: ComposerProps) {
         // the FOCUSED pane's composer when several are mounted.
         <div className={CLASS.formAnchor} data-composer={ref}>
           {/* Anchored above the control row inside the card below, opening
-              upward the same way GoalControl's own popover does - see
-              slashcompletionmenu.module.css's header comment. Mounted only
+              upward - see slashcompletionmenu.module.css's header comment
+              for the anchored-float recipe. Mounted only
               while a token has real catalog matches (slashOpen), never for
               an empty/no-match filter. */}
           {slashOpen && (
@@ -1595,7 +1704,6 @@ export function Composer({ ref, focused }: ComposerProps) {
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
-                verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
                   <SkillEditor
                     ref={editorRef}
@@ -1645,6 +1753,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                         placement="composer"
                         onOpenTasks={toggleTasks}
                         discoverActivity
+                        turnVerbs={turnVerbs}
                       />
                     </div>
                   )
@@ -1653,11 +1762,14 @@ export function Composer({ ref, focused }: ComposerProps) {
                   ended && !followUpEngaged ? undefined : (
                     <>
                       {/* Stop leads the cluster, always in the same place: it is
-                        the one control here whose misfire cannot be undone, so
-                        it must never trade positions with Send or Steer as
-                        those come and go. The word, not a glyph - "Stop" is
-                        chrome, and chrome speaks. */}
-                      {showStop && (
+                          the one control here whose misfire cannot be undone, so
+                          it must never trade positions with Send or Steer as
+                          those come and go. The word, not a glyph - "Stop" is
+                          chrome, and chrome speaks. Below the phone-width
+                          boundary the row cannot hold the cluster beside the
+                          status row, so the narrow layout offers it through the
+                          session menu instead (turnVerbs above). */}
+                      {showStop && !narrow && (
                         <Tooltip label="Stop the current turn">
                           <Button
                             variant="dangerQuiet"
@@ -1704,13 +1816,17 @@ export function Composer({ ref, focused }: ComposerProps) {
                           disabled={
                             actionPending ||
                             !hasContent ||
-                            !(ended ? canSendWhenEnded && !isLocalRecoveryFenced(ref, recoveryRequired) : canCompose)
+                            !(ended
+                              ? (canSendWhenEnded || fence.resumeOnly) && canCompose && !fence.stillFenced
+                              : canCompose)
                           }
                         >
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
                       </Tooltip>
-                      {showSteer && (
+                      {/* Same narrow-layout gate as Stop above: the Steer the
+                          row cannot fit rides in the session menu (turnVerbs). */}
+                      {showSteer && !narrow && (
                         <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
                           <Button
                             variant="primary"

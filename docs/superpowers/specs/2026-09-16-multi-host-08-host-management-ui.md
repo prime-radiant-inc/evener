@@ -390,8 +390,13 @@ required together. Presence of all three is validated before the dedup check
 (missing any is a validation refusal committing nothing). The pair is checked
 under the mutation lock against the target's current (generation, incarnation
 id) before staging, past the dedup check — a replay never reaches it. A
-mismatch on either is the typed `stale-entry` refusal committing nothing; the
-UI re-reads the row and retries against the current pair. A delayed retry
+mismatch on either is the typed `stale-entry` refusal committing nothing. For
+`update` the UI sends the pair of the row its edit form opened on and shows a
+`stale-entry` refusal in that form ("changed since you opened it"), never
+retrying: only `add`/re-add and `update` advance a generation, so the refusal
+means someone else edited the host, and a retry against the current pair would
+overwrite their edit. For `remove` the UI re-reads the row and retries once
+against the current pair. A delayed retry
 carrying a pre-bump generation with no matching current-generation receipt is
 refused the same way, so it can never overwrite fields an intervening update
 changed. `update` is refused with the typed busy error while the host's

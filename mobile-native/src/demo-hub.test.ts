@@ -370,6 +370,21 @@ describe("native demonstration hub", () => {
 });
 
 describe("native demonstration hub's redesign fleet", () => {
+	it("says the hub is up to date without EVENER_DEMO_FLEET, so the Hub's About shows real text", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			expect(await client.request("evener/update/check", { channel: "" })).toMatchObject({
+				updateAvailable: false,
+				applicable: true,
+			});
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("answers no navigation, search, auth or plugin method without EVENER_DEMO_FLEET", async () => {
 		const hub = await createDemoHub(0);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -443,6 +458,9 @@ describe("native demonstration hub's redesign fleet", () => {
 				source: "paradise-park",
 			});
 			expect(started.thread.evener.ref).toBe("paradise-park:created-1");
+			// A real hub names a remote session's source by its host
+			// (remote_hub_refs.go's fromRemoteThread), matching the ref.
+			expect(started.thread.source).toBe("paradise-park");
 			expect(started.thread.cwd).toBe("/Users/jesse/git/evener");
 			const local = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
 			expect(local.thread.evener.ref).toBe("demo:created-2");
@@ -650,14 +668,14 @@ describe("native demonstration hub's fleet sessions", () => {
 			// Steer now, while the turn runs.
 			const [first, second] = queued.queue?.ids ?? [];
 			if (!first || !second) throw new Error("Missing queue ids");
-			expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
+			expect(ghosts(queued, [], null, [], true).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
 			await service.promoteQueuedAsSteer(0, first, instanceId);
 			// Stop with a message queued holds it, and Send now releases it.
 			await service.interrupt();
 			const stopped = await service.open(fleetSessionRef("s-pr2138"));
 			expect(stopped.status.type).toBe("idle");
 			expect(stopped.queue?.texts).toEqual(["One more thing"]);
-			expect(ghosts(stopped, [], null, [])).toEqual([
+			expect(ghosts(stopped, [], null, [], true)).toEqual([
 				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 			]);
 			await service.promoteQueuedAsSteer(0, second, instanceId);
@@ -694,6 +712,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					reconcilePendingEntries(ref, records, model, new Map(), () => true),
 					null,
 					[],
+					true,
 				);
 			};
 			const opened = await service.open(ref);

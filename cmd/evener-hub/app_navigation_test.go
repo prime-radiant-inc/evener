@@ -436,10 +436,14 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	for _, params := range []appwire.NavigationReadParams{
 		{Resource: "project", ProjectKey: "missing"},
 		{Resource: "pin_section", SectionID: "missing"},
-		{Resource: "location", Ref: "missing"},
 	} {
 		_, err = dispatchNavigationReadResult(t, server, v2(params))
 		assertNavigationWireError(t, err, appwire.CodeUnavailable, appwire.ErrorActionUnavailable)
+	}
+	// A location that resolves nowhere is gone, a real answer, not a retryable
+	// unavailable error.
+	if gone := dispatchNavigationRead(t, server, v2(appwire.NavigationReadParams{Resource: "location", Ref: "missing"})); gone.Status != "gone" || gone.GenerationID == "" {
+		t.Fatalf("unknown location = %+v, want gone", gone)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())

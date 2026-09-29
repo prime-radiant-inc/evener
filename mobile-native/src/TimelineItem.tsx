@@ -1,7 +1,8 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
@@ -345,7 +346,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
 				<MarkdownResponse markdown={markdown || "…"} selectable={false} {...accessibility} />
 			</Pressable>
-			<Modal
+			<HoldingModal
 				visible={selecting}
 				animationType="slide"
 				presentationStyle="fullScreen"
@@ -359,7 +360,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 						<Copy variant="agentProse">{markdown}</Copy>
 					</ScrollView>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }

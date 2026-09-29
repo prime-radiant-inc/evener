@@ -264,3 +264,13 @@ export function selectSessionOmittedArmedWatches(ref: string, state: NavigationS
   const summary = selectSessionSummary(ref, state);
   return summary?.omitted_armed_watches ?? 0;
 }
+
+/** The subagent counts a row's tally chip shows, or null when there is
+ * nothing to show. Only a live root carries a tally (past and archived roots
+ * show none), and done subagents are history, so a tally with nothing running
+ * or failed shows nothing. */
+export function subagentTallyToShow(session: NavigationSessionSummary): { running: number; failed: number } | null {
+  const tally = session.subagents;
+  if (!session.live || !tally || (tally.running === 0 && tally.failed === 0)) return null;
+  return { running: tally.running, failed: tally.failed };
+}

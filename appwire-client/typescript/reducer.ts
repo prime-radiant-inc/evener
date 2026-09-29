@@ -1207,6 +1207,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     name: thread.name ?? "",
     status: thread.status,
     resumeRequired: thread.evener.resumeRequired ?? false,
+    resumeOnlyFoldable: thread.evener.resumeOnlyFoldable ?? false,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types.go documents as overloaded to

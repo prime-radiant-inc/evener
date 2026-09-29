@@ -287,7 +287,6 @@ export function restoredStack(location: SavedLocation | null) {
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
 	if (location?.keybindings) {
-		routes.push({ name: "HubSettings", params: { hubId: location.hubId } });
 		routes.push({
 			name: "KeybindingPreferences",
 			params: { hubId: location.hubId, ...location.keybindings },

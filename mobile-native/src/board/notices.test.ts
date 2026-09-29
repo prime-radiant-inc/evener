@@ -106,6 +106,7 @@ it("names each broken plugin", () => {
 			text: "elements-of-style is broken",
 			action: "Plugins",
 			pluginId: "elements-of-style",
+			marketplace: "evener",
 		},
 	]);
 });
@@ -120,6 +121,11 @@ it("keeps two broken plugins of one name from different marketplaces apart", () 
 	expect(found.map((notice) => notice.text)).toEqual([
 		"superpowers from evener is broken",
 		"superpowers from community is broken",
+	]);
+	// Each opens the Hub at its own plugin.
+	expect(found.map((notice) => (notice.kind === "plugin" ? notice.marketplace : null))).toEqual([
+		"evener",
+		"community",
 	]);
 });
 

@@ -37,18 +37,16 @@ func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
 // tierEligible reports whether a session belongs to the tier-eligible
 // population both DeriveAttention's summary and BuildTree's needs-you tier
 // (tree.go) draw from: top-level — neither a subagent nor a fork-superseded
-// parent nested under its active continuation (nested, from tree.go's
-// nestedSessionIDs) — and not manually archived. meta may be nil (a live
-// session with no persisted meta yet is still top-level and unarchived by
-// definition, so nil never excludes on its own). One function, both
-// callers, so population membership can't become two independently-
-// maintained copies again — the same failure mode promotedAttentionLevel
-// above already fixed for state promotion.
-func tierEligible(sessionID string, meta *schema.SessionMeta, nested map[string]struct{}, decisions map[ArchiveKey]bool) bool {
-	if meta != nil && meta.IsSubagent {
-		return false
-	}
-	if _, isNested := nested[sessionID]; isNested {
+// parent nested under its active continuation (roots) — and not manually
+// archived. A subagent is one its persisted meta says so or one a live entry
+// reports as its running child (runningSubagents, see RunningSubagentIDs), so
+// a subagent whose meta is missing is still excluded. A live session that
+// neither source names is top-level and unarchived by definition. One
+// function, both callers, so population membership can't become two
+// independently-maintained copies again — the same failure mode
+// promotedAttentionLevel above already fixed for state promotion.
+func tierEligible(sessionID string, roots *RootIndex, runningSubagents map[string]bool, decisions map[ArchiveKey]bool) bool {
+	if roots.IsSubagent(sessionID) || runningSubagents[sessionID] || roots.IsNested(sessionID) {
 		return false
 	}
 	// Archive suppression: only an explicit user archive decision clears
@@ -68,29 +66,40 @@ func tierEligible(sessionID string, meta *schema.SessionMeta, nested map[string]
 // auto-archive deliberately does NOT apply here, because needs_you never
 // decays (spec v5): a stale-but-live awaiting session stays in the badge
 // just as it stays in the tier. Cheap by construction — in-memory inputs
-// only, no disk, no BuildTree (spec v5 watcher section); nestedSessionIDs is
-// itself a pure, in-memory pass over metas.
+// only, no disk, no BuildTree (spec v5 watcher section).
 func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) (map[string]appwire.AttentionEntry, appwire.AttentionSummary) {
 	metaByID := make(map[string]*schema.SessionMeta, len(metas))
 	for i := range metas {
 		metaByID[metas[i].ID] = &metas[i]
 	}
-	nested, _ := nestedSessionIDs(metas)
+	return DeriveAttentionFromRoots(NewRootIndex(metas), func(id string) (schema.SessionMeta, bool) {
+		if m, ok := metaByID[id]; ok {
+			return *m, true
+		}
+		return schema.SessionMeta{}, false
+	}, live, decisions)
+}
+
+// DeriveAttentionFromRoots is DeriveAttention over a prebuilt RootIndex, with
+// meta looking up the persisted meta for a live session (titles only), so a
+// caller that already holds the past index's RootIndex pays nothing per call
+// for the lineage pass.
+func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.SessionMeta, bool), live []LiveEntry, decisions map[ArchiveKey]bool) (map[string]appwire.AttentionEntry, appwire.AttentionSummary) {
+	runningSubagents := RunningSubagentIDs(live)
 	out := make(map[string]appwire.AttentionEntry, len(live))
 	var sum appwire.AttentionSummary
 	for _, le := range live {
 		if le.SessionID == "" {
 			continue
 		}
-		meta := metaByID[le.SessionID]
-		if !tierEligible(le.SessionID, meta, nested, decisions) {
+		if !tierEligible(le.SessionID, roots, runningSubagents, decisions) {
 			continue
 		}
 		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
 		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk, ApprovalPending: le.PendingEscalation}
-		if meta != nil {
-			e.Title = nodeTitle(*meta, nodeKind(*meta))
-			e.Project = projectName(*meta)
+		if m, ok := meta(le.SessionID); ok {
+			e.Title = nodeTitle(m, nodeKind(m))
+			e.Project = projectName(m)
 		} else {
 			e.Title = ShortID(le.SessionID)
 		}
