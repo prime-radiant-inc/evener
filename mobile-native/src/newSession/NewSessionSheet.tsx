@@ -17,8 +17,7 @@ import { useHubFleet } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
-import { sheetStackOptions } from "../sheet/sheetStack";
-import { useColors } from "../ui";
+import { useSheetStackOptions } from "../sheet/sheetStack";
 import { BrowseFolders } from "./BrowseFolders";
 import { bindCreation, creationStore } from "./creations";
 import { AccessPicker } from "./AccessPicker";
@@ -53,7 +52,7 @@ export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSessio
 function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSession">) {
 	const { hubId, hubName, like } = route.params;
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
-	const { palette } = useColors();
+	const sheetStackOptions = useSheetStackOptions();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
 	const store = creationStore(hubId, () => nativeDrafts().creation);
 	const memory = useMemo(() => launchMemory(hubId), [hubId]);
@@ -104,7 +103,7 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	);
 	return (
 		<NewSessionProvider value={value}>
-			<NewSessionStack.Navigator screenOptions={sheetStackOptions(palette)}>
+			<NewSessionStack.Navigator screenOptions={sheetStackOptions}>
 				{/* The form sets its own title and its Cancel and Start. */}
 				<NewSessionStack.Screen name="Form" component={NewSessionForm} />
 				<NewSessionStack.Screen name="Host" component={HostPicker} options={{ title: "Host" }} />
