@@ -352,15 +352,22 @@ before current writer health. Existing
 `TestRetainedCompletionSettlesAfterRetryingTheBarrier` distinguish
 exhaustion from successful short recovery.
 
-**Discuss.** Keep execution suspended while exact transcript state is uncertain,
-but own revalidation or runtime replacement under the same chat identity.
-Distinguish absent records, retained unsynced records and ambiguous completion.
-Decide whether recovery resumes authorized work or merely makes the next normal
-action succeed. Do not replay unknown tool effects or discard damaged evidence.
+**Decision.** Treat recoverable persistence failure as an interruption of the
+affected chat, with owned recovery and backoff rather than a permanent refusal.
+Keep available history readable and preserve drafts and pending input. Revalidate
+or replace the affected runtime under the same chat identity as needed. Once
+persistence works and the interrupted state is reconciled, automatically resume
+the already-authorized task, including after a prolonged outage. Honor existing
+budgets, explicit Stop and newer instructions. Distinguish absent records,
+retained unsynced records and ambiguous completion; inspect actual results
+instead of blindly replaying uncertain tool effects. Preserve damaged evidence
+when a remaining uncertainty needs resolution. Implementation remains pending.
 
 **Acceptance.** Hold fsync failure beyond the retry window, then heal storage.
-The same chat becomes usable without a manual restart; retained output appears
-once. Genuinely damaged authoritative history remains preserved for resolution.
+The same chat resumes authorized work without a restart or another user message;
+retained output appears once and uncertain completed actions are not duplicated.
+Explicit Stop, exhausted budgets and superseding instructions remain effective.
+Genuinely damaged authoritative history remains preserved for resolution.
 
 ### R02 Finished turn ownership
 
