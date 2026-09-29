@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import {
 	isEndpointConflict,
 	type InstanceCreateParams,
@@ -21,9 +21,14 @@ import {
 	useErrorInView,
 	useFormError,
 } from "./sheet/Grouped";
+import { confirmDiscard } from "./sheet/confirmDiscard";
 import { Sheet } from "./sheet/Sheet";
 
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
+
+/** Runs `leave` if the editor may go now: never mid-save, and only after
+ * asking when there is an edit to lose. */
+export type LeaveGuard = (leave: () => void) => void;
 
 export function ProviderEditor({
 	instance,
@@ -35,7 +40,7 @@ export function ProviderEditor({
 	onSaved,
 	onEndpointConflict,
 	onCancel,
-	onSavingChange,
+	leaveGuard,
 	accessory,
 }: {
 	instance?: InstanceEntry;
@@ -58,9 +63,9 @@ export function ProviderEditor({
 	onSaved(name: string): void;
 	onEndpointConflict(name: string): void;
 	onCancel(): void;
-	/** Told when a save starts and ends, so the modal around the editor can
-	 * hold a swipe down while one is in flight. */
-	onSavingChange?: (saving: boolean) => void;
+	/** Where the editor hands the modal around it its leave check, so a swipe
+	 * down waits out a save and asks before an edit goes, as Cancel does. */
+	leaveGuard?: RefObject<LeaveGuard | null>;
 	/** Pinned under the title, such as the connection's status line. */
 	accessory?: ReactNode;
 }) {
@@ -71,14 +76,15 @@ export function ProviderEditor({
 			alive.current = false;
 		};
 	}, []);
-	const [draft, setDraft] = useState<ProviderDraft>({
+	const [opened] = useState<ProviderDraft>(() => ({
 		name: instance?.name ?? "",
 		base: "",
 		baseUrl: instance?.baseUrl ?? "",
 		vars: {},
 		apiKeyEnv: "",
 		credentialHeader: "",
-	});
+	}));
+	const [draft, setDraft] = useState<ProviderDraft>(opened);
 	// The save's assertion belongs to the row this editor was OPENED on, not
 	// whatever it resolves to now: the screen this editor lives in survives
 	// reconnects behind a status line (hub/ProvidersPage), so a row another client
@@ -96,11 +102,21 @@ export function ProviderEditor({
 	const [query, setQuery] = useState("");
 	const [saving, setSaving] = useState(false);
 	const busy = disabled || saving;
-	const savingChanged = useRef(onSavingChange);
-	savingChanged.current = onSavingChange;
-	useEffect(() => savingChanged.current?.(saving), [saving]);
-	// A save that lands closes the editor before it can clear `saving`.
-	useEffect(() => () => savingChanged.current?.(false), []);
+	// Leaving waits out a save in flight, and asks before an edit goes (spec
+	// 6); an editor still as it opened leaves at once.
+	const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
+	const guardLeave: LeaveGuard = (leave) => {
+		if (saving) return;
+		if (dirty) confirmDiscard(leave);
+		else leave();
+	};
+	useEffect(() => {
+		if (!leaveGuard) return;
+		leaveGuard.current = guardLeave;
+		return () => {
+			leaveGuard.current = null;
+		};
+	});
 	async function save() {
 		// The invocation-time readiness guard, ahead of every state change: a
 		// save that cannot be sent bails before clearing the error slot or
@@ -181,7 +197,7 @@ export function ProviderEditor({
 	return (
 		<Sheet
 			title={instance ? `Edit ${instance.name}` : "Add provider"}
-			onCancel={onCancel}
+			onCancel={() => guardLeave(onCancel)}
 			cancelDisabled={saving}
 			done={{
 				label: saving ? "Saving…" : "Save",

@@ -30,13 +30,14 @@ import { appliedInstanceWrite } from "../appliedInstanceWrite";
 import { isReady, whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
 import { destructiveButton } from "../haptics";
-import { ProviderEditor } from "../ProviderEditor";
+import { type LeaveGuard, ProviderEditor } from "../ProviderEditor";
 import { signInKind, statusOf } from "../providers/providerStatus";
 import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
+import { confirmDiscard } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
@@ -227,7 +228,8 @@ function Providers({
 	const stale = staleListingHeld(core);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [configuration, setConfiguration] = useState<"create" | "edit" | null>(null);
-	const editorSaving = useRef(false);
+	// The open editor's leave check: a swipe down asks it, as its Cancel does.
+	const editorLeave = useRef<LeaveGuard | null>(null);
 	const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
 	// The instance the credential editor was opened for, with the endpoint it
 	// resolved to then: a key typed for that destination is never saved against a
@@ -490,8 +492,11 @@ function Providers({
 			<ModalFrame
 				visible={!!instance || configuration === "create"}
 				onRequestClose={() => {
-					// A swipe down waits out a save in flight, as Cancel does.
-					if (!editorSaving.current) close();
+					// A swipe down asks before an edit or a pasted key goes (spec 6),
+					// and waits out a save in flight, as each Cancel does.
+					if (configuration && editorLeave.current) editorLeave.current(close);
+					else if (editingCredential && key.trim()) confirmDiscard(close);
+					else close();
 				}}
 			>
 				{/* The native modal covers the page's status line, so each sheet in it
@@ -525,9 +530,7 @@ function Providers({
 							if (configuration === "create") close();
 							else setConfiguration(null);
 						}}
-						onSavingChange={(saving) => {
-							editorSaving.current = saving;
-						}}
+						leaveGuard={editorLeave}
 						accessory={<SheetStatus />}
 					/>
 				) : (
@@ -584,8 +587,13 @@ function Providers({
 													tone="accent"
 													disabled={surface.busy}
 													onPress={() => {
-														setEditingCredential(null);
-														setKey("");
+														const clear = () => {
+															setEditingCredential(null);
+															setKey("");
+														};
+														// A pasted key asks before it goes (spec 6).
+														if (key.trim()) confirmDiscard(clear);
+														else clear();
 													}}
 												/>
 											</Group>

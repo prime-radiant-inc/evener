@@ -1322,3 +1322,58 @@ it("says a connection test's result under the actions", async () => {
 	expect(renderedText(tree)).not.toContain("Works");
 	expect(renderedText(tree)).toContain("The provider rejected these credentials.");
 });
+
+async function openWork(tree: ReactTestRenderer) {
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+}
+
+const choose = (text: string) =>
+	act(() => alertRequests.at(-1)?.buttons?.find((button) => button.text === text)?.onPress?.());
+
+it("asks before Cancel or a swipe throws away an edited provider (spec 6)", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	// A swipe down asks; Keep editing keeps the edit and the sheet.
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	expect(control(tree, "Base URL").props.value).toBe("https://changed.example");
+	// Cancel asks too; Discard goes back to the provider's detail.
+	press(tree, (label) => label === "Cancel");
+	expect(alertRequests).toHaveLength(2);
+	choose("Discard");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(hasControl(tree, "Edit")).toBe(true);
+});
+
+it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	// Nothing pasted yet: Cancel just closes the field.
+	press(tree, (label) => label === "Cancel");
+	expect(alertRequests).toHaveLength(0);
+	expect(hasControl(tree, "API key")).toBe(false);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+	press(tree, (label) => label === "Cancel");
+	choose("Discard");
+	expect(hasControl(tree, "API key")).toBe(false);
+});
