@@ -183,8 +183,8 @@ export interface PagedOpenSettleTracker {
 
 /**
  * Tracks ?paged=1 readiness across frames: the read's turns are in the model
- * AND the geometry has held still for SETTLE_QUIESCENT_FRAMES consecutive
- * frames.
+ * AND the scroll port is laid out AND the geometry has held still for
+ * SETTLE_QUIESCENT_FRAMES consecutive frames.
  *
  * DELIBERATELY NOT a readiness condition: the paging row staying mounted. The
  * regression this pass exists for auto-loads the fixture's single older page,
@@ -192,7 +192,10 @@ export interface PagedOpenSettleTracker {
  * to the harness tripwire and report a settle timeout instead of the pass's own
  * "auto-loaded N older page(s)" failure. The runner asserts the row is mounted
  * and that no page loaded, so settling without the row is exactly what turns
- * the regression into the fast, specific failure the pass exists to give.
+ * the regression into the fast, specific failure the pass exists to give. What
+ * replaces the row as the "the shape rendered" signal is the port being laid
+ * out: a mounted-but-unlaid-out pane reports its (zero) geometry, holds it
+ * still, and would otherwise settle the open before anything rendered.
  */
 export function createPagedOpenSettleTracker(expectedTurns: number): PagedOpenSettleTracker {
   const stillness = createStillnessCounter();
@@ -202,8 +205,9 @@ export function createPagedOpenSettleTracker(expectedTurns: number): PagedOpenSe
     observe({ turns, geometry }) {
       const still = stillness.observe(geometry.scrollHeight, geometry.scrollTop);
       // The read has hydrated once the model carries at least the scripted
-      // turns; a prepended older page pushes it past that.
-      const standing = turns >= expectedTurns && still > 0 && turns === lastTurns;
+      // turns (a prepended older page pushes it past that) and the port has a
+      // box (clientHeight > 0).
+      const standing = turns >= expectedTurns && geometry.clientHeight > 0 && still > 0 && turns === lastTurns;
       lastTurns = turns;
       if (!standing) {
         stillness.reset();

@@ -159,6 +159,14 @@ test("a paged open whose read has not hydrated yet is not ready", () => {
   expect(holdPaged(tracker, pagedSample(rendered(), 17), FRAMES_TO_READY)).toBe(false);
 });
 
+test("a paged open whose scroll port has not been laid out is not ready, however many turns hydrated", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  // A mounted-but-unlaid-out pane reports zero geometry and holds it still; the
+  // wait must not settle the open there before the paged shape has rendered.
+  const unlaid: TranscriptGeometry = { scrollHeight: 0, clientHeight: 0, scrollTop: 0 };
+  expect(holdPaged(tracker, pagedSample(unlaid, TURNS), FRAMES_TO_READY)).toBe(false);
+});
+
 test("paged-open stillness must be consecutive, not merely accumulated", () => {
   const tracker = createPagedOpenSettleTracker(TURNS);
   holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES);
