@@ -24,10 +24,15 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	useConnectionStatusText: () => status.line,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+// Whether the form's screen is focused, for useFocusEffect: a picker pushed
+// over it takes focus, and coming back gives it back.
+const screen = vi.hoisted(() => ({ focused: true }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]),
+		useFocusEffect: (effect: () => undefined | (() => void)) =>
+			// biome-ignore lint/correctness/useExhaustiveDependencies: the focus flag is the test's stand-in for navigation.
+			useEffect(() => (screen.focused ? effect() : undefined), [effect, screen.focused]),
 		StackActions: { replace: (name: string, params: unknown) => ({ type: "REPLACE", payload: { name, params } }) },
 	};
 });
@@ -251,6 +256,11 @@ async function mount(options: Options = {}) {
 		headerOptions: first.headerOptions,
 		header,
 		reopen,
+		/** Renders the form again, as a focus change does. */
+		rerender: () =>
+			act(async () => {
+				tree.update(form());
+			}),
 		row,
 		prompt,
 		setReady,
@@ -262,6 +272,7 @@ async function mount(options: Options = {}) {
 beforeEach(() => {
 	status.line = null;
 	alertRequests.length = 0;
+	screen.focused = true;
 });
 
 it("has Cancel, New session and Start, then the prompt, WHERE and AGENT with their values", async () => {
@@ -854,5 +865,28 @@ it("holds Start after a new connection leaves its start unconfirmed, until the d
 	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
 	expect(form.header("headerRight").props.disabled).toBe(false);
 	await act(async () => form.releaseStart());
+	form.dispose();
+});
+
+it("retires a failed start's alert when the form comes back into focus, not only when it opens (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	// A picker is pushed over the form while the start is out.
+	screen.focused = false;
+	form.focus.focused = false;
+	await form.rerender();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts[0]).toMatchObject({ kind: "startFailed" });
+	// Back on the form, which shows the reason itself.
+	screen.focused = true;
+	form.focus.focused = true;
+	await form.rerender();
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	expect(form.text()).toContain("the hub is shutting down");
 	form.dispose();
 });
