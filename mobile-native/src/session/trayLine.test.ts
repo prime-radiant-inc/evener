@@ -100,6 +100,8 @@ describe("the tray's line (spec 8.3)", () => {
 	// The tray counts what the Subagents list, its chip and the transcript row
 	// call running (subagentState), so the four never disagree.
 	it("counts the subagents the list counts as running", () => {
+		// Resumable with no ended run, so not terminal: running. An idle
+		// subagent whose run ended is terminal on the wire.
 		const idle = { ...delegate("idle", 2), resumable: true };
 		const stopped = { ...delegate("stopped", 3), terminal: true, outcome: "stopped" };
 		const failed = { ...delegate("failed", 4), terminal: true, outcome: "failed" };
