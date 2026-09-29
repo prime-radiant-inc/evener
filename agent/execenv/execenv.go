@@ -197,3 +197,79 @@ type GlobExcluder interface {
 type GlobBudgeter interface {
 	GlobWithBudget(ctx context.Context, pattern, basePath string, includeIgnored bool, budget *GlobBudget) (matches []string, excluded int, err error)
 }
+
+// maxListDirWalkListings and maxListDirWalkEntries cap how much work one
+// ListDirectoryBudget walk may spend no matter how large a page its caller
+// asked for: the number of directories it reads and the total entries it
+// accumulates across them. They mirror GlobBudget's listing and entry bounds,
+// and matter for the same reason — a model-controlled depth over a huge tree
+// costs unbounded work even when the requested page is tiny.
+var (
+	maxListDirWalkListings = 200_000
+	maxListDirWalkEntries  = 200_000
+)
+
+// ListDirBudget bounds one ListDirectoryBudget walk's work. Callers supply it
+// and read afterwards whether the walk had to stop early; its fields stay
+// unexported for the same reason GlobBudget's do. A budget belongs to one call
+// and must not be shared across goroutines.
+type ListDirBudget struct {
+	maxListings int
+	maxEntries  int
+	listings    int
+	entries     int
+	truncated   bool
+}
+
+// NewListDirBudget constructs a budget for one list_dir call. maxEntries is the
+// number of entries the caller still needs — the requested page (offset+limit)
+// plus one, so the walk can tell a complete listing from a truncated one. It is
+// clamped up to at least one and down to maxListDirWalkEntries so neither a
+// caller's tiny page nor a huge one can drive the walk past the hard ceiling.
+func NewListDirBudget(maxEntries int) *ListDirBudget {
+	if maxEntries < 1 {
+		maxEntries = 1
+	}
+	if maxEntries > maxListDirWalkEntries {
+		maxEntries = maxListDirWalkEntries
+	}
+	return &ListDirBudget{maxEntries: maxEntries, maxListings: maxListDirWalkListings}
+}
+
+// Truncated reports whether the walk stopped at its budget rather than
+// exhausting the subtree. The entries it returned are then a prefix of the full
+// listing, with more beyond, so their count is a floor rather than a total.
+func (b *ListDirBudget) Truncated() bool { return b.truncated }
+
+// chargeListing records one directory the walk is about to read, reporting
+// false once the listing budget is spent. A non-positive cap is unlimited, so
+// the zero ListDirBudget an internal caller uses is unbounded.
+func (b *ListDirBudget) chargeListing() bool {
+	if b.maxListings > 0 && b.listings >= b.maxListings {
+		b.truncated = true
+		return false
+	}
+	b.listings++
+	return true
+}
+
+// chargeEntry records one entry the walk is about to retain, reporting false
+// once the entry budget is spent. A non-positive cap is unlimited.
+func (b *ListDirBudget) chargeEntry() bool {
+	if b.maxEntries > 0 && b.entries >= b.maxEntries {
+		b.truncated = true
+		return false
+	}
+	b.entries++
+	return true
+}
+
+// DirBudgeter is an optional capability an ExecutionEnvironment may implement,
+// modelled on GlobBudgeter for the same reason: ListDirectory's signature is
+// shared by every implementation, including test doubles with no budget
+// accounting, so a caller that needs to cancel and bound a directory walk uses
+// this instead. The caller supplies the budget and reads what the walk had to
+// cut off it through ListDirBudget.Truncated afterwards.
+type DirBudgeter interface {
+	ListDirectoryBudget(ctx context.Context, path string, depth int, budget *ListDirBudget) ([]DirEntry, error)
+}

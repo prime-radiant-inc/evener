@@ -40,6 +40,10 @@ type listDirResult struct {
 	Returned  int
 	Offset    int
 	Truncated bool
+	// Partial marks a page whose walk was cut off by its work budget before the
+	// directory was fully enumerated: Total is then only a floor, not the true
+	// count, and the footer must not claim a total the walk never computed.
+	Partial bool
 }
 
 // dirEntrySize over-estimates an entry's rendered line length (name, an optional
@@ -76,6 +80,12 @@ func formatDirListing(r listDirResult) string {
 		b.WriteString("\n\n")
 	}
 	switch {
+	case r.Partial:
+		if r.Returned > 0 {
+			fmt.Fprintf(&b, "%d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Offset, r.Offset+r.Returned)
+		} else {
+			fmt.Fprintf(&b, "no entries at offset %d — the listing budget was reached before it; narrow the path or reduce depth", r.Offset)
+		}
 	case r.Truncated:
 		fmt.Fprintf(&b, "%d of %d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Total, r.Offset, r.Offset+r.Returned)
 	case r.Offset > 0:
@@ -92,7 +102,12 @@ func formatDirListing(r listDirResult) string {
 // size), whichever binds first, and reports the totals. At least one entry is
 // always returned when any remain past offset. The page is a non-nil slice so it
 // serializes as [] rather than null when empty.
-func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
+//
+// A caller whose walk stopped at its budget passes partial=true: the entries it
+// holds are then a prefix of the listing rather than all of it, so the result is
+// marked Partial and always Truncated even when the collected prefix was fully
+// paged.
+func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int, partial ...bool) listDirResult {
 	if offset < 0 {
 		offset = 0
 	}
@@ -121,13 +136,15 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 		used += sz
 		end++
 	}
+	cut := len(partial) > 0 && partial[0]
 	return listDirResult{
 		Path:      path,
 		Entries:   page,
 		Total:     total,
 		Returned:  len(page),
 		Offset:    offset,
-		Truncated: end < total,
+		Truncated: end < total || cut,
+		Partial:   cut,
 	}
 }
 
@@ -176,7 +193,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefListDir(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			path := stringArg(args, "path")
 			depth := 1
 			if v, ok := args["depth"].(float64); ok && int(v) > 0 {
@@ -190,11 +206,33 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["limit"].(float64); ok && int(v) > 0 {
 				limit = int(v)
 			}
-			entries, err := env.ListDirectory(path, depth)
-			if err != nil {
-				return nil, err
+			// Ask a budgeted walk for only the entries this page needs, plus one so
+			// a complete listing can be told from one the budget cut short. This is
+			// what keeps a tiny page from enumerating (and storing) the whole
+			// requested subtree, and it lets ctx cancel an in-flight walk. The
+			// offset+limit+1 bound is itself clamped by NewListDirBudget.
+			effectiveLimit := limit
+			if effectiveLimit <= 0 {
+				effectiveLimit = defaultListDirLimit
 			}
-			return formatDirListing(paginateDirEntries(path, entries, offset, limit)), nil
+			var entries []execenv.DirEntry
+			partial := false
+			if dl, ok := env.(execenv.DirBudgeter); ok {
+				budget := execenv.NewListDirBudget(offset + effectiveLimit + 1)
+				var err error
+				entries, err = dl.ListDirectoryBudget(ctx, path, depth, budget)
+				if err != nil {
+					return nil, err
+				}
+				partial = budget.Truncated()
+			} else {
+				var err error
+				entries, err = env.ListDirectory(path, depth)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return formatDirListing(paginateDirEntries(path, entries, offset, limit, partial)), nil
 		},
 	})
 

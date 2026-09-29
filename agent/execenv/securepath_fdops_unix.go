@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -465,22 +466,33 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	return st.Mode&unix.S_IFMT != unix.S_IFLNK
 }
 
-// listDir returns the entries beneath abs, recursing up to depth levels, using
-// only fd-anchored operations: the top directory is resolved beneath the correct
-// root, and each subdirectory is re-opened beneath its parent's fd with
+// listDirBudget returns the entries beneath abs, recursing up to depth levels,
+// using only fd-anchored operations: the top directory is resolved beneath the
+// correct root, and each subdirectory is re-opened beneath its parent's fd with
 // O_NOFOLLOW — never re-resolved from the root by a joined path. Masked entries
 // are skipped so a denylisted subtree is never enumerated.
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+//
+// It observes ctx before each directory it reads and before each entry it
+// retains, and stops once the walk has spent its listing or entry budget,
+// returning the entries gathered so far; budget.Truncated then reports the
+// result is a prefix of the full listing. A nil budget is unbounded.
+func (s *sandboxFS) listDirBudget(ctx context.Context, tool, abs string, depth int, budget *ListDirBudget) ([]DirEntry, error) {
+	if budget == nil {
+		budget = &ListDirBudget{}
+	}
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
 	if err != nil {
 		return nil, err
 	}
 	var out []DirEntry
-	if err := s.walkDirFd(fd, "", abs, depth, &out); err != nil { // walkDirFd closes fd
+	if err := s.walkDirFd(ctx, fd, "", abs, depth, budget, &out); err != nil { // walkDirFd closes fd
 		return nil, err
 	}
 	return out, nil
@@ -490,14 +502,26 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // closes), appends them to out, and recurses into real subdirectories beneath
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
 // absolute path of dirFd, used only to skip masked entries.
-func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
+func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs string, depth int, budget *ListDirBudget, out *[]DirEntry) error {
 	defer func() { _ = unix.Close(dirFd) }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !budget.chargeListing() {
+		return nil
+	}
 	ents, err := secureReadDirEntries(dirFd)
 	if err != nil {
 		return err
 	}
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !budget.chargeEntry() {
+			return nil
+		}
 		name := ent.Name()
 		childAbs := filepath.Join(baseAbs, name)
 		if s.underMasked(childAbs) {
@@ -527,8 +551,11 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
-			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, out); err != nil {
+			if err := s.walkDirFd(ctx, childFd, relName, childAbs, depth-1, budget, out); err != nil {
 				return err
+			}
+			if budget.truncated {
+				return nil
 			}
 		}
 	}

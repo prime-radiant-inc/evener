@@ -1922,26 +1922,54 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 // by name within each directory, nested names are prefixed with their relative
 // path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.ListDirectoryBudget(context.Background(), path, depth, &ListDirBudget{})
+}
+
+// ListDirectoryBudget is the DirBudgeter capability: ListDirectory bounded by
+// ctx and budget. It observes ctx before each directory it reads and before
+// each entry it retains, and stops once the walk has spent its listing or entry
+// budget, returning the entries gathered so far; budget.Truncated then reports
+// that the result is a prefix of the full listing rather than the whole subtree.
+// A nil budget is unbounded, matching ListDirectory.
+func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, path string, depth int, budget *ListDirBudget) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
+	}
+	if budget == nil {
+		budget = &ListDirBudget{}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDir("list_dir", e.resolve(path), depth)
+		return sfs.listDirBudget(ctx, "list_dir", e.resolve(path), depth, budget)
 	}
 	root := e.resolve(path)
 
 	var out []DirEntry
 	var walk func(absDir string, relPrefix string, d int) error
 	walk = func(absDir string, relPrefix string, d int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !budget.chargeListing() {
+			return nil
+		}
 		ents, err := listReadDir(absDir)
 		if err != nil {
 			return err
 		}
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !budget.chargeEntry() {
+				return nil
+			}
 			name := ent.Name()
 			relName := name
 			if relPrefix != "" {
@@ -1963,6 +1991,9 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 			if ent.IsDir() && d > 1 {
 				if err := walk(filepath.Join(absDir, name), relName, d-1); err != nil {
 					return err
+				}
+				if budget.truncated {
+					return nil
 				}
 			}
 		}
