@@ -596,11 +596,13 @@ type hostBootstrapStore struct{ m *hubHostManager }
 // writes through.
 func (m *hubHostManager) bootstrapStore() hostfence.BootstrapStore { return hostBootstrapStore{m: m} }
 
-// Provisioning reads the host's current bootstrap record.
-func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, error) {
+// Provisioning reads the host's current bootstrap record, bound to identity: a
+// changed registration or a host that is no longer live refuses with the typed
+// stale-attempt error before the flow takes any host-side step.
+func (s hostBootstrapStore) Provisioning(host string, identity hostfence.BootstrapIdentity) (hostfence.Provisioning, error) {
 	s.m.cfg.mu.Lock()
 	defer s.m.cfg.mu.Unlock()
-	return s.m.cfg.store.provisioningFor(host), nil
+	return s.m.boundProvisioning(host, identity)
 }
 
 // PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
@@ -742,7 +744,9 @@ func (m *hubHostManager) boundProvisioning(host string, identity hostfence.Boots
 		break
 	}
 	if !ok {
-		return hostfence.Provisioning{}, fmt.Errorf("host %q is not a live host, so no bootstrap record was written", host)
+		// A host that is no longer live is the same class: the attempt's
+		// registration cannot stand, and a zero Live identity says so.
+		return hostfence.Provisioning{}, &hostfence.StaleAttemptError{Host: host, Bound: identity}
 	}
 	if identity.IsZero() || live != identity {
 		// The typed stale-registration refusal: the deploy-pipeline's stale-entry
