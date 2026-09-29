@@ -1,26 +1,17 @@
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { BarFrame } from "../design/BarFrame";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useConnectionStatusText } from "./connectionStatus";
 
 /** The bar under the Board, above the home indicator: the toolbar, or the
  * select bar in its place. */
 export function ToolbarFrame({ children }: { children: ReactNode }) {
-	const { palette } = useColors();
-	const { bottom } = useSafeAreaInsets();
 	return (
-		<View
-			style={{
-				paddingBottom: bottom,
-				borderTopWidth: 0.5,
-				borderColor: palette.edge,
-				backgroundColor: palette.page,
-			}}
-		>
+		<BarFrame>
 			<View style={{ height: 50, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>{children}</View>
-		</View>
+		</BarFrame>
 	);
 }
 
