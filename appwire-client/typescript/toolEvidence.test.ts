@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { toolWireStep } from "./testing/toolWireFixtures";
 import {
   MAX_OUTPUT_TAIL_CUTS,
@@ -98,6 +98,27 @@ test("tries a bounded number of cuts, only near the end, however many blank line
   expect(tails.length).toBeLessThanOrEqual(MAX_OUTPUT_TAIL_CUTS + 1);
   for (const tail of tails.slice(1)) expect(tail.length).toBeGreaterThanOrEqual(blank.length - OUTPUT_TAIL_WINDOW);
   expect(shellOutput(blank).text).toBe(blank.replace(/\n+$/, ""));
+});
+
+// The footer ends the output, so it is looked for only within the last
+// OUTPUT_TAIL_WINDOW characters, however long a running command's output
+// grows; the body returned is still the whole output.
+test("looks for the footer only near the end of a long output", () => {
+  const long = "[step] done\n".repeat(20_000);
+  const searched: number[] = [];
+  const matchAll = String.prototype.matchAll;
+  const spy = vi.spyOn(String.prototype, "matchAll").mockImplementation(function (this: string, pattern: RegExp) {
+    searched.push(this.length);
+    return matchAll.call(this, pattern);
+  });
+  try {
+    expect(shellOutput(`${long}[exit 0]`)).toEqual({ text: long.replace(/\n+$/, ""), exitCode: 0 });
+    expect(shellOutput(long)).toEqual({ text: long.replace(/\n+$/, "") });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(searched.length).toBeGreaterThan(0);
+  expect(Math.max(...searched)).toBeLessThanOrEqual(OUTPUT_TAIL_WINDOW);
 });
 
 test("strips only the environment's whole block, anchored at the end", () => {

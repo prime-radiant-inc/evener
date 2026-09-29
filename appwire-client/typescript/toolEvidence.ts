@@ -97,15 +97,19 @@ function withoutTrailingNewlines(text: string): string {
 }
 
 function readBracketed(text: string): ShellOutput | undefined {
+  // The footer ends the text, so only its last OUTPUT_TAIL_WINDOW characters
+  // are searched: a running command's output grows without one.
+  const start = Math.max(0, text.length - OUTPUT_TAIL_WINDOW);
+  const tail = text.slice(start);
   let footer: RegExpMatchArray | undefined;
-  for (const match of text.matchAll(BRACKETED_RE)) {
+  for (const match of tail.matchAll(BRACKETED_RE)) {
     const segments = (match[1] ?? "").split(" · ");
-    const rest = text.slice((match.index ?? 0) + match[0].length);
+    const rest = tail.slice((match.index ?? 0) + match[0].length);
     if (FOOTER_FIRST_SEGMENT_RE.test(segments[0] ?? "") && rest.trim() === "") footer = match;
   }
   if (footer === undefined) return undefined;
   const segments = (footer[1] ?? "").split(" · ");
-  const body = text.slice(0, footer.index).replace(TRAILING_REMINDER_RE, "");
+  const body = text.slice(0, start + (footer.index ?? 0)).replace(TRAILING_REMINDER_RE, "");
   const result: ShellOutput = { text: withoutTrailingNewlines(body) };
   for (const segment of segments) {
     const exit = /^exit (-?\d+)$/.exec(segment);
