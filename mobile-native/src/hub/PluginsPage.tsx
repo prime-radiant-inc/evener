@@ -703,9 +703,12 @@ function Plugins({
 	);
 }
 
-/** How long ago a time the hub sends in Unix seconds was: "3d ago". */
+/** How long ago a time the hub sends in Unix seconds was: "3d ago", or
+ * "just now" under a second, including a time a clock ahead of this phone's
+ * put in the future. */
 function agoText(unixSeconds: number): string {
-	return `${compactDuration(Date.now() - unixSeconds * 1000)} ago`;
+	const ms = Date.now() - unixSeconds * 1000;
+	return ms < 1000 ? "just now" : `${compactDuration(ms)} ago`;
 }
 
 /** The installed plugins by marketplace, in the order the hub lists them. */

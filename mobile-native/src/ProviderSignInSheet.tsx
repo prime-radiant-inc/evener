@@ -7,13 +7,13 @@ import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { AppState, Text, TextInput, View } from "react-native";
-import { fonts, space } from "./design/tokens";
+import { fonts, scaledType, space, uiType } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
-import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
+import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { Spinner } from "./sheet/Spinner";
-import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
 const OPEN_FAILED = "Could not open the sign-in page.";
@@ -127,8 +127,10 @@ export function ProviderSignInSheet({
 			<GroupedPage>
 				{state.phase === "idle" || state.phase === "starting" ? <Spinner label="Starting sign-in" /> : null}
 				{device && !waiting ? (
-					// A poll's error or a failed copy or open lands in a footer
-					// right under the explanation.
+					// As the prototype draws it (hub.js 128-132): the code with Copy
+					// code beside it, the page's one call to action, and how long the
+					// code lasts. A poll's error or a failed copy or open lands in a
+					// footer right under it.
 					<Section followedBy={state.error || localError ? "footer" : undefined}>
 						{body(
 							"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
@@ -136,6 +138,8 @@ export function ProviderSignInSheet({
 						<View
 							style={{
 								flexDirection: "row",
+								// At the largest text sizes Copy code moves under the code.
+								flexWrap: "wrap",
 								alignItems: "center",
 								justifyContent: "space-between",
 								gap: 12,
@@ -159,23 +163,29 @@ export function ProviderSignInSheet({
 							>
 								{device.userCode}
 							</Text>
-							<Action
+							<Button
+								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
 								onPress={() => {
 									setLocalError(null);
 									void copy(device.flowId, device.userCode);
 								}}
-							>
-								{copiedFlow === device.flowId ? "Code copied" : "Copy code"}
-							</Action>
+							/>
 						</View>
-						<Action
-							tone="primary"
+						<Button
+							label="Open sign-in page"
+							primary
 							onPress={() => {
 								void openDevicePage();
 							}}
+						/>
+						{/* The hub drops a device flow after hubAuthFlowTTL, 15 minutes
+						    (app_auth.go); the provider's code expires in about that time. */}
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ color: palette.inkLow, ...scaledType(uiType.footnote, scale) }}
 						>
-							Open sign-in page
-						</Action>
+							The code expires in 15 minutes.
+						</Text>
 					</Section>
 				) : null}
 				{device && waiting ? (
