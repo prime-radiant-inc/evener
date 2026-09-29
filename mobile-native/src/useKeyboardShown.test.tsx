@@ -11,7 +11,7 @@ vi.mock("react-native", async () => (await import("./renderNative.testkit")).nat
 
 const platform = Platform as { OS: string };
 afterEach(() => {
-	act(() => keyboard.hide());
+	keyboard.reset();
 	platform.OS = "ios";
 });
 

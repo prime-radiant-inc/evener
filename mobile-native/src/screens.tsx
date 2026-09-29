@@ -2562,8 +2562,10 @@ export function ConversationScreen({
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
-							// Dragging the transcript lowers the keyboard, as in Messages.
-							keyboardDismissMode="interactive"
+							// Dragging the transcript lowers the keyboard: following the finger
+							// as in Messages on iOS, and at the drag's start on Android, which
+							// has no interactive dismissal.
+							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
