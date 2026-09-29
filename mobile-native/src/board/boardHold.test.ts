@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { BoardHold, boardHoldKey, type HeldAction, heldFor, turnStillSeen } from "./boardHold";
+import { BoardHold, boardHoldKey, type HeldAction, heldFor, turnSeen, turnStillSeen } from "./boardHold";
 
 function memory(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
@@ -119,6 +119,19 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		hold.hold(stop("local:b"), 2);
 		hold.hold({ kind: "pin", target: { sessionRef: "local:a", sectionId: "s1" } }, 3);
 		expect(heldFor(hold.getSnapshot(), "local:a").map((record) => record.action.kind)).toEqual(["archive", "pin"]);
+	});
+});
+
+describe("the turn a press saw", () => {
+	it("names the row's stamp, and counts a session asking for you as running a turn", () => {
+		const row = (state: string, turn_ended_at?: string) => ({ state, turn_ended_at });
+		expect(turnSeen(row("active", "2026-09-28T10:00:00.000Z"))).toEqual({
+			turnEndedAt: "2026-09-28T10:00:00.000Z",
+			running: true,
+		});
+		// A question or approval waits inside a live turn.
+		expect(turnSeen(row("awaiting"))).toEqual({ turnEndedAt: null, running: true });
+		expect(turnSeen(row("idle"))).toEqual({ turnEndedAt: null, running: false });
 	});
 });
 

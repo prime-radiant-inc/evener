@@ -113,6 +113,13 @@ export function heldFor(records: readonly HeldRecord[], ref: string): HeldRecord
 	return records.filter((record) => heldRef(record.action) === ref);
 }
 
+/** The turn a Stop or Shut down pressed on this row saw: its stamp, and
+ * whether a turn was running. A session asking a question or waiting on an
+ * approval counts as running one: the ask sits inside a live turn. */
+export function turnSeen(row: { state: string; turn_ended_at?: string }): TurnSeen {
+	return { turnEndedAt: row.turn_ended_at ?? null, running: row.state === "active" || row.state === "awaiting" };
+}
+
 /** Whether a held Stop or Shut down still names the turn that runs now
  * (spec 7.5: dropped rather than sent if that turn ended before the
  * connection returned). True only while a turn runs and none has ended

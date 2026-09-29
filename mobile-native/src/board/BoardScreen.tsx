@@ -75,7 +75,7 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
-import { type HeldAction, heldFor, heldProjectState, heldVerb, waitingLine } from "./boardHold";
+import { type HeldAction, heldFor, heldProjectState, heldVerb, turnSeen, waitingLine } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
@@ -539,7 +539,7 @@ function Board({
 				toast,
 				(section) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
 			);
-		else if (action === "stop") holdAction({ kind: "stop", ref: row.ref, title: row.title, seen: seenTurn(row) });
+		else if (action === "stop") holdAction({ kind: "stop", ref: row.ref, title: row.title, seen: turnSeen(row) });
 		else {
 			const target = archiveTarget(row);
 			if (target) holdAction({ kind: "archive", ref: row.ref, target, archived: action === "archive" });
@@ -555,7 +555,7 @@ function Board({
 		else if (action === "shutDown")
 			confirmShutDown(row, () => {
 				const on = liveNow.current ? clientNow.current : null;
-				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: seenTurn(row) });
+				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
 					shutDownSession(on, row.ref).then(
 						() => toast.show({ text: SHUT_DOWN_DONE }),
@@ -1355,12 +1355,6 @@ function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
 		{ text: "Cancel", style: "cancel" },
 		destructiveButton("Shut down", shutDown),
 	]);
-}
-
-/** The turn a Stop or Shut down names: the row's turn_ended_at as you saw
- * it, and whether a turn was running (boardHold.ts's turnStillSeen). */
-function seenTurn(row: NavigationSessionSummary) {
-	return { turnEndedAt: row.turn_ended_at ?? null, running: row.state === "active" };
 }
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
