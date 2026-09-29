@@ -276,19 +276,18 @@ type NavigationQuestion struct {
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref          string `json:"ref"`
-	HostID       string `json:"host_id"`
-	SessionID    string `json:"session_id"`
-	Title        string `json:"title"`
-	Project      string `json:"project"`
-	State        string `json:"state"`
-	Kind         string `json:"kind"`
-	Branch       string `json:"branch,omitempty"`
-	ClusterCount int    `json:"cluster_count,omitempty"`
-	Favorite     bool   `json:"favorite,omitempty"`
-	Rename       bool   `json:"rename,omitempty"`
-	Live         bool   `json:"live"`
-	AskPending   bool   `json:"ask_pending,omitempty"`
+	Ref        string `json:"ref"`
+	HostID     string `json:"host_id"`
+	SessionID  string `json:"session_id"`
+	Title      string `json:"title"`
+	Project    string `json:"project"`
+	State      string `json:"state"`
+	Kind       string `json:"kind"`
+	Branch     string `json:"branch,omitempty"`
+	Favorite   bool   `json:"favorite,omitempty"`
+	Rename     bool   `json:"rename,omitempty"`
+	Live       bool   `json:"live"`
+	AskPending bool   `json:"ask_pending,omitempty"`
 	// ApprovalPending is true while the session is blocked on a sandbox
 	// escalation a human must allow or deny (M7). The row keeps its real State
 	// ("active": the escalation blocks mid-turn); the flag says why the session

@@ -102,14 +102,12 @@ func TestClassifyFavoriteDecisions_UnverifiableEvidenceIsDormant(t *testing.T) {
 	aliasID := hubtest.SessionID(t)
 	otherAliasID := hubtest.SessionID(t)
 	malformedID := hubtest.SessionID(t)
-	collisionID := "cluster:" + hubtest.SessionID(t)
 	alias := "local:" + hubtest.SessionID(t)
 	decisions := map[ArchiveKey]bool{
 		{Kind: "session", ID: remoteID}:    true,
 		{Kind: "session", ID: missingID}:   true,
 		{Kind: "session", ID: alias}:       true,
 		{Kind: "session", ID: malformedID}: true,
-		{Kind: "session", ID: collisionID}: true,
 	}
 	authority := FavoriteAuthority{
 		Sessions: []FavoriteSessionAuthority{
@@ -117,9 +115,7 @@ func TestClassifyFavoriteDecisions_UnverifiableEvidenceIsDormant(t *testing.T) {
 			{ID: aliasID, Aliases: []string{alias}, TopLevel: true, Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete},
 			{ID: otherAliasID, Aliases: []string{alias}, TopLevel: true, Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete},
 			{ID: malformedID, Aliases: []string{malformedID}, TopLevel: false, Lineage: FavoriteAuthorityIncomplete, Source: FavoriteAuthorityComplete},
-			{ID: collisionID, Aliases: []string{collisionID}, TopLevel: true, Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete},
 		},
-		Nodes: []FavoriteNodeAuthority{{ID: collisionID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
 	}
 
 	got := ClassifyFavoriteDecisions(decisions, authority)
@@ -128,80 +124,6 @@ func TestClassifyFavoriteDecisions_UnverifiableEvidenceIsDormant(t *testing.T) {
 		if got.Presentation[key] {
 			t.Errorf("dormant decision entered presentation: %v", key)
 		}
-	}
-}
-
-func TestClassifyFavoriteDecisions_ClusterInvalidityUsesCurrentNodeKind(t *testing.T) {
-	clusterID := "cluster:deadbeef"
-	clusterKey := ArchiveKey{Kind: "session", ID: clusterID}
-	clusterAuthority := FavoriteAuthority{
-		Nodes: []FavoriteNodeAuthority{{ID: clusterID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
-	}
-	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{clusterKey: true}, clusterAuthority)
-	assertFavoriteClassification(t, got, clusterKey, FavoriteDecisionConfirmedInvalid)
-
-	legitimateID := "cluster:" + hubtest.SessionID(t)
-	legitimateKey := ArchiveKey{Kind: "session", ID: legitimateID}
-	legitimateAuthority := FavoriteAuthority{
-		Sessions: []FavoriteSessionAuthority{{
-			ID: legitimateID, Aliases: []string{legitimateID}, TopLevel: true,
-			Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
-		}},
-	}
-	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{legitimateKey: true}, legitimateAuthority)
-	assertFavoriteClassification(t, got, legitimateKey, FavoriteDecisionValid)
-}
-
-func TestClassifyFavoriteDecisions_ClusterAliasCollisionsAreDormant(t *testing.T) {
-	clusterID := "cluster:alias-collision"
-	realID := hubtest.SessionID(t)
-	clusterKey := ArchiveKey{Kind: "session", ID: clusterID}
-	authority := FavoriteAuthority{
-		Sessions: []FavoriteSessionAuthority{{
-			ID: realID, Aliases: []string{clusterID}, TopLevel: true,
-			Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
-		}},
-		Nodes: []FavoriteNodeAuthority{{ID: clusterID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
-	}
-
-	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{clusterKey: true}, authority)
-	assertFavoriteClassification(t, got, clusterKey, FavoriteDecisionDormant)
-
-	canonicalCollisionID := "cluster:canonical-collision"
-	aliasKey := ArchiveKey{Kind: "session", ID: "local:" + canonicalCollisionID}
-	authority = FavoriteAuthority{
-		Sessions: []FavoriteSessionAuthority{{
-			ID: canonicalCollisionID, Aliases: []string{aliasKey.ID}, TopLevel: true,
-			Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
-		}},
-		Nodes: []FavoriteNodeAuthority{{ID: canonicalCollisionID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
-	}
-	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{aliasKey: true}, authority)
-	assertFavoriteClassification(t, got, aliasKey, FavoriteDecisionDormant)
-}
-
-func TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		kind FavoriteNodeKind
-	}{
-		{name: "zero", kind: ""},
-		{name: "unknown", kind: FavoriteNodeKind("future-node")},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			sessionID := hubtest.SessionID(t)
-			key := ArchiveKey{Kind: "session", ID: sessionID}
-			authority := FavoriteAuthority{
-				Sessions: []FavoriteSessionAuthority{{
-					ID: sessionID, TopLevel: true,
-					Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
-				}},
-				Nodes: []FavoriteNodeAuthority{{ID: sessionID, Kind: test.kind, Quality: FavoriteAuthorityComplete}},
-			}
-
-			got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{key: true}, authority)
-			assertFavoriteClassification(t, got, key, FavoriteDecisionDormant)
-		})
 	}
 }
 

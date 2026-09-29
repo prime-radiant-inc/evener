@@ -92,7 +92,15 @@ import {
   setGlobalLastWorkingDir,
   sweepStaleModels,
 } from "./spawnDefaults";
-import { applySpawnURL, type SpawnDraft, selectSpawnDirectory, spawnDraftsStore, useDraftField } from "./spawnDrafts";
+import {
+  applySpawnURL,
+  controllerDefaultDirectory,
+  reseedSpawnDirectory,
+  type SpawnDraft,
+  selectSpawnDirectory,
+  spawnDraftsStore,
+  useDraftField,
+} from "./spawnDrafts";
 import {
   PRE_SESSION_BUILTIN_IDS,
   resolveSpawnEffortItems,
@@ -507,6 +515,111 @@ function SpawnForm({
     createDialogHostRef.current = submittedSource;
     closeCreateDialog();
   }, [submittedSource, closeCreateDialog]);
+  // The working directory a new session is seeded with belongs to the machine
+  // the session starts on - the cwd half of the same owner model the create
+  // dialog above, the branch readout, and the plugin/model gates follow. A
+  // change of the host the form targets re-resolves it over the SELECTED host
+  // alone: that host is asked whether it has the directory, and only a refusal
+  // re-seeds it from that host's own default - its home, resolved over itself
+  // through evener/path/validate's "~" expansion - or, for the local host, the
+  // directory a fresh local mount computes (?dir= prefill, else the sticky
+  // global working-dir default), which IS the controller's own resolution. So
+  // the controller's default never rides to a host that does not have it, and
+  // the form never keeps a path the selected host refused; a path the host DOES
+  // have is kept - the host resolved it itself, exactly as the phone's New
+  // session does when the project exists on the host it moves to (ruling 17).
+  //
+  // A host that cannot answer keeps the directory: unknown is not absent, and
+  // the submit's own host-routed preflight is the authority on the path then.
+  // An unresolved own default (a host refusing "~" too, or naming no directory)
+  // leaves no directory at all rather than a foreign one - the picker already
+  // opens at the selected host's home in that state.
+  //
+  // A reconnect is not a switch: only a change of the target host can
+  // re-resolve, so a same-host re-read (a manifest revalidation, a re-attach, a
+  // pane remount restoring the draft) never discards the directory in the form.
+  // A mount is not a switch either: the first run only records, so the rail's
+  // ?dir=&host= project-copy prefill keeps the directory it named, and the
+  // re-resolution happens only when the person (or a fallback) actually changes
+  // the host. And a different draft is not a switch: the re-seed is a property
+  // of ONE draft, so a draft change (a directory pick opens that directory's
+  // own draft) leaves the newly current draft's own directory and host
+  // standing. The ref records the pair, so a late answer can be checked against
+  // both the host and the draft it was issued for.
+  const cwdHostRef = useRef<{ host: string; draft: SpawnDraft } | null>(null);
+  // Every switch's resolution is a NEW question, even when it names a host the
+  // form has visited before and the draft is the same object (a round trip
+  // A -> B -> A -> B): the issuance counter is what tells an answer apart from
+  // an answer to an earlier visit's question. The non-switch runs above must
+  // not bump it, so a resolution still in flight for this host and this draft
+  // can still land; a draft transition does invalidate it (below) without
+  // asking anything.
+  const cwdIssuanceRef = useRef(0);
+  // The guard belongs to the form INSTANCE and dies with it: the draft store is
+  // module scope and outlives the pane, so an answer still in flight at unmount
+  // must not seed the form a later mount shows for the same draft. Reset at
+  // setup (StrictMode runs setup/cleanup/setup) and set in the cleanup, which
+  // every run returns so an unmount always cancels.
+  const cwdCancelledRef = useRef(false);
+  useEffect(() => {
+    cwdCancelledRef.current = false;
+    const cancel = () => {
+      cwdCancelledRef.current = true;
+    };
+    const previous = cwdHostRef.current;
+    cwdHostRef.current = { host: submittedSource, draft };
+    if (previous === null) return cancel;
+    if (previous.draft !== draft) {
+      // A draft transition invalidates whatever was in flight: the same draft
+      // object can come back (a directory round trip), and an answer from
+      // before the trip must not pass for the return.
+      cwdIssuanceRef.current++;
+      return cancel;
+    }
+    if (previous.host === submittedSource) return cancel;
+    const issuedFor = submittedSource;
+    const issuance = ++cwdIssuanceRef.current;
+    // Every answer below is a statement about the machine selected NOW, for the
+    // question asked NOW: one that lands after another switch, after the draft
+    // moved on, or after this form went away describes a moment the form has
+    // left, so it is dropped.
+    const superseded = () =>
+      cwdCancelledRef.current ||
+      cwdIssuanceRef.current !== issuance ||
+      cwdHostRef.current?.host !== issuedFor ||
+      cwdHostRef.current?.draft !== draft;
+    const seedOwnDefault = () => {
+      if (isLocalHost(issuedFor)) {
+        reseedSpawnDirectory(draft, controllerDefaultDirectory());
+        return;
+      }
+      hostRequest(client, issuedFor, "evener/path/validate", { path: "~", kind: "dir" }).then(
+        (result) => {
+          if (superseded()) return;
+          // `path` is typed non-optional, but evener/host/request hands a remote
+          // host's answer back through a cast - an answer missing it (an older
+          // host, a malformed one) must seed no directory, never a non-string key
+          // in the string-keyed drafts map.
+          const home = typeof result.path === "string" && result.path !== "" ? result.path : "";
+          reseedSpawnDirectory(draft, home);
+        },
+        () => {
+          if (superseded()) return;
+          reseedSpawnDirectory(draft, "");
+        },
+      );
+    };
+    hostRequest(client, issuedFor, "evener/path/validate", { path: draft.cwd, kind: "dir" }).then(
+      (result) => {
+        if (superseded()) return;
+        // The selected host itself resolved the directory as one it has.
+        if (result.valid) return;
+        seedOwnDefault();
+      },
+      () => {},
+    );
+    return cancel;
+  }, [client, draft, submittedSource]);
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the

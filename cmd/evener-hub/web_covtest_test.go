@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -421,15 +420,6 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 }
 
 // --- web_api_tree.go: resolveTopLevelSessionRef ---
-
-// TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
-// rejection in the top-level session resolver.
-func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	if session, err := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); err == nil || session.sessionID != "" {
-		t.Fatalf("cluster: prefix should be refused, got %+v %v", session, err)
-	}
-}
 
 // --- web_api_tree.go: apiTreeSources ---
 

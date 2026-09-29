@@ -257,7 +257,7 @@ func fuzzScenarioBuildTree_EveryRowCarriesEveryLiveFact(t *testing.T) {
 	liveFields := func(n TreeNode) TreeNode {
 		n.ID, n.Title, n.Project, n.Branch, n.Kind = "", "", "", "", ""
 		n.CreatedAt, n.UpdatedAt, n.Age = time.Time{}, time.Time{}, ""
-		n.Children, n.ClusterCount = nil, 0
+		n.Children = nil
 		return n
 	}
 
