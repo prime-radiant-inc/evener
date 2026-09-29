@@ -779,7 +779,12 @@ function ProviderFacts({
 					layer.effective ? (
 						<Row key={layer.source} label="Credential" sub={layer.label} />
 					) : (
-						<Row key={layer.source} label="Also stored" sub={layer.label} value="Not used" />
+						<Row
+							key={layer.source}
+							label={layer.source === "store" ? "Also stored" : "Also in the environment"}
+							sub={layer.label}
+							value="Not used"
+						/>
 					),
 				)}
 			</Group>

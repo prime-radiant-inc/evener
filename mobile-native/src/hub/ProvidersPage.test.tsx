@@ -1531,3 +1531,13 @@ it("keeps a provider's facts in its group: Default as a tag, where it's defined,
 	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
 	expect(hasControl(tree, "Also stored, Configured via stored API key, Not used")).toBe(true);
 });
+
+it("calls a shadowed environment variable what it is, never a stored credential", async () => {
+	providersHub([instance({ activeSource: "api_key", shadowedEnvVar: "WORK_KEY", hasStoredFile: false })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
+	expect(hasControl(tree, shadowed)).toBe(true);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
+});
