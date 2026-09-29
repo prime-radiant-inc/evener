@@ -25,7 +25,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	async function withFleetHub(
 		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
-		options: { planRevised?: boolean } = {},
+		options: { planRevised?: boolean; long?: boolean } = {},
 	) {
 		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -107,6 +107,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			},
 			{ planRevised: true },
 		);
+	});
+
+	it("serves the long questions, approval and messages with EVENER_DEMO_LONG", async () => {
+		const AUDIT = `local:${demoSessionId("s-audit")}`;
+		const pendingCount = async (client: ReturnType<typeof createHubClient>) =>
+			(await client.request("thread/read", { ref: AUDIT, includeTurns: false })).thread.evener.pendingQuestion?.count;
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(4), { long: true });
+		await withFleetHub(async (_hub, client) => expect(await pendingCount(client)).toBe(2));
 	});
 });
 

@@ -915,6 +915,9 @@ export interface DemoFleetOptions {
 	// settle-race plan's revision rather than its first text, so a Reader that
 	// read the plan before the restart shows what changed (frame 17).
 	planRevised?: boolean;
+	// Mirrors EVENER_DEMO_LONG: demo-hub.mts serves the sessions' long content
+	// (demoSessions.ts LONG_CONTENT) in place of the usual.
+	long?: boolean;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
