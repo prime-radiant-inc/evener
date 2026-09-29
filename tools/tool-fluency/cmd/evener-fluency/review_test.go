@@ -238,6 +238,30 @@ func TestRenderPacketShowsTheFullDelegateSendMessage(t *testing.T) {
 	}
 }
 
+// TestRenderPacketShowsDelegateSendRecipient: delegate_send's `to` argument
+// says which delegate or caller a follow-up went to; a blind reader needs
+// that alongside the full message, not just the bare "delegate_send" name.
+func TestRenderPacketShowsDelegateSendRecipient(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	args, err := json.Marshal(map[string]any{"to": "dlg_child1", "message": "Please also check the Delta Payments contract."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("delegate_send", string(args))),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, "→ delegate_send to dlg_child1") {
+		t.Errorf("packet missing the delegate_send recipient:\n%s", packet)
+	}
+}
+
 // TestRenderPacketShowsTheFullBriefForEachTaskListStep: a delegate call can
 // seed a multi-step plan in task_list instead of a single prompt; each step's
 // own prompt is a brief too and must appear whole.

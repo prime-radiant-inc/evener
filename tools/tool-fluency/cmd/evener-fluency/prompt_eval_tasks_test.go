@@ -284,6 +284,115 @@ func TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes(t *testing.T) {
 	}
 }
 
+// checkNamed returns the check named name from probe's expectations, or
+// fails the test if the task carries no such check.
+func checkNamed(t *testing.T, probe probeFile, name string) checkSpec {
+	t.Helper()
+	for _, c := range probe.Expect.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("task has no %q check", name)
+	return checkSpec{}
+}
+
+// TestVendorReviewCinderCheckCatchesAnUnamendedAnswer: Cinder's data-deletion
+// period is also 30 days, so a check that only looks for the digit "30"
+// passes an answer that never noticed the amendment and kept the
+// pre-amendment 90-day termination notice. The "cites the amendment" check
+// must fail that answer.
+func TestVendorReviewCinderCheckCatchesAnUnamendedAnswer(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "vendor-review.yaml"))
+	check := checkNamed(t, probe, "cinder row cites the amendment")
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrong := "| Vendor | Termination notice | Auto-renews | Data retention after termination | Section |\n" +
+		"| --- | --- | --- | --- | --- |\n" +
+		"| Cinder Analytics | 90 days | Yes, successive 1-year terms | 30 days | Sections 4, 6, 11 |\n"
+	mustWrite(t, filepath.Join(work, "REVIEW.md"), wrong)
+	if ok, _ := runCheck(work, check, checkTimeout); ok {
+		t.Error("check passed a Cinder row with the unamended 90-day notice and no mention of the amendment")
+	}
+}
+
+// TestVendorReviewShapeChecksCatchProseAnswers: the task asks for a markdown
+// table with a Section column, not just the right facts somewhere in the
+// file. An answer with every fact correct but written as prose bullets, no
+// table at all, must fail the shape checks.
+func TestVendorReviewShapeChecksCatchProseAnswers(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "vendor-review.yaml"))
+	headerCheck := checkNamed(t, probe, "table header names the Section column")
+	rowCheck := checkNamed(t, probe, "each vendor is a table row")
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrong := "# Vendor contract review\n\n" +
+		"Arbor Storage: 60 days notice, auto-renews, 45 days retention (Section 5).\n" +
+		"Beacon Mail: 45 days notice, auto-renews, 60 days retention (Section 9).\n" +
+		"Cinder Analytics: 30 days notice (amended), auto-renews, 30 days retention (Section 6, amended).\n" +
+		"Delta Payments: 30 days notice, no renewal, 30 days retention except legal holds (Section 8).\n" +
+		"Ember Search: 15 days notice, auto-renews, 14 days retention (Section 9).\n"
+	mustWrite(t, filepath.Join(work, "REVIEW.md"), wrong)
+	if ok, _ := runCheck(work, headerCheck, checkTimeout); ok {
+		t.Error("the Section-column header check passed a prose answer with no markdown table")
+	}
+	if ok, _ := runCheck(work, rowCheck, checkTimeout); ok {
+		t.Error("the table-row check passed a prose answer with no markdown table")
+	}
+}
+
+// TestNotesNewsletterSectionChecksCatchWeakAnswers: sections can be empty,
+// and the Cold start note can be summarized without saying it was
+// superseded (the point of the note). Both new checks must catch those
+// weak answers.
+func TestNotesNewsletterSectionChecksCatchWeakAnswers(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "notes-newsletter.yaml"))
+	emptySectionCheck := checkNamed(t, probe, "every section has text")
+	coldStartCheck := checkNamed(t, probe, "cold start section notes it was superseded")
+
+	emptyWork := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(emptyWork, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	empty := "# Design notes\n\n" +
+		"## Retry budget\n\n" +
+		"## Shard map\n\n" +
+		"The shard layout moves into a small replicated store services watch.\n\n" +
+		"## Cold start\n\n" +
+		"Superseded by the shard map, so we are not building it.\n\n" +
+		"## Audit trail\n\n" +
+		"Every admin action now writes an append-only log entry.\n"
+	mustWrite(t, filepath.Join(emptyWork, "NEWSLETTER.md"), empty)
+	if ok, _ := runCheck(emptyWork, emptySectionCheck, checkTimeout); ok {
+		t.Error("check passed a NEWSLETTER.md with an empty Retry budget section")
+	}
+
+	noMentionWork := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(noMentionWork, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	noMention := "# Design notes\n\n" +
+		"## Retry budget\n\n" +
+		"Clients now get a retry budget capping retries at 10% of calls per minute.\n\n" +
+		"## Shard map\n\n" +
+		"The shard layout moves into a small replicated store services watch.\n\n" +
+		"## Cold start\n\n" +
+		"New instances took about four minutes to reach full speed before this change.\n\n" +
+		"## Audit trail\n\n" +
+		"Every admin action now writes an append-only log entry.\n"
+	mustWrite(t, filepath.Join(noMentionWork, "NEWSLETTER.md"), noMention)
+	if ok, _ := runCheck(noMentionWork, coldStartCheck, checkTimeout); ok {
+		t.Error("check passed a Cold start section that never says it was superseded")
+	}
+}
+
 func failingChecks(workDir string, checks []checkSpec) []string {
 	var names []string
 	for _, c := range checks {

@@ -109,7 +109,11 @@ const packetToolResultMax = 1500
 
 // renderPacket renders a root transcript for a blind read. Every message to
 // the user appears whole, since those messages are what the reader scores.
-// Other tool calls appear as their previews, and tool results are cut short.
+// Other tool calls appear as their previews, except delegate and
+// delegate_send: their brief (delegate's prompt and task_list step prompts,
+// delegate_send's message) is rendered in full, since a blind reader judging
+// how work was split and briefed must see the brief itself, not an 80-byte
+// preview. Tool results are cut short.
 // A communicate/result-tool message that echoes assistant text already shown
 // within the same logical turn is not repeated, matching evener itself: the
 // reader must never see a repetition the user never saw (see
@@ -132,7 +136,7 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		for _, call := range turn.ToolCalls {
 			if !isMessageToUser(call) {
 				if brief := delegateBrief(call); brief != "" {
-					fmt.Fprintf(&b, "→ %s\n\n%s\n\n", call.Name, brief)
+					fmt.Fprintf(&b, "→ %s\n\n%s\n\n", delegateCallHeader(call), brief)
 				} else {
 					fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
 				}
@@ -169,10 +173,21 @@ type delegateArguments struct {
 	} `json:"task_list"`
 }
 
-// delegateSendArguments decodes a delegate_send call's arguments: the
-// message delivered to the addressed delegate or caller (DefDelegateSend).
+// delegateSendArguments decodes a delegate_send call's arguments: to, the
+// delegate_id or "caller" it addressed, and message, the text delivered
+// there (DefDelegateSend, agent/internal/tool/definitions.go).
 type delegateSendArguments struct {
+	To      string `json:"to"`
 	Message string `json:"message"`
+}
+
+// decodeDelegateSendArguments decodes a delegate_send call's arguments once,
+// so delegateBrief and delegateCallHeader never disagree about what a call
+// said or where it went.
+func decodeDelegateSendArguments(call doctor.ToolCallSummary) (delegateSendArguments, error) {
+	var args delegateSendArguments
+	err := json.Unmarshal([]byte(call.Arguments), &args)
+	return args, err
 }
 
 // delegateBrief returns the full text of a delegate or delegate_send call's
@@ -195,14 +210,30 @@ func delegateBrief(call doctor.ToolCallSummary) string {
 		}
 		return b.String()
 	case "delegate_send":
-		var args delegateSendArguments
-		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		args, err := decodeDelegateSendArguments(call)
+		if err != nil {
 			return ""
 		}
 		return args.Message
 	default:
 		return ""
 	}
+}
+
+// delegateCallHeader returns the "→ ..." label for a delegate or
+// delegate_send call whose brief is being shown in full: the call's name, or
+// "delegate_send to <to>" naming the delegate or caller a follow-up went to
+// — a blind reader judging delegation needs to see who a message was sent
+// to, alongside its full text.
+func delegateCallHeader(call doctor.ToolCallSummary) string {
+	if call.Name != "delegate_send" {
+		return call.Name
+	}
+	args, err := decodeDelegateSendArguments(call)
+	if err != nil || args.To == "" {
+		return call.Name
+	}
+	return call.Name + " to " + args.To
 }
 
 // indentBlock indents every line of s by four spaces, a Markdown code block

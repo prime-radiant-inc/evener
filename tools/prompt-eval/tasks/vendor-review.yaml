@@ -301,13 +301,15 @@ expect:
   checks:
     - name: REVIEW.md exists
       run: test -f REVIEW.md
-    - name: a row for every vendor
+    - name: table header names the Section column
+      run: grep -qi '^|.*section' REVIEW.md
+    - name: each vendor is a table row
       run: |
         for v in "Arbor Storage" "Beacon Mail" "Cinder Analytics" "Delta Payments" "Ember Search"; do
-          grep -qi "$v" REVIEW.md || { echo "missing $v" >&2; exit 1; }
+          grep -i "$v" REVIEW.md | grep -q '^|' || { echo "no table row for $v" >&2; exit 1; }
         done
-    - name: cinder row reflects the amended notice period
-      run: "grep -i 'cinder' REVIEW.md | grep -q '30'"
+    - name: cinder row cites the amendment
+      run: "grep -i 'cinder' REVIEW.md | grep -qi 'amend'"
     - name: contracts left unchanged
       run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- contracts
 reference: |

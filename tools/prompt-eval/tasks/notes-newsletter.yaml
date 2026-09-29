@@ -44,6 +44,18 @@ expect:
       run: test "$(grep -c '^## ' NEWSLETTER.md)" -eq 4
     - name: sections in index order
       run: "grep '^## ' NEWSLETTER.md | grep -o -i -E 'retry budget|shard map|cold start|audit trail' | tr 'A-Z' 'a-z' | paste -sd , - | grep -qx 'retry budget,shard map,cold start,audit trail'"
+    - name: every section has text
+      run: |
+        awk '
+          /^## / {
+            if (insec && !hasbody) { print "empty section: " sec; exit 1 }
+            sec = $0; insec = 1; hasbody = 0; next
+          }
+          insec && NF > 0 { hasbody = 1 }
+          END { if (insec && !hasbody) { print "empty section: " sec; exit 1 } }
+        ' NEWSLETTER.md
+    - name: cold start section notes it was superseded
+      run: tr 'A-Z' 'a-z' < NEWSLETTER.md | awk '/^## cold start/{flag=1; next} /^## /{flag=0} flag' | grep -q 'supersed'
     - name: notes left unchanged
       run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- docs/notes
 reference: |
