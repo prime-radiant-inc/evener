@@ -96,16 +96,17 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	singleFile := relPath == "."
 	lines := strings.Split(string(data), "\n")
+	// strings.Split yields a trailing "" for newline-terminated data, and [""]
+	// for a zero-byte file; neither element is a line. Ripgrep reports neither,
+	// so drop it — otherwise a context window near EOF fabricates a row and an
+	// empty file "matches" an empty pattern (#3284 review).
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	// Context only shapes content output; files-with-matches and count report
 	// per-file. This path needs every match in the file at once so overlapping
 	// windows can merge (ripgrep's -C shape), so it takes the whole file.
 	if a.contextLines > 0 && (a.outputMode == "" || a.outputMode == "content") {
-		// strings.Split leaves a trailing "" for newline-terminated data, which
-		// is not a line. Context near EOF would otherwise print it as a
-		// fabricated row that ripgrep never reports (#3284 review).
-		if len(lines) > 1 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
 		return a.feedContextWindows(relPath, lines, singleFile)
 	}
 	for i, line := range lines {

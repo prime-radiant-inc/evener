@@ -30,7 +30,8 @@ type egrep_file struct {
 // order (root files lexically, then the visible subdir). It mirrors exactly the
 // production predicates — binary (NUL) skip, glob match on the base name with
 // filepath.Match's error swallowed to "no match", raw split on '\n' with no CRLF
-// normalization, regex per line — but shares no code with grepNative.
+// normalization and the split's phantom trailing "" dropped (as ripgrep does),
+// regex per line — but shares no code with grepNative.
 //
 // It returns the ordered content-mode matches ("rel:lineno:line"), the per-file
 // match counts, and the ordered list of files that had at least one match. The
@@ -50,6 +51,9 @@ func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (conte
 		}
 		fileHad := false
 		lines := strings.Split(string(f.content), "\n")
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
 		for i, line := range lines {
 			if re.MatchString(line) {
 				content = append(content, fmt.Sprintf("%s:%d:%s", f.rel, i+1, line))

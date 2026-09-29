@@ -221,6 +221,23 @@ func TestGrepContextGroupsMatchWithOrWithoutRipgrep(t *testing.T) {
 			t.Fatalf("%s context differs:\n ripgrep = %q\n fallback = %q", name, gotRg, gotNative)
 		}
 	}
+
+	// A directory search exercises the inter-file "--" separator and the
+	// cross-file order --sort path pins.
+	gotRg, err := withRg.Grep(context.Background(), "foo", root, "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("Grep (ripgrep, directory): %v", err)
+	}
+	gotNative, err := fallback.Grep(context.Background(), "foo", root, "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("Grep (fallback, directory): %v", err)
+	}
+	if gotRg == "" {
+		t.Fatal("directory context search returned nothing")
+	}
+	if gotRg != gotNative {
+		t.Fatalf("directory context differs:\n ripgrep = %q\n fallback = %q", gotRg, gotNative)
+	}
 }
 
 // TestGrepContentCapCountsLines pins the result cap to output lines (#3284):
@@ -264,5 +281,33 @@ func TestBuildRipgrepArgsSortsByPath(t *testing.T) {
 	i := slices.Index(args, "--sort")
 	if i < 0 || i+1 >= len(args) || args[i+1] != "path" {
 		t.Fatalf("expected --sort path in args, got: %v", args)
+	}
+}
+
+// TestGrepContextEmptyFileHasNoPhantomLine pins that a zero-byte file yields no
+// context row (rg reports nothing), while a file holding one empty line still
+// reports that line (#3284 review).
+func TestGrepContextEmptyFileHasNoPhantomLine(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "empty.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "one.txt"), []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(root)
+	got, err := env.grepNative(context.Background(), "^", filepath.Join(root, "empty.txt"), "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("zero-byte file context = %q, want empty", got)
+	}
+	gotOne, err := env.grepNative(context.Background(), "^", filepath.Join(root, "one.txt"), "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if gotOne != "1:" {
+		t.Fatalf("single empty line context = %q, want %q", gotOne, "1:")
 	}
 }
