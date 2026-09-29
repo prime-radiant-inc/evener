@@ -46,9 +46,9 @@ package hub
 //
 // The push must write the DISPOSABLE host store and leave the host's REAL
 // store byte-identical. The test fails if the real file changed, or if it did
-// not exist before but does after. That guard is proven able to fail: see
-// hostPushGuardedCredentials's EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE hook, used
-// by the falsification run.
+// not exist before but does after. That guard is proven able to fail: see the
+// shared hostGuardedCredentialsPath's EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE hook
+// (app_host_disposable_e2e_test.go), used by the falsification run.
 //
 // It is gated by EVENER_SSH_E2E_PUSH=1 ON TOP OF EVENER_SSH_E2E=1 and
 // EVENER_SSH_E2E_HOST, so default `go test ./...` performs no ssh. The push
@@ -139,13 +139,48 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	credsPath := cfgRoot + "/credentials.toml"
 	configPath := hostDir + "/" + hostPushToml
 
-	// The per-run token makes the name unique, and an existing path is refused
-	// HERE, before anything is created: `mkdir -p` on a name already present
-	// would adopt a directory this run did not make, and the cleanup would then
-	// delete whatever was already inside it.
-	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
-		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
-	}
+	// The per-run token makes the name unique. The directory is created with a
+	// bare `mkdir` — not a `test -e` followed by `mkdir -p` — so the creation is
+	// one atomic, exclusive step: an existing name fails it and can never be
+	// adopted (its contents would then be deleted by the cleanup below).
+	host.mustRun("mkdir " + shellquote.RemoteWord(hostDir))
+
+	// Remove the test-owned directory on EVERY exit path. It is registered here,
+	// immediately after the exclusive creation and before any other host
+	// operation, so a failure resolving the guard paths or hashing below cannot
+	// strand the directory (or a staged binary or credential files) on the host.
+	// The guard comparison registers its own cleanup just after; by t.Cleanup's
+	// LIFO order that one runs FIRST, so the guarded files are read before this
+	// removal.
+	t.Cleanup(func() {
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+	})
+
+	// The two files this check must leave untouched: the host's REAL credential
+	// store and its real install. They are hashed BEFORE anything is written or
+	// launched. The credential path is resolved from the host's own environment
+	// (hostRealCredentialsPath), so the guard follows the host's actual
+	// credential store rather than an assumed ~/.config default.
+	realCredsPath := hostGuardedCredentialsPath("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE",
+		hostRealCredentialsPath(t, host, home), hostDir+"/evener/credentials.toml")
+	realCredsBefore := host.sha256IfFile(realCredsPath)
+	installPath := home + "/.local/bin/evener"
+	installBefore := host.sha256IfFile(installPath)
+	t.Cleanup(func() {
+		stopHostListener(t, host, hostPushAddr, configPath)
+		// Read the guarded files BEFORE removing the directory: with the
+		// falsification hook the guarded path can live inside hostDir, and hashing
+		// after the removal would fire on "absent" rather than on "changed".
+		realCredsAfter := host.sha256IfFile(realCredsPath)
+		installAfter := host.sha256IfFile(installPath)
+		assertGuardedFileIntact(t, host, "the push", realCredsPath,
+			"it must write only the test-owned "+credsPath, realCredsBefore, realCredsAfter)
+		assertGuardedFileIntact(t, host, "this check", installPath,
+			"it must install nothing, only run the host's own binary", installBefore, installAfter)
+	})
+
 	hostBin := hostDir + "/bin/evener"
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(cfgRoot))
 
@@ -154,7 +189,8 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// predates the feature — a live run against it answers "method not found" —
 	// so this check stages a build of THIS checkout for the host's target into
 	// the test-owned directory and runs the host hub from it. The host's real
-	// install at ~/.local/bin/evener is never touched (hashed before/after below).
+	// install at ~/.local/bin/evener is never touched (hashed before/after in the
+	// guard just above).
 	host.writeFile(hostBin, stageHostTargetBinary(t, goos, goarch))
 	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostBin))
 
@@ -169,49 +205,6 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// start — which the readiness wait reports with the hub's own log line.
 	host.mustRun("chmod 600 " + shellquote.RemoteWord(credsPath))
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostPushAddr, hostDir+"/state")))
-
-	// The two files this check must leave untouched: the host's REAL credential
-	// store and its real install. They are hashed before anything is launched.
-	realCredsPath := hostPushGuardedCredentials(home, hostDir)
-	realCredsBefore := host.sha256IfFile(realCredsPath)
-	installPath := home + "/.local/bin/evener"
-	installBefore := host.sha256IfFile(installPath)
-
-	// The disposable hub is stopped first, then the directory it runs from is
-	// removed, and only then are the real files judged — a leftover directory or
-	// a live hub must not pass as a clean run, and a failure is reported rather
-	// than logged away.
-	t.Cleanup(func() {
-		stopHostListener(t, host, hostPushAddr, configPath)
-		// Read the guarded files BEFORE removing the directory: with the
-		// falsification hook the guarded path can live inside hostDir, and hashing
-		// after the removal would fire on "absent" rather than on "changed".
-		realCredsAfter := host.sha256IfFile(realCredsPath)
-		installAfter := host.sha256IfFile(installPath)
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-		}
-		if realCredsBefore == "" {
-			// The host had no real credential store when the check began.
-			// Skipping would let the push create one and still pass — exactly the
-			// violation the assertion exists to catch — so assert it is still
-			// absent.
-			if realCredsAfter != "" {
-				t.Errorf("the push created the host's real credential store %s on host %s (sha256 %s); it must write only the test-owned %s", realCredsPath, host.target, realCredsAfter, credsPath)
-			}
-		} else if realCredsAfter != realCredsBefore {
-			t.Errorf("the host's REAL credential store %s on %s changed during the push (sha256 %s -> %s); the push must write only the test-owned %s", realCredsPath, host.target, realCredsBefore, realCredsAfter, credsPath)
-		}
-		if installBefore == "" {
-			if installAfter != "" {
-				t.Errorf("this check created %s on host %s (sha256 %s); it must install nothing, only run the host's own binary", installPath, host.target, installAfter)
-			}
-			return
-		}
-		if installAfter != installBefore {
-			t.Errorf("the host's own install %s changed during the check (sha256 %s -> %s); the check must not deploy over it", installPath, installBefore, installAfter)
-		}
-	})
 
 	// Start the disposable host hub itself, so the attach below bridges to it
 	// instead of bootstrapping a hub with the host's real environment.
@@ -340,21 +333,6 @@ base_url = "http://127.0.0.1:9/v1"
 `, provider.BaseURL(), instance)
 }
 
-// hostPushGuardedCredentials is the host file the check proves the push never
-// touched: the host's REAL credential store under its real config root.
-//
-// EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE is a falsification hook, and the reason
-// the guard can be trusted at all: a guard never seen to fail proves nothing. It
-// points the guard at the test-owned disposable store instead of the real one,
-// which the push DOES write, so the guard must fire. It is off in a normal run
-// and never risks the host's real file either way.
-func hostPushGuardedCredentials(home, hostDir string) string {
-	if os.Getenv("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE") == "1" {
-		return hostDir + "/evener/credentials.toml"
-	}
-	return home + "/.config/evener/credentials.toml"
-}
-
 // hostPushReadCredentials reads a credentials.toml back from the host and
 // returns its instance->api_key map. It parses the real remote file, so the
 // assertion is on what the host wrote, not on a local copy.
@@ -393,11 +371,16 @@ func hostPushResultFor(resp appwire.HostPushCredentialsResponse, instance string
 func TestHostPushGuardedCredentialsDefaultTargetsRealStore(t *testing.T) {
 	const home = "/Users/dev"
 	const hostDir = "/Users/dev/evener-push-e2e-123"
-	if got, want := hostPushGuardedCredentials(home, hostDir), home+"/.config/evener/credentials.toml"; got != want {
-		t.Fatalf("default guard target = %q, want the host's real store %q", got, want)
+	const realPath = home + "/.config/evener/credentials.toml"
+	const disposablePath = hostDir + "/evener/credentials.toml"
+	// The hook is CLEARED first so an ambient EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE
+	// cannot make the default assertion fail spuriously.
+	t.Setenv("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE", "")
+	if got := hostGuardedCredentialsPath("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE", realPath, disposablePath); got != realPath {
+		t.Fatalf("default guard target = %q, want the host's real store %q", got, realPath)
 	}
 	t.Setenv("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE", "1")
-	if got, want := hostPushGuardedCredentials(home, hostDir), hostDir+"/evener/credentials.toml"; got != want {
-		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, want)
+	if got := hostGuardedCredentialsPath("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE", realPath, disposablePath); got != disposablePath {
+		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, disposablePath)
 	}
 }
