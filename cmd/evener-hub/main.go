@@ -760,12 +760,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	}()
 
-	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
-	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
-	// cycle — see bump above), so composing the navigation invalidation into the
-	// same hook pushes the sidebar exactly on a daemon appearing/disappearing/
-	// changing liveness, or a session appearing/ending/changing in the past
-	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
+	// Navigation invalidation hooks: Roster's onChange and PastIndex's onRootChange
+	// hooks already gate on an actual fingerprint delta (never a no-op
+	// probe/rebuild cycle — see bump above), so composing the navigation
+	// invalidation into the same hook pushes the sidebar exactly on a daemon
+	// appearing/disappearing/changing liveness, or a root session changing or a
+	// subagent appearing/disappearing in the past index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
 	// which never route through PastIndex at all, so they invalidate directly.
 	wirePastNavigation(past, bump, web.navigation)
 	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })

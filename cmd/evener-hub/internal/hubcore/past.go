@@ -232,9 +232,10 @@ func contentFingerprint(all []PastEntry) uint64 {
 
 // Rebuild scans every project under stateGlob and reloads the index. The
 // bool return reports whether the reload's content actually differed from
-// what was already indexed AND a registered onChange callback fired for it
-// (false on a no-op reload, a glob error, or when SetOnChange was never
-// called) — so a caller relying on that hook to signal the change elsewhere
+// what was already indexed AND a registered hook (onChange or onRootChange)
+// fired for it (false on a no-op reload, a glob error, or when neither
+// SetOnChange nor SetOnRootChange was called; production subscribes with
+// SetOnRootChange) — so a caller relying on that hook to signal the change elsewhere
 // (e.g. a broadcast) can tell whether that already happened, or whether it
 // needs to compensate.
 //
@@ -471,9 +472,9 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 // Rebuild may still be reading, which is a data race.
 //
 // The bool return reports whether the edit actually differed from what was
-// already indexed AND a registered onChange callback fired for it (false on
-// the untracked-id no-op, a no-op edit, or when SetOnChange was never
-// called) — see Rebuild's return for why a caller needs this.
+// already indexed AND a registered hook (onChange or onRootChange) fired for
+// it (false on the untracked-id no-op, a no-op edit, or when neither was
+// registered) — see Rebuild's return for why a caller needs this.
 func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
 	old, ok := i.byID[id]
