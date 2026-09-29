@@ -43,7 +43,7 @@ import {
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
 import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
-import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_PROVIDERS, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -113,7 +113,7 @@ export async function createDemoHub(
 	// "ago" from, so a row and its thread agree on when it last changed.
 	const startedAt = fleetOptions?.now ?? Date.now();
 	const demoFleet = fleetOptions
-		? createDemoFleet({ ...fleetOptions, now: startedAt })
+		? createDemoFleet({ ...fleetOptions, now: startedAt, modelProviders: DEMO_MODEL_PROVIDERS })
 		: null;
 	// With the fleet on, New session and the Hub read the prototype's hosts,
 	// providers, plugins, models and folders (demoSetup.ts).
@@ -253,11 +253,15 @@ export async function createDemoHub(
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
-		const notification = JSON.stringify({
-			jsonrpc: "2.0",
-			method: "evener/navigation/invalidated",
-			params: payload,
-		});
+		broadcast("evener/navigation/invalidated", payload);
+	}
+	// Tells every client the hub's notices changed, carrying the whole new
+	// list, as cmd/evener-hub/app_notices.go broadcasts evener/notices/changed.
+	function broadcastNotices() {
+		if (demoSetup) broadcast("evener/notices/changed", demoSetup.answer("evener/notices/list", {}));
+	}
+	function broadcast(method: string, params: unknown) {
+		const notification = JSON.stringify({ jsonrpc: "2.0", method, params });
 		for (const socket of server.clients) {
 			if (socket.readyState !== WebSocket.OPEN) continue;
 			// One socket that fails mid-send must not skip the rest of the
@@ -287,7 +291,10 @@ export async function createDemoHub(
 			return;
 		}
 		broadcastNavigation(requireFleet().step(step));
-		if (step === "host-offline" || step === "host-online") return;
+		if (step === "host-offline" || step === "host-online") {
+			broadcastNotices();
+			return;
+		}
 		// The session's own thread follows its row, as askQuestion's does.
 		const [id, state] = ROW_STEPS[step];
 		const thread = threads.get(fleetSessionRef(id));

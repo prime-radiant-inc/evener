@@ -424,6 +424,88 @@ function sessionInfoHost() {
 	return host;
 }
 
+// The model's name comes from the catalog, which the screen keeps across a
+// screen pushed over it and back: its new controls start from it, so the
+// Session sheet never names the model by its raw id while the next read is
+// out (audit N6).
+it("keeps naming the model after a screen pushed over it closes, while the catalog reads again", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				// The first read answers; the one after the push never does.
+				return modelReads === 1
+					? { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] }
+					: new Promise<never>(() => {});
+			},
+		},
+	);
+	await flush();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await flush();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await flush();
+	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
+	tree.unmount();
+});
+
+// The phone switched to another hub while this session stayed open: the
+// sheet still names this hub's own machine for this hub, from the hub list,
+// and shows it offline (audit N6).
+it("names the hub's own machine for its hub after another hub becomes active", async () => {
+	const profiles = [
+		{ id: "hub-1", name: "Work hub", origin: "https://work.example" },
+		{ id: "hub-2", name: "Home hub", origin: "https://home.example" },
+	];
+	const { tree } = mount(thread, {}, { profiles });
+	await flush();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: true });
+	harness.connection = { ...harness.connection, activeProfile: { id: "hub-2", name: "Home hub" } };
+	act(() => tree.update(screen()));
+	await flush();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: false });
+	tree.unmount();
+});
+
+// A failed catalog read clears the catalog, so the picker offers no stale
+// choices; the screen forgets it too, so controls made after a pushed screen
+// closes don't bring the old catalog back.
+it("brings no catalog back after a failed read and a screen pushed over it", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				if (modelReads === 1)
+					return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+				if (modelReads === 2) throw new Error("The hub couldn't list its models.");
+				return new Promise<never>(() => {});
+			},
+		},
+	);
+	await flush();
+	const pushAndReturn = async () => {
+		stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+		act(() => tree.update(screen()));
+		await flush();
+		stack.state = { index: 0, routes: [session] };
+		act(() => tree.update(screen()));
+		await flush();
+	};
+	await pushAndReturn();
+	expect(modelReads).toBe(2);
+	await pushAndReturn();
+	expect(modelReads).toBe(3);
+	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
+	tree.unmount();
+});
+
 it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
 	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
 		"evener/archive/set": {},

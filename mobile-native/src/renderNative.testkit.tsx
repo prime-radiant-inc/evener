@@ -593,6 +593,7 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 	const downAt = state === "ready" ? null : Date.now();
 	return {
 		activeProfile: { id: "hub-1", name: "Work hub" },
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.example" }],
 		client,
 		state,
 		fatal: false,
