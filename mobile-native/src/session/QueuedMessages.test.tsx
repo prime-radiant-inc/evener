@@ -91,22 +91,26 @@ function mount(
 		canEdit = true,
 		editHint = null as string | null,
 		backdrop = "surface" as "surface" | "page",
+		typing = false,
 	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
-	const tree = render(
+	const element = (typing: boolean) => (
 		<QueuedMessages
 			ghosts={ghosts}
 			disabled={disabled}
 			canEdit={canEdit}
 			editHint={editHint}
 			backdrop={backdrop}
+			typing={typing}
 			onAction={onAction}
 			onMore={onMore}
-		/>,
+		/>
 	);
-	return { tree, onAction, onMore };
+	const tree = render(element(typing));
+	const setTyping = (next: boolean) => act(() => tree.update(element(next)));
+	return { tree, onAction, onMore, setTyping };
 }
 
 function press(tree: ReactTestRenderer, label: string) {
@@ -390,5 +394,82 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		act(() => tree.update(bubble(true)));
 		act(() => tree.update(bubble(false)));
 		expect(mounts).toBe(1);
+	});
+});
+
+// While you type, the queue folds to one line so the transcript keeps its
+// room: how many are waiting and what you can do to the first (spec 8.5).
+// Everything returns when the keyboard lowers.
+describe("while you type", () => {
+	const second: Ghost = { ...queued, key: "queue:queue_3", text: "then deploy" };
+
+	it("folds the queue to its count and the first message's action", () => {
+		const { tree, onAction } = mount([queued, second], { typing: true });
+		expect(renderedText(tree)).not.toContain(queued.text);
+		expect(renderedText(tree)).not.toContain(second.text);
+		expect(pressable(tree, "2 queued")).toBeDefined();
+		press(tree, "Steer now");
+		expect(onAction).toHaveBeenCalledWith(queued, "steerNow");
+	});
+
+	it("says a held queue is held, and offers sending it", () => {
+		const { tree, onAction } = mount([held], { typing: true });
+		expect(pressable(tree, "1 held")).toBeDefined();
+		expect(pressable(tree, "Cancel")).toBeUndefined();
+		press(tree, "Send now");
+		expect(onAction).toHaveBeenCalledWith(held, "sendNow");
+	});
+
+	it("counts the whole queue, past the three that show", () => {
+		const five = [1, 2, 3, 4, 5].map((n): Ghost => ({ ...queued, key: `queue:q${n}`, text: `message ${n}` }));
+		const { tree } = mount(five, { typing: true });
+		expect(pressable(tree, "5 queued")).toBeDefined();
+		expect(pressable(tree, "2 more queued")).toBeUndefined();
+	});
+
+	it("holds the action while another ghost action runs", () => {
+		const { tree, onAction } = mount([queued], { typing: true, disabled: true });
+		expect(pressable(tree, "Steer now")?.props.accessibilityState).toEqual({ disabled: true });
+		press(tree, "Steer now");
+		expect(onAction).not.toHaveBeenCalled();
+	});
+
+	it("offers no action when the first message has none to take now", () => {
+		const { tree } = mount([{ ...queued, buttons: [] }], { typing: true });
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		expect(pressable(tree, "Steer now")).toBeUndefined();
+	});
+
+	it("keeps showing what isn't in the queue", () => {
+		const { tree } = mount([steering, refused, queued], { typing: true });
+		expect(renderedText(tree)).toContain(steering.text);
+		expect(renderedText(tree)).toContain(refused.text);
+		expect(renderedText(tree)).not.toContain(queued.text);
+		expect(pressable(tree, "1 queued")).toBeDefined();
+	});
+
+	it("shows nothing extra with nothing queued", () => {
+		const { tree } = mount([steering], { typing: true });
+		expect(renderedText(tree)).toContain(steering.text);
+		expect(renderedText(tree)).not.toContain("queued");
+	});
+
+	it("opens to the messages on a tap, and folds again the next time you type", () => {
+		const { tree, setTyping } = mount([queued], { typing: true });
+		press(tree, "1 queued");
+		expect(renderedText(tree)).toContain(queued.text);
+		setTyping(false);
+		expect(renderedText(tree)).toContain(queued.text);
+		setTyping(true);
+		expect(renderedText(tree)).not.toContain(queued.text);
+		expect(pressable(tree, "1 queued")).toBeDefined();
+	});
+
+	it("shows everything again when the keyboard lowers", () => {
+		const { tree, setTyping } = mount([queued, second], { typing: true });
+		setTyping(false);
+		expect(renderedText(tree)).toContain(queued.text);
+		expect(renderedText(tree)).toContain(second.text);
+		expect(pressable(tree, "2 queued")).toBeUndefined();
 	});
 });
