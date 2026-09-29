@@ -10,6 +10,7 @@ import { Children, type ReactElement, type ReactNode, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { markFor } from "../board/StateMark";
 import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
@@ -42,6 +43,9 @@ export interface SessionInfoHost {
 	hostLabel(hostId: string): string;
 	/** The model and its effort, as the composer's chip names them. */
 	modelLabel: string;
+	/** How long a subagent has run at `now`, as its row times it; null for a
+	 * session that isn't one, which the turn's own age times instead. */
+	runMs(now: number): number | null;
 	/** Whether the session can take an action now: connected, open and idle. */
 	ready: boolean;
 	editGoal(): void;
@@ -158,7 +162,7 @@ function SessionInfoBody({
 					edit={(text) => setEditing(editing ? { ...editing, text } : null)}
 					submit={() => void rename()}
 				/>
-				<StateLine session={session} />
+				<StateLine session={session} runMs={host.runMs} />
 			</View>
 
 			<Section title="Where">
@@ -361,10 +365,11 @@ function Title({
 	);
 }
 
-function StateLine({ session }: { session: MobileConversation }) {
+function StateLine({ session, runMs }: { session: MobileConversation; runMs(now: number): number | null }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = sessionStateLine(session, Date.now());
+	const now = Date.now();
+	const line = sessionStateLine(session, now, runMs(now));
 	const mark = markFor(line.state, false);
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -597,13 +602,14 @@ function ContextGauge({ text, fraction }: { text: string; fraction: number }) {
 function Serif({ children }: { children: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
 			style={{
-				fontFamily: typeRoles.yourMessage.fontFamily,
-				fontSize: typeRoles.yourMessage.fontSize * scale,
-				lineHeight: typeRoles.yourMessage.lineHeight * scale,
+				fontFamily: reading.yourMessage.fontFamily,
+				fontSize: reading.yourMessage.fontSize * scale,
+				lineHeight: reading.yourMessage.lineHeight * scale,
 				color: palette.prose,
 			}}
 		>

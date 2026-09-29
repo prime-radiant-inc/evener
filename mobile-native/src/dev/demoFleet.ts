@@ -39,7 +39,7 @@ import { type DemoCoordinator, type DemoSubagent, demoActivityTree } from "./dem
 // "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
 // Every resource shares one revision, bumped when the fleet changes (the
-// question askQuestion below poses, or an archive), so an invalidation's
+// steps below play, or an archive), so an invalidation's
 // target revision is one the next read actually reaches: the navigation
 // store refuses a response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
@@ -797,6 +797,9 @@ export interface FleetSession {
 	ago: number;
 	activity?: string;
 	subagents: RawSubagent[];
+	/** A subagent's own session: when its run started (demoRunStartedAt), which
+	 * its working time counts from. */
+	runStartedAt?: number;
 }
 
 // The ref the fleet names a session by, from its fixture slug.
@@ -904,9 +907,9 @@ export interface DemoFleetOptions {
 	// hub starts, the working row s-gateway ("Design Gateway Token Command
 	// MVP") asks a question, moving from Working into Needs you, so the
 	// Board's spring and amber wash can be watched on a still list. The fleet
-	// itself only knows how to make the change (askQuestion); demo-hub.mts
+	// itself only knows how to make the change (step("question")); demo-hub.mts
 	// owns the timer and sends the resulting invalidation, so a test fires the
-	// change by calling askQuestion directly instead of sleeping.
+	// change by calling step("question") directly instead of sleeping.
 	askAfterSeconds?: number;
 	// Mirrors EVENER_DEMO_FLEET_PLAN_REVISED: demo-hub.mts serves the
 	// settle-race plan's revision rather than its first text, so a Reader that
@@ -936,10 +939,11 @@ export interface DemoFleet extends FleetAnswers {
 	// import it -- this one qualifies by living under src/dev/, the way the
 	// web's own analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
 	navigationCapability(): NavigationCapability;
-	// Turns ASKING_SESSION_ID's working row into a pending question and
+	// Plays one of the prototype's scripted events (sim.js's `events`) and
 	// returns the evener/navigation/invalidated payload a real hub would send
-	// for that change.
-	askQuestion(): NavigationInvalidatedPayload;
+	// for that change. "question" turns ASKING_SESSION_ID's working row into
+	// a pending question.
+	step(name: DemoStep): NavigationInvalidatedPayload;
 	// Answers evener/archive/set for a session, named as the Board's
 	// archiveTarget names it: a local row by its session id (or its local:
 	// ref), another host's by its ref. Returns the reply and the
@@ -954,11 +958,25 @@ export interface DemoFleet extends FleetAnswers {
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
 export const ASKING_SESSION_ID = "s-gateway";
-const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
+
+/** The prototype's scripted events (sim.js's `events`), for the phase 6
+ * alert screenshots: a row changing state, or paradise-park going offline
+ * and back (what EVENER_DEMO_FLEET_OFFLINE_HOST sets at startup). */
+export type DemoStep = "question" | "failure" | "approval" | "finish" | "host-offline" | "host-online";
+
+// The row each row step changes, and the state it moves to. An approval
+// stays "active" on the wire and joins needs_you, as the hub promotes an
+// escalation; a finish is a turn ending with the ball in your court.
+export const ROW_STEPS: Record<Exclude<DemoStep, "host-offline" | "host-online">, [string, ProtoState]> = {
+	question: [ASKING_SESSION_ID, "question"],
+	failure: ["s-readintent", "failed"],
+	approval: ["s-landing", "approval"],
+	finish: ["s-resume", "yourmove"],
+};
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
-	const offlineHost = options.offlineHost ?? false;
+	let offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
@@ -984,22 +1002,40 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
-	function askQuestion(): NavigationInvalidatedPayload {
-		// A negative `ago` puts updated_at at the moment of asking, after
+	function step(name: DemoStep): NavigationInvalidatedPayload {
+		if (name === "host-offline" || name === "host-online") {
+			offlineHost = name === "host-offline";
+			// The manifest carries the source's online flag, and every section
+			// its rows' offline marks.
+			return commit(sessionsList, (revision) => [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+			]);
+		}
+		const [id, state] = ROW_STEPS[name];
+		const target = sessionsList.find((raw) => raw.id === id);
+		// A fleet without the row (EVENER_DEMO_FLEET_EMPTY) changes nothing,
+		// and the step still answers at a new revision, as askQuestion did.
+		if (!target)
+			return commit(sessionsList, (revision) => [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+			]);
+		// A negative `ago` puts updated_at at the moment of the change, after
 		// startup, the way a real hub stamps a row when its state changes.
-		const askedAgo = (startupMs - clock()) / 1000;
-		const asked = sessionsList.map((raw) =>
-			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
-		);
+		const changedAgo = (startupMs - clock()) / 1000;
+		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, state, ago: changedAgo } : raw));
 		// The resources a real hub invalidates for one row's state change
 		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
 		// Board sections, and the row's project. Search has no invalidation
 		// target; the next search simply answers from the changed fleet.
-		return commit(asked, (revision) => [
+		return commit(changed, (revision) => [
 			{ kind: "manifest", revision },
 			{ kind: "section", section: "live", revision },
 			{ kind: "section", section: "needs_you", revision },
-			{ kind: "project", projectKey: ASKING_PROJECT, revision },
+			{ kind: "project", projectKey: projectKeyOf(target), revision },
 		]);
 	}
 
@@ -1041,7 +1077,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
-		askQuestion,
+		step,
 		archive,
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 	};

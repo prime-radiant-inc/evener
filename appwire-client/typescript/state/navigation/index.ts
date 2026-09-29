@@ -78,6 +78,7 @@ export {
   selectSessionOmittedWatches,
   selectSessionSummary,
   selectSources,
+  subagentTallyToShow,
 } from "./selectors";
 export type {
   NavigationClient,

@@ -43,7 +43,7 @@ vi.mock("@react-navigation/native", async () => ({
 	StackActions: (await import("@react-navigation/routers")).StackActions,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ activeProfile: { id: "hub-1" } }) }));
-vi.mock("./AlertsProvider", async () => {
+vi.mock("./alertsContext", async () => {
 	const { useSyncExternalStore } = await import("react");
 	return {
 		useAlertCenter: () => harness.center,

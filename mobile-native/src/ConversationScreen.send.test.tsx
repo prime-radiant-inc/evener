@@ -29,8 +29,10 @@ import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
-import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
+import { compactDuration } from "./session/format";
+import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
@@ -62,6 +64,8 @@ const navigationState = vi.hoisted(() => ({
 }));
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// Who alerted you most recently, and Next's word that it moved you on.
+const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -164,6 +168,11 @@ vi.mock("expo-secure-store", () => ({
 }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
+}));
+vi.mock("./alerts/alertsContext", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./alerts/alertsContext")>()),
+	useAlertedRecently: () => alerts.recent,
+	useNextUsed: () => alerts.nextUsed,
 }));
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
@@ -301,7 +310,10 @@ const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) =
 		stop: () => ({ outcome: "stopping" }),
 		readFails: null,
 	};
+// Whether model/list refuses, as a hub mid-restart does.
+const catalogHub = { fails: false };
 afterEach(() => {
+	catalogHub.fails = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
@@ -352,6 +364,7 @@ function hubClient(
 			}
 			// The page before the first read: older turns, and the start of history.
 			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
@@ -1085,6 +1098,21 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
 });
 
+it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {
+	catalogHub.fails = true;
+	fleet.live = [fleetSession("ref-model", { title: "Model", state: "idle", model_name: "Claude Sonnet 5" })];
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree } = await mount(served);
+	await act(async () => {});
+	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
+	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
+});
+
 it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {
 	vi.mocked(navigation.goBack).mockClear();
 	const served = thread("ref-blip", "idle");
@@ -1238,7 +1266,12 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
 	await press(tree, "Sign in");
-	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	// The error doesn't name the provider, so the Hub opens at Providers.
+	expect(navigation.navigate).toHaveBeenCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: "hub-1" },
+		initial: false,
+	});
 });
 
 it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
@@ -2066,6 +2099,8 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		vi.mocked(navigation.replace).mockClear();
 		vi.mocked(navigation.goBack).mockClear();
 		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		alerts.recent = [];
+		alerts.nextUsed.mockClear();
 	});
 
 	/** The Back the screen set last, rendered as the header renders it. */
@@ -2147,6 +2182,31 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(navigation.push).toHaveBeenCalledTimes(1);
 	});
 
+	it("serves what alerted you first, on Next and on its list, and tells alerts it moved you on (spec 8.3)", async () => {
+		alerts.recent = ["local:ask"];
+		const { tree } = await mount(thread("ref-alerted", "idle"));
+		const next = pressable(tree, "Next, Pick a name");
+		if (!next) throw new Error("no Next capsule for the session that alerted");
+		act(() => next.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Pick a name", "Fix retry loop", "Cancel"]);
+		act(() => choose(2));
+		expect(alerts.nextUsed).not.toHaveBeenCalled();
+		act(() => choose(1));
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(1);
+		await act(async () => next.props.onPress());
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(2);
+		expect(navigation.push).toHaveBeenLastCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
+	});
+
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
 		const { tree } = await mount(thread("ref-stacked", "active"));
 		await press(tree, "Stop");
@@ -2162,6 +2222,20 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(stack.findAll((node) => node === next)).toHaveLength(1);
 		// The toast has no other place on the screen.
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
+	});
+
+	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
+		// Ruling on the device pass: the pills must never hide the newest
+		// message, so the list's end grows by the stack's height.
+		const { tree } = await mount(thread("ref-inset", "active"));
+		const list = () =>
+			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+		const bottom = () => list().props.contentContainerStyle.paddingBottom;
+		const stack = tree.root.findByType(FloatingStack);
+		act(() => stack.props.onHeight(104));
+		expect(bottom()).toBe(16 + 104 + 10);
+		act(() => stack.props.onHeight(0));
+		expect(bottom()).toBe(16);
 	});
 
 	it("shows no Next while this session asks you something", async () => {
@@ -2430,6 +2504,62 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		vi.mocked(navigation.push).mockClear();
 		// The per-hub stop requests are one instance for the app's life.
 		forgetStopRequestsForHub("hub-1");
+	});
+
+	it("times a running subagent's state line by its run, as its row does", async () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run
+		// four: one number per subagent everywhere (ruling on the device pass).
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served);
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 2m");
+		// Session info times it the same way.
+		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
+		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
+	});
+
+	it("times a still-working subagent by its turn once its row has ended", async () => {
+		// The row reads done a moment before the session itself stops: the row's
+		// time since it ended is no Working time.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served, {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 2m");
+	});
+
+	it("takes back the row it reported when its panel goes away", async () => {
+		// A screen that stops showing the panel shows no subagent's time.
+		await mountSubagent(subagent(true));
+		const reported: (string | null)[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onRow={(row) => void reported.push(row?.ref ?? null)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("local:fix");
+		act(() => panel.unmount());
+		expect(reported.at(-1)).toBeNull();
 	});
 
 	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {

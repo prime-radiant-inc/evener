@@ -24,9 +24,25 @@ export function floatingCapsule(palette: Palette) {
 	} as const;
 }
 
-export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
+export function FloatingStack({
+	toast,
+	next,
+	pill,
+	onHeight,
+}: {
+	toast: ReactNode;
+	next: ReactNode;
+	pill: ReactNode;
+	/** How tall the stack stands, 0 with nothing in it: the transcript keeps its
+	 * end that far clear, so nothing here hides the newest message. */
+	onHeight?(height: number): void;
+}) {
 	return (
-		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}>
+		<View
+			pointerEvents="box-none"
+			style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}
+			onLayout={(event) => onHeight?.(event.nativeEvent.layout.height)}
+		>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
 					{toast}

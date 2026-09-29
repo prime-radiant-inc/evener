@@ -2756,6 +2756,56 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     expect(el.scrollTop).toBe(111);
   });
 
+  test("a prepend while following the bottom re-targets the end", () => {
+    // The mount's scrollToIndex(count-1, {align:"end"}) starts virtual-core's
+    // reconcile loop, which keeps re-targeting the row INDEX it was handed. A
+    // prepend shifts every row's index, so that index now names a row a page
+    // above the true end, and the reconcile drags the viewport up there
+    // (reproduced in the browser), leaving the reader short of the latest
+    // with the jump-to-latest pill showing. Re-issuing the end target with
+    // the NEW last row is what keeps the reconcile pointed at the bottom.
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+    scrollToIndex.mockClear(); // drop the initial-mount positioning call
+
+    // t0 prepended above t1-t2, the reader still at the bottom.
+    rerender({ m: model([turn("t0", ["i0"]), turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  test("a prepend while scrolled away does NOT re-target the end", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+    scrollToIndex.mockClear();
+
+    rerender({ m: model([turn("t0", ["i0"]), turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
   // Not named in the brief's own test list, but a direct consequence of
   // storing the error anchor as an absolute turn INDEX (see "the error
   // anchor" describe block above): a prepend shifts every existing turn's

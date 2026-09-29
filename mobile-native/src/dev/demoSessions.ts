@@ -51,6 +51,7 @@ import {
 	type ProtoState,
 	type RawSubagent,
 } from "./demoFleet";
+import { demoRunStartedAt } from "./demoSubagents";
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -551,7 +552,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			projectionRevision: 1,
 			description: subagent.title,
 			originToolCallId: callId(subagent.id),
-			runStartedAt: iso(lastActive - 5 * 60_000),
+			runStartedAt: iso(demoRunStartedAt(subagent, now)),
 			...(running ? { latestActivityAt: iso(lastActive) } : { runEndedAt: iso(lastActive) }),
 			...(subagent.state === "failed" ? { reason: FAILURE_REASONS[subagent.id] ?? GENERIC_FAILURE } : {}),
 		};
@@ -816,7 +817,13 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string): 
 			instanceId: `demo-instance-${session.slug}`,
 			queue: queueOf(session.slug, content.queued),
 			capabilities: NO_CAPABILITIES,
-			...(active ? { activeTurnId: turn.id, activeTurnStartedAt: turn.startedAt } : {}),
+			...(active
+				? {
+						activeTurnId: turn.id,
+						// A running subagent's turn is its run, timed as its row is.
+						activeTurnStartedAt: session.runStartedAt ?? turn.startedAt,
+					}
+				: {}),
 			...(turn.completedAt === undefined ? {} : { lastTurnEndedAt: turn.completedAt }),
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
 			reasoningEffortLevels: ALL_EFFORTS,
@@ -890,7 +897,11 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 		...sessions.map((session) => sessionThread(session, now)),
 		...sessions.flatMap((session) =>
 			flatten(session.subagents).map(({ subagent, parent }) =>
-				sessionThread(subagentSession(session, subagent), now, hostSessionRef(session.hostId, parent ?? session.slug)),
+				sessionThread(
+					subagentSession(session, subagent, now),
+					now,
+					hostSessionRef(session.hostId, parent ?? session.slug),
+				),
 			),
 		),
 	];
@@ -898,7 +909,7 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 
 // A subagent as a session of its own on its parent's host and folder, in the
 // state its Board row shows, served with the generic transcript.
-function subagentSession(owner: FleetSession, subagent: RawSubagent): FleetSession {
+function subagentSession(owner: FleetSession, subagent: RawSubagent, now: number): FleetSession {
 	return {
 		slug: subagent.id,
 		ref: hostSessionRef(owner.hostId, subagent.id),
@@ -908,6 +919,7 @@ function subagentSession(owner: FleetSession, subagent: RawSubagent): FleetSessi
 		workingDir: owner.workingDir,
 		ago: subagent.ago,
 		subagents: subagent.children ?? [],
+		runStartedAt: demoRunStartedAt(subagent, now),
 	};
 }
 
@@ -1062,6 +1074,37 @@ const WORKING_SESSION_QUESTION: Question[] = [
 		],
 	},
 ];
+
+// A staged event (demoFleet.ts's steps) as the session's thread shows it, so
+// a banner opens a session that agrees with its Board row: a failure ends the
+// running turn in an error, an approval waits on a sandbox escalation inside
+// it, and a finish ends it with the ball in your court (a session that
+// finished without asking rests idle, as THREAD_STATUS says).
+export function stageFleetState(thread: Thread, state: "failed" | "approval" | "yourmove", now: number): void {
+	if (state === "approval") {
+		thread.evener.pendingEscalations = [
+			{
+				threadId: thread.id,
+				ref: thread.evener.ref,
+				escalationId: `${thread.evener.ref}-staged-escalation`,
+				tool: "write_file",
+				kind: "file_tool",
+				mode: "workspace-write",
+				deniedPath: "/home/jesse/sites/index.html",
+			},
+		];
+		refreshCapabilities(thread);
+		return;
+	}
+	const turn = thread.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+	if (turn) endTurn(thread, turn, "completed", now);
+	restFleetSession(thread, "idle", now);
+	if (state === "failed") {
+		thread.status = { type: "systemError" };
+		thread.evener.failure = { title: "The turn stopped on an error" };
+		refreshCapabilities(thread);
+	}
+}
 
 // The working session asks its question: its turn ends on the ask, as a
 // daemon's does, and the session waits on you, matching its Board row.

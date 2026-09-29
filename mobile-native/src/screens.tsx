@@ -19,7 +19,6 @@ import {
 import {
 	AccessibilityInfo,
 	ActionSheetIOS,
-	ActivityIndicator,
 	Alert,
 	AppState,
 	FlatList,
@@ -30,7 +29,6 @@ import {
 	ScrollView,
 	Text,
 	TextInput,
-	useWindowDimensions,
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -51,6 +49,7 @@ import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
+import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
@@ -64,9 +63,7 @@ import {
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls, queueActionRefusal } from "./conversationControls";
-import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
-import { HubEditor } from "./HubEditor";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
@@ -76,13 +73,13 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import type { SessionSeed } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites } from "./reader/documentReferences";
 import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
-import { editPairingInput, importPairing as importReviewedPairing, reviewPairingInput } from "./pairingImport";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
@@ -124,7 +121,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -147,6 +144,7 @@ import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
@@ -170,13 +168,14 @@ import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { destructiveButton, haptic } from "./haptics";
+import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -214,10 +213,7 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	Providers: { hubId: string };
-	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
-	TranscriptPreferences: { hubId: string };
 	KeybindingPreferences: {
 		hubId: string;
 		editor?: { actionId: string; chord: string };
@@ -234,7 +230,9 @@ export type Routes = {
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
-	NewSession: { hubId: string; hubName: string };
+	/** New session (spec 11), a modal holding its own stack of pages. `like`
+	 * opens it on a session's setup ("New session like this"). */
+	NewSession: { hubId: string; hubName: string; like?: SessionSeed };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
@@ -289,217 +287,6 @@ export type Routes = {
 /** A document's comments and its review: the document, and the session the
  * review goes to. */
 type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
-
-export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
-	const { profiles, activeProfile, saveHub, updateHub, selectHub, removeHub, loading } = useConnection();
-	const colors = useColors();
-	const headerHeight = useHeaderHeight();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
-	const [editing, setEditing] = useState<HubProfile | null>(null);
-	const [name, setName] = useState("");
-	const [origin, setOrigin] = useState("");
-	const [token, setToken] = useState("");
-	const [pairingReview, setPairingReview] = useState(editPairingInput(""));
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const inputStyle = [
-		styles.input,
-		{
-			color: colors.text,
-			borderColor: colors.border,
-			backgroundColor: colors.surface,
-		},
-	];
-	async function save() {
-		if (saving) return;
-		setSaving(true);
-		setError(null);
-		try {
-			const selected = await saveHub({ name, origin, token });
-			setName("");
-			setOrigin("");
-			setToken("");
-			setPairingReview(editPairingInput(""));
-			if (selected) navigation.navigate("Sessions");
-		} catch {
-			setError("Could not save this hub. Check the name and http(s) origin, and try again.");
-		} finally {
-			setSaving(false);
-		}
-	}
-	function reviewPairingURL() {
-		const review = reviewPairingInput(pairingReview.input);
-		setPairingReview(review);
-		setError(review.error);
-	}
-	function importPairing() {
-		const imported = importReviewedPairing(pairingReview);
-		if (!imported) return;
-		setOrigin(imported.origin);
-		setToken(imported.token);
-		setPairingReview(imported.state);
-		setError(null);
-	}
-	function remove(id: string, label: string) {
-		Alert.alert(
-			`Remove ${label}?`,
-			"The saved hub, its credentials, and its local drafts will be removed from this device.",
-			[
-				{ text: "Cancel", style: "cancel" },
-				destructiveButton("Remove", () => {
-					void removeHub(id).catch((error: unknown) =>
-						setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
-					);
-				}),
-			],
-		);
-	}
-	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			{editing ? <HubEditor profile={editing} save={updateHub} close={() => setEditing(null)} /> : null}
-			<KeyboardAvoidingView
-				style={styles.fill}
-				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
-			>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-							},
-						]}
-					>
-						Saved hubs
-					</Text>
-					{loading ? (
-						<ActivityIndicator accessibilityLabel="Loading saved hubs" />
-					) : profiles.length === 0 ? (
-						<Copy muted>Add a hub to browse your sessions.</Copy>
-					) : null}
-					{profiles.map((profile) => (
-						<View
-							key={profile.id}
-							style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}
-						>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={`Open ${profile.name}`}
-								onPress={() => {
-									selectHub(profile.id);
-									navigation.navigate("Sessions");
-								}}
-								style={{ gap: 8, minHeight: 44 }}
-							>
-								<Copy>
-									{profile.name}
-									{activeProfile?.id === profile.id ? " · Selected" : ""}
-								</Copy>
-								<Copy muted>{profile.origin}</Copy>
-							</Pressable>
-							<View style={[styles.row, { justifyContent: "flex-end", flexWrap: "wrap" }]}>
-								<Action onPress={() => setEditing(profile)} label={`Edit ${profile.name}`}>
-									Edit
-								</Action>
-								<Action onPress={() => remove(profile.id, profile.name)} label={`Remove ${profile.name}`}>
-									Remove
-								</Action>
-							</View>
-						</View>
-					))}
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-								marginTop: 16,
-							},
-						]}
-					>
-						Add hub
-					</Text>
-					<Copy muted>Enter the hub’s origin, such as https://hub.example.com:9180.</Copy>
-					<TextInput
-						accessibilityLabel="Hub name"
-						placeholder="Hub name"
-						placeholderTextColor={colors.secondary}
-						value={name}
-						onChangeText={setName}
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Pairing URL"
-						placeholder="Paste pairing URL"
-						placeholderTextColor={colors.secondary}
-						value={pairingReview.input}
-						onChangeText={(value) => {
-							setPairingReview(editPairingInput(value));
-							setError(null);
-						}}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						secureTextEntry
-						style={inputStyle}
-					/>
-					{pairingReview.preview ? (
-						<View style={{ gap: 8 }}>
-							<Copy muted>Pairing target: {pairingReview.preview.origin}</Copy>
-							<Action disabled={saving} onPress={importPairing}>
-								Import pairing link
-							</Action>
-						</View>
-					) : (
-						<Action disabled={saving || !pairingReview.input.trim()} onPress={reviewPairingURL}>
-							Review pairing link
-						</Action>
-					)}
-					<TextInput
-						accessibilityLabel="Hub origin"
-						placeholder="https://hub.example.com:9180"
-						placeholderTextColor={colors.secondary}
-						value={origin}
-						onChangeText={setOrigin}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Bearer token, optional"
-						placeholder="Bearer token (optional)"
-						placeholderTextColor={colors.secondary}
-						value={token}
-						onChangeText={setToken}
-						autoCapitalize="none"
-						autoCorrect={false}
-						secureTextEntry
-						style={inputStyle}
-					/>
-					<ErrorMessage message={error} />
-					<Action
-						onPress={() => {
-							void save();
-						}}
-						disabled={saving || loading || !name.trim() || !origin.trim()}
-					>
-						{saving ? "Saving…" : "Save and connect"}
-					</Action>
-				</ScrollView>
-			</KeyboardAvoidingView>
-		</SafeAreaView>
-	);
-}
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
@@ -716,6 +503,13 @@ export function ConversationScreen({
 	);
 	const othersWaiting = useMemo(() => othersNeedingYou(fleet.bands, route.params.ref), [fleet.bands, route.params.ref]);
 	const othersWaitingCount = othersWaiting.length;
+	// Next serves whichever session alerted you most recently first (spec 8.3).
+	const alertedRecently = useAlertedRecently();
+	const queue = useMemo(
+		() => nextQueue(fleet.bands, route.params.ref, alertedRecently),
+		[fleet.bands, route.params.ref, alertedRecently],
+	);
+	const nextUsed = useNextUsed();
 	useEffect(() => {
 		// iPhone only: Android keeps its own back arrow.
 		if (Platform.OS !== "ios") return;
@@ -734,6 +528,7 @@ export function ConversationScreen({
 	}
 	function openNext(target: NavigationSessionSummary) {
 		leaveFor(target);
+		nextUsed();
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -764,7 +559,7 @@ export function ConversationScreen({
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
 		if (Platform.OS !== "ios") return;
-		const choices = othersWaiting.slice(0, 8);
+		const choices = queue.slice(0, 8);
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
 				options: [...choices.map((row) => row.title), "Cancel"],
@@ -811,6 +606,10 @@ export function ConversationScreen({
 		return () => {
 			if (mutationHostRef.current === host) mutationHostRef.current = null;
 			host.dispose();
+			// Letting go writes nothing to storage, so ask the flush to look: a
+			// message still waiting here would otherwise wait for the next
+			// connection.
+			void outboxFlush.flush();
 		};
 	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
@@ -1068,7 +867,19 @@ export function ConversationScreen({
 		return () => clearInterval(clock);
 	}, [focused]);
 	const conversation = snapshot.conversation;
-	const stateLine = conversation ? sessionStateLine(conversation, Date.now()) : null;
+	// A subagent's screen times its run as its Subagents row does, from the
+	// row its panel reads (one number per subagent everywhere). An ended row
+	// times how long ago it ended, which is no Working time, so a session still
+	// winding down times its turn instead.
+	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const runMs = useCallback(
+		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
+		[subagentRow],
+	);
+	// How tall the toast, Next and "↓ new" stand over the transcript's end.
+	const [floatingHeight, setFloatingHeight] = useState(0);
+	const now = Date.now();
+	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
@@ -2061,7 +1872,10 @@ export function ConversationScreen({
 		() => hostLabeler(fleet.sources, (hostId) => (hostId === "local" && hubName ? hubName : hostId)),
 		[fleet.sources, hubName],
 	);
-	const modelLabel = conversation ? modelChipLabel(conversation, controlsState?.catalog?.data) : "";
+	// The Board row names the model too (S17), for while the catalog is away.
+	const modelLabel = conversation
+		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
+		: "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
 			// Provided while the screen lives, with or without controls, so a
@@ -2072,6 +1886,7 @@ export function ConversationScreen({
 						controls,
 						hostLabel,
 						modelLabel,
+						runMs,
 						ready,
 						editGoal: () => goalActionsRef.current.editGoal(),
 						clearGoal: () => goalActionsRef.current.clearGoal(),
@@ -2079,7 +1894,7 @@ export function ConversationScreen({
 						toast: toaster.show,
 					}
 				: undefined,
-		[conversation, controls, hostLabel, modelLabel, ready, toaster.show],
+		[conversation, controls, hostLabel, modelLabel, runMs, ready, toaster.show],
 	);
 	useProvideSheetHost(sessionInfoHosts, sheetKey(route.params.hubId, route.params.ref), sessionInfoHost);
 	// The model sheet's host (ruling 37).
@@ -2336,7 +2151,9 @@ export function ConversationScreen({
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn") navigation.navigate("Providers", { hubId: route.params.hubId });
+			else if (errorAction === "signIn")
+				// The error doesn't name the provider, so the Hub opens at Providers.
+				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
@@ -2557,8 +2374,7 @@ export function ConversationScreen({
 	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
-	const nextTarget =
-		approval === null && questionBatch === null && find === null ? nextSession(fleet.bands, route.params.ref) : null;
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2727,11 +2543,12 @@ export function ConversationScreen({
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
 							renderItem={renderItem}
-							// Room at the end for the Next capsule (spec 8.3).
+							// The end stays clear of what floats over it (the toast, Next
+							// and "↓ new"), so they never hide the newest message.
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: 60,
+								paddingBottom: 16 + (floatingHeight > 0 ? floatingHeight + 10 : 0),
 							}}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -2921,6 +2738,7 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
+							onHeight={setFloatingHeight}
 						/>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
@@ -3014,6 +2832,7 @@ export function ConversationScreen({
 									inFront={focused}
 									barShown={subagentBar}
 									showToast={showSubagentToast}
+									onRow={setSubagentRow}
 									navigation={navigation as never}
 								/>
 							) : null}

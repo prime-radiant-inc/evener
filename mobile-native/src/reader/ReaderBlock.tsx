@@ -1,47 +1,55 @@
 // One block of a document in the Reader (spec 10.2): markdown in the document
-// role with serif headings, code in the machine face on an inset box, a table
-// as the markdown view draws it (it scrolls a wide one sideways itself), a
-// rule as a line. A block that changed since you last read it carries an
-// accent rule down its left edge. Touch and hold opens its menu (comment,
-// quote, copy, select), and a pill at its top trailing corner counts the
-// comments on it.
+// role and the phone's reading font, code in the machine face on an inset box,
+// a table as the markdown view draws it (it scrolls a wide one sideways
+// itself), a rule as a line. A block that changed since you last read it
+// carries an accent rule down its left edge. Touch and hold opens its menu
+// (comment, quote, copy, select), and a pill at its top trailing corner counts
+// the comments on it.
 import { SymbolView } from "expo-symbols";
 import { memo, useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { EnrichedMarkdownText, type MarkdownStyle } from "react-native-enriched-markdown";
-import { fonts, typeRoles } from "../design/tokens";
+import { fonts } from "../design/tokens";
+import { readingRoles, useDisplayChoices } from "../display/displayContext";
+import type { ReadingFont } from "../display/displayPreferences";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "../longPressMenu";
 import { openLink, showLink } from "../MarkdownResponse";
 import { type MarkdownRoles, markdownStyle } from "../markdownStyle";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { DocumentBlock } from "./documentBlocks";
 
-const serifHeading = (fontSize: number, lineHeight: number) => ({
-	fontFamily: fonts.serifSemibold,
-	fontSize,
-	lineHeight,
-	fontWeight: "600",
-});
-
-const READER_ROLES: MarkdownRoles = {
-	body: typeRoles.document,
-	headings: [serifHeading(24, 30), serifHeading(20, 26), serifHeading(18, 24)],
-};
+// A document reads in the phone's reading font (spec 12): the serif, its
+// headings in the serif's semibold, or under Sans the system face for both.
+function readerRoles(font: ReadingFont): MarkdownRoles {
+	const heading = (fontSize: number, lineHeight: number) => ({
+		...(font === "serif" ? { fontFamily: fonts.serifSemibold } : {}),
+		fontSize,
+		lineHeight,
+		fontWeight: "600" as const,
+	});
+	return {
+		body: readingRoles(font).document,
+		headings: [heading(24, 30), heading(20, 26), heading(18, 24)],
+	};
+}
 
 /** The styles a block draws with that carry margins of their own. */
 const FLUSH = ["paragraph", "h1", "h2", "h3", "h4", "h5", "h6", "list", "blockquote", "table"] as const;
 
-// One style per palette, shared by every block: a document can have hundreds.
-const styles = new WeakMap<object, MarkdownStyle>();
-function readerStyle(colors: ReturnType<typeof useColors>): MarkdownStyle {
-	let style = styles.get(colors.palette);
+// One style per palette and reading font, shared by every block: a document
+// can have hundreds.
+const styles = new WeakMap<object, Partial<Record<ReadingFont, MarkdownStyle>>>();
+function readerStyle(colors: ReturnType<typeof useColors>, font: ReadingFont): MarkdownStyle {
+	const perFont = styles.get(colors.palette) ?? {};
+	let style = perFont[font];
 	if (!style) {
 		// A block is drawn on its own, so the 14pt gap between blocks is the
 		// list's, not the markdown's margins.
-		const built = markdownStyle(colors, READER_ROLES);
+		const built = markdownStyle(colors, readerRoles(font));
 		style = { ...built };
 		for (const name of FLUSH) style[name] = { ...built[name], marginTop: 0, marginBottom: 0 };
-		styles.set(colors.palette, style);
+		perFont[font] = style;
+		styles.set(colors.palette, perFont);
 	}
 	return style;
 }
@@ -60,10 +68,11 @@ function Markdown({
 	accessibility?: Accessibility;
 }) {
 	const colors = useColors();
+	const { readingFont } = useDisplayChoices();
 	return (
 		<EnrichedMarkdownText
 			markdown={markdown}
-			markdownStyle={readerStyle(colors)}
+			markdownStyle={readerStyle(colors, readingFont)}
 			flavor="github"
 			// Touch and hold belongs to the block's menu until you choose
 			// Select text; then the system's selection takes it.

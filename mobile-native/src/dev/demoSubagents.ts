@@ -32,6 +32,18 @@ export interface DemoCoordinator {
 	subagentRef: (id: string) => string;
 }
 
+const DEFAULT_ELAPSED_SECONDS = 300;
+
+/** When a subagent's run started, from data.js's elapsed: a running one's
+ * counts back from now, an ended one's from when it ended. The Subagents list,
+ * the coordinator's transcript and the subagent's own screen all read this
+ * one fact (demoSessions.ts), so their times agree. */
+export function demoRunStartedAt(sub: Pick<DemoSubagent, "state" | "ago" | "elapsed">, startupMs: number): number {
+	const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
+	const until = sub.state === "running" ? startupMs : startupMs - sub.ago * 1000;
+	return until - elapsed;
+}
+
 export function demoTokens(label: string | undefined): number {
 	const match = /^(\d+(?:\.\d+)?)([KM]?)$/.exec(label ?? "");
 	if (!match) return 0;
@@ -41,7 +53,6 @@ export function demoTokens(label: string | undefined): number {
 
 const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
 const iso = (ms: number) => new Date(ms).toISOString();
-const DEFAULT_ELAPSED_SECONDS = 300;
 const MANDATE = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
 
 interface Counts {
@@ -70,7 +81,6 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const ref = coordinator.subagentRef(sub.id);
 		const sessionId = idOf(ref);
 		const running = sub.state === "running";
-		const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
 		const lastEvent = startupMs - sub.ago * 1000;
 		const counts: Counts = {
 			active: running ? 1 : 0,
@@ -118,7 +128,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			mandate: MANDATE(sub.title),
 			task: MANDATE(sub.title),
 			...(sub.model ? { resolvedModel: sub.model, model: sub.model } : {}),
-			runStartedAt: iso(running ? startupMs - elapsed : lastEvent - elapsed),
+			runStartedAt: iso(demoRunStartedAt(sub, startupMs)),
 			...(running
 				? { latestActivityAt: iso(lastEvent) }
 				: {
@@ -156,7 +166,8 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	};
 }
 
-// data.js's settle-race plan (data.js:505-531), as the first read serves it.
+// data.js's settle-race plan (data.js:505-531), the text the demo hub serves
+// unless EVENER_DEMO_FLEET_PLAN_REVISED is set.
 export const SETTLE_RACE_PLAN = `# Fix the settle/drain race
 
 ## Problem

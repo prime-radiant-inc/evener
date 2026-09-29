@@ -140,7 +140,7 @@ it("connects and follows the client's transitions the same way native has always
 	harness.client = fake;
 	const { hook, setError } = mount();
 	// Before the token fetch resolves there is still no client, but the hub
-	// is known, so the same "connecting" default PluginsScreen etc. have
+	// is known, so the same "connecting" default PluginsPage etc. have
 	// always read applies.
 	expect(hook.result.current).toEqual({ client: null, state: "connecting", fatal: false });
 	await act(async () => {});

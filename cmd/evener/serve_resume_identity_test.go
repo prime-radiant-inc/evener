@@ -102,7 +102,7 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 // (server.TestTranscriptHeaderReadsOnlyLeadingHeader).
 func TestServeResumeServesTheRestoredTranscript(t *testing.T) {
 	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
-	stateDir := t.TempDir()
+	stateDir := resolvedTempDir(t)
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	seedResumableSession(t, stateDir, sessionID, sessionID)
 

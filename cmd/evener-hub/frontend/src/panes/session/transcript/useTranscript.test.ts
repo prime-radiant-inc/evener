@@ -132,9 +132,9 @@ test("loadingOlder is true while the request is in flight and false once it sett
 });
 
 // Two callers in the SAME tick, which is the shape automatic paging actually
-// produces: LoadOlderRow's IntersectionObserver sentinel and
-// useTranscriptScroll's near-top scroll trigger both fire for one scroll. A
-// guard reading loadingOlder from a state closure lets both through (observed
+// produces: LoadOlderRow's geometry fill and useTranscriptScroll's near-top
+// scroll trigger both fire for one scroll. A guard reading loadingOlder from a
+// state closure lets both through (observed
 // live: the same cursor requested twice); the ref-based guard does not.
 test("two loadOlder() calls in the same tick issue exactly one request", async () => {
   const fake = connectFakeClient();

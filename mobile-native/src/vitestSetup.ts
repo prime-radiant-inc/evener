@@ -8,7 +8,18 @@
 //   for real and a suite can assert on what a press played.
 // - expo-sqlite/kv-store: the device's key-value store, which the Haptics
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
+// - expo-symbols: the SF Symbols every grouped row draws its glyph with
+//   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
+//   element, as the suites that mock it themselves draw it.
 import { vi } from "vitest";
+
+// react-test-renderer logs a deprecation warning through console.error on
+// every create() unless it is told it runs in a React Native test
+// environment; the flag also selects the synchronous root React Native's
+// testing environment uses instead of a concurrent one. Suites that render
+// through renderNative.testkit.tsx would otherwise bury real stderr under one
+// line per render (#2433).
+(globalThis as { IS_REACT_NATIVE_TEST_ENVIRONMENT?: boolean }).IS_REACT_NATIVE_TEST_ENVIRONMENT = true;
 
 vi.mock("expo-haptics", async () => {
 	const { playedHaptics } = await import("./renderNative.testkit");
@@ -20,6 +31,8 @@ vi.mock("expo-haptics", async () => {
 		notificationAsync: async (type: string) => void playedHaptics.push(`notification:${type}`),
 	};
 });
+
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();

@@ -274,6 +274,7 @@ describe("forgetBoard", () => {
 				["evener.native.board-sections.hub-a", "{}"],
 				["evener.native.board-organize.hub-a", '"host-project"'],
 				["evener.native.recent-searches.hub-a", "[]"],
+				["evener.native.board-hold.hub-a", "[]"],
 				["evener.native.seen.hub-b", "{}"],
 				["evener.native.board-organize.hub-b", '"host-project"'],
 			]),
@@ -300,6 +301,7 @@ describe("forgetBoard", () => {
 			"evener.native.board-sections.hub-a",
 			"evener.native.board-organize.hub-a",
 			"evener.native.recent-searches.hub-a",
+			"evener.native.board-hold.hub-a",
 		]);
 	});
 });

@@ -25,6 +25,19 @@ func provisionScratchOwningEnv(env *execenv.LocalExecutionEnvironment) error {
 	return env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true})
 }
 
+// resolvedTempDir returns a fresh t.TempDir with symlinks resolved. The scratch
+// retention manifest records the session's canonical state dir, so a test that
+// hands it a t.TempDir() path must compare against that same canonical path: on
+// macOS /var is a symlink to /private/var, and the two never match (#2497).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
+	}
+	return dir
+}
+
 // assertRetainedScratchStillIntact asserts the observable consequence the root
 // construction failure must not violate: every reference the root's durable
 // retention manifest names still exists at its path, every pin still validates
@@ -102,7 +115,7 @@ func TestRunRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t *t
 		return provisionScratchOwningEnv(env)
 	}
 
-	dir := t.TempDir()
+	dir := resolvedTempDir(t)
 	err := run(context.Background(), runConfig{
 		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
 		noDefaultMarketplaces: true, contextStrategy: "definitely-not-a-strategy",
@@ -130,9 +143,9 @@ func TestServeRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t 
 		return provisionScratchOwningEnv(env)
 	}
 
-	stateDir := t.TempDir()
+	stateDir := resolvedTempDir(t)
 	err := runServeWithDeps([]string{
-		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", stateDir,
+		"--model", "openai/gpt-test", "--dir", resolvedTempDir(t), "--state-dir", stateDir,
 		"--context-strategy", "definitely-not-a-strategy",
 	}, deps)
 	if err == nil || !strings.Contains(err.Error(), "unknown context strategy") {

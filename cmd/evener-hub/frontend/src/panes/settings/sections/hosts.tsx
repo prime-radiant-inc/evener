@@ -1,4 +1,14 @@
-import { friendlyErrorMessage, type HostEntry, type HostRow, hostFieldError } from "@evener/appwire-client";
+import {
+  friendlyErrorMessage,
+  HOST_CHANGED_MESSAGE,
+  HOST_ENTRY_FIELD_TEXT,
+  type HostEntry,
+  type HostRow,
+  hostChangedSinceOpened,
+  hostFieldError,
+  rootsFromText,
+  rootsToText,
+} from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import {
   clearedOutcomeLine,
@@ -208,8 +218,14 @@ export function HostsSection(_props: HostsSectionProps) {
     toasts.push("success", `Added ${entry.name}`);
   }
 
+  // row is the snapshot the dialog opened on, so the edit echoes the pair of
+  // the row the person saw, never a newer one a poll brought in since.
   async function handleEdit(row: HostRow, entry: HostEntry): Promise<void> {
-    await hostsStore.getState().update({ name: row.name, entry });
+    await hostsStore.getState().update({
+      name: row.name,
+      entry,
+      expected: { generation: row.generation, incarnationId: row.incarnationId },
+    });
     toasts.push("success", `Updated ${row.name}`);
   }
 
@@ -482,23 +498,6 @@ export function HostsSection(_props: HostsSectionProps) {
   );
 }
 
-// rootsFromText parses the roots field: one root per line, trimmed, with blank
-// lines dropped — so a stray blank line is not an empty root the hub refuses
-// (hostreg's ErrEmptyRoot). The field is a Textarea rather than the settings
-// cluster's browse-assisted PathListEditor because these paths live on the
-// REMOTE host: a controller-side directory picker would offer the wrong
-// machine's directories.
-function rootsFromText(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
-}
-
-function rootsToText(roots: readonly string[] | undefined): string {
-  return (roots ?? []).join("\n");
-}
-
 // HostEntryDialog is the one Add/Edit dialog (spec §3.5, §13): every mutable
 // HostConfig field under the wire's own spelling — the spelling a refusal's
 // field uses, so a message lands on the input it names — plus slice 1's Key path
@@ -566,7 +565,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
       const field = hostFieldError(err);
       setError({
         field: field !== undefined && renderedFields.has(field) ? field : null,
-        message: friendlyErrorMessage(err),
+        message: hostChangedSinceOpened(err) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
       });
     } finally {
       setBusy(false);
@@ -604,9 +603,9 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           </FormRow>
         )}
         <FormRow
-          label="SSH address"
+          label={HOST_ENTRY_FIELD_TEXT.address.label}
           htmlFor={`${prefix}-address`}
-          help="SSH destination, e.g. host.example or user@host.example."
+          help={HOST_ENTRY_FIELD_TEXT.address.help}
           error={fieldError("address")}
         >
           <Input
@@ -617,25 +616,25 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           />
         </FormRow>
         <FormRow
-          label="User"
+          label={HOST_ENTRY_FIELD_TEXT.user.label}
           htmlFor={`${prefix}-user`}
-          help="Optional SSH user; leave empty when the address already names one."
+          help={HOST_ENTRY_FIELD_TEXT.user.help}
           error={fieldError("user")}
         >
           <Input id={`${prefix}-user`} value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
         </FormRow>
         <FormRow
-          label="Key path"
+          label={HOST_ENTRY_FIELD_TEXT.keyPath.label}
           htmlFor={`${prefix}-key`}
-          help="Optional SSH private-key path used when dialing this host."
+          help={HOST_ENTRY_FIELD_TEXT.keyPath.help}
           error={fieldError("keyPath")}
         >
           <Input id={`${prefix}-key`} value={keyPath} onChange={(e) => setKeyPath(e.target.value)} autoComplete="off" />
         </FormRow>
         <FormRow
-          label="Evener path"
+          label={HOST_ENTRY_FIELD_TEXT.evenerPath.label}
           htmlFor={`${prefix}-evener`}
-          help="Optional path to the evener binary on the host, when it is not on PATH."
+          help={HOST_ENTRY_FIELD_TEXT.evenerPath.help}
           error={fieldError("evenerPath")}
         >
           <Input
@@ -646,9 +645,9 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           />
         </FormRow>
         <FormRow
-          label="Hub config path"
+          label={HOST_ENTRY_FIELD_TEXT.configPath.label}
           htmlFor={`${prefix}-config`}
-          help="Optional path to the host's hub.toml, when it is not the default."
+          help={HOST_ENTRY_FIELD_TEXT.configPath.help}
           error={fieldError("configPath")}
         >
           <Input
@@ -659,17 +658,17 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           />
         </FormRow>
         <FormRow
-          label="Hub address"
+          label={HOST_ENTRY_FIELD_TEXT.addr.label}
           htmlFor={`${prefix}-addr`}
-          help="Optional listen address of the host's hub, when it is not the default."
+          help={HOST_ENTRY_FIELD_TEXT.addr.help}
           error={fieldError("addr")}
         >
           <Input id={`${prefix}-addr`} value={addr} onChange={(e) => setAddr(e.target.value)} autoComplete="off" />
         </FormRow>
         <FormRow
-          label="Roots"
+          label={HOST_ENTRY_FIELD_TEXT.roots.label}
           htmlFor={`${prefix}-roots`}
-          help="Optional directories on the host to serve. One per line."
+          help={HOST_ENTRY_FIELD_TEXT.roots.help}
           error={fieldError("roots")}
         >
           <Textarea id={`${prefix}-roots`} value={roots} onChange={(e) => setRoots(e.target.value)} rows={3} />

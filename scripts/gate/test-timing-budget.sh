@@ -9,10 +9,12 @@
 # It measures the SAME surface ROOT_FULL=1 make test proves, reusing
 # gate-surface-lib.sh exactly like `evener dev coverage-floor`: -short on every
 # module except root, the gate's Test/Example filter, and the fuzz-owned name
-# skip. Go durations come from `go test -json`'s per-test Elapsed field, summed
-# per PACKAGE (the import path go test -json already reports — no extra
-# grouping). The frontend has no per-package shape, so its whole vitest run
-# rolls up under the single key "web", read from the vitest JSON reporter.
+# skip. A Go package's duration is its own wall time, read from the package-level
+# terminal event `go test -json` emits for it (the Elapsed field); the per-test
+# and per-subtest Elapsed values feed only the per-test ceiling below, never the
+# per-package number (issue #172). `evener-dev timing-parse` reads the stream.
+# The frontend has no per-package shape, so its whole vitest run rolls up under
+# the single key "web", read from the vitest JSON reporter.
 #
 # Two independent things are checked, both from the same measurement:
 #
@@ -77,7 +79,9 @@
 # A bless writes every package it measured and leaves the rest of the file
 # alone: a narrowed run (--modules, --no-web, or a frontend that is not checked
 # out) refreshes the packages it measured instead of deleting the ones it did
-# not, so a rebaseline can never drop a budget nobody measured this time.
+# not, so a narrowed rebaseline can never drop a budget nobody measured this
+# time. A full rebaseline is the exception: it drops entries go list no longer
+# reports, and records the metric marker the ratio check reads.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -85,6 +89,7 @@ budget_file="${repo_root}/testing-budget.json"
 modules=". agent llm auth envvars invariant identifier execsupport"
 web_dir="${repo_root}/cmd/evener-hub/frontend"
 web=true
+modules_overridden=0
 check=false
 bless=false
 strict_override=""
@@ -92,7 +97,7 @@ measured_override=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--modules) modules="$2"; shift 2 ;;
+		--modules) modules="$2"; modules_overridden=1; shift 2 ;;
 		--budget) budget_file="$2"; shift 2 ;;
 		--web-dir) web_dir="$2"; shift 2 ;;
 		--no-web) web=false; shift ;;
@@ -133,63 +138,29 @@ scratch_dir work evener-testbudget
 measured="$work/measured.tsv"
 : >"$measured"
 
-# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE >> measured.tsv
-# — appends one "SUM\t<package>\t<seconds>" line per package (summing only
-# TOP-LEVEL Test/Example results, never subtests, so a parent's elapsed and its
-# subtests' elapsed are not both counted) and one
-# "TEST\t<package>\t<name>\t<seconds>" line per test AND subtest result, which
-# is what the ceiling check needs to catch a slow subtest a top-level-only sum
-# would hide.
+# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
+# — prints the ratchet's rows for one module: one "PKG\t<package>" line per
+# package-level terminal event, one "TEST\t<package>\t<name>\t<seconds>" line per
+# test AND subtest result (what the ceiling check needs to catch a slow subtest a
+# top-level-only view would hide), and one "SUM\t<package>\t<seconds>" line per
+# package, the package's own wall time read from its terminal event's Elapsed
+# field. (The SUM used to be the sum of top-level Test/Example Elapsed; under
+# t.Parallel that counts overlapping tests additively, so it measured contention
+# as much as work — issue #172.)
 #
-# It also emits one "PKG\t<package>" line per package-level terminal event
-# (pass/fail/skip with no Test field). go test -json emits exactly one such
-# event for EVERY package it was asked to test — including a package with no
-# test files (skip) and a package that fails to build (fail). The expected-
-# packages file lists what `go list ./...` reported, one import path per line;
-# any of those the stream never mentions is the silent-drop shape issue #172
-# filed (a build-failed package contributing no rows, so --bless quietly wrote
-# a budget without it) and fails the whole run. The check is a set difference
-# in the parser, not a per-package grep, so a 74-package root module costs one
-# comparison pass, not 74 subprocesses.
+# go test -json emits exactly one terminal event for EVERY package it was asked
+# to test — including a package with no test files (skip) and a package that
+# fails to build (fail). $2 lists what `go list ./...` reported, one import path
+# per line; any of those the stream never ends is the silent-drop shape issue
+# #172 filed (a build-failed package contributing no rows, so --bless quietly
+# wrote a budget without it) and fails the whole run.
+#
+# The parsing is `evener-dev timing-parse`, unit-tested in Go against JSON stream
+# strings rather than through a faked toolchain (issue #172 review;
+# docs/developing-evener/testing.md's port-on-touch rule). GOFLAGS= keeps an
+# inherited GOFLAGS from changing how the helper itself builds.
 go_test_json_to_tsv() {
-	python3 - "$1" "$2" <<'PY'
-import json, sys
-
-sums = {}
-seen = set()
-with open(sys.argv[1]) as fh:
-	for line in fh:
-		line = line.strip()
-		if not line:
-			continue
-		try:
-			ev = json.loads(line)
-		except ValueError:
-			continue
-		if ev.get("Action") not in ("pass", "fail", "skip"):
-			continue
-		pkg = ev.get("Package", "")
-		test = ev.get("Test")
-		if not test:
-			seen.add(pkg)
-			print(f"PKG\t{pkg}")
-			continue
-		elapsed = ev.get("Elapsed", 0.0)
-		print(f"TEST\t{pkg}\t{test}\t{elapsed}")
-		if "/" not in test:
-			sums[pkg] = sums.get(pkg, 0.0) + elapsed
-for pkg, total in sums.items():
-	print(f"SUM\t{pkg}\t{total}")
-
-with open(sys.argv[2]) as fh:
-	expected = {line.strip() for line in fh if line.strip()}
-missing = expected - seen
-if missing:
-	for pkg in sorted(missing):
-		print(f"test-timing-budget: package {pkg} listed by go list produced no "
-			"terminal event in the go test -json stream", file=sys.stderr)
-	sys.exit(1)
-PY
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse --json "$1" --packages "$2" )
 }
 
 # vitest_json_to_tsv REPORT_JSON >> measured.tsv — rolls the whole frontend
@@ -221,12 +192,17 @@ module_short_flag() {
 }
 
 go_measure_failed=0
+module_missing=0
 if [ -n "$measured_override" ]; then
 	[ -f "$measured_override" ] || { echo "test-timing-budget: --measured file not found: $measured_override" >&2; run_failed=1; exit 1; }
 	cp "$measured_override" "$measured"
 else
 	for m in $modules; do
-		[ -f "$repo_root/$m/go.mod" ] || { echo "test-timing-budget: no module at $m, skipping" >&2; continue; }
+		if [ ! -f "$repo_root/$m/go.mod" ]; then
+			echo "test-timing-budget: no module at $m, skipping" >&2
+			module_missing=1
+			continue
+		fi
 		name="$m"; [ "$name" = "." ] && name="root"
 		base="$work/$(printf '%s' "$name" | tr / _)"
 		log="$base.jsonl"
@@ -318,23 +294,51 @@ if [ "$go_measure_failed" -ne 0 ]; then
 	exit 1
 fi
 
+# bless_full records whether THIS run measured the whole budgeted surface: the
+# default module list (no --modules), every default module present (a sparse
+# checkout that skipped one is not full), the frontend included, and a real
+# measurement rather than a --measured replay. A bless needs it to decide
+# whether every number left in the file is in the metric this run just measured
+# — see the metric-marker logic in compare.py below. It is computed here, after
+# the module loop, because that loop is what records a skipped module.
+bless_full=false
+if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && [ "$module_missing" -eq 0 ] && $web && [ -d "$web_dir" ]; then
+	bless_full=true
+fi
+
 # compare.py is the whole comparison contract: package ratios against the
 # checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
 # and the global no-baseline-yet warn. It can be exercised entirely through
 # --budget/--modules/measured.tsv, with no go test or vitest run involved —
 # the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
-python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" <<'PY'
+python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
 import json, sys
 
-measured_path, budget_path, bless, check, strict, out_path = sys.argv[1:7]
+measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
 bless = bless == "true"
 check = check == "true"
 strict = strict == "true"
+bless_full = bless_full == "true"
 
 DEFAULT_CEILING = 2.0
 FAIL_RATIO = 1.5
 WARN_RATIO = 1.1
+
+# The metric the recorded numbers were blessed under. A budget whose "metric"
+# is not this was measured under the pre-#172 sum-of-test-Elapsed metric, whose
+# numbers are not comparable to the package wall time measured now: comparing
+# them can read high (setup/TestMain overhead) or low (parallel overlap). Until
+# a rebaseline rewrites them, a would-be ratio FAIL is a WARNING, never fatal —
+# enforcing numbers in the wrong units would be worse than not enforcing them
+# (issue #172 review).
+WALL_METRIC = "package-wall-seconds"
+
+# The frontend rolls up under this one key. Its number is the vitest reporter's
+# assertion durations, the same metric issue #172 left unchanged, so it stays
+# comparable to the checked-in budget even while the Go packages' units are
+# stale and held back (below).
+WEB_KEY = "web"
 
 sums = {}
 tests = []  # (package, name, seconds)
@@ -365,6 +369,8 @@ except (FileNotFoundError, ValueError):
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 no_baseline = len(packages) == 0
+had_metric = budget.get("metric") == WALL_METRIC
+stale_units = not no_baseline and not had_metric
 
 lines = []
 worst = "ok"  # ok < warn < fail
@@ -378,6 +384,12 @@ if no_baseline:
 	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
 		"result below is informational only and --check always exits 0 until "
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
+elif stale_units:
+	lines.append("STALE UNITS: testing-budget.json's Go-package numbers were blessed "
+		"under the pre-#172 sum-of-test-Elapsed metric; they are not comparable to the "
+		"package wall time measured now, so their ratio failures are warnings until #141 "
+		f"regenerates the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\"). "
+		f"The \"{WEB_KEY}\" entry is the unchanged vitest metric and stays enforced.")
 
 for pkg in sorted(sums):
 	m = sums[pkg]
@@ -388,8 +400,13 @@ for pkg in sorted(sums):
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
 	if ratio > FAIL_RATIO:
-		lines.append(f"FAIL  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {FAIL_RATIO}x)")
-		raise_worst("fail")
+		if stale_units and pkg != WEB_KEY:
+			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
+				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
+			raise_worst("warn")
+		else:
+			lines.append(f"FAIL  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {FAIL_RATIO}x)")
+			raise_worst("fail")
 	elif ratio > WARN_RATIO:
 		lines.append(f"WARN  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {WARN_RATIO}x)")
 		raise_worst("warn")
@@ -417,11 +434,29 @@ if bless:
 	# A bless records what this run measured and never deletes an entry it did
 	# not measure: a narrowed run (--modules, --no-web, or a frontend that is
 	# not checked out) would otherwise silently drop every package it skipped
-	# from the one file whose whole job is to be the checked-in baseline.
+	# from the one file whose whole job is to be the checked-in baseline. A FULL
+	# bless is different — go list enumerated every package, so an entry with no
+	# measurement this run is a package gone from the tree, not one skipped, and
+	# is dropped below.
 	order = list(packages) + sorted(pkg for pkg in sums if pkg not in packages)
-	budget["packages"] = {
-		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
-	}
+	measured = {pkg: round(sums[pkg], 2) for pkg in sums}
+	if bless_full:
+		# Full surface: every recorded package was measured, so the whole file is
+		# package wall time. Drop entries go list no longer reports (they hold
+		# the old units, and keeping one would either enforce it as wall time or
+		# pin the file to the old units forever) and stamp the marker.
+		budget["packages"] = {pkg: measured[pkg] for pkg in order if pkg in measured}
+		budget["metric"] = WALL_METRIC
+	else:
+		budget["packages"] = {
+			pkg: (measured[pkg] if pkg in measured else packages[pkg]) for pkg in order
+		}
+		# A narrowed bless keeps an existing marker — the entries it preserves
+		# are already wall time — but never adds one: stamping a stale file here
+		# would enforce ratios against the old-unit entries it preserved (issue
+		# #172 review).
+		if had_metric:
+			budget["metric"] = WALL_METRIC
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline

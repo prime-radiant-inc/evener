@@ -391,9 +391,13 @@ type Manager struct {
 	// SetEnsureRestartHook); nil refuses a restart-only attempt before any
 	// mutating command.
 	ensureRestart atomic.Pointer[EnsureRestartHook]
-	reg           *hostreg.Registry
-	opts          Options
-	runner        Runner
+	// firstContact is the hub's first-contact caller (see SetBootstrapHook);
+	// nil runs no bootstrap, so a Manager with no hub surface (tests,
+	// embedders) launches exactly as it did before the hook existed.
+	firstContact atomic.Pointer[BootstrapHook]
+	reg          *hostreg.Registry
+	opts         Options
+	runner       Runner
 	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
 	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
@@ -2183,6 +2187,19 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		return nil
 	}
 
+	// §6:131's one exempt delivery step, at its one trigger: the first-attach
+	// repair is where a never-provisioned host may receive the fencing helper,
+	// and the hub's first-contact caller decides from its own durable record. It
+	// runs before the launch's first mutating remote command — the identified
+	// supervisor's unit start and the ad hoc launch below are both mutating —
+	// and a refusal starts nothing. A Manager with no hub surface wired runs no
+	// bootstrap (§6:135/:137's fail-closed delivery posture is the caller's).
+	if hook := m.bootstrapHook(); hook != nil {
+		if err := hook(ctx, host); err != nil {
+			return err
+		}
+	}
+
 	set, err := m.detectSupervisor(ctx, host, facts)
 	if err != nil {
 		return err
@@ -3243,6 +3260,39 @@ func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
 // ensureDeployHook returns the wired hook, if any.
 func (m *Manager) ensureDeployHook() EnsureDeployHook {
 	if hook := m.ensureDeploy.Load(); hook != nil {
+		return *hook
+	}
+	return nil
+}
+
+// BootstrapHook runs the crash-fencing §6 first-contact flow for one host the
+// attach ladder is about to start (the first-attach repair, §6:131): the hub's
+// first-contact caller persists the durable attempt fence, runs the one exempt
+// delivery step through the host-side claim-plus-quiesce gate, and converges
+// helperInstalled — or refuses fail-closed with the typed helper-gate class.
+// It is called with the host's per-host gate already held and before the
+// launch's first mutating remote command, so a non-nil error means nothing may
+// be launched. A nil hook runs no bootstrap: a Manager with no hub surface
+// (tests, embedders) keeps its previous first-attach behavior, while production
+// always wires the hub's caller in newHubHostManager.
+type BootstrapHook func(ctx context.Context, host hostreg.Host) error
+
+// SetBootstrapHook wires the hub's first-contact caller into this Manager's
+// first-attach repair. It is a setter for the same reason SetEnsureDeployHook
+// is: the hub's host surface (which owns the hub.toml record machinery and the
+// operation store the flow reads) is constructed after the Manager, and the
+// wiring runs before the Manager serves any request. A nil hook clears it.
+func (m *Manager) SetBootstrapHook(hook BootstrapHook) {
+	if hook == nil {
+		m.firstContact.Store(nil)
+		return
+	}
+	m.firstContact.Store(&hook)
+}
+
+// bootstrapHook returns the wired first-contact caller, if any.
+func (m *Manager) bootstrapHook() BootstrapHook {
+	if hook := m.firstContact.Load(); hook != nil {
 		return *hook
 	}
 	return nil
