@@ -324,6 +324,38 @@ it("waits for a fresh read of the coordinator after the connection comes back", 
 	expect(sendDisabled(mounted)).toBe(false);
 });
 
+it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+	// The sheet opened with the route's thread, but the coordinator has since
+	// restarted under a new one: the tree it reads comes back under that new
+	// thread, and ActivityList refuses it unless the tree is asked for it too.
+	client.on(
+		"thread/read",
+		() =>
+			({
+				thread: wireThread(COORDINATOR.ref, {
+					id: "coord-restarted",
+					status: { type: status },
+					turns: [],
+					evener: {
+						ref: COORDINATOR.ref,
+						instanceId: "instance-coord",
+						capabilities: capabilities(),
+						queue: { revision: 1 },
+						mutationStateAuthoritative: true,
+					},
+				}),
+			}) as ThreadReadResponse,
+	);
+	client.on(
+		"evener/jobs/list",
+		() => ({ data: { ...tree(), root: { ...tree().root, sessionId: "coord-restarted" } } }) as never,
+	);
+	const mounted = await mount();
+	expect(field(mounted).props.value).toContain("Fix race in tree settle");
+	expect(sendDisabled(mounted)).toBe(false);
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+});
+
 it("reads and sends only through its own hub's connection", async () => {
 	harness.connection = { ...screenConnection(client, "ready"), activeProfile: { id: "hub-2", name: "Other hub" } };
 	const mounted = await mount();
