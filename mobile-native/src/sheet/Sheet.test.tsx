@@ -45,6 +45,15 @@ describe("the sheet's chrome", () => {
 		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Cancel")).toEqual([]);
 	});
 
+	it("says Done is busy while its action runs", () => {
+		const tree = render(
+			<Sheet title="Edit hub" done={{ label: "Saving…", disabled: true, busy: true, onPress: () => {} }}>
+				<ScrollView />
+			</Sheet>,
+		);
+		expect(pressable(tree, "Saving…").props.accessibilityState).toEqual({ disabled: true, busy: true });
+	});
+
 	it("dims Cancel while it can't run, as it dims Done", () => {
 		const cancel = vi.fn();
 		const tree = render(
