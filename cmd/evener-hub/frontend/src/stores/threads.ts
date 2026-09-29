@@ -1588,6 +1588,9 @@ export async function discardRecoveryMutation(
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
+    // The removed row's id is resolved: a later settle of a replacement, or
+    // unreadable storage, must not keep blocking fallback sends behind it.
+    noteHandledMutation(clientMutationId);
     notifyMutationPersistence([targetRef]);
   }
   return discarded;
@@ -1616,6 +1619,11 @@ export async function resendRecoveryMutation(
         : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
   );
   if (!record) return undefined;
+  // The resend mints a new row and removes the recovery row it came from, so
+  // the old id is resolved: keep the new one (trackOutboxWrite registered it)
+  // and drop the old, so a later settle of the new row or unreadable storage
+  // does not strand the guard on a row that no longer exists.
+  noteHandledMutation(clientMutationId);
   pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
@@ -1928,10 +1936,15 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  await runtime.storage.cancelUnattempted(ref);
+  const canceled = await runtime.storage.cancelUnattempted(ref);
   // Rows were canceled in the outbox: in-flight reads for the ref are stale,
   // whether or not their ids were registered here.
   noteMutationStateChange(ref);
+  // The write named the ids it canceled, so they are provably undelivered no
+  // more: leaving them would fail a later send closed for a row that never
+  // reached the daemon. Only a cancel path that cannot name its rows may leave
+  // them for the next successful read.
+  for (const clientMutationId of canceled) noteHandledMutation(clientMutationId);
   // Notify on every successful write, zero canceled rows included: zero is
   // exactly what this tab sees when a sibling tab's Stop already canceled the
   // rows, and cancelUnattempted is a raw storage write — it announces nothing

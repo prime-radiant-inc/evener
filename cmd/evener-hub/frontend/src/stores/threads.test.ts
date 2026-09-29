@@ -55,6 +55,7 @@ import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } fr
 import {
   appendFrameTime,
   ConflictError,
+  discardRecoveryMutation,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
   hasBlockedUnknown,
@@ -13561,6 +13562,120 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The cancel path names the ids it cancels, so it must resolve them: the
+  // design leaves ids only for cancel paths that cannot name their rows.
+  test("a Stop that cancels a durably committed row does not refuse the next send", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stop-names-canceled-ids";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    fake.on("thread/shutdown", () => ({}));
+    // A store commit arms the ref and registers its row, which then settles
+    // away, leaving the guard empty and the arm in place.
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // A durable row written after the hydration (so nothing reopens it) and
+    // held non-dispatchable, read into the guard by the dispatch's own trailing
+    // refresh - which attempts nothing behind a blockedUnknown head, so the
+    // Stop's cancel still reaches it.
+    const row = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const guarded = await probe.listOutbox("ref_a");
+    expect(guarded.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    expect(guarded[0]!.attempted).toBe(false);
+
+    // The Stop cancels the row and the write names the id it canceled.
+    await threadsStore.getState().shutdown("ref_a");
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+
+    // Storage wedges. Nothing undelivered is left, so the send must dispatch
+    // rather than fail closed behind a row that never reached the daemon.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A recovery row leaves the outbox with its id still registered; discarding
+  // it resolves that id, so later unreadable storage cannot keep refusing.
+  test("a discarded recovery row does not leave its id blocking the fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-discard-recovery-id";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    const row = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["blockedUnknown"]);
+
+    // A terminal refusal moves the row to recovery, id and all.
+    expect(await storage.transferToRecovery(row.clientMutationId, "rejected")).toBeDefined();
+    expect(await probe.listOutbox("ref_a")).toEqual([]);
+    // The user discards it: the id is resolved with the row.
+    expect(await discardRecoveryMutation(row.clientMutationId, "ref_a")).toBe(true);
+
+    // Storage wedges; the row's id must not refuse the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the discard");
       await vi.advanceTimersByTimeAsync(11_000);
       await send;
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
