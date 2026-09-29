@@ -162,9 +162,10 @@ export class NotesController {
 	 * is text here the hub hasn't confirmed: that stays yours. */
 	sync(): void {
 		const hub = this.options.savedNote();
-		// The hub caught up to text you're still editing: it needs no draft and
-		// nothing to send, so read clean rather than leaving one behind.
-		if (this.state.phase === "editing" && hub === this.state.text) {
+		// The hub caught up to text you're still editing, or that a blur has
+		// scheduled to save: it needs no draft and nothing to send, so read
+		// clean rather than leaving one behind (RoboRev #3160).
+		if ((this.state.phase === "editing" || this.state.phase === "scheduled") && hub === this.state.text) {
 			this.clearDraft();
 			this.publish({ text: hub, phase: "clean" });
 			return;
@@ -231,7 +232,13 @@ export class NotesController {
 			// The hub caught up: nothing to save, and nothing to keep on the phone
 			// (the write above may have just put this text there).
 			this.clearDraft();
-			if (this.state.phase === "scheduled") this.publish({ ...this.state, phase: "clean" });
+			// Nothing left to send and no save armed any more: read clean rather
+			// than leaving the editor visibly editing, or promising a save seconds
+			// away, with nothing left to save (RoboRev #3160). Only the phases that
+			// read as unsaved here: a just-confirmed "saved" stands, and a save in
+			// flight owns its own settle.
+			if (this.state.phase === "editing" || this.state.phase === "scheduled")
+				this.publish({ ...this.state, phase: "clean" });
 			return Promise.resolve(nothing);
 		}
 		if (!this.options.writable()) {
