@@ -1322,6 +1322,13 @@ func (i *PastIndex) evict(id string, expectedRebuildGen, expectedIDGen uint64) b
 	return true
 }
 
+// FindIndexed returns the entry the index already holds for sessionID. Unlike
+// Find it never probes the disk, so a caller that may be asked about unknown ids
+// repeatedly (a navigation read) does no I/O on a miss.
+func (i *PastIndex) FindIndexed(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
+}
+
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()

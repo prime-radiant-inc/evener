@@ -127,8 +127,8 @@ type navigationAliasServed struct {
 	gone        bool
 }
 
-// maxNavigationAliasServed bounds aliasServed. Past it the memory resets:
-// revisions of keys it forgot fall back to the stateless bound.
+// maxNavigationAliasServed bounds aliasServed. Past it the memory resets and
+// its highest revision becomes a floor for every later answer.
 const maxNavigationAliasServed = 4096
 
 type navigationCoreSnapshot struct {
@@ -185,6 +185,10 @@ type NavigationService struct {
 	// backward when the answer changes shape. It is bounded; entries drop once
 	// the key becomes a present row.
 	aliasServed map[navigationResourceKey]navigationAliasServed
+	// aliasServedFloor is the highest revision aliasServed ever forgot. Every
+	// alias or gone answer stays above it, so forgetting cannot move a
+	// revision backward.
+	aliasServedFloor uint64
 
 	core                *navigationCoreSnapshot
 	resources           map[navigationResourceKey]navigationResourceState // includes tombstones
@@ -455,6 +459,9 @@ func (s *NavigationService) subagentChain(ref string) *navigationAliasChain {
 // with. The memory is bounded; on overflow it starts over.
 func (s *NavigationService) rememberAliasServedLocked(key navigationResourceKey, served navigationAliasServed) {
 	if len(s.aliasServed) >= maxNavigationAliasServed {
+		for _, forgotten := range s.aliasServed {
+			s.aliasServedFloor = max(s.aliasServedFloor, forgotten.revision)
+		}
 		clear(s.aliasServed)
 	}
 	s.aliasServed[key] = served
@@ -465,7 +472,10 @@ func (s *NavigationService) rememberAliasServedLocked(key navigationResourceKey,
 // stays put while the answer stays gone.
 func (s *NavigationService) goneRevisionLocked(key navigationResourceKey, tombstoneRevision uint64) uint64 {
 	served, ok := s.aliasServed[key]
-	if !ok || served.revision < tombstoneRevision {
+	if !ok && s.aliasServedFloor > tombstoneRevision {
+		// The key's history was forgotten: stay above everything forgotten.
+		served = navigationAliasServed{revision: s.aliasServedFloor}
+	} else if !ok || served.revision < tombstoneRevision {
 		return tombstoneRevision
 	}
 	if served.gone {
@@ -506,6 +516,9 @@ func (s *NavigationService) aliasProjectionLocked(key navigationResourceKey, tom
 			return navigationProjection{}, 0, false
 		}
 		revision := tombstoneRevision + rootState.Revision
+		if s.aliasServedFloor >= revision {
+			revision = s.aliasServedFloor + 1
+		}
 		if served, seen := s.aliasServed[key]; seen {
 			switch {
 			case (served.gone || served.topLevelRef != root.TopLevelRef) && revision <= served.revision:
@@ -822,7 +835,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			expected = after
 			continue
 		}
-		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations, s.aliasServed)
+		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations, s.aliasServed, s.aliasServedFloor)
 		if err != nil {
 			s.mu.Unlock()
 			if ctx.Err() != nil {
@@ -904,7 +917,7 @@ func (s *NavigationService) completeRefreshTicketsLocked(flight *navigationBuild
 // with while the key was not a present row: what the alias or gone answer last
 // used, or the top-level row's previous revision on top of the key's tombstone.
 // A row that appears must start above it.
-func aliasFloor(previous map[navigationResourceKey]navigationResourceState, served map[navigationResourceKey]navigationAliasServed, locations map[string]hubapi.NavigationSessionLocation, key navigationResourceKey) uint64 {
+func aliasFloor(previous map[navigationResourceKey]navigationResourceState, served map[navigationResourceKey]navigationAliasServed, floorAll uint64, locations map[string]hubapi.NavigationSessionLocation, key navigationResourceKey) uint64 {
 	if key.Kind != navigationResourceLocation {
 		return 0
 	}
@@ -912,10 +925,10 @@ func aliasFloor(previous map[navigationResourceKey]navigationResourceState, serv
 	if location, ok := locations[key.ID]; ok && !location.TopLevel {
 		floor += previous[navigationResourceKey{Kind: navigationResourceLocation, ID: location.TopLevelRef}].Revision
 	}
-	return max(floor, served[key].revision)
+	return max(floor, served[key].revision, floorAll)
 }
 
-func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey, locations map[string]hubapi.NavigationSessionLocation, served map[navigationResourceKey]navigationAliasServed) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
+func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey, locations map[string]hubapi.NavigationSessionLocation, served map[navigationResourceKey]navigationAliasServed, floorAll uint64) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -941,7 +954,7 @@ func navigationNextStatesContext(ctx context.Context, previous map[navigationRes
 		old, existed := previous[key]
 		fingerprint, present := fingerprints[key]
 		if !existed {
-			next[key] = navigationResourceState{Revision: 1 + aliasFloor(previous, served, locations, key), Fingerprint: fingerprint, Present: present, Dependencies: cloneNavigationDependencies(dependencies[key])}
+			next[key] = navigationResourceState{Revision: 1 + aliasFloor(previous, served, floorAll, locations, key), Fingerprint: fingerprint, Present: present, Dependencies: cloneNavigationDependencies(dependencies[key])}
 			changes[key] = true
 			continue
 		}
@@ -952,7 +965,7 @@ func navigationNextStatesContext(ctx context.Context, previous map[navigationRes
 			}
 			old.Revision++
 			if present && !old.Present {
-				old.Revision = max(old.Revision, 1+aliasFloor(previous, served, locations, key))
+				old.Revision = max(old.Revision, 1+aliasFloor(previous, served, floorAll, locations, key))
 			}
 			changes[key] = true
 		}
@@ -1511,7 +1524,7 @@ func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, o
 	}
 	id := parsed.SessionID
 	if w.cfg.Past != nil {
-		if entry, ok := w.cfg.Past.Find(id); ok {
+		if entry, ok := w.cfg.Past.FindIndexed(id); ok {
 			meta := entry.Meta
 			switch {
 			case meta.IsSubagent && meta.ParentSessionID != "":

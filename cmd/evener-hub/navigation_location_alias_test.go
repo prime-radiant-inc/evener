@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -353,5 +354,32 @@ func TestNavigationLocationAliasKeepsForkKind(t *testing.T) {
 	location := aliasLocation(t, service, aliasForkOrigID)
 	if location.Session == nil || location.Session.Kind != "fork" || location.TopLevelRef != "local:"+aliasContID {
 		t.Fatalf("alias = %+v, want a fork routed to the continuation", location)
+	}
+}
+
+// Forgetting alias history at the memory bound must not let a later answer
+// fall below what was served before.
+func TestNavigationLocationAliasRevisionSurvivesMemoryOverflow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	parents := aliasParents{aliasSubID: aliasRootID}
+	others := make([]string, maxNavigationAliasServed)
+	for index := range others {
+		others[index] = fmt.Sprintf("01OVERFLOW%016d", index)
+		parents[others[index]] = aliasRootID
+	}
+	service, source := aliasService(t, parents, aliasNode(aliasRootID, "root", now))
+	for _, title := range []string{"one", "two", "three"} {
+		aliasSetRows(source, aliasNode(aliasRootID, title, now))
+		aliasRefresh(t, service)
+	}
+	alias := aliasRead(t, service, aliasSubID, nil)
+	for _, id := range others {
+		aliasRead(t, service, id, nil)
+	}
+	aliasSetRows(source, aliasNode(aliasOtherID, "other", now))
+	aliasRefresh(t, service)
+	gone := aliasRead(t, service, aliasSubID, aliasBase(alias))
+	if gone.Status != "gone" || gone.Revision <= alias.Revision {
+		t.Fatalf("gone after overflow = %+v, want a revision past alias %d", gone, alias.Revision)
 	}
 }
