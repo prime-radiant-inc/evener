@@ -1162,3 +1162,31 @@ it("persists nothing once retired, even with its start still out (#3104)", async
 	store.getState().retryStorage();
 	expect(saved.size).toBe(0);
 });
+
+it("clears the draft it sent even when the host's models change it while the start is out (#3104)", async () => {
+	const { saved, storage } = memoryDrafts();
+	let models: unknown[] = [model];
+	const start = deferred();
+	const store = createNewSessionStore("hub-a", storage);
+	store.getState().bind(
+		createNewSessionService({
+			request: (method: string) => (method === "model/list" ? Promise.resolve({ data: models }) : start.promise),
+		} as unknown as ConversationClientLike),
+	);
+	await store.getState().setCwd("/project");
+	store.getState().selectModel(model);
+	store.getState().setReasoning("high");
+	store.getState().setPrompt("go");
+	const started = store.getState().submit();
+	await flush();
+	// A sheet reopened mid-start reloads the host's models, which no longer
+	// offer that effort: the host changes the draft, the person doesn't.
+	models = [{ ...model, reasoningEffortLevels: ["low"] }];
+	await store.getState().loadModels(true);
+	expect(store.getState().reasoning).toBe("");
+	start.resolve({ thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await started).toMatchObject({ status: "created" });
+	expect(saved.has("hub-a")).toBe(false);
+	expect(store.getState()).toMatchObject({ prompt: "", unconfirmedCreation: false });
+	expect(store.getState().startMayRepeat()).toBe(false);
+});

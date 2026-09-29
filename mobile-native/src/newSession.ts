@@ -148,6 +148,9 @@ export function createNewSessionStore(
 	let pendingModelId: string | null = null;
 	// The draft's content when its start became unconfirmed, for startMayRepeat.
 	let unconfirmedContent: string | null = null;
+	// The saved draft a start in flight sent, as the host's own fill-ins have
+	// moved it since: its landing clears that draft and no other.
+	let sentDraft: string | null = null;
 	/** The form moves: to another host or project, the latest start, a seed, or an
 	 * empty form after a start. Answers for the old place are dropped, a
 	 * session's model waiting for them goes, and a host change still answering
@@ -344,6 +347,7 @@ export function createNewSessionStore(
 						unconfirmedContent = draftContent();
 						saving = false;
 						saveDraft();
+						if (get().submitting) sentDraft = lastSaved;
 					}
 				}
 			} catch {
@@ -424,7 +428,7 @@ export function createNewSessionStore(
 					return { status: "blocked" };
 				}
 				// The draft as this start sent it; only that draft is cleared when it lands.
-				const submittedDraft = lastSaved;
+				sentDraft = lastSaved;
 				startDispatched = true;
 				creationRequested = true;
 				const result = await current.start({
@@ -443,7 +447,7 @@ export function createNewSessionStore(
 						// Another form on this hub may have saved a newer draft while
 						// the start was on its way; that draft, and this form, stay.
 						const stored = storage().read(hubId);
-						if (stored === null || creationDraftMetadata(stored) === submittedDraft) {
+						if (stored === null || creationDraftMetadata(stored) === sentDraft) {
 							storage().clear(hubId);
 							emptyForm();
 						} else {
