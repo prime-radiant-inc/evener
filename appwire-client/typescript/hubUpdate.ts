@@ -166,15 +166,21 @@ export function createHubUpdateController(
         return;
       }
       try {
-        const resp = await client.request(
+        const resp: unknown = await client.request(
           "evener/update/apply",
           { channel: get().channel ?? "" },
           { timeoutMs: APPLY_TIMEOUT_MS },
         );
+        // An answer that doesn't say whether the hub is restarting is a
+        // refusal the app can't read, not a lost answer: it waits for nothing.
+        if (typeof (resp as { restarting?: unknown } | null)?.restarting !== "boolean") {
+          set({ applying: false, applyError: friendlyErrorMessage(new Error("unreadable update answer")) });
+          return;
+        }
         // The server re-checks before installing and answers restarting:false
         // when the channel was already current: no download, no exec, no new
         // version to wait for. Report it instead of waiting into a timeout.
-        if (!resp.restarting) {
+        if (!(resp as { restarting: boolean }).restarting) {
           // The kept check said an update waited; the hub says otherwise.
           set({ applying: false, applyError: ALREADY_UP_TO_DATE, check: { ...check, updateAvailable: false } });
           return;
@@ -198,7 +204,8 @@ export function createHubUpdateController(
         }
       }
       // A controller disposed while its apply was in flight belongs to a
-      // replaced connection: it waits for nothing.
+      // replaced connection: it waits for nothing and writes nothing, since
+      // an app's shared store may already belong to its replacement.
       if (disposed) return;
       set({ applying: false, restarting: true });
       await waitForRestart(previous);

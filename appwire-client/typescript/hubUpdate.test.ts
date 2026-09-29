@@ -221,6 +221,19 @@ describe("apply", () => {
     expect(hub.restarts).toHaveLength(0);
   });
 
+  test.each([
+    ["no answer", undefined],
+    ["an answer without restarting", {}],
+  ])("reports %s to apply as an error, not a restart", async (_name, answer) => {
+    const hub = await checked(WAITING);
+    const applying = hub.controller.apply();
+    hub.take("evener/update/apply").resolve(answer);
+    await applying;
+    expect(hub.controller.getState()).toMatchObject({ applying: false, restarting: false });
+    expect(hub.controller.getState().applyError).toBe(GENERIC_ERROR_MESSAGE);
+    expect(hub.restarts).toHaveLength(0);
+  });
+
   test("clears the restart when the wait itself fails", async () => {
     const controller = createHubUpdateController({
       client: () => ({
