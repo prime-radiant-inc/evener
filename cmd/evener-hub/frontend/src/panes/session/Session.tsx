@@ -567,7 +567,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            <LoadOlderRow
+              onLoad={loadOlderReportingError}
+              loading={loadingOlder}
+              error={olderError}
+              scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
+            />
           )
         }
         liveOverlay={
