@@ -511,12 +511,6 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 	if !budget.chargeListing() {
 		return nil
 	}
-	if budget.remainingEntries() == 0 {
-		// The page is already full; any entry here is unreachable without more
-		// budget, so do not spend I/O reading the directory to confirm.
-		budget.truncated = true
-		return nil
-	}
 	// Stream the directory in chunks, keeping only the smallest entries the page
 	// can still use, so a one-entry page never materializes a whole huge
 	// directory yet still returns the true sorted prefix. Masked entries are

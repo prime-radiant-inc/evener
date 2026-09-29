@@ -297,6 +297,34 @@ func TestListDirectoryBudget_ScanCapBoundsScan(t *testing.T) {
 	}
 }
 
+// A directory whose entries end exactly at the scan cap is complete, not
+// incomplete: the cap check must probe for EOF before declaring truncation.
+func TestListDirectoryBudget_ScanCapExactFitIsComplete(t *testing.T) {
+	dir := t.TempDir()
+	seedListDirTree(t, dir, 3)
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	restoreChunk := listDirChunk
+	listDirChunk = 1
+	defer func() { listDirChunk = restoreChunk }()
+	restoreCap := maxListDirScanEntries
+	maxListDirScanEntries = 3
+	defer func() { maxListDirScanEntries = restoreCap }()
+
+	budget := NewListDirBudget(10)
+	got, err := env.ListDirectoryBudget(context.Background(), "", 1, budget)
+	if err != nil {
+		t.Fatalf("ListDirectoryBudget: %v", err)
+	}
+	if budget.Incomplete() || budget.Truncated() {
+		t.Fatalf("directory ending exactly at the scan cap reported incomplete=%t truncated=%t", budget.Incomplete(), budget.Truncated())
+	}
+	if want := []string{"f00", "f01", "f02"}; !reflect.DeepEqual(dirNames(got), want) {
+		t.Fatalf("listing = %v, want the complete %v", dirNames(got), want)
+	}
+}
+
 // A scan-capped child directory must not hide later siblings: the scan cap marks
 // the listing incomplete but leaves budget, so the walk keeps descending.
 func TestListDirectoryBudget_IncompleteChildDoesNotHideSiblings(t *testing.T) {

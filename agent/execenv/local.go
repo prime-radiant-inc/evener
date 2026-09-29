@@ -1992,12 +1992,43 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 		}
 		return out
 	}
+	if limit == 0 {
+		// No room to keep anything. A single-entry probe tells the caller
+		// whether an entry remains, without scanning the directory; skipped
+		// (masked) entries are stepped over so a visible one still counts.
+		for {
+			if err := ctx.Err(); err != nil {
+				return dirPrefixResult{}, err
+			}
+			batch, rerr := read(f, 1)
+			if len(batch) > 0 {
+				if keep == nil || keep(batch[0]) {
+					return dirPrefixResult{more: true}, nil
+				}
+				continue
+			}
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return dirPrefixResult{}, rerr
+			}
+			return dirPrefixResult{}, nil
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return dirPrefixResult{}, err
 		}
 		if scanCap >= 0 && scanned >= scanCap {
-			return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
+			// We stopped with entries read. A directory that ended exactly at the
+			// cap is complete, not incomplete: probe one entry to tell EOF from
+			// "there is more". Only a yielded entry means the scan was cut short.
+			batch, rerr := read(f, 1)
+			if len(batch) > 0 {
+				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
+			}
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return dirPrefixResult{}, rerr
+			}
+			return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
 		}
 		batch, rerr := read(f, listDirChunk)
 		for _, ent := range batch {
@@ -2077,12 +2108,6 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 			return err
 		}
 		if !budget.chargeListing() {
-			return nil
-		}
-		if budget.remainingEntries() == 0 {
-			// The page is already full; any entry here is unreachable without
-			// more budget, so do not spend I/O reading the directory to confirm.
-			budget.truncated = true
 			return nil
 		}
 		// Stream the directory in chunks, keeping only the smallest entries the
