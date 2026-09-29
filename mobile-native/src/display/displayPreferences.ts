@@ -48,6 +48,8 @@ function read(storage: DisplayStorage): DisplayChoices {
 
 export class DisplayPreferences {
 	private choices: DisplayChoices;
+	/** Whether the choices in memory are the ones stored. */
+	private stored = true;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly storage: DisplayStorage) {
@@ -67,10 +69,16 @@ export class DisplayPreferences {
 	 * the choice has applied, so the page can say it won't survive a restart. */
 	set(change: Partial<DisplayChoices>): void {
 		const next = { ...this.choices, ...change };
-		if (next.appearance === this.choices.appearance && next.readingFont === this.choices.readingFont) return;
-		this.choices = next;
-		for (const listener of this.listeners) listener();
+		const unchanged = next.appearance === this.choices.appearance && next.readingFont === this.choices.readingFont;
+		// The same choice again still stores it when the last store failed.
+		if (unchanged && this.stored) return;
+		if (!unchanged) {
+			this.choices = next;
+			for (const listener of this.listeners) listener();
+		}
+		this.stored = false;
 		this.storage.setItemSync(DISPLAY_KEY, JSON.stringify(next));
+		this.stored = true;
 	}
 }
 
