@@ -20,7 +20,7 @@ import {
 	questionAdvanceTarget,
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { useKeyboardShown } from "../useKeyboardShown";
+import { useComposerTyping } from "../useKeyboardShown";
 import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
 import { DockBody } from "./DockBody";
@@ -64,7 +64,7 @@ export function QuestionDock({
 	error = null,
 	composerUp = false,
 }: QuestionDockProps) {
-	const typing = useKeyboardShown() && composerUp;
+	const typing = useComposerTyping(composerUp);
 	useOptionsReturnAnnounced(typing, folded);
 	const { palette } = useColors();
 	const scale = useTextScale();

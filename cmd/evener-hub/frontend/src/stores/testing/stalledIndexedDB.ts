@@ -1,6 +1,13 @@
 import { IDBDatabase } from "fake-indexeddb";
 import { vi } from "vitest";
 
+// A request that never fires success, error, or blocked: the wedged
+// connection-coordinator shape, where open()/deleteDatabase() return and then
+// no event ever arrives.
+export function neverSettlingRequest(): IDBOpenDBRequest {
+  return new EventTarget() as unknown as IDBOpenDBRequest;
+}
+
 // Hold browser callbacks while fake-indexeddb performs the real transaction.
 // This distinguishes an unobserved commit from a write that can still abort.
 export function holdIndexedDBEvent(target: EventTarget, type: string) {

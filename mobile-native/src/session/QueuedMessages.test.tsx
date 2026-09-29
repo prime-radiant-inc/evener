@@ -6,7 +6,15 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
+import {
+	keyboard,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	swipeableCalls,
+	swipeRowFully,
+} from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -27,6 +35,7 @@ vi.mock("react-native-gesture-handler", async () =>
 beforeEach(() => {
 	native.showActionSheetWithOptions.mockReset();
 	swipeableCalls.closes = 0;
+	keyboard.reset();
 });
 
 const Image = (props: { accessibilityLabel: string }) => createElement("Image", props);
@@ -91,25 +100,28 @@ function mount(
 		canEdit = true,
 		editHint = null as string | null,
 		backdrop = "surface" as "surface" | "page",
+		// The keyboard is up, for the composer.
 		typing = false,
+		// Whether a keyboard up is the composer's.
+		composerKeyboard = true,
 	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
-	const element = (typing: boolean) => (
+	const tree = render(
 		<QueuedMessages
 			ghosts={ghosts}
 			disabled={disabled}
 			canEdit={canEdit}
 			editHint={editHint}
 			backdrop={backdrop}
-			typing={typing}
+			composerKeyboard={composerKeyboard}
 			onAction={onAction}
 			onMore={onMore}
-		/>
+		/>,
 	);
-	const tree = render(element(typing));
-	const setTyping = (next: boolean) => act(() => tree.update(element(next)));
+	const setTyping = (next: boolean) => act(() => (next ? keyboard.show() : keyboard.hide()));
+	if (typing) setTyping(true);
 	return { tree, onAction, onMore, setTyping };
 }
 
@@ -448,6 +460,12 @@ describe("while you type", () => {
 		expect(renderedText(tree)).toContain(refused.text);
 		expect(renderedText(tree)).not.toContain(queued.text);
 		expect(pressable(tree, "1 queued")).toBeDefined();
+	});
+
+	it("stays open while the keyboard is up for something other than the composer", () => {
+		const { tree } = mount([queued], { typing: true, composerKeyboard: false });
+		expect(renderedText(tree)).toContain(queued.text);
+		expect(pressable(tree, "1 queued")).toBeUndefined();
 	});
 
 	it("shows nothing extra with nothing queued", () => {
