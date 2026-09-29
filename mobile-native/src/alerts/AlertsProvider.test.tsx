@@ -88,7 +88,9 @@ async function needsYouNow(hub: Hub, sequence: number, rows: NavigationSessionSu
 	});
 }
 const shownRefs = () =>
-	probe.snapshot?.banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref)) ?? [];
+	probe.snapshot?.banner?.alerts.map((alert) =>
+		alert.kind === "notice" ? alert.key : alert.kind === "startFailed" ? alert.kind : alert.ref,
+	) ?? [];
 
 beforeEach(() => {
 	alertPreferences().set(DEFAULT_ALERT_PREFERENCES);

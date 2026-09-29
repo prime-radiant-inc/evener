@@ -14,6 +14,7 @@ import { swipeDismisses } from "./bannerGesture";
 
 const COALESCED_LINE = "Tap to see them on the Board.";
 const STARTED_LINE = "Session started. Tap to open it.";
+const START_FAILED_HINT = "Tap to open New session.";
 
 /** What the banner's two lines say: the title, and the why line for one
  * session, the prototype's hint for several, or nothing for a notice or a
@@ -26,6 +27,7 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
 	if (only.kind === "started") return { title: only.title, why: null, hint: STARTED_LINE };
+	if (only.kind === "startFailed") return { title: only.title, why: null, hint: `${only.reason} ${START_FAILED_HINT}` };
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
 
@@ -61,7 +63,7 @@ function Mark({ banner }: { banner: Banner }) {
 		);
 	if (only.kind === "notice")
 		return <SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />;
-	return <StateMark state={only.kind === "started" ? "working" : only.kind} />;
+	return <StateMark state={only.kind === "started" ? "working" : only.kind === "startFailed" ? "failed" : only.kind} />;
 }
 
 export function AlertBanner({

@@ -30,7 +30,11 @@ function center() {
 	return { alerts: new AlertCenter(timer, (kind) => haptics.push(kind)), haptics };
 }
 function shown(alerts: AlertCenter): string[] | undefined {
-	return alerts.getSnapshot().banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref));
+	return alerts
+		.getSnapshot()
+		.banner?.alerts.map((alert) =>
+			alert.kind === "notice" ? alert.key : alert.kind === "startFailed" ? alert.kind : alert.ref,
+		);
 }
 
 beforeEach(() => {
@@ -605,4 +609,58 @@ it("tells subscribers when something changes", () => {
 	stop();
 	alerts.dismiss();
 	expect(calls).toBe(1);
+});
+
+describe("a New session start that failed after its sheet closed (#3104)", () => {
+	const failed: Alert = {
+		kind: "startFailed",
+		title: "Couldn't start the new session",
+		reason: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
+	};
+
+	it("shows, buzzes as a failure, and opens New session on a tap", () => {
+		const { alerts, haptics } = center();
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(haptics).toEqual(["warning"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession" });
+	});
+
+	it("shows whatever the failures setting, since it's about what you just did", () => {
+		const { alerts } = center();
+		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, failures: false });
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("is never lost: it waits behind a banner that is up, and out a hold, and keeps waiting when Next is used", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["a"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		alerts.dismiss();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.nextUsed();
+		expect(alerts.getSnapshot().held).toBe(1);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("goes once New session is opened, which shows the same reason", () => {
+		const { alerts } = center();
+		alerts.offer(failed);
+		alerts.startFailureSeen();
+		expect(alerts.getSnapshot().banner).toBeNull();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.startFailureSeen();
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	});
 });
