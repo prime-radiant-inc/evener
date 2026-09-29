@@ -647,6 +647,28 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
 	});
 
+	// The bar's cap is measured, not a percentage (#3248): arriving by a push,
+	// the screen first lays out at the full window, then shorter once the
+	// header's inset lands, and a dock's content arriving in that same pass left
+	// a percentage cap worked out against the old height until the next layout.
+	it("caps the bottom bar at four fifths of its room's latest height, in points", async () => {
+		const served = thread("ref-question-cap", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+		const room = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar-room",
+		);
+		// Before the room is measured, the cap is the same share as a percentage.
+		expect(flatStyle(bar).maxHeight).toBe("80%");
+		const layout = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 375, height } } });
+		act(() => room.props.onLayout(layout(667)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(533.6);
+		// The header's inset lands: the room is shorter, and so is the cap.
+		act(() => room.props.onLayout(layout(593)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(474.4);
+	});
+
 	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
 		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
 		expectOnlyTheDockSlotShrinks(tree, "question-dock");
