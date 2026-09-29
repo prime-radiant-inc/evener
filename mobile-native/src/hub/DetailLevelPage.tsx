@@ -55,17 +55,25 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const [failed, setFailed] = useState(false);
 	const state = snapshot?.transcriptMobile;
 	const writeUncertain = state?.writeUncertain ?? false;
-	// One check per uncertain write, the first time the hub is back for it.
+	// While a write is uncertain, one check each time the hub is back, so a
+	// check that failed gets another; refresh settles its own errors.
 	const checkedUncertainty = useRef(false);
 	useEffect(() => {
-		if (!writeUncertain) {
+		if (!writeUncertain || !connected) {
 			checkedUncertainty.current = false;
 			return;
 		}
-		if (!connected || checkedUncertainty.current || !model) return;
+		if (checkedUncertainty.current || !model) return;
 		checkedUncertainty.current = true;
 		void model.refresh();
 	}, [writeUncertain, connected, model]);
+	// A save whose reply was lost may have landed: once the check settles
+	// it, the save's failure no longer stands.
+	const wasUncertain = useRef(writeUncertain);
+	useEffect(() => {
+		if (wasUncertain.current && !writeUncertain) setFailed(false);
+		wasUncertain.current = writeUncertain;
+	}, [writeUncertain]);
 	const current = state?.confirmed ?? null;
 	const config = (state?.draft ?? current)?.config;
 	// A page that has never loaded says it is connecting (ruling 21).
@@ -89,8 +97,9 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	// The shared store marks an unconfirmed write as a conflict too; the page
 	// checks the hub's setting itself, so there is nothing to resolve yet.
 	const conflict = state.conflict && !writeUncertain;
-	const busy =
-		!connected || state.loading || state.saving || writeUncertain || state.storageUnavailable || state.conflict;
+	// Resolving a conflict writes, so it holds for everything a write does.
+	const resolveHeld = !connected || state.loading || state.saving || writeUncertain || state.storageUnavailable;
+	const busy = resolveHeld || state.conflict;
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -118,7 +127,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 						<Row
 							label="Keep mine"
 							tone="accent"
-							disabled={!connected || state.saving}
+							disabled={resolveHeld}
 							onPress={() =>
 								run(async () => {
 									await model.rebaseTranscriptDraft(current.revision);
@@ -129,7 +138,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 						<Row
 							label="Use the hub's"
 							tone="accent"
-							disabled={!connected || state.saving}
+							disabled={resolveHeld}
 							onPress={() => run(() => model.discardTranscriptDraft())}
 						/>
 					</Group>
@@ -225,7 +234,10 @@ function CustomChoices({
 						label={HOOK_LABELS[detail]}
 						checked={config.advanced.hookExits === detail}
 						disabled={disabled}
-						onPress={() => choose({ ...config, advanced: { ...config.advanced, hookExits: detail } })}
+						onPress={() => {
+							if (config.advanced.hookExits === detail) return;
+							choose({ ...config, advanced: { ...config.advanced, hookExits: detail } });
+						}}
 					/>
 				))}
 			</Group>

@@ -206,19 +206,23 @@ it("offers to keep your choice or use the hub's after a conflict", async () => {
 	expect(fake.calls).toEqual([["discard"]]);
 });
 
-it("checks the hub's setting on its own once the hub is back, once per uncertain write", () => {
+it("checks the hub's setting on its own each time the hub is back while a write is uncertain", () => {
 	// The shared store marks an unconfirmed write as a conflict too.
 	const { tree, fake, update } = mount(transcript({ writeUncertain: true, conflict: true }), false);
 	expect(renderedText(tree)).toContain("Checking the hub's setting…");
 	expect(fake.refresh).not.toHaveBeenCalled();
 	update(transcript({ writeUncertain: true }), true);
 	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	// Once per return of the hub, never per render.
+	update(transcript({ writeUncertain: true, loading: true }), true);
+	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	// A check that failed gets another when the hub comes back again.
 	update(transcript({ writeUncertain: true }), false);
 	update(transcript({ writeUncertain: true }), true);
-	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	expect(fake.refresh).toHaveBeenCalledTimes(2);
 	update(transcript(), true);
 	update(transcript({ writeUncertain: true }), true);
-	expect(fake.refresh).toHaveBeenCalledTimes(2);
+	expect(fake.refresh).toHaveBeenCalledTimes(3);
 });
 
 it("offers to discard a saved change the phone can't read, even with no draft to show", async () => {
@@ -272,6 +276,31 @@ it("shows an unconfirmed write as a check, not a conflict to resolve", () => {
 	expect(renderedText(tree)).toContain("Checking the hub's setting…");
 	expect(renderedText(tree)).not.toContain("The hub's setting changed while you were choosing.");
 	expect(button("Keep mine")).toBeNull();
+});
+
+it("drops a failed save's line once the check finds the uncertain write landed", async () => {
+	const { tree, fake, press, update } = mount(transcript());
+	fake.saveTranscript.mockRejectedValueOnce(new Error("reply lost"));
+	await press("Full, Everything, including the agent's reasoning");
+	update(transcript({ writeUncertain: true, conflict: true }));
+	update(transcript({ confirmed: { revision: 4, config: PRESET } }));
+	expect(renderedText(tree)).not.toContain("The change couldn't be saved.");
+});
+
+it.each([
+	["the hub's setting is loading", { loading: true }],
+	["the phone can't keep a change", { storageUnavailable: true }],
+])("holds Keep mine and Use the hub's while %s", (_name, over) => {
+	const { button } = mount(transcript({ conflict: true, draft: { revision: 2, config: CUSTOM }, ...over }));
+	expect(button("Keep mine")?.props.accessibilityState.disabled).toBe(true);
+	expect(button("Use the hub's")?.props.accessibilityState.disabled).toBe(true);
+});
+
+it("saves nothing when the hook events already chosen are chosen again", async () => {
+	const { fake, press, button } = mount(transcript({ confirmed: { revision: 3, config: CUSTOM } }));
+	expect(button("Failures only")).not.toBeNull();
+	await press("Failures only");
+	expect(fake.saveTranscript).not.toHaveBeenCalled();
 });
 
 it("drops a failed save's line while the hub's setting is being checked", async () => {
