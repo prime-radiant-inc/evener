@@ -29,8 +29,6 @@ const DISCARD_NOTE = " · discarded uncommitted changes";
 // than the full args object worktreeSummary below needs (it also reads
 // name/path/base_ref for display text) - it's exactly the "read-vs-mutate"
 // shape a caller that only cares about consequence, not display, needs.
-// Exported so callers that need the "read-vs-mutate" shape can reuse this
-// instead of re-deriving the same two fields from item.argumentsJSON itself.
 interface WorktreeCallArgs {
   operation: string;
   forceDirty: boolean;
@@ -39,6 +37,14 @@ interface WorktreeCallArgs {
 function parseWorktreeCallArgs(argumentsJSON: string | undefined): WorktreeCallArgs {
   const args = parseArgs(argumentsJSON);
   return { operation: str(args, "operation") ?? "", forceDirty: args.force_dirty === true };
+}
+
+// The worktree a call names, as the line says it: `name` for
+// create/remove/switch, or `path`, switch's and adopt's other accepted form;
+// "a worktree" when the call names none, so no line ends in a dangling space.
+function worktreeNamed(args: Record<string, unknown>): string {
+  const named = str(args, "name") || str(args, "path");
+  return named ? `worktree ${named}` : "a worktree";
 }
 
 function countOf(result: Record<string, unknown> | undefined, key: string): number | undefined {
@@ -52,15 +58,13 @@ export function worktreeSummary(item: WorktreeStep): string {
   const { operation, forceDirty } = parseWorktreeCallArgs(item.argumentsJSON);
   const result = toolJSONResult(item.output);
   const status = result ? str(result, "status") : undefined;
-  // `name` is the handle for create/remove/switch; `path` is switch's other
-  // accepted form (the schema takes exactly one of the two).
-  const target = str(args, "name") ?? str(args, "path") ?? "";
+  const target = worktreeNamed(args);
   const dirty = forceDirty ? DISCARD_NOTE : "";
 
   switch (operation) {
     case "create": {
       const base = str(args, "base_ref");
-      return `Created worktree ${target}${base ? ` (from ${base})` : ""}`;
+      return `Created ${target}${base ? ` (from ${base})` : ""}`;
     }
     case "list": {
       const found = countOf(result, "entries");
@@ -68,13 +72,13 @@ export function worktreeSummary(item: WorktreeStep): string {
     }
     case "switch":
       // The daemon reports `unchanged` when the session was already there.
-      return status === "unchanged" ? `Already in worktree ${target}` : `Switched to worktree ${target}`;
+      return status === "unchanged" ? `Already in ${target}` : `Switched to ${target}`;
     case "exit": {
       const left = result ? str(result, "left_path") : undefined;
       return `Exited worktree${left ? ` at ${left}` : ""}`;
     }
     case "remove":
-      return `Removed worktree ${target}${dirty}`;
+      return `Removed ${target}${dirty}`;
     case "prune": {
       const removed = countOf(result, "removed");
       const skipped = countOf(result, "skipped");
@@ -83,11 +87,11 @@ export function worktreeSummary(item: WorktreeStep): string {
     }
     case "adopt": {
       // The result names the managed worktree the adopted path became.
-      const name = (result ? str(result, "name") : undefined) ?? str(args, "path") ?? "";
-      return `Adopted worktree ${name}`;
+      const name = result ? str(result, "name") : undefined;
+      return `Adopted ${name ? `worktree ${name}` : target}`;
     }
     case "dispose": {
-      const id = str(args, "id") ?? "";
+      const id = str(args, "id") || "a worktree";
       // Idempotent no-op: the lane was already gone, so no work was discarded
       // however the call was flagged.
       if (status === "already_disposed") return `Already disposed ${id}`;
@@ -111,24 +115,24 @@ export function worktreeMessage(output: string | undefined): string | undefined 
 export function worktreeProgress(item: Pick<WorktreeStep, "argumentsJSON">): string {
   const args = parseArgs(item.argumentsJSON);
   const { operation } = parseWorktreeCallArgs(item.argumentsJSON);
-  const target = str(args, "name") ?? str(args, "path") ?? "";
+  const target = worktreeNamed(args);
   switch (operation) {
     case "create":
-      return `Creating worktree ${target}`;
+      return `Creating ${target}`;
     case "list":
       return "Listing worktrees";
     case "switch":
-      return `Switching to worktree ${target}`;
+      return `Switching to ${target}`;
     case "exit":
       return "Leaving the worktree";
     case "remove":
-      return `Removing worktree ${target}`;
+      return `Removing ${target}`;
     case "prune":
       return "Pruning worktrees";
     case "adopt":
-      return `Adopting worktree ${target}`;
+      return `Adopting ${target}`;
     case "dispose":
-      return `Disposing ${str(args, "id") ?? ""}`;
+      return `Disposing ${str(args, "id") || "a worktree"}`;
     default:
       return `Using manage worktree: ${operation}`;
   }

@@ -54,7 +54,8 @@ test.each<[ToolWireCall, string]>([
     "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",
   ],
   ["call_worktree_remove", "Removed worktree settle-fix"],
-  ["call_worktree_prune", "Pruned worktrees · 0 removed, 1 skipped"],
+  ["call_worktree_prune", "Pruned worktrees · 0 removed, 2 skipped"],
+  ["call_worktree_adopt", "Adopted worktree lane"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
@@ -155,6 +156,16 @@ test("says what a worktree adopt or dispose did, and an operation it doesn't kno
     "Already disposed dlg_1",
   );
   expect(worktree({ operation: "reticulate" })).toBe("Used manage worktree: reticulate");
+  // A call that names no worktree says so, with no dangling space.
+  expect(worktree({ operation: "dispose" })).toBe("Disposed a worktree");
+  expect(worktree({ operation: "create" })).toBe("Created a worktree");
+  expect(worktree({ operation: "switch" }, { status: "unchanged" })).toBe("Already in a worktree");
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"dispose"}' })).toBe(
+    "Disposing a worktree",
+  );
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"remove"}' })).toBe(
+    "Removing a worktree",
+  );
 });
 
 test("keeps a shell command's cd when the session is somewhere else", () => {
