@@ -5,7 +5,7 @@
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Animated, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, type LayoutChangeEvent, Pressable, Text, View } from "react-native";
 import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
@@ -13,6 +13,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { ChipStrip } from "../design/ChipStrip";
 import { headerRowFill } from "../design/systemGlass";
 import type { ComposerFocus } from "./composerFocus";
 import type { ChipKind, ContextChip } from "./sessionState";
@@ -145,40 +146,12 @@ function ChipsRow({
 	onChip: (kind: ChipKind) => void;
 	onGlass: boolean;
 }) {
-	const { palette } = useColors();
-	const [viewportWidth, setViewportWidth] = useState(0);
-	const [contentWidth, setContentWidth] = useState(0);
-	const overflows = viewportWidth > 0 && contentWidth > viewportWidth;
 	return (
-		<View testID="chips-row" style={{ backgroundColor: headerRowFill(onGlass, palette) }}>
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
-				onContentSizeChange={(width) => setContentWidth(width)}
-				contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
-			>
-				{chips.map((chip) => (
-					<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
-				))}
-			</ScrollView>
-			{/* The fade is into the page color, so on the glass it would paint an
-			    opaque band; there the chips run under the glass's edge instead. */}
-			{overflows && !onGlass ? (
-				<View
-					testID="chips-fade"
-					pointerEvents="none"
-					style={{
-						position: "absolute",
-						top: 0,
-						bottom: 0,
-						right: 0,
-						width: 24,
-						experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
-					}}
-				/>
-			) : null}
-		</View>
+		<ChipStrip testID="chips-row" onGlass={onGlass}>
+			{chips.map((chip) => (
+				<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
+			))}
+		</ChipStrip>
 	);
 }
 
