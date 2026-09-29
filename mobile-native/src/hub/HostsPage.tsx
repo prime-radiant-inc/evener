@@ -10,7 +10,7 @@ import { HostsNotListed } from "../hosts/HostsNotListed";
 import { hostStatus, systemLabel, versionDriftTag } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { SheetStatus } from "../sheet/SheetStatus";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen } from "./useHostsOnScreen";
 
