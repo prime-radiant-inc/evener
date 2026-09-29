@@ -18,6 +18,8 @@ export type HubRoutes = {
 	/** focus opens that host's detail once. */
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
+	/** The hub's own machine, which the hub's hosts list doesn't carry. */
+	OwnHost: { hubId: string };
 	HostEdit: { hubId: string; name: string };
 	/** focus opens that provider's detail once; signIn starts its sign-in instead. */
 	Providers: { hubId: string; focus?: string; signIn?: boolean };

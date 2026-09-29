@@ -26,6 +26,7 @@ import { HostsPage } from "./HostsPage";
 import { HubDetailsPage } from "./HubDetailsPage";
 import { HubHome } from "./HubHome";
 import { HubsPage } from "./HubsPage";
+import { OwnHostPage } from "./OwnHostPage";
 import { PluginsPage } from "./PluginsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
@@ -88,6 +89,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					component={HostDetailPage}
 					options={({ route }) => ({ title: route.params.name })}
 				/>
+				<HubStack.Screen name="OwnHost" component={OwnHostPage} options={{ title: activeProfile.name }} />
 				{/* The page sets its own title and its Cancel and Save. */}
 				<HubStack.Screen name="HostEdit" component={HostEditPage} />
 				<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />

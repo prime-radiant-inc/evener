@@ -2,11 +2,13 @@ import { createHubUpdateController, WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
+import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { render, renderedText } from "../renderNative.testkit";
 import { HostsPage } from "./HostsPage";
+import { hubConnectionWord } from "./hubHeader";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
@@ -89,8 +91,29 @@ it("puts the hub's own machine first, named after the hub, with its live session
 	const page = await mount(fleet);
 	const own = page.row("magic-kingdom");
 	expect(own?.props.accessibilityLabel).toBe("magic-kingdom, Connected · 2 live, 0.9.412");
-	expect(own?.props.accessibilityRole).toBeUndefined();
 	expect(renderedText(page.tree)).toContain("0.9.412");
+	page.dispose();
+});
+
+it("words the hub's own machine the way the Hubs page words the hub, through hubConnectionWord", async () => {
+	// Connected but too old for this app: the connection line speaks while
+	// the connection still reads as ready.
+	status.line = UPDATE_NEEDED;
+	const page = await mount(scriptedFleet([], [liveSession("local:a", "local")]));
+	expect(page.row("magic-kingdom")?.props.accessibilityLabel).toBe(
+		`magic-kingdom, ${hubConnectionWord(true, UPDATE_NEEDED)} · 1 live, 0.9.412`,
+	);
+	page.dispose();
+});
+
+it("opens the hub's own machine like any other host (audit M1)", async () => {
+	const page = await mount(scriptedFleet([hostRow("paradise-park")]));
+	const own = page.row("magic-kingdom");
+	expect(own?.props.accessibilityRole).toBe("button");
+	const chevrons = own?.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "chevron.right");
+	expect(chevrons).toHaveLength(1);
+	act(() => own?.props.onPress());
+	expect(page.navigation.navigate).toHaveBeenCalledWith("OwnHost", { hubId: "hub-1" });
 	page.dispose();
 });
 
