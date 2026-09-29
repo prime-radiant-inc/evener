@@ -156,7 +156,9 @@ export type MobileTimelineItem =
 		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		// roundKey: the key a reply keeps from its first streamed frame through
+		// its recording (see withRoundKey), where it has one.
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
 		| {
 				kind: "activity";
 				id: string;
@@ -201,9 +203,6 @@ export type MobileTimelineItem =
 		| { kind: "attachments"; id: string; items: AttachmentRef[] }
 	) & {
 		transcriptKey?: string;
-		// The key a reply keeps from its first streamed frame through its
-		// recording (see roundKey), where it has one.
-		roundKey?: string;
 		sourceTranscriptKey?: string;
 		position?: { entry: number; item: number };
 		// The turn this row's item belongs to (ItemModel.turnId), or the failing
@@ -922,15 +921,10 @@ function rowsForProjectedTurn(
 // no round id, so it has nothing to share a key with and takes none. The key
 // is for display and reading positions only: timelineIdentity, which the
 // store's merges use, stays transcriptKey-first.
-function roundKey(item: ItemModel): string | undefined {
-	return item.type === "agentMessage" && item.roundId && !item.callId
-		? `round:${item.roundId}:agentMessage`
-		: undefined;
-}
-
 function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
-	const key = row.kind === "assistant" ? roundKey(item) : undefined;
-	if (key === undefined || keyedRounds.has(key)) return row;
+	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
+	const key = `round:${item.roundId}:agentMessage`;
+	if (keyedRounds.has(key)) return row;
 	keyedRounds.add(key);
 	return { ...row, roundKey: key };
 }
