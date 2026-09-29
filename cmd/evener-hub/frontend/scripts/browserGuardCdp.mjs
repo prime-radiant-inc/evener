@@ -335,7 +335,7 @@ export const BOOT_RETRY_DELAY_MS = 250;
 // How long the loop holds a boot check for a navigation whose load resolved
 // before its Page.frameNavigated commit (a delayed load from the old document).
 // Bounded so a navigation that never commits cannot stall the guard.
-export const COMMIT_SETTLE_MS = 1000;
+export const COMMIT_SETTLE_MS = 250;
 
 /**
  * layoutguard's half of the boot seam, exported so the wire tests can call it
@@ -529,14 +529,20 @@ export async function navigateTo(
   // loaderIds a Page.frameNavigated has actually committed. loaderAttempts also
   // holds send-time bindings, so a commit wait must test this set, not that map.
   const committedLoaderIds = new Set();
+  // A top-level navigation whose response reported NO loaderId cannot be matched
+  // to its commit by identity. Its attempt is queued here and consumed, oldest
+  // first, by the next loaderless top commit - so a STALE loaderless commit from
+  // an earlier navigation cannot be adopted as the retry now in flight. A
+  // loaderless commit that matches no queued attempt is ignored for identity.
+  const pendingLoaderless = [];
+  const committedLoaderless = new Set();
   // Waiters parked on a commit. A navigation's load event can resolve before its
   // commit (a delayed load from the old document), so the loop holds the next
   // boot check until THIS navigation's commit is recorded. Each waiter matches
-  // only its own navigation (by the loaderId its response named, or the next top
-  // commit for a loaderless response), and is removed when it settles or times
+  // only its own navigation (by the loaderId its response named, or its queued
+  // attempt for a loaderless response), and is removed when it settles or times
   // out, so a stale or unrelated commit can neither release it nor leak it.
   const commitWaiters = new Set();
-  let topCommitSeq = 0;
   const failures = [];
   // The last navigation whose main frame has COMMITTED (Page.frameNavigated).
   // It advances only at that commit - never at the counter increment - so in
@@ -640,17 +646,20 @@ export async function navigateTo(
         if (!parentId) {
           currentLoaderId = loaderId;
           currentAttempt = attempt;
-          topCommitSeq++;
           settleCommitWaiters();
         }
       } else if (!parentId) {
-        // A top document that reported no loaderId has no identity to bind; the
-        // navigation in flight is the only owner it can have (the shared null
-        // key would hold a PREVIOUS attempt and misattribute the commit).
-        currentLoaderId = null;
-        currentAttempt = attempts;
-        topCommitSeq++;
-        settleCommitWaiters();
+        // A top document that reported no loaderId has no identity to bind, so
+        // it takes the OLDEST pending loaderless navigation. A loaderless commit
+        // with nothing pending is stale: it names no document we are awaiting,
+        // so it must not be adopted into the live-document identity.
+        const attempt = pendingLoaderless.shift();
+        if (attempt != null) {
+          committedLoaderless.add(attempt);
+          currentLoaderId = null;
+          currentAttempt = attempt;
+          settleCommitWaiters();
+        }
       }
       return;
     }
@@ -706,7 +715,7 @@ export async function navigateTo(
     for (;;) {
       attempts++;
       let expectedLoaderId = null;
-      const commitsBefore = topCommitSeq;
+      const navigating = attempts;
       // The commit that names this navigation's document is observed by the
       // shared listener above, at Page.frameNavigated - not by anything the
       // load event can stand in for. The navigate response registers which
@@ -715,14 +724,14 @@ export async function navigateTo(
       await navigateToOnce(page, url, (navigatedLoaderId) => {
         expectedLoaderId = navigatedLoaderId;
         if (navigatedLoaderId) navigationAttempts.set(navigatedLoaderId, attempts);
+        else pendingLoaderless.push(navigating);
       });
       // A load event from the previous document can resolve the wait before
       // THIS navigation commits. Hold the boot check until THIS navigation's
       // commit lands (bounded): matched by the loaderId its response named, or -
-      // for a loaderless response - by the next top commit after this attempt
-      // began, since no identity exists to match on.
+      // for a loaderless response - by its queued attempt being consumed.
       const commitMatches = () =>
-        expectedLoaderId ? committedLoaderIds.has(expectedLoaderId) : topCommitSeq > commitsBefore;
+        expectedLoaderId ? committedLoaderIds.has(expectedLoaderId) : committedLoaderless.has(navigating);
       await waitForCommit(commitMatches);
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
