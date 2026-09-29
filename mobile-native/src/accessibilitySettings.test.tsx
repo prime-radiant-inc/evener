@@ -95,10 +95,10 @@ it("stays unknown when the read fails, and says nothing of the failure", async (
 	}
 });
 
-it("starts a later mount from the last Reduce Transparency value it knew", async () => {
-	const first = renderHook(() => useReduceTransparency());
+it("starts a later mount from the value an earlier mount is still following", async () => {
+	// The Board's bar stays mounted under a session it pushed.
+	const earlier = renderHook(() => useReduceTransparency());
 	await act(async () => {});
-	first.unmount();
 	let answer!: (value: boolean) => void;
 	accessibility.transparencyRead = new Promise((resolve) => {
 		answer = resolve;
@@ -108,6 +108,47 @@ it("starts a later mount from the last Reduce Transparency value it knew", async
 		// Known at once, before its own read answers.
 		expect(later.result.current).toBe(true);
 		await act(async () => answer(true));
+		later.unmount();
+		earlier.unmount();
+	} finally {
+		accessibility.transparencyRead = null;
+	}
+});
+
+it("forgets the value once nothing follows it, since it could change unheard", async () => {
+	const first = renderHook(() => useReduceTransparency());
+	await act(async () => {});
+	expect(first.result.current).toBe(true);
+	first.unmount();
+	let answer!: (value: boolean) => void;
+	accessibility.transparencyRead = new Promise((resolve) => {
+		answer = resolve;
+	});
+	try {
+		const later = renderHook(() => useReduceTransparency());
+		expect(later.result.current).toBeNull();
+		await act(async () => answer(false));
+		expect(later.result.current).toBe(false);
+		later.unmount();
+	} finally {
+		accessibility.transparencyRead = null;
+	}
+});
+
+it("remembers nothing from a read that answers after its mount is gone", async () => {
+	vi.resetModules();
+	const { useReduceTransparency } = await import("./accessibilitySettings");
+	let answer!: (value: boolean) => void;
+	accessibility.transparencyRead = new Promise((resolve) => {
+		answer = resolve;
+	});
+	try {
+		const gone = renderHook(() => useReduceTransparency());
+		gone.unmount();
+		await act(async () => answer(false));
+		accessibility.transparencyRead = new Promise(() => {});
+		const later = renderHook(() => useReduceTransparency());
+		expect(later.result.current).toBeNull();
 		later.unmount();
 	} finally {
 		accessibility.transparencyRead = null;
