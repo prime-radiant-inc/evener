@@ -8,25 +8,13 @@
 // The fill is the system's Liquid Glass (spec 16.3) where the device has it
 // (iOS 26 and later), and the opaque page color elsewhere and while Reduce
 // Transparency is on.
-import { GlassView, isGlassEffectAPIAvailable } from "expo-glass-effect";
+import { GlassView } from "expo-glass-effect";
 import type { ReactNode } from "react";
 import { type LayoutChangeEvent, type StyleProp, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useReduceTransparency } from "../accessibilitySettings";
 import { useColors } from "../ui";
+import { systemGlassAvailable, useSystemGlass } from "./systemGlass";
 import { useKeyboardShown } from "../useKeyboardShown";
-
-/** Whether the device has the Liquid Glass API. expo-glass-effect reads its
- * native module once per process and checks the API itself (iOS 26 betas
- * lacked it); reading the module throws only for a binary built without it,
- * which gets the opaque fill. */
-function systemGlassAvailable(): boolean {
-	try {
-		return isGlassEffectAPIAvailable();
-	} catch {
-		return false;
-	}
-}
 
 export function BarFrame({
 	children,
@@ -45,11 +33,8 @@ export function BarFrame({
 	const { palette } = useColors();
 	const { bottom } = useSafeAreaInsets();
 	const keyboardShown = useKeyboardShown();
-	const reduceTransparency = useReduceTransparency();
-	// Glass waits for Reduce Transparency to be known to be off, so a reader
-	// with it on never sees a flash of glass.
 	const hasGlass = systemGlassAvailable();
-	const glass = hasGlass && reduceTransparency === false;
+	const glass = useSystemGlass();
 	// The screen's layout goes first, so it can't undo what the frame owns:
 	// the home indicator's room, the hairline and the fill.
 	const frame: StyleProp<ViewStyle> = [

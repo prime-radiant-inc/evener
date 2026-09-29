@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
+import { useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -352,6 +353,14 @@ export function ConversationScreen({
 	// remembered by its row's reader key, since older pages prepend rows.
 	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
+	// Where the device has Liquid Glass, the nav bar is the system's glass
+	// over the transcript (spec 16.3): the screen starts under it, and what
+	// must stay clear of it starts below it.
+	const navGlass = useSystemGlass();
+	const underNavBar = navGlass ? headerHeight : 0;
+	useEffect(() => {
+		navigation.setOptions({ headerTransparent: navGlass });
+	}, [navigation, navGlass]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's
@@ -928,15 +937,18 @@ export function ConversationScreen({
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	// What the list's top keeps clear: the nav bar where the screen runs
+	// under it, and the chips block.
+	const reservedTop = underNavBar + sessionHeaderHeight;
 	const listOffset = useRef(0);
 	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes), the
-	// list's top padding moves by the same amount; scrolling the list by it
-	// too keeps every row where it was on screen. At the top the list stays
-	// at the top, and the rows make room for the block.
+	// When the block grows or shrinks (the connection bar comes or goes, or
+	// the nav bar turns glass or opaque), the list's top padding moves by the
+	// same amount; scrolling the list by it too keeps every row where it was
+	// on screen. At the top the list stays at the top, and the rows make room.
 	useLayoutEffect(() => {
-		const change = sessionHeaderHeight - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = sessionHeaderHeight;
+		const change = reservedTop - reservedHeaderHeight.current;
+		reservedHeaderHeight.current = reservedTop;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -945,7 +957,7 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [sessionHeaderHeight]);
+	}, [reservedTop]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
@@ -2619,7 +2631,7 @@ export function ConversationScreen({
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
+				keyboardVerticalOffset={headerHeight - underNavBar}
 			>
 				<View style={styles.fill}>
 					<View style={{ flex: 1 }}>
@@ -2658,7 +2670,7 @@ export function ConversationScreen({
 								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
 								justifyContent: "flex-end",
 								padding: 16,
-								paddingTop: 16 + sessionHeaderHeight,
+								paddingTop: 16 + reservedTop,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
 							}}
 							contentInset={listUnderBar.contentInset}
@@ -2816,7 +2828,7 @@ export function ConversationScreen({
 						/>
 						<View
 							pointerEvents="box-none"
-							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+							style={{ position: "absolute", top: underNavBar, left: 0, right: 0 }}
 							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
 						>
 							<SessionHeader

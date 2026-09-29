@@ -22,6 +22,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	systemGlass,
 	textOf,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -30,6 +31,7 @@ import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure"
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
@@ -330,6 +332,7 @@ afterEach(() => {
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
+	systemGlass.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -1452,6 +1455,53 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toHaveLength(1);
 	act(() => tree.unmount());
 	expect(inScope()).toEqual([]);
+});
+
+// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
+// system's glass over the transcript (spec 16.3): the transcript runs under
+// it, and the chips and the list's top start below it. Elsewhere, and while
+// Reduce Transparency is on, the bar is opaque and the screen starts below it.
+describe("the nav bar's glass (spec 16.3)", () => {
+	const lastTransparency = () =>
+		(vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+			.map(([options]) => options)
+			.findLast((options) => "headerTransparent" in options)?.headerTransparent;
+	const layout = (tree: ReactTestRenderer) => ({
+		chipsTop: Object.assign(
+			{},
+			...[tree.root.findByType(SessionHeader).parent?.props.style].flat(Number.POSITIVE_INFINITY),
+		).top,
+		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
+		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardAvoidingView")[0]?.props
+			.keyboardVerticalOffset,
+	});
+
+	it("runs the transcript under the glass, with the chips and the list's top below the bar", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass"));
+		await act(async () => {});
+		expect(lastTransparency()).toBe(true);
+		expect(layout(tree)).toEqual({ chipsTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
+
+	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
+		const { tree } = await mount(twoTurns("ref-no-glass"));
+		await act(async () => {});
+		expect(lastTransparency()).toBe(false);
+		expect(layout(tree)).toEqual({ chipsTop: 0, listTop: 16, keyboardOffset: 64 });
+	});
+
+	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
+		await act(async () => {});
+		expect(lastTransparency()).toBe(false);
+		expect(layout(tree)).toEqual({ chipsTop: 0, listTop: 16, keyboardOffset: 64 });
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(lastTransparency()).toBe(true);
+		expect(layout(tree)).toEqual({ chipsTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
 });
 
 // A short transcript rests just above the composer (spec 8.5), not at the top
