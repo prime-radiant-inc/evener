@@ -13,7 +13,7 @@ import {
 	requestsFor,
 	session,
 	tick,
-} from "../board/navigationHub.testkit";
+} from "../board/navigationHubTestUtils";
 import { render } from "../renderNative.testkit";
 import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS } from "./alertCenter";
 import { alertPreferences } from "./nativeAlertPreferences";

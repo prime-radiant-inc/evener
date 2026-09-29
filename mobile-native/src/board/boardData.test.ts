@@ -18,7 +18,7 @@ import {
 	session,
 	sessions,
 	tick,
-} from "./navigationHub.testkit";
+} from "./navigationHubTestUtils";
 
 const sources = [{ id: "laptop", label: "Laptop", kind: "local", online: true }];
 async function answerAll(hub: Hub, { live = sessions("live-", 2), needsYou = [session("ask-0")] } = {}) {

@@ -20,7 +20,7 @@ import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
 import { canWriteHumanNote, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
-import { haptic } from "../haptics";
+import { destructiveButton, haptic } from "../haptics";
 
 export interface NotesHost {
 	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">;
@@ -323,7 +323,9 @@ function LinkRow({
 		Alert.alert(
 			label || link.url,
 			undefined,
-			items.map((item) => ({ text: item.label, onPress: item.run })),
+			items.map((item) =>
+				item.run === remove ? destructiveButton(item.label, item.run) : { text: item.label, onPress: item.run },
+			),
 			{ cancelable: true },
 		);
 	};

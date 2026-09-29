@@ -390,6 +390,10 @@ describe("links", () => {
 			expect(request?.title).toBe("The PR");
 			expect(request?.buttons?.map((button) => button.text)).toEqual(["Open", "Copy link", "Remove link"]);
 			expect(request?.options).toEqual({ cancelable: true });
+			// Spec 16.6: rigid on the destructive choice here too.
+			playedHaptics.length = 0;
+			act(() => request?.buttons?.[2]?.onPress?.());
+			expect(playedHaptics).toEqual(["impact:rigid"]);
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}

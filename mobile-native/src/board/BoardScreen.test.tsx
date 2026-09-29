@@ -669,11 +669,14 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	act(() => tree.unmount());
 });
 
-it("scrolls to Needs you when a coalesced banner asks", async () => {
+it("scrolls to Needs you when a coalesced banner asks, once the Board has laid out", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
+	// Asked before this Board existed: the banner popped to it.
+	requestBoardJump("needsYou");
 	const { tree, scrollTo } = await mountWithInstances(navigation());
+	expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
 	const band = tree.root
 		.findAll(
 			(node) =>
@@ -687,6 +690,9 @@ it("scrolls to Needs you when a coalesced banner asks", async () => {
 			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 400 } } });
 		band?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 30, width: 390, height: 28 } } });
 	});
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
+	// A Board already laid out scrolls at once.
+	scrollTo.mockClear();
 	act(() => requestBoardJump("needsYou"));
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
 	act(() => tree.unmount());

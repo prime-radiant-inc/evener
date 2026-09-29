@@ -9,7 +9,7 @@ import { SwipeRow } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
-import { haptic } from "../haptics";
+import { destructiveButton, haptic } from "../haptics";
 
 const BUTTON_LABELS: Record<GhostAction, string> = {
 	steerNow: "Steer now",
@@ -75,7 +75,11 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		// beneath.
 		else
 			Alert.alert(ghost.caption, ghost.text, [
-				...menu.map((action) => ({ text: MENU_LABELS[action], onPress: () => onAction(action) })),
+				...menu.map((action) =>
+					action === "cancel"
+						? destructiveButton(MENU_LABELS[action], () => onAction(action))
+						: { text: MENU_LABELS[action], onPress: () => onAction(action) },
+				),
 				{ text: "Cancel", style: "cancel" as const },
 			]);
 	}
