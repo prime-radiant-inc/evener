@@ -501,4 +501,24 @@ describe("last mobile location", () => {
 			),
 		).toBeNull();
 	});
+
+	it("refuses Reader params that predate the single-ref route", () => {
+		// A pre-#2871 Reader named its session twice; the route now takes one ref
+		// and its title, so these params have no sessionTitle and are rejected.
+		expect(
+			locationForRoute(
+				{
+					name: "Reader",
+					params: {
+						hubId: "studio",
+						sessionRef: "local:fix",
+						path: "a.md",
+						reviewRef: "local:fix",
+						reviewTitle: "Fix race",
+					},
+				},
+				"studio",
+			),
+		).toBeNull();
+	});
 });
