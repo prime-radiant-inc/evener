@@ -83,6 +83,15 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 
+// flushMicrotasks drains a bounded number of microtask turns without waiting on
+// any condition - for a caller that only wants pending continuations to run
+// before its next assertion. (A predicate that is never true would cost at most
+// the same 20 hops; this makes that intent explicit rather than reading as a
+// wait on the impossible.)
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
+}
+
 function nextHandledRequest<M extends MethodName>(
   fake: FakeClient,
   method: M,
@@ -12805,7 +12814,11 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       // watchdog and the retry delay so a mutation that DOES reject would run
       // its retry to completion and trip the assertions below.
       await vi.advanceTimersByTimeAsync(11_000);
-      await flushUntil(() => outcome !== null);
+      // Flush pending continuations so a wrongly-rejecting or retrying
+      // implementation would have settled before the assertions below. This
+      // does NOT wait for `outcome`: the correct path leaves it null forever,
+      // which is exactly what the next assertion pins.
+      await flushMicrotasks();
       // Not rejected, not resolved, not retried, and nothing reached the wire.
       expect(outcome).toBeNull();
       expect(enqueueAttempts).toBe(1);
