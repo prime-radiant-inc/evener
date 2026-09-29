@@ -1002,8 +1002,14 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 	if cfg.Logf != nil {
 		return cfg.Logf
 	}
+	// Resolve the sink once, when the logger is built, not per call. A server
+	// goroutine outlives the test that started it, so reading the mutable
+	// os.Stderr global from it races any test that redirects os.Stderr
+	// (captureHubStderr, issue #2783). The startup path sets the sink before
+	// any server runs, so this captures the same destination it always wanted.
+	stderr := os.Stderr
 	return func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
 	}
 }
 

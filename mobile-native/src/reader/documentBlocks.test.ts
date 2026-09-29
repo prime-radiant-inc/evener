@@ -136,6 +136,25 @@ it("reads links and images as their words", () => {
 	);
 });
 
+it("drops inline HTML tags from a block's words, but not inside an inline code span", () => {
+	const [paragraph] = documentBlocks("Some <b>bold</b> text and a `Vec<String>` span.");
+	expect(paragraph?.kind).toBe("paragraph");
+	expect(paragraph?.markdown).toBe("Some <b>bold</b> text and a `Vec<String>` span.");
+	expect(paragraph?.text).toBe("Some bold text and a Vec<String> span.");
+	expect(documentBlocks("a<br>b")[0]?.text).toBe("ab");
+	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See <https://x.test> too.");
+	expect(documentBlocks('Tags like <span title="a > b">value</span> go.')[0]?.text).toBe("Tags like value go.");
+	expect(documentBlocks("Code ``a`<b>`` done.")[0]?.text).toBe("Code a<b> done.");
+});
+
+it("keeps an html block's markup but still strips its markdown", () => {
+	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
+});
+
+it("protects a code span that runs across lines from tag stripping", () => {
+	expect(documentBlocks("`before\n<b>\nafter`")[0]?.text).toBe("before\n<b>\nafter");
+});
+
 it("hashes the same text the same way every time, and different text differently", () => {
 	expect(hashText("abc")).toBe(hashText("abc"));
 	expect(hashText("abc")).not.toBe(hashText("abd"));

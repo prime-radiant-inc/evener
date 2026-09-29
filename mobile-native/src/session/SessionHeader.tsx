@@ -66,6 +66,10 @@ export function SessionHeader({
 				>
 					<Text
 						allowFontScaling={allowFontScaling}
+						// Android reads this live region; iOS has none, and this
+						// connection status stays unannounced there on purpose: it is
+						// ambient and changes on every reconnect and offline-age tick,
+						// so speaking each one would talk over the reader (#2903).
 						accessibilityLiveRegion="polite"
 						accessibilityHint={status === UPDATE_NEEDED ? INCOMPATIBLE_VERSIONS : undefined}
 						style={{

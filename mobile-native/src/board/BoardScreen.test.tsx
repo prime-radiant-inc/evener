@@ -38,6 +38,7 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { SearchResults } from "./SearchResults";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
@@ -2925,6 +2926,43 @@ it("scrolls to a project from search that was already unfolded", async () => {
 	act(() => tree.unmount());
 });
 
+it("scrolls a project row taller than the viewport to its top, never past it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	await revealFromSearch(tree);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	// The row is taller than the 600pt viewport, so there is nowhere to sit it
+	// a third of the way down: the Board shows its top.
+	layOutAt(revealTarget(tree), 60, 700);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60, animated: true });
+	act(() => tree.unmount());
+});
+
+it("stays in search when a tapped project is no longer in the loaded catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("even");
+	// The catalog goes stale between the result's render and the tap: the
+	// project is no longer loaded, so there is nothing to reveal.
+	act(() => tree.root.findByType(SearchResults).props.onOpenProject({ key: "gone", name: "Gone" }));
+	expect(hasCancel(tree)).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
 it("scrolls to a project from search without animating while Reduce Motion is on", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -4215,6 +4253,23 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	nav.navigate.mockClear();
 	act(() => rowTitled(tree, "Refactor parser (archived tier)").props.onLongPress());
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
+});
+
+it("keeps the row menu's row while the list is held, even once the read drops it", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	// Opening the menu from the row holds the list (ruling 22).
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	const ref = `local:${SESSION_ID}`;
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
+	// A later read no longer has the row, but the held list keeps showing it,
+	// so the menu that is about it must still resolve one.
+	shape.live = [[swipeFinished, swipePark]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hasRow(tree, "Refactor parser")).toBe(true);
+	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
 });
 
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
