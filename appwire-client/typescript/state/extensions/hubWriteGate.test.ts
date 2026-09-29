@@ -116,3 +116,29 @@ describe("HubWriteBusyError carries the busy copy", () => {
     expect(isHubWriteBusy(new Error("other"))).toBe(false);
   });
 });
+
+describe("reset opens the gate without letting an abandoned write reopen it", () => {
+  test("a reset write's late settlement cannot clear a newer write's busy", async () => {
+    const gate = createHubWriteGate();
+    const abandoned = pending();
+    const first = gate.run(() => abandoned.promise);
+    expect(gate.isBusy()).toBe(true);
+
+    gate.reset();
+    expect(gate.isBusy()).toBe(false);
+
+    const held = pending();
+    const second = gate.run(() => held.promise);
+    expect(gate.isBusy()).toBe(true);
+
+    // The abandoned write settles after the reset: its finally is stale and
+    // must not open the gate under the write that now owns it.
+    abandoned.settle();
+    await expect(first).resolves.toBe(true);
+    expect(gate.isBusy()).toBe(true);
+
+    held.settle();
+    await expect(second).resolves.toBe(true);
+    expect(gate.isBusy()).toBe(false);
+  });
+});

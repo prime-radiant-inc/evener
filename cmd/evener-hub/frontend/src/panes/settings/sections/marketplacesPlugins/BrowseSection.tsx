@@ -197,6 +197,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
               cache={browseCatalogs.get(m.name)}
               query={trimmedQuery}
               isInstalled={isInstalled}
+              installDisabled={hubWriteBusy}
               onToggle={() => toggleExpanded(m.name)}
               onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
             />
@@ -232,6 +233,7 @@ function MarketplaceNode({
   cache,
   query,
   isInstalled,
+  installDisabled,
   onToggle,
   onInstall,
 }: {
@@ -240,6 +242,7 @@ function MarketplaceNode({
   cache: MarketplaceCatalogEntry | undefined;
   query: string;
   isInstalled: (plugin: string, marketplace: string) => boolean;
+  installDisabled: boolean;
   onToggle: () => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
@@ -295,7 +298,7 @@ function MarketplaceNode({
                   {isInstalled(p.name, marketplace.name) ? (
                     <span className={CLASS.installedBadge}>Installed</span>
                   ) : (
-                    <Button size="sm" onClick={() => onInstall(p.name, marketplace.name)}>
+                    <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
                       Install
                     </Button>
                   )}

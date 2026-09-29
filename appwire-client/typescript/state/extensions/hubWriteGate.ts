@@ -42,23 +42,29 @@ export function createHubWriteGate(): HubWriteGate {
   // The package's own store: nothing here needs a listener set of its own, and
   // its setState notifies every subscriber, which is what a surface binds to.
   const store = createFrameworkFreeStore<{ busy: boolean }>(() => ({ busy: false }));
+  // Which write owns the gate. reset() bumps it, so the abandoned write's
+  // finally no longer matches and cannot clear the busy flag out from under a
+  // write that took the gate after the reset.
+  let generation = 0;
 
   return {
     isBusy: () => store.getState().busy,
     async run(action) {
       if (store.getState().busy) return false;
+      const mine = ++generation;
       store.setState({ busy: true });
       try {
         await action();
         return true;
       } finally {
-        store.setState({ busy: false });
+        if (mine === generation) store.setState({ busy: false });
       }
     },
     subscribe(listener) {
       return store.subscribe(() => listener());
     },
     reset() {
+      generation += 1;
       store.setState({ busy: false });
     },
   };

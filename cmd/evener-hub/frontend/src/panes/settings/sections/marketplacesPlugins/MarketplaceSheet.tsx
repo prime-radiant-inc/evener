@@ -239,12 +239,12 @@ export function MarketplaceSheet({
       }
     } catch (err) {
       pendingRename.current = null;
-      const busy = isHubWriteBusy(err);
-      const message = busy ? HUB_WRITE_BUSY : errorText(err);
+      const wasBusyRefused = isHubWriteBusy(err);
+      const message = wasBusyRefused ? HUB_WRITE_BUSY : errorText(err);
       // Inline only while this sheet still shows the form that caused it; the
       // toast carries the failure either way.
       if (liveName.current === entry.name) setFormError(message);
-      toasts.push("error", busy ? HUB_WRITE_BUSY : `Save failed: ${message}`);
+      toasts.push("error", wasBusyRefused ? HUB_WRITE_BUSY : `Save failed: ${message}`);
     }
   }
 

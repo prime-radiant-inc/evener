@@ -130,7 +130,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
                 Upgrade
               </Button>
-              <Button variant="danger" onClick={() => setPendingRemove(true)}>
+              <Button variant="danger" disabled={hubWriteBusy} onClick={() => setPendingRemove(true)}>
                 Remove
               </Button>
             </>

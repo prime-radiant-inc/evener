@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
-import type { PluginEntry } from "../../types.gen";
+import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
+import { createMarketplacesStore } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsStore } from "./plugins";
 
 const LINTER: PluginEntry = {
@@ -144,6 +145,26 @@ describe("the shared hub write gate serializes plugin writes", () => {
     fake.on("evener/plugin/install", () => ({ plugins: [LINTER] }));
     await store.getState().installPlugin("linter", "acme");
     expect(store.getState().plugins).toEqual([LINTER]);
+  });
+});
+
+describe("one gate serializes a plugin write and a marketplace write together", () => {
+  test("a plugin mutation is refused while a marketplace write holds the same gate", async () => {
+    const gate = createHubWriteGate();
+    const pluginsFake = new FakeClient("ready");
+    const marketplacesFake = new FakeClient("ready");
+    const plugins = createPluginsStore(pluginsFake, gate);
+    const marketplaces = createMarketplacesStore(marketplacesFake, gate);
+
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(marketplacesFake, "evener/marketplace/remove");
+    const removing = marketplaces.getState().removeMarketplace("acme");
+    await Promise.resolve();
+
+    await expect(plugins.getState().installPlugin("linter", "acme")).rejects.toBeInstanceOf(HubWriteBusyError);
+    expect(pluginsFake.calls).toEqual([]);
+
+    release({ marketplaces: [] });
+    await removing;
   });
 });
 
