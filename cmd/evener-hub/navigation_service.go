@@ -70,6 +70,9 @@ type navigationSourceRevision struct {
 type navigationSourceSnapshot struct {
 	Inputs       navigationBuildInputs
 	NextBoundary time.Time
+	// Stats carries the capture's phase timings and session counts; the
+	// service fills in the later phases.
+	Stats navigationBuildStats
 }
 
 type navigationSource interface {
@@ -91,6 +94,9 @@ type navigationServiceConfig struct {
 	NewTimer     func(time.Duration) navigationTimer
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
+	// Logf receives one line per slow or periodic build and per timed-out
+	// build. Nil disables them.
+	Logf func(format string, args ...any)
 	// historyEntries and historyBytes override the default delta-history
 	// retention. Production leaves both zero for the full default budget;
 	// tests set them to force eviction with small fixtures.
@@ -184,6 +190,7 @@ type NavigationService struct {
 	// pending invalidation may be attempted again; zero means the next
 	// attempt is not paced. See refreshPending.
 	nextAttemptAt time.Time
+	statsLog      navigationBuildStatsLog
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -226,6 +233,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		now:              now,
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
+		statsLog:         navigationBuildStatsLog{logf: cfg.Logf},
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
@@ -589,6 +597,15 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		close(flight.done)
 		s.mu.Unlock()
 	}()
+	started := time.Now()
+	var stats navigationBuildStats
+	stats.phase = "capture"
+	defer func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			stats.Total = time.Since(started)
+			s.statsLog.timedOut(stats)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			flight.err = navigationUnavailable(err)
@@ -598,7 +615,14 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		epoch := s.epoch
 		generation := s.generation
 		s.mu.Unlock()
+		stats.phase = "capture"
 		snapshot, err := s.source.Capture(ctx, generation, s.now())
+		if err == nil {
+			restarts := stats.Restarts
+			stats = snapshot.Stats
+			stats.Restarts = restarts
+			stats.phase = "projection"
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				flight.err = navigationUnavailable(ctx.Err())
@@ -610,7 +634,10 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		inputs := snapshot.Inputs
 		inputs.GenerationID = generation
 		inputs.Revision = 0 // semantic fingerprints never include transport revision.
+		phaseStart := time.Now()
 		projection, err := buildNavigationServiceProjectionContext(ctx, inputs)
+		stats.Projection = time.Since(phaseStart)
+		stats.phase = "fingerprints"
 		if err != nil {
 			if ctx.Err() != nil {
 				flight.err = navigationUnavailable(ctx.Err())
@@ -619,7 +646,11 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			return
 		}
+		phaseStart = time.Now()
 		fingerprints, dependencies, err := navigationLogicalFingerprintsContext(ctx, projection)
+		stats.Fingerprints = time.Since(phaseStart)
+		stats.Resources = len(fingerprints)
+		stats.phase = "next_states"
 		if err != nil {
 			if ctx.Err() != nil {
 				flight.err = navigationUnavailable(ctx.Err())
@@ -650,9 +681,13 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			s.mu.Unlock()
 			expected = after
+			stats.Restarts++
 			continue
 		}
+		phaseStart = time.Now()
 		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies)
+		stats.NextStates = time.Since(phaseStart)
+		stats.phase = "commit"
 		if err != nil {
 			s.mu.Unlock()
 			if ctx.Err() != nil {
@@ -704,6 +739,8 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		flight.finalized = true
 		woke := flight.mutated
 		s.mu.Unlock()
+		stats.Total = time.Since(started)
+		s.statsLog.completed(stats, s.now())
 		// Commit owns the scheduler wake, including canceled-waiter builds.
 		if woke {
 			select {
@@ -1329,14 +1366,20 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	if s.web == nil {
 		return navigationSourceSnapshot{}, errors.New("navigation web source is unavailable")
 	}
+	var stats navigationBuildStats
+	phaseStart := time.Now()
 	snapshot := s.web.navigationSnapshot(ctx)
+	stats.Inputs, stats.Resolve = time.Since(phaseStart), snapshot.resolveDuration
 	if err := ctx.Err(); err != nil {
 		return navigationSourceSnapshot{}, err
 	}
 	decisions := s.web.archiveDecisions()
 	// Keep the legacy adapter on the exact same seam as the established endpoint;
 	// in particular, test and compatibility fixtures replace these functions.
+	phaseStart = time.Now()
 	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
+	stats.Tree = time.Since(phaseStart)
+	stats.countNavigationSessions(snapshot.metas, snapshot.live, tree)
 	_, attention := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 	authority := favoriteAuthorityForNavigation(snapshot, tree)
 	favorites, err := s.web.favoriteDecisions()
@@ -1371,7 +1414,7 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 			}
 		}
 	}
-	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now)}, nil
+	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now), Stats: stats}, nil
 }
 
 func navigationSnapshotBoundary(tree hubcore.Tree, now time.Time) time.Time {
