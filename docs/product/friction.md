@@ -384,13 +384,20 @@ Existing `TestReleaseRunningTurnIDRecoversFromARefusedWrite`,
 `TestReleaseRunningTurnIDResetsRetryBudgetOnExhaustion` specify those recovery
 and exhaustion contracts.
 
-**Discuss.** Reconcile a proven dead owner on health recovery or ordinary
-admission. Serialize repair with accepted queue/start claims and keep
-compare-and-clear semantics; a late release must not clear a newer live turn.
+**Decision.** Recover a finished turn's stale ownership automatically, continuing
+the release repair with backoff and checking ownership on ordinary admission.
+A message submitted during repair stays pending with its original identity and
+runs once the chat is ready, unless canceled or superseded. Do not require the
+user to resend, interrupt or restart. Serialize repair with accepted queue/start
+claims and keep compare-and-clear semantics; a late release must not clear a
+newer live turn. Silence or elapsed time alone does not establish that an owner
+has finished. Implementation remains pending.
 
-**Acceptance.** Fail release persistence past eight retries, heal the store, and
-send a regular message. It starts once without interrupt/restart; a genuinely
-running or accepted pending turn retains its ownership.
+**Acceptance.** Fail release persistence past eight retries, submit a message,
+then heal the store without another user action. The pending message starts
+exactly once with its original identity. Cancellation during recovery prevents
+later execution, and a genuinely running or accepted pending turn retains its
+ownership.
 
 ### R03 Watch intent after restart
 
