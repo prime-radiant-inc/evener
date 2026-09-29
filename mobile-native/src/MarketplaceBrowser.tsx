@@ -32,9 +32,9 @@ import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
-const MARKETPLACES_FAILED = "Could not load marketplaces. Try again when connected.";
-const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
-export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins. Try again when connected.";
+const MARKETPLACES_FAILED = "Could not load marketplaces.";
+const CATALOG_FAILED = "Could not load this catalog.";
+export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins.";
 const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
 
 export function MarketplaceBrowser({

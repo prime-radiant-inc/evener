@@ -42,6 +42,7 @@ import {
 	stageFleetState,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
+import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
 import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
@@ -213,6 +214,10 @@ export async function createDemoHub(
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
+	const olderHistoryThread = fleetOptions?.olderHistory
+		? threads.get(fleetSessionRef("s-pr2138"))
+		: undefined;
+	if (olderHistoryThread) withOlderHistory(olderHistoryThread);
 	const fleetRefs = new Set(fleetThreads.map((value) => value.evener.ref));
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
@@ -555,6 +560,20 @@ export async function createDemoHub(
 							refs.add(selected.evener.ref);
 							subscribers.set(socket, refs);
 						}
+						// EVENER_DEMO_FLEET_OLDER: the latest page of items, and a cursor
+						// to the pages before it.
+						if (
+							selected === olderHistoryThread &&
+							params.includeTurns &&
+							typeof params.itemLimit === "number"
+						) {
+							const page = latestPage(selected.turns ?? [], params.itemLimit);
+							result = {
+								thread: { ...selected, turns: page.turns },
+								...(page.olderCursor ? { olderCursor: page.olderCursor } : {}),
+							};
+							break;
+						}
 						result = {
 							thread: {
 								...selected,
@@ -566,9 +585,16 @@ export async function createDemoHub(
 						subscribers.get(socket)?.delete(params.ref);
 						result = {};
 						break;
-					case "thread/turns/list":
-						result = { data: [] };
+					case "thread/turns/list": {
+						const page =
+							selected && selected === olderHistoryThread
+								? pageBefore(selected.turns ?? [], params.cursor, params.itemLimit ?? 40)
+								: null;
+						result = page
+							? { data: page.turns, ...(page.olderCursor ? { nextCursor: page.olderCursor } : {}) }
+							: { data: [] };
 						break;
+					}
 					case "turn/queue":
 					case "turn/steer":
 					case "turn/cancelQueued":
@@ -889,6 +915,8 @@ environment variables:
   EVENER_DEMO_FLEET_EMPTY=1          with the fleet: nothing live
   EVENER_DEMO_FLEET_ASK_AFTER=<s>    with the fleet: s-gateway asks after s seconds
   EVENER_DEMO_FLEET_PLAN_REVISED=1   with the fleet: serve the plan's revision
+  EVENER_DEMO_FLEET_OLDER=1          with the fleet: fifteen older turns ahead of
+                                     Get PR 2138's, paged by item as a v6 hub does
   EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
                                      and messages, many steps and notifications,
                                      so screenshots exercise real-sized content
@@ -920,6 +948,7 @@ if (
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: secondsFrom("EVENER_DEMO_FLEET_ASK_AFTER"),
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
+					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
 					long: process.env.EVENER_DEMO_LONG === "1",
 				}
 			: undefined,
