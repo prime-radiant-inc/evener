@@ -248,7 +248,7 @@ it("holds the discard while the hub is away", () => {
 });
 
 it("shows a failed load as a line with nothing to press", () => {
-	const { tree } = mount(transcript({ confirmed: null, error: "Couldn't load this hub's setting." }));
+	const { tree } = mount(transcript({ confirmed: null, error: "The hub request could not be confirmed." }));
 	expect(renderedText(tree)).toContain("Couldn't load this hub's setting.");
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Try again" })).toHaveLength(0);
 });
@@ -284,16 +284,41 @@ it("drops a failed save's line while the hub's setting is being checked", async 
 });
 
 it.each([
-	["a changed setting", "Transcript display settings changed again before this draft was saved.", false],
-	["a draft to check", "Could not restore the saved transcript draft. Check current settings to retry.", false],
-	["a phone that can't keep the draft", "Could not save the transcript draft locally.", true],
-])("says %s in its own words", (_name, error, storageUnavailable) => {
-	const { tree } = mount(transcript({ error, storageUnavailable }));
+	// nativePreferences' own message for a hub-side failure.
+	[
+		"a setting the hub didn't send",
+		{ error: "The hub request could not be confirmed." },
+		/Couldn't load this hub's setting/,
+	],
+	// The shared store's draft-side messages, with the state it sets beside them.
+	[
+		"a change the phone couldn't keep",
+		{ error: "Could not save the transcript draft locally.", storageUnavailable: true },
+		/This phone couldn't update its copy of this setting/,
+	],
+	[
+		"a saved change the phone couldn't record",
+		{
+			error: "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.",
+			storageUnavailable: true,
+		},
+		/This phone couldn't update its copy of this setting/,
+	],
+])("says %s in its own words", (_name, over, expected) => {
+	const { tree } = mount(transcript(over));
 	expect(renderedText(tree)).not.toMatch(CALM);
 	expect(renderedText(tree)).not.toContain("Check current settings");
-	expect(renderedText(tree)).toMatch(
-		storageUnavailable ? /This phone couldn't keep the change/ : /Couldn't load this hub's setting/,
-	);
+	expect(renderedText(tree)).toMatch(expected);
+});
+
+it("says a conflict happened even before the hub's value has loaded", () => {
+	const { tree } = mount(transcript({ conflict: true, confirmed: null, draft: { revision: 3, config: PRESET } }));
+	expect(renderedText(tree)).toContain("The hub's setting changed while you were choosing.");
+});
+
+it("says it is connecting while the hub hasn't said whether it keeps the setting", () => {
+	const { tree } = mount(transcript({ support: "unknown", confirmed: null }));
+	expect(renderedText(tree)).toContain("Connecting to Work hub…");
 });
 
 it("says it is connecting while the hub's setting is still loading", () => {

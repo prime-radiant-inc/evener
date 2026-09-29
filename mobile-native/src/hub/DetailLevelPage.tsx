@@ -17,6 +17,7 @@ import {
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
+import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SwitchRow } from "../sheet/Grouped";
@@ -46,7 +47,7 @@ const HOOK_LABELS: Record<(typeof HOOK_EXIT_DETAILS)[number], string> = {
 
 const NOT_SAVED = "The change couldn't be saved. Choose it again.";
 const NOT_LOADED = "Couldn't load this hub's setting. It loads again once the hub is back.";
-const NOT_KEPT = "This phone couldn't keep the change, so it isn't saved yet.";
+const NOT_UPDATED = "This phone couldn't update its copy of this setting.";
 
 export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "DetailLevel">) {
 	const { hubName } = useHubSheet();
@@ -68,7 +69,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const current = state?.confirmed ?? null;
 	const config = (state?.draft ?? current)?.config;
 	// A page that has never loaded says it is connecting (ruling 21).
-	if (!state || !model || (!config && state.loading)) {
+	if (!state || !model || (!config && (state.loading || state.support === "unknown"))) {
 		return (
 			<GroupedPage>
 				<SheetStatus />
@@ -110,9 +111,9 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				</>
 			) : null}
 			{writeUncertain ? <GroupFooter>Checking the hub's setting…</GroupFooter> : null}
+			{conflict ? <GroupFooter tone="attention">The hub's setting changed while you were choosing.</GroupFooter> : null}
 			{conflict && current ? (
 				<>
-					<GroupFooter tone="attention">The hub's setting changed while you were choosing.</GroupFooter>
 					<Group>
 						<Row
 							label="Keep mine"
@@ -138,9 +139,9 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				// The store's own messages name its plumbing ("transcript display",
 				// a Check current settings button this page doesn't have), so the
 				// page says what happened in its own words.
-				<GroupFooter tone="danger">{state.storageUnavailable ? NOT_KEPT : NOT_LOADED}</GroupFooter>
+				<GroupFooter tone="danger">{state.error === HUB_UNCONFIRMED_MESSAGE ? NOT_LOADED : NOT_UPDATED}</GroupFooter>
 			) : null}
-			{failed && !writeUncertain ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{failed && !writeUncertain && !conflict ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
 			{config && state.support === "supported" ? (
 				<>
 					<GroupLabel>Default detail level</GroupLabel>
