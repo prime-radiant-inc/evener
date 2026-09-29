@@ -468,7 +468,7 @@ it("uses the shared picker pipeline without attaching late results to an abandon
 		],
 		encode: async () => {
 			started.resolve(null);
-			return (await encoding.promise) as string;
+			return { data: (await encoding.promise) as string, mediaType: "image/jpeg" };
 		},
 	});
 	const choosing = selection.choose();
@@ -479,7 +479,7 @@ it("uses the shared picker pipeline without attaching late results to an abandon
 	await choosing;
 	expect(store.getState().images).toEqual([]);
 	await selection.choose();
-	expect(document.imagePreviews()).toEqual([{ marker: 2, name: "photo.jpg", mediaType: "image/png", data: "AQID" }]);
+	expect(document.imagePreviews()).toEqual([{ marker: 2, name: "photo.jpg", mediaType: "image/jpeg", data: "AQID" }]);
 	expect(store.getState().prompt).toBe("[image 2]");
 	document.removeImage("photo");
 	expect(document.imagePreviews()).toEqual([]);
@@ -1265,14 +1265,14 @@ describe("a start the hub answers with an error (#3104)", () => {
 		return { store, saved };
 	}
 
-	it("isn't held when the hub refused it before running it: no session exists", async () => {
-		const { store, saved } = refusing(new WireError("cwd is not a directory", -32602));
+	it("is held even when the hub refused it as invalid, since the session may exist by then (#3184)", async () => {
+		const { store, saved } = refusing(new WireError("skill input is not supported", -32602));
 		await store.getState().setCwd("/project", false);
 		store.getState().setPrompt("go");
 		expect(await store.getState().submit()).toEqual({ status: "failed" });
-		expect(store.getState().startMayRepeat()).toBe(false);
-		expect(store.getState().error).toBe("cwd is not a directory\n\nNo session was started. Your input is kept.");
-		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: false });
+		expect(store.getState().startMayRepeat()).toBe(true);
+		expect(store.getState().error).toContain("It may have started");
+		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
 	});
 
 	it("is held when the hub failed it in a way that leaves open whether it ran", async () => {

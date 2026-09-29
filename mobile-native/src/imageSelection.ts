@@ -6,6 +6,9 @@ export interface PickedImage {
 	name: string;
 	type: string;
 	size: number;
+	/** The pixel size the picker reports; absent or 0 when it doesn't know. */
+	width?: number;
+	height?: number;
 }
 interface PendingImage extends PickedImage {
 	id: string;
@@ -21,7 +24,9 @@ export interface ImagePicker {
 	/** One photo from the camera; rejects with CameraAccessDenied when the
 	 * person has turned camera access off. */
 	capture(): Promise<PickedImage[]>;
-	encode(image: PickedImage): Promise<string>;
+	/** The image as the phone sends it: scaled down to fit the attachment
+	 * limit, or as it is when it already fits (nativeImagePicker.ts). */
+	encode(image: PickedImage): Promise<EncodedImage>;
 	id(): string;
 }
 
@@ -31,6 +36,37 @@ export class CameraAccessDenied extends Error {
 		super("Camera access is off. Turn it on in Settings to take photos here.");
 		this.name = "CameraAccessDenied";
 	}
+}
+
+/** An image as base64, and the type it is in. */
+export interface EncodedImage {
+	data: string;
+	mediaType: string;
+}
+
+/** The largest picked file the phone decodes to scale it: far above a camera
+ * HEIC or JPEG, and a bound on the memory decoding takes. */
+export const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
+
+/** A full frame from a 48 megapixel iPhone camera, the most pixels the phone
+ * decodes. */
+const FULL_FRAME_WIDTH = 8064;
+const FULL_FRAME_HEIGHT = 6048;
+const MAX_SOURCE_PIXELS = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
+
+const TOO_LARGE = "This photo is too large to attach. Try a screenshot or a smaller image.";
+
+/** Why a picked image can't be staged, said before it's decoded, or undefined.
+ * Its own size isn't the attachment limit: the phone scales it down and the
+ * encoding is measured after. A picker that doesn't say its pixel size leaves
+ * only the file-size cap to bound the decode. */
+function sourceRejection(image: PickedImage, reserved: number): string | undefined {
+	if (!Number.isFinite(image.size) || image.size < 0) return `${image.name} (could not read file size)`;
+	if (image.size > MAX_SOURCE_BYTES || (image.width ?? 0) * (image.height ?? 0) > MAX_SOURCE_PIXELS)
+		return `${image.name}: ${TOO_LARGE}`;
+	// The shared check bundles size with type and count (#3166); with no size
+	// it applies only those two.
+	return rejectionReason({ type: image.type, name: image.name, size: 0 }, reserved);
 }
 
 function base64ByteLength(data: string): number {
@@ -95,10 +131,7 @@ export class ImageSelection {
 			let reserved = current.images?.length ?? 0;
 			const pending: PendingImage[] = [];
 			for (const image of picked) {
-				const reason =
-					!Number.isFinite(image.size) || image.size < 0
-						? `${image.name} (could not read file size)`
-						: rejectionReason(image, reserved);
+				const reason = sourceRejection(image, reserved);
 				if (reason) {
 					errors.push(reason);
 					continue;
@@ -116,12 +149,12 @@ export class ImageSelection {
 				if (generation !== this.generation) return;
 				if (!this.snapshot.pending.some((item) => item.id === image.id)) continue;
 				try {
-					const data = await this.picker.encode(image);
+					const { data, mediaType } = await this.picker.encode(image);
 					if (generation !== this.generation) return;
 					if (!this.snapshot.pending.some((item) => item.id === image.id)) continue;
 					const reason = rejectionReason(
 						{
-							type: "image/png",
+							type: mediaType,
 							size: base64ByteLength(data),
 							name: image.name,
 						},
@@ -132,7 +165,7 @@ export class ImageSelection {
 						this.document.addImage({
 							id: image.id,
 							marker: image.marker,
-							mediaType: "image/png",
+							mediaType,
 							name: image.name,
 							data,
 						});
