@@ -83,20 +83,23 @@ export function AlertBanner({
 	const opacity = useRef(new Animated.Value(0)).current;
 	useEffect(() => {
 		let live = true;
-		void AccessibilityInfo.isReduceMotionEnabled().then((reduce) => {
-			if (!live) return;
-			const fade = Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true });
-			if (reduce) {
-				drop.setValue(0);
-				fade.start();
-				return;
-			}
-			// Settles in about 300ms (spec 16.6).
-			Animated.parallel([
-				Animated.spring(drop, { toValue: 0, stiffness: 300, damping: 26, mass: 1, useNativeDriver: true }),
-				fade,
-			]).start();
-		});
+		// A read that fails shows the banner without motion rather than not at all.
+		void AccessibilityInfo.isReduceMotionEnabled()
+			.catch(() => true)
+			.then((reduce) => {
+				if (!live) return;
+				const fade = Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true });
+				if (reduce) {
+					drop.setValue(0);
+					fade.start();
+					return;
+				}
+				// Settles in about 300ms (spec 16.6).
+				Animated.parallel([
+					Animated.spring(drop, { toValue: 0, stiffness: 300, damping: 26, mass: 1, useNativeDriver: true }),
+					fade,
+				]).start();
+			});
 		return () => {
 			live = false;
 		};
@@ -108,16 +111,25 @@ export function AlertBanner({
 	const drag = useRef(new Animated.Value(0)).current;
 	const dismiss = useRef(onDismiss);
 	dismiss.current = onDismiss;
+	// The drag takes the touch from the Pressable, whose press-out would let
+	// the banner expire under the finger, so the drag keeps it itself.
+	const touch = useRef(onTouch);
+	touch.current = onTouch;
 	const pan = useMemo(() => {
 		const springBack = () => Animated.spring(drag, { toValue: 0, useNativeDriver: true }).start();
 		return PanResponder.create({
 			onMoveShouldSetPanResponder: (_event, gesture) => gesture.dy < -4 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+			onPanResponderGrant: () => touch.current(true),
 			onPanResponderMove: (_event, gesture) => drag.setValue(Math.min(0, gesture.dy)),
 			onPanResponderRelease: (_event, gesture) => {
+				touch.current(false);
 				if (swipeDismisses(gesture.dy, gesture.vy)) dismiss.current();
 				else springBack();
 			},
-			onPanResponderTerminate: springBack,
+			onPanResponderTerminate: () => {
+				touch.current(false);
+				springBack();
+			},
 		});
 	}, [drag]);
 

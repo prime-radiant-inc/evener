@@ -84,6 +84,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	// late answer never reaches the feed. A drop the same client recovers
 	// from keeps both, and its fresh reads are diffed.
 	const board = useMemo(() => (client ? createBoardController({ scope: "attention" }) : null), [client]);
+	useEffect(() => () => board?.dispose(), [board]);
 	useEffect(() => {
 		feed.rebaseline();
 		if (!board || hubId === null) return;
@@ -113,10 +114,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 				feed.observeNotices(list);
 			}
 		});
-		return () => {
-			stop();
-			board.dispose();
-		};
+		return stop;
 	}, [board, feed, hubId]);
 	// A client refuses requests until it's ready; ready again after a drop, it
 	// gets fresh readers that catch up on what it missed.

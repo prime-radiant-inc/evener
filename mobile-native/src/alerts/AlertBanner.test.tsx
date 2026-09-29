@@ -9,6 +9,7 @@ const native = vi.hoisted(() => ({
 	announced: [] as string[],
 	pan: null as null | {
 		onMoveShouldSetPanResponder: (event: unknown, gesture: { dx: number; dy: number }) => boolean;
+		onPanResponderGrant: () => void;
 		onPanResponderRelease: (event: unknown, gesture: { dy: number; vy: number }) => void;
 	},
 }));
@@ -130,10 +131,13 @@ it("dismisses on an upward swipe past its threshold, and springs back short of i
 	if (!pan) throw new Error("no pan responder");
 	expect(pan.onMoveShouldSetPanResponder({}, { dx: 0, dy: -10 })).toBe(true);
 	expect(pan.onMoveShouldSetPanResponder({}, { dx: 0, dy: 10 })).toBe(false);
+	// The drag keeps the banner while the finger is down, as a press does.
+	act(() => pan.onPanResponderGrant());
 	act(() => pan.onPanResponderRelease({}, { dy: -10, vy: 0 }));
-	expect(calls).toEqual([]);
+	expect(calls).toEqual(["touch:true", "touch:false"]);
+	act(() => pan.onPanResponderGrant());
 	act(() => pan.onPanResponderRelease({}, { dy: -40, vy: 0 }));
-	expect(calls).toEqual(["dismiss"]);
+	expect(calls).toEqual(["touch:true", "touch:false", "touch:true", "touch:false", "dismiss"]);
 });
 
 it("is one button VoiceOver reads and can dismiss with escape", () => {
