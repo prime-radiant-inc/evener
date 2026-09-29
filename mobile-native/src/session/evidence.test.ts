@@ -228,6 +228,20 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A delegate's stop adds provenance lines under its footer; they read as
+	// printed, a scratch path's underscores and all.
+	it("shows a delegate stop's provenance as printed, only its footer's codes in words", () => {
+		const output =
+			"[delegate job_x · cancelled · cancelled_by_request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]";
+		expect(stepEvidence({ label: "job_stop", detail: { output } })).toEqual([
+			{
+				kind: "output",
+				text: "[delegate job_x · cancelled · cancelled by request · was running]\nrequested by: parent\nscratch: /tmp/a  b  exit_zero  d [tree_order]",
+				lines: 3,
+			},
+		]);
+	});
+
 	// Only a listing and a stop footer carry codes. Anything else a job tool
 	// prints, a job's own output among it, reads as printed.
 	it("shows other job output as printed, codes and all", () => {
