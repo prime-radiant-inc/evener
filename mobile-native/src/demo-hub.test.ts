@@ -370,6 +370,21 @@ describe("native demonstration hub", () => {
 });
 
 describe("native demonstration hub's redesign fleet", () => {
+	it("says the hub is up to date without EVENER_DEMO_FLEET, so the Hub's About shows real text", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			expect(await client.request("evener/update/check", { channel: "" })).toMatchObject({
+				updateAvailable: false,
+				applicable: true,
+			});
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("answers no navigation, search, auth or plugin method without EVENER_DEMO_FLEET", async () => {
 		const hub = await createDemoHub(0);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
