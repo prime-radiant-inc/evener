@@ -29,12 +29,23 @@ import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
-import { PinnedSectionScreen, PinSectionsScreen } from "./src/PinSectionsScreen";
+import {
+	PinnedSectionScreen,
+	PinSectionsScreen,
+} from "./src/PinSectionsScreen";
 import { PluginsScreen } from "./src/PluginsScreen";
-import { ProjectScreen, ProjectsScreen, SessionLocationScreen } from "./src/ProjectsScreen";
+import {
+	ProjectScreen,
+	ProjectsScreen,
+	SessionLocationScreen,
+} from "./src/ProjectsScreen";
 import { ProvidersScreen } from "./src/ProvidersScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
-import { ConversationScreen, HubsScreen, type Routes } from "./src/screens";
+import {
+	ConversationScreen,
+	HubsScreen,
+	type Routes,
+} from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
@@ -59,7 +70,9 @@ const navigationRef = createNavigationContainerRef<Routes>();
 
 /** The root stack's routes up to the focused one, as alerts read them. */
 function stackRoutes(state: NavigationState) {
-	return state.routes.slice(0, state.index + 1).map((route) => ({ name: route.name, params: route.params }));
+	return state.routes
+		.slice(0, state.index + 1)
+		.map((route) => ({ name: route.name, params: route.params }));
 }
 
 // Runs before the first render, so the first frame already has the
@@ -86,7 +99,8 @@ export default function App() {
 	);
 }
 function Navigation() {
-	const { loading, initialLocation, activeProfile, restorationError } = useConnection();
+	const { loading, initialLocation, activeProfile, restorationError } =
+		useConnection();
 	const [state, setState] = useState<NavigationState>();
 	const [saveError, setSaveError] = useState<string | null>(null);
 	// In-app alerts follow what is on screen (spec 13.3).
@@ -99,7 +113,9 @@ function Navigation() {
 			locations.save(locationForRoute(route, activeProfile?.id ?? null));
 			setSaveError(null);
 		} catch {
-			setSaveError("This screen could not be saved for reopening after restart.");
+			setSaveError(
+				"This screen could not be saved for reopening after restart.",
+			);
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
@@ -143,28 +159,51 @@ function Navigation() {
 						contentStyle: { backgroundColor: colors.background },
 					}}
 				>
-					<Stack.Screen name="Hubs" component={HubsScreen} options={{ title: "Evener · Hubs" }} />
+					<Stack.Screen
+						name="Hubs"
+						component={HubsScreen}
+						options={{ title: "Evener · Hubs" }}
+					/>
 					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen
 						name="SessionDeletion"
 						component={SessionDeletionScreen}
 						options={{ title: "Delete saved session" }}
 					/>
-					<Stack.Screen name="Fork" component={ForkScreen} options={{ title: "Fork conversation" }} />
+					<Stack.Screen
+						name="Fork"
+						component={ForkScreen}
+						options={{ title: "Fork conversation" }}
+					/>
 					<Stack.Screen name="Projects" component={ProjectsScreen} />
-					<Stack.Screen name="PinSections" component={PinSectionsScreen} options={{ title: "Pinned sections" }} />
-					<Stack.Screen name="PinnedSection" component={PinnedSectionScreen} options={{ title: "Pinned section" }} />
+					<Stack.Screen
+						name="PinSections"
+						component={PinSectionsScreen}
+						options={{ title: "Pinned sections" }}
+					/>
+					<Stack.Screen
+						name="PinnedSection"
+						component={PinnedSectionScreen}
+						options={{ title: "Pinned section" }}
+					/>
 					<Stack.Screen
 						name="PinSectionEditor"
 						component={PinSectionEditorScreen}
 						options={{ title: "Manage section" }}
 					/>
-					<Stack.Screen name="PinAssignment" component={PinAssignmentScreen} options={{ title: "Pin session" }} />
+					<Stack.Screen
+						name="PinAssignment"
+						component={PinAssignmentScreen}
+						options={{ title: "Pin session" }}
+					/>
 					<Stack.Screen
 						name="LaunchSettings"
 						component={LaunchSettingsScreen}
 						options={({ route }) => ({
-							title: route.params.projectCwd === undefined ? "Launch defaults" : "Project launch settings",
+							title:
+								route.params.projectCwd === undefined
+									? "Launch defaults"
+									: "Project launch settings",
 						})}
 					/>
 					<Stack.Screen
@@ -174,7 +213,11 @@ function Navigation() {
 					/>
 					<Stack.Screen name="Providers" component={ProvidersScreen} />
 					<Stack.Screen name="Plugins" component={PluginsScreen} />
-					<Stack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
+					<Stack.Screen
+						name="HubSettings"
+						component={HubSettingsScreen}
+						options={{ title: "Hub settings" }}
+					/>
 					<Stack.Screen
 						name="SessionLocation"
 						component={SessionLocationScreen}
@@ -187,8 +230,16 @@ function Navigation() {
 							title: route.params.title || "Project",
 						})}
 					/>
-					<Stack.Screen name="Hub" component={HubSheet} options={{ presentation: "modal", headerShown: false }} />
-					<Stack.Screen name="NewSession" component={NewSessionScreen} options={{ title: "New session" }} />
+					<Stack.Screen
+						name="Hub"
+						component={HubSheet}
+						options={{ presentation: "modal", headerShown: false }}
+					/>
+					<Stack.Screen
+						name="NewSession"
+						component={NewSessionScreen}
+						options={{ title: "New session" }}
+					/>
 					<Stack.Screen
 						name="Conversation"
 						component={ConversationScreen}
@@ -197,8 +248,16 @@ function Navigation() {
 							animationTypeForReplace: replaceAnimation(route.params),
 						})}
 					/>
-					<Stack.Screen name="Reader" component={ReaderScreen} options={{ title: "" }} />
-					<Stack.Screen name="Subagents" component={SubagentsScreen} options={{ title: "" }} />
+					<Stack.Screen
+						name="Reader"
+						component={ReaderScreen}
+						options={{ title: "" }}
+					/>
+					<Stack.Screen
+						name="Subagents"
+						component={SubagentsScreen}
+						options={{ title: "" }}
+					/>
 					<Stack.Screen
 						name="Subagent"
 						component={SubagentScreen}
@@ -209,22 +268,66 @@ function Navigation() {
 							contentStyle: { backgroundColor: colors.palette.canvas },
 						}}
 					>
-						<Stack.Screen name="TasksSheet" component={TasksSheet} options={SHEET_ROUTES.TasksSheet} />
-						<Stack.Screen name="NotesSheet" component={NotesSheet} options={SHEET_ROUTES.NotesSheet} />
-						<Stack.Screen name="RowMenuSheet" component={RowMenuSheet} options={SHEET_ROUTES.RowMenuSheet} />
-						<Stack.Screen name="QueueSheet" component={QueueSheet} options={SHEET_ROUTES.QueueSheet} />
-						<Stack.Screen name="OutlineSheet" component={OutlineSheet} options={SHEET_ROUTES.OutlineSheet} />
-						<Stack.Screen name="CommentSheet" component={CommentSheet} options={SHEET_ROUTES.CommentSheet} />
-						<Stack.Screen name="CommentsSheet" component={CommentsSheet} options={SHEET_ROUTES.CommentsSheet} />
-						<Stack.Screen name="ReviewSheet" component={ReviewSheet} options={SHEET_ROUTES.ReviewSheet} />
+						<Stack.Screen
+							name="TasksSheet"
+							component={TasksSheet}
+							options={SHEET_ROUTES.TasksSheet}
+						/>
+						<Stack.Screen
+							name="NotesSheet"
+							component={NotesSheet}
+							options={SHEET_ROUTES.NotesSheet}
+						/>
+						<Stack.Screen
+							name="RowMenuSheet"
+							component={RowMenuSheet}
+							options={SHEET_ROUTES.RowMenuSheet}
+						/>
+						<Stack.Screen
+							name="QueueSheet"
+							component={QueueSheet}
+							options={SHEET_ROUTES.QueueSheet}
+						/>
+						<Stack.Screen
+							name="OutlineSheet"
+							component={OutlineSheet}
+							options={SHEET_ROUTES.OutlineSheet}
+						/>
+						<Stack.Screen
+							name="CommentSheet"
+							component={CommentSheet}
+							options={SHEET_ROUTES.CommentSheet}
+						/>
+						<Stack.Screen
+							name="CommentsSheet"
+							component={CommentsSheet}
+							options={SHEET_ROUTES.CommentsSheet}
+						/>
+						<Stack.Screen
+							name="ReviewSheet"
+							component={ReviewSheet}
+							options={SHEET_ROUTES.ReviewSheet}
+						/>
 						<Stack.Screen
 							name="SessionInfoSheet"
 							component={SessionInfoSheet}
 							options={SHEET_ROUTES.SessionInfoSheet}
 						/>
-						<Stack.Screen name="ModelSheet" component={ModelSheet} options={SHEET_ROUTES.ModelSheet} />
-						<Stack.Screen name="CommandsSheet" component={CommandsSheet} options={SHEET_ROUTES.CommandsSheet} />
-						<Stack.Screen name="FilesSheet" component={FilesSheet} options={SHEET_ROUTES.FilesSheet} />
+						<Stack.Screen
+							name="ModelSheet"
+							component={ModelSheet}
+							options={SHEET_ROUTES.ModelSheet}
+						/>
+						<Stack.Screen
+							name="CommandsSheet"
+							component={CommandsSheet}
+							options={SHEET_ROUTES.CommandsSheet}
+						/>
+						<Stack.Screen
+							name="FilesSheet"
+							component={FilesSheet}
+							options={SHEET_ROUTES.FilesSheet}
+						/>
 						<Stack.Screen
 							name="StopSubagentSheet"
 							component={StopSubagentSheet}
