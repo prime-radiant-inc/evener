@@ -873,7 +873,8 @@ export function ConversationScreen({
 	const runMs = useCallback((now: number) => (subagentRow ? timeInState(subagentRow, now) : null), [subagentRow]);
 	// How tall the toast, Next and "↓ new" stand over the transcript's end.
 	const [floatingHeight, setFloatingHeight] = useState(0);
-	const stateLine = conversation ? sessionStateLine(conversation, Date.now(), runMs(Date.now())) : null;
+	const now = Date.now();
+	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
