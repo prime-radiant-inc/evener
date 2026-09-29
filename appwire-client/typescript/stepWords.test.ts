@@ -22,7 +22,7 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_shell: "Ran cat agent/tree_order.go",
   call_shell_failed: "Ran test -f agent/missing.go",
   call_shell_windowed: "Ran seq 1 3000",
-  call_shell_timeout: "Ran printf 'started\\n'; sleep 10",
+  call_shell_timeout: "Ran printf 'started\\n'; sleep 600",
   call_read_transcript: "Read transcript 02wMz5Txv5aIxgf9yVdd0N · all 1 turn",
   call_read_transcript_outline: "Read transcript 02wMz5Txv5aIxgf9yVdd0N · outline of 1 turn",
   call_find_sessions: 'Searched sessions for "settle race" · 1 match',
@@ -43,6 +43,12 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_worktree_adopt: "Adopted worktree lane",
   // The web's ask_user descriptor's line, the question's header.
   call_ask_user: "Asked: [Deploy]",
+  // The web's job rows' lines.
+  call_job_status: "Checked job_fixture_1 · running",
+  call_job_list: "Listed jobs",
+  // The web read job_stop's whole footer ("· shell job_fixture_1 · cancelled ·
+  // cancelled_by_request · stopped_by_parent"); the line now says the status.
+  call_job_stop: "Stopped job_fixture_1 · cancelled",
   call_web_fetch: "Fetched https://example.com/release-notes · 48213 bytes",
   call_web_search: 'Searched the web for "go race detector settle drain" · 2 results',
   call_use_skill: "Activated skill: systematic-debugging",
@@ -88,6 +94,9 @@ test.each<[ToolWireCall, StepWords]>([
     },
   ],
   ["call_worktree_adopt", { verb: "Adopted worktree", target: "lane" }],
+  ["call_job_status", { verb: "Checked", target: "job_fixture_1", detail: "running" }],
+  ["call_job_list", { verb: "Listed jobs" }],
+  ["call_job_stop", { verb: "Stopped", target: "job_fixture_1", detail: "cancelled" }],
   // A line with nothing machine-shaped in it is its verb alone.
   ["call_task_list_add", { verb: "☐ Run the race detector again" }],
   ["call_task_list_view", { verb: "Checked the task list" }],

@@ -10,7 +10,6 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
-	type ItemModel,
 	mcpToolParts,
 	parseAskUserQuestions,
 	skillName,
@@ -120,9 +119,7 @@ export function sessionRows(
 /** The questions an earlier ask_user row shows (QuestionHistory), or
  * undefined when its arguments name none it can read. */
 export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user"
-		? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel)
-		: undefined;
+	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments }) : undefined;
 }
 
 // A composed answer reply: "[answers]" and then numbered lines like
@@ -318,6 +315,8 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
+	/** How many questions a part's ask_user calls asked: a call can ask several. */
+	questions: number;
 }
 
 // "go test ./agent/..." runs "go test"; "ls -la" runs "ls".
@@ -379,7 +378,9 @@ function partText(group: Group): string {
 		case "worktree":
 			return `managed worktrees ${times}`;
 		case "ask":
-			return n === 1 ? "asked a question" : `asked ${n} questions`;
+			return group.questions === 1 ? "asked a question" : `asked ${group.questions} questions`;
+		case "jobs":
+			return `managed jobs ${times}`;
 		case "mcp":
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
@@ -410,7 +411,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step.label);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false };
+			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -419,6 +420,9 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		// A call whose questions don't parse still asked one.
+		if (part.family === "ask")
+			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;
 		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
 			const name = namedBy(part.family, step);
 			if (name) group.names.add(name);

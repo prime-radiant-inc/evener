@@ -209,6 +209,22 @@ func TestSubagentRunFromDelegate(t *testing.T) {
 	}
 }
 
+// A failed run's cause rides beside its reason code on the wire (#3327); the
+// TUI keeps both.
+func TestSubagentRunFromDelegateKeepsAFailedRunsError(t *testing.T) {
+	run := subagentRunFromDelegate(appwire.EvenerDelegateInfo{
+		DelegateID: "dlg_1",
+		Status:     "failed",
+		Outcome:    "failed",
+		Reason:     "failed",
+		Error:      " provider returned 500 ",
+		Terminal:   true,
+	})
+	if run.Reason != "failed" || run.Error != "provider returned 500" {
+		t.Fatalf("reason=%q error=%q", run.Reason, run.Error)
+	}
+}
+
 func TestSubagentRunFromToolItemEmpty(t *testing.T) {
 	run := subagentRunFromToolItem(appwire.ThreadItem{})
 	if run.DelegateID != "" || run.Status != "" {

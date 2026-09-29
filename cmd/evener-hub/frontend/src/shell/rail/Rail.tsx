@@ -1390,6 +1390,13 @@ function NavigationRail({
         // A nested row (a fork original) is found through the row that carries
         // it, the location's top_level_ref.
         const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
+        // The count effect creates the list when navigation counts archived
+        // rows. A location can resolve to one while the count is still 0 (a
+        // lagging revision, a deep link ahead of the count), so fetch it here.
+        if (catalog && !list && (project?.archived_total ?? 0) === 0)
+          requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:first`, () =>
+            refreshArchivedList(catalog, location.project_key as string),
+          );
         if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
           const cursor = list.nextCursor;
           if (cursor)

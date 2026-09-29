@@ -627,6 +627,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		MobileBaseURL:             cfg.MobileBaseURL,
 		HubStateRoot:              cfg.HubStateRoot,
 		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
+		MachineRoots:              cfg.Roots,
 		PluginRoot:                pluginRoot,
 		TranscriptDisplayStore:    transcriptDisplayStore,
 		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,

@@ -455,7 +455,8 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		expect(glass(tree)).toHaveLength(1);
 		expect(glass(tree)[0]?.props.glassEffectStyle).toBe("regular");
 		expect(barRoom(tree)).toBe(64);
-		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		const chipsFill = tree.root.find((node) => node.props.testID === "chips-row" && String(node.type) === "View").props
+			.style.backgroundColor;
 		expect(chipsFill).toBe("transparent");
 		expect(statusLine(tree).props.style.backgroundColor).toBe("transparent");
 		const note = tree.root.findAll(
@@ -497,7 +498,7 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 	it("fades overflowing chips into the page, and not on the glass", () => {
 		const fades = (glassTop?: number) => {
 			const tree = render(header({ chips: [goal], glassTop }));
-			const row = tree.root.find((node) => node.props.testID === "chips-row");
+			const row = tree.root.find((node) => node.props.testID === "chips-row" && String(node.type) === "View");
 			const scroller = row.findAll((node) => node.props.horizontal === true)[0];
 			act(() => scroller?.props.onLayout({ nativeEvent: { layout: { width: 300, height: 48, x: 0, y: 0 } } }));
 			act(() => scroller?.props.onContentSizeChange(500, 48));
@@ -511,13 +512,16 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		const tree = render(header({ chips: [goal], glassTop: 64 }));
 		const clips = tree.root.findAll((node) => node.props.style?.overflow === "hidden");
 		expect(clips).toHaveLength(1);
-		expect(clips[0]?.findAll((node) => node.props.testID === "chips-row")).toHaveLength(1);
+		expect(clips[0]?.findAll((node) => node.props.testID === "chips-row" && String(node.type) === "View")).toHaveLength(
+			1,
+		);
 	});
 
 	it("keeps the opaque page fill, and no glass, without it", () => {
 		const tree = render(header({ chips: [goal] }));
 		expect(glass(tree)).toEqual([]);
-		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
+		const chipsFill = tree.root.find((node) => node.props.testID === "chips-row" && String(node.type) === "View").props
+			.style.backgroundColor;
 		expect(chipsFill).toBe(paletteFor("light").page);
 	});
 });

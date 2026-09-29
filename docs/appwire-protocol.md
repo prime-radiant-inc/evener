@@ -659,6 +659,7 @@ _(no fields)_
 | `status` | `string` |  |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` |  |  |
 | `needsAttention` | `bool` |  |  |
@@ -1464,6 +1465,7 @@ _(no fields)_
 | `projectionRevision` | `uint64` | yes |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` | yes |  |
 | `notResumableReason` | `string` | yes |  |

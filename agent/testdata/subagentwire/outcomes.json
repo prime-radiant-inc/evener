@@ -30,6 +30,7 @@
               "projectionRevision": 3,
               "outcome": "failed",
               "reason": "failed",
+              "error": "provider returned 500",
               "terminal": true,
               "resumable": true,
               "mandate": "Update the lockfile",
@@ -43,7 +44,7 @@
               "latestActivityAt": "2026-09-28T20:02:30Z",
               "durationMs": 30000,
               "packetKind": "terminal_error",
-              "message": "provider returned 500",
+              "message": "provider returned 500\nretry-after: 30",
               "turns": [],
               "branch": {
                 "error": "child session \"child-dlg_failed\" unavailable in state directory"

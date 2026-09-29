@@ -602,13 +602,11 @@ test("job_list: rows join a legacy failed record to the display word by its reas
 
 // --- job_stop -----------------------------------------------------------
 
-test("job_stop: summary shows the target job and the tool's own outcome footer", () => {
+test("job_stop: summary shows the target job and the status its footer reports", () => {
   const d = toolRendererFor("job_stop");
   const args = JSON.stringify({ target: "job_7" });
   const output = "[job job_7 · cancelled · cancelled_by_request]";
-  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe(
-    "Stopped job_7 · job job_7 · cancelled · cancelled_by_request",
-  );
+  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe("Stopped job_7 · cancelled");
 });
 
 test("job_stop: no footer yet (request in flight) shows just the target", () => {
@@ -905,17 +903,19 @@ test("job_send_message aliases to the same descriptor as delegate_send, reading 
 // unlisted job_* name. These pin the predicate with a name no exact
 // descriptor claims, plus the exact-wins-over-predicate precedence rule.
 
-test("an unlisted job_* tool falls to the generic family descriptor, mentioning its operation arg when present", () => {
+test("an unlisted job_* tool falls to the generic family descriptor, in words with its operation arg when present", () => {
   const d = toolRendererFor("job_zzz_unlisted");
   const args = JSON.stringify({ operation: "frobnicate" });
   expect(d.summary(item({ id: "jw_1", toolName: "job_zzz_unlisted", argumentsJSON: args }))).toBe(
-    "job_zzz_unlisted: frobnicate",
+    "Used job zzz unlisted: frobnicate",
   );
 });
 
-test("the generic job_* descriptor degrades to the bare tool name with no operation arg", () => {
+test("the generic job_* descriptor says the tool in words with no operation arg, never its raw name", () => {
   const d = toolRendererFor("job_zzz_unlisted");
-  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe("job_zzz_unlisted");
+  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe(
+    "Used job zzz unlisted",
+  );
 });
 
 test("the generic job_* descriptor never wins over an exact match", () => {

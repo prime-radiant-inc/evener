@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -1057,9 +1058,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	}
 	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName:           "evener-hub",
-		Version:              Version,
-		SourceID:             "local",
+		ServerName: "evener-hub",
+		Version:    Version,
+		SourceID:   "local",
+		// The hub's own machine: its system and architecture from the running
+		// binary, and its project roots from hub.toml's top-level `roots`, so a
+		// client showing the hub's own machine beside its SSH hosts has the
+		// same facts a HostRow carries.
+		OS:                   runtime.GOOS,
+		Arch:                 runtime.GOARCH,
+		Roots:                cfg.MachineRoots,
 		WebSocketTrace:       appwireTrace,
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,

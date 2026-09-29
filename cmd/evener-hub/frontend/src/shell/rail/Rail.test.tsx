@@ -3157,6 +3157,77 @@ describe("archived rows come from evener/archived/list", () => {
     restoreScroll();
   });
 
+  test("a reveal of an archived session fetches the first page when navigation counts none", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(0),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
+  test("a reveal of an archived session in a counted project fetches its list once", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(1),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    // Folds already open, so the reveal reaches the list on the count effect's
+    // own commit rather than a re-run after it.
+    localStorage.setItem(
+      EXPANSION_STORAGE_KEY,
+      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
+    );
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
   test("a reveal of a fork original under an archived row pages until its continuation loads", async () => {
     const restoreScroll = stubScrollIntoView();
     const client = new FakeClient("ready");

@@ -703,6 +703,12 @@ func settledGenerationFinish(prepared delegatestore.TerminalPacket, incoming del
 	if preparedFinish.outcome == delegatestore.OutcomeExhausted {
 		decision.meta = preparedFinish
 	}
+	// A failed packet's metadata carries the run's cause. An incoming finish
+	// that doesn't (a restart's repair passes none) keeps the packet's, so
+	// the settled outcome records it either way (#3327).
+	if decision.outcome == delegatestore.OutcomeFailed && preparedFinish.outcome == delegatestore.OutcomeFailed && decision.meta.errorText == "" {
+		decision.meta.errorText = preparedFinish.errorText
+	}
 	return decision
 }
 

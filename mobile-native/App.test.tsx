@@ -25,7 +25,6 @@ vi.mock("react-native-safe-area-context", () => ({
 // The other native edges App's imports reach. Only the loading view renders,
 // so each factory returns just what its importers read as they load, and
 // vitest throws if anything reads another export.
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({}));
 vi.mock("@react-navigation/elements", () => ({}));
 vi.mock("@react-navigation/native", () => ({
