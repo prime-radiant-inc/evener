@@ -12,7 +12,7 @@ import {
 	str,
 	type ThreadModel,
 } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import { subagentState } from "../subagents/subagentModel";
 import { PULSE_BARS } from "../board/pulse";
 import { compactCount, compactDuration } from "./format";
 
@@ -134,7 +134,7 @@ function thinkingTokens(item: ItemModel): number {
 }
 
 function runningSubagents(session: TraySource): number {
-	return (session.delegates ?? []).filter((delegate) => projectDelegateEntry(delegate).tone === "running").length;
+	return (session.delegates ?? []).filter((delegate) => subagentState(delegate) === "running").length;
 }
 
 function timeOf(value: string | undefined): number | undefined {

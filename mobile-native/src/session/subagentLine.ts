@@ -2,8 +2,8 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import { delegateTiming, type EvenerDelegateInfo, stableDelegateDisplayStatus } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import { delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
+import { endedInStop, subagentState } from "../subagents/subagentModel";
 import { hubTime } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
@@ -23,13 +23,11 @@ export interface SubagentLine {
  * liveness threshold, ruling 10). */
 const QUIET_AFTER_MS = 20_000;
 
-// A stop, the parent's or the user's, ends a subagent without failing it.
-const STOPPED = new Set(["stopped", "cancelled", "canceled"]);
-
+// The Subagents list's own rule (subagentState), so this row, the list, the
+// Subagents chip and the tray always agree; a subagent a stop ended says
+// stopped, as its list row does.
 function stateOf(delegate: EvenerDelegateInfo): SubagentLine["state"] {
-	if (STOPPED.has(stableDelegateDisplayStatus(delegate) ?? "")) return "stopped";
-	const { tone } = projectDelegateEntry(delegate);
-	return tone === "running" ? "running" : tone === "failed" ? "failed" : "done";
+	return endedInStop(delegate) ? "stopped" : subagentState(delegate);
 }
 
 function stateFromRow(row: Activity): SubagentLine["state"] {
