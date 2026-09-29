@@ -3334,6 +3334,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
         client = await requireReadyClient();
         if ((refCounts.get(ref) ?? 0) <= 0) return;
+        // Recheck after the possibly-long ready wait: a deletion fence can
+        // land while this loop is waiting out a reconnect, and a ref known
+        // deleted must not start another read on becoming ready.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }
@@ -3501,6 +3505,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (threadsStore.getState().deletedRefs.has(ref)) return;
 
       client = await requireReadyClient();
+      // Recheck after the possibly-long ready wait: a deletion fence can land
+      // while this loop waits out a reconnect, and a ref known deleted must
+      // not start another read on becoming ready.
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
       inflight = inflightWatchHydrates.get(ref);
       const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
       if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
