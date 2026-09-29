@@ -1477,6 +1477,8 @@ function fleetAnswers(
 	}
 
 	function answerPluginList(): PluginListResponse {
+		// Unix seconds, as the hub sends them (app_plugins.go UnixSeconds).
+		const startupSeconds = Math.floor(startupMs / 1000);
 		return {
 			plugins: PLUGINS.map((plugin) => ({
 				plugin: plugin.id,
@@ -1486,9 +1488,8 @@ function fleetAnswers(
 				autoUpgrade: false,
 				broken: false,
 				installPath: `~/.claude/plugins/${plugin.mp}/${plugin.id}`,
-				// Unix seconds, as the hub sends them (app_plugins.go UnixSeconds).
-				installedAt: Math.floor(startupMs / 1000) - 30 * D,
-				lastUpdated: Math.floor(startupMs / 1000) - 1 * D,
+				installedAt: startupSeconds - 30 * D,
+				lastUpdated: startupSeconds - 1 * D,
 			})),
 		};
 	}

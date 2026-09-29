@@ -12,7 +12,6 @@ import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
-import { scaledType, space, uiType } from "../design/tokens";
 import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
@@ -79,9 +78,12 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.inkMid,
-					...scaledType(uiType.subheadline, scale),
-					paddingHorizontal: space.labelInset,
-					paddingTop: 4,
+					// The prototype's status line (hub.js:17): 14pt, 20pt in, 2 above
+					// and 6 below. Spec 16.2 names no type role for it.
+					fontSize: 14 * scale,
+					paddingHorizontal: 20,
+					paddingTop: 2,
+					paddingBottom: 6,
 				}}
 			>
 				{line}

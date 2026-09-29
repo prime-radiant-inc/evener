@@ -444,6 +444,11 @@ function Plugins({
 	// once per marketplace as the web's detail does (browseMarketplace skips a
 	// marketplace it already holds, loaded, failed or in flight).
 	const catalogs = useSyncExternalStore(marketplaces.subscribe, () => marketplaces.getState().browseCatalogs);
+	// An empty plugin list points at Browse, or, with no marketplace to
+	// browse, at adding one. It says which only once the hub's marketplaces
+	// have been read (the Marketplaces and Browse segments read them): it
+	// never points at an action that may not be there.
+	const marketplaceList = useSyncExternalStore(marketplaces.subscribe, () => marketplaces.getState().marketplaces);
 	useEffect(() => {
 		if (selected && !marketplaces.getState().browseCatalogs.has(selected.marketplace))
 			void marketplaces.getState().browseMarketplace(selected.marketplace);
@@ -585,7 +590,13 @@ function Plugins({
 						</View>
 					) : null}
 					{state.plugins?.length === 0 && query === "" ? (
-						<GroupFooter>No plugins installed on this hub.</GroupFooter>
+						<GroupFooter>
+							{marketplaceList === null
+								? "No plugins installed on this hub."
+								: marketplaceList.length === 0
+									? "No plugins installed on this hub. Add a marketplace to find plugins."
+									: "No plugins installed on this hub. Browse a marketplace to install one."}
+						</GroupFooter>
 					) : null}
 					{state.plugins !== null && query !== "" && visible.length === 0 ? (
 						<GroupFooter>No matching plugins.</GroupFooter>
@@ -692,9 +703,12 @@ function Plugins({
 	);
 }
 
-/** How long ago a time the hub sends in Unix seconds was: "3d ago". */
+/** How long ago a time the hub sends in Unix seconds was: "3d ago", or
+ * "just now" under a second, including a time a clock ahead of this phone's
+ * put in the future. */
 function agoText(unixSeconds: number): string {
-	return `${compactDuration(Date.now() - unixSeconds * 1000)} ago`;
+	const ms = Date.now() - unixSeconds * 1000;
+	return ms < 1000 ? "just now" : `${compactDuration(ms)} ago`;
 }
 
 /** The installed plugins by marketplace, in the order the hub lists them. */

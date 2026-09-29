@@ -18,6 +18,7 @@ import {
   readTranscriptProgress,
   readTranscriptSummary,
 } from "./transcriptSteps";
+import { worktreeProgress, worktreeSummary } from "./worktreeSteps";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -40,6 +41,7 @@ export type ToolFamily =
   | "tasks"
   | "transcript"
   | "sessions"
+  | "worktree"
   | "mcp"
   | "tool";
 
@@ -402,6 +404,8 @@ function progressFor(
       return readTranscriptProgress(step);
     case "sessions":
       return findSessionsProgress(step);
+    case "worktree":
+      return worktreeProgress(step);
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -436,6 +440,7 @@ const TOOLS: Record<string, ToolEntry> = {
   read_transcript: { family: "transcript", summary: readTranscriptSummary },
   read_session_transcript: { family: "transcript", summary: readTranscriptSummary },
   find_session_transcripts: { family: "sessions", summary: findSessionsSummary },
+  manage_worktree: { family: "worktree", summary: worktreeSummary },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {

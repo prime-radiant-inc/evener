@@ -463,6 +463,14 @@ describe("a run's transcript reads and session searches", () => {
 	});
 });
 
+describe("a run's worktree steps", () => {
+	it("says how often a run managed worktrees", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "manage_worktree")])).toEqual(["managed worktrees once"]);
+		expect(texts([step("a", "manage_worktree"), step("b", "manage_worktree")])).toEqual(["managed worktrees 2 times"]);
+	});
+});
+
 describe("a step's target", () => {
 	it.each([
 		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
