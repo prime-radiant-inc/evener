@@ -111,6 +111,35 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
   return draft;
 }
 
+/** The controller's own default working directory: the ?dir= prefill when this
+ * page is on /new, else the sticky global working-dir default (floor §1.9).
+ * This is the directory a fresh LOCAL mount seeds, so a switch back to the
+ * local host re-seeds exactly this - and a remote host never does. */
+export function controllerDefaultDirectory(): string {
+  const prefill = window.location.pathname === "/new" ? readUrlPrefill(window.location.search) : {};
+  const urlDir = prefill.dir?.trim();
+  return urlDir || resolveInitialDefaults({}).workingDir || "";
+}
+
+/** Moves the LIVE draft to a new working directory, keeping its fields (prompt,
+ * model, plugin selection, advanced options) and its attachment pipeline: a
+ * host switch re-seeds the directory from the selected host and must not
+ * discard what the person typed - the same reseed-vs-discard rule the
+ * host-scoped launch panes follow for their own draft (LaunchConfigForm's
+ * owner reseed). Not-current drafts and drafts already at `cwd` are no-ops,
+ * so a superseded or late answer can never move a draft the reader has left. */
+export function reseedSpawnDirectory(draft: SpawnDraft, cwd: string): void {
+  const state = spawnDraftsStore.getState();
+  if (state.current !== draft || draft.cwd === cwd) return;
+  const drafts = new Map(state.drafts);
+  drafts.delete(draft.cwd);
+  // The live draft wins the target key: a draft already sitting there (from a
+  // visit to that directory) is the stale one.
+  const reseeded = { ...draft, cwd };
+  drafts.set(cwd, reseeded);
+  spawnDraftsStore.setState({ drafts, current: reseeded });
+}
+
 export function applySpawnURL(onNavigation = false): void {
   const state = spawnDraftsStore.getState();
   const isNew = window.location.pathname === "/new";
