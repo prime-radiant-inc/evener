@@ -142,6 +142,10 @@ describe("ActivitySidebar", () => {
     expect(screen.getByText("C")).toBeTruthy();
     // The unloaded remainder is a passive note, never a fake control.
     expect(screen.getByText(/\+201 more/)).toBeTruthy();
+    // The fold control carries its spacing class (the CSS rule and the
+    // requireClass map entry exist for exactly this wrapper).
+    const foldButton = screen.getByRole("button", { name: /Inactive subagents \(202\)/ });
+    expect(foldButton.parentElement?.className).toContain("foldButton");
   });
 
   test("clicking an agent row drills: the transcript pane opens in the secondary slot", () => {

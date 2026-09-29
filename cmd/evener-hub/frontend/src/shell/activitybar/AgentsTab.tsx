@@ -60,7 +60,7 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
       ) : null}
       {inactive.length > 0 ? (
         <>
-          <div>
+          <div className={CLASS.foldButton}>
             <Button variant="quiet" size="sm" onClick={() => setFoldOpen((value) => !value)}>
               <Chevron direction={foldOpen ? "down" : "right"} /> Inactive subagents ({foldTotal})
             </Button>
