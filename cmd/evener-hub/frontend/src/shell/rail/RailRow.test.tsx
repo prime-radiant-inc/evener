@@ -816,6 +816,11 @@ describe("subagent tally on the summary line", () => {
     expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
   });
 
+  test("a live subagent row shows no chip", () => {
+    renderRow({ kind: "subagent", subagents: { running: 2, failed: 0, done: 0 } });
+    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
+  });
+
   test("keeps its place before the gloss on a signal row", () => {
     renderRow({ state: "active", branch: "main", subagents: { running: 1, failed: 0, done: 0 } });
     expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("1 running ·");

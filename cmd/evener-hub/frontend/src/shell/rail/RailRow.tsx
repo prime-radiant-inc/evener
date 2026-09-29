@@ -713,9 +713,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // this file): without it the count would vanish on exactly the session where
   // a watch is the only thing happening, which is the case this feature exists
   // for.
-  // A live root's whole-tree subagent tally (D1): running and failed counts
+  // A live root's whole-tree subagent tally (D1); nested rows show none: running and failed counts
   // in words. It too can be all a quiet row has to say, so it earns the line.
-  const tally = subagentTallyToShow(session);
+  const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches || tally !== null;
   // The tinted gloss itself still belongs to a signal row (or to a depth-0
   // row naming its project). A watch-only quiet row's second line is just its
