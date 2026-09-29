@@ -182,7 +182,7 @@ export function TimelineItem({
 				);
 				break;
 			}
-			if (item.label === "delegate" || item.label === "delegate_send") {
+			if (item.label === "delegate") {
 				content = <Subagent row={item} delegates={delegates} openSubagent={openSubagent} />;
 				break;
 			}

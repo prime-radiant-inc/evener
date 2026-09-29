@@ -22,20 +22,26 @@ const session = (type: string, over: Partial<StateSource> = {}): StateSource => 
 	...over,
 });
 const done = (completedAt: string): TurnModel => ({ id: "turn_1", status: "completed", items: [], completedAt });
-const delegate = (status: string, n: number, outcome?: string): EvenerDelegateInfo => ({
+const delegate = (
+	status: string,
+	n: number,
+	outcome?: string,
+	terminal = outcome !== undefined,
+): EvenerDelegateInfo => ({
 	delegateId: `d${n}`,
 	ownerSessionId: "root",
 	rootSessionId: "root",
 	childSessionId: `c${n}`,
 	transcriptRef: `local:c${n}`,
-	type: "subagent",
+	type: "delegate",
 	lifecycle: status,
 	phase: status,
 	status,
 	resumable: false,
 	needsAttention: false,
 	projectionRevision: 1,
-	...(outcome ? { outcome, terminal: true } : {}),
+	...(outcome ? { outcome } : {}),
+	...(terminal ? { terminal: true } : {}),
 });
 
 describe("the nav bar's state line (spec 8.1, 13.1)", () => {
@@ -77,17 +83,21 @@ describe("the context chips (spec 8.1)", () => {
 		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true)).toEqual([]);
 	});
 
-	it("count subagents, with failures in their own part", () => {
+	it("count subagents the way the Subagents list does, with failures in their own part", () => {
+		// A stopped or cancelled delegate finished, not failed; a delegate still
+		// retrying after exhaustion (not terminal) is running. The list says so
+		// (subagentState), and the chip must show the same numbers (issue #2684).
 		const tally = subagentTally([
 			delegate("running", 1),
-			delegate("completed", 2),
-			delegate("failed", 3),
-			delegate("done", 4, "failed"),
+			delegate("idle", 2, "completed"),
+			delegate("idle", 3, "failed"),
+			delegate("idle", 4, "stopped"),
+			delegate("exhausted", 5),
 		]);
-		expect(tally).toEqual({ total: 4, running: 1, failed: 2, done: 1 });
+		expect(tally).toEqual({ total: 5, running: 2, failed: 1, done: 2 });
 		const [chip] = contextChips(
 			{
-				delegates: [delegate("running", 1), delegate("failed", 2)],
+				delegates: [delegate("running", 1), delegate("idle", 2, "failed")],
 				tasks: null,
 				goal: null,
 				queue: null,

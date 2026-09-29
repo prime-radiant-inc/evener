@@ -29,9 +29,9 @@ type TurnTimes = Pick<TurnModel, "id" | "startedAt" | "completedAt">;
 export const TIME_GAP_MS = 10 * 60_000;
 
 // A subagent and a question are items of their own (spec 8.2), never steps.
-const OWN_ROW_TOOLS = new Set(["delegate", "delegate_send", "ask_user"]);
+const OWN_ROW_TOOLS = new Set(["delegate", "ask_user"]);
 
-function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
+export function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
 	return row.kind === "activity" && row.family !== "reasoning" && !OWN_ROW_TOOLS.has(row.label);
 }
 

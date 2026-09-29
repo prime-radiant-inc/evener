@@ -873,9 +873,9 @@ describe("native demonstration hub's fleet sessions", () => {
 			if (!turn?.startedAt) throw new Error("the stopped turn needs its start");
 			expect(turn.status).toBe("interrupted");
 			expect(turn.items?.filter((item) => item.status === "inProgress")).toEqual([]);
+			// Its subagent calls settled when their launch receipts returned, so
+			// only the step still running is interrupted.
 			expect(turn.items?.filter((item) => item.status === "interrupted").map((item) => item.toolName)).toEqual([
-				"delegate",
-				"delegate",
 				"shell",
 			]);
 			expect(turn.completedAt).toBeGreaterThanOrEqual(turn.startedAt);

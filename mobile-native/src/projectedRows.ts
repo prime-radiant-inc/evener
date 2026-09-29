@@ -260,22 +260,27 @@ function unhandledEntryKind(_entry: never): null {
 // The operator's summary-only ruling: at compact levels (the projector's
 // intent entries) a SETTLED tool action carries ONLY its summary line. The
 // projector hands its trimmed rationale; the source item's full detail
-// (arguments, output, exit code, duration, call id) is dropped — it returns at
+// (arguments, output, exit code, duration) is dropped — it returns at
 // tools/activity/full, where the same call is an "item" entry. The
 // "unavailable" placeholder means the source carried no description, so the
-// ruling still drops the output, exit code, duration and call id — but the
-// ARGUMENTS survive, because they are what the presentation layer's own
-// summary fallback parses to render the line a descriptionless write_file
-// call shows (RoboRev panel: with them dropped, "Write /tmp/x" degraded to
-// the literal placeholder). Either way the row keeps its two clock times as
-// metadata that nothing shows on it, so the run it folds into can say how
-// long it took (spec 8.2's run line; Jesse, 2026-09-27).
+// ruling still drops the output, exit code and duration — but the ARGUMENTS
+// survive, because they are what the presentation layer's own summary
+// fallback parses to render the line a descriptionless write_file call shows
+// (RoboRev panel: with them dropped, "Write /tmp/x" degraded to the literal
+// placeholder). Either way the row keeps metadata that nothing shows on it:
+// its two clock times, so the run it folds into can say how long it took
+// (spec 8.2's run line; Jesse, 2026-09-27), and its call id, which is how a
+// subagent row finds the subagent its `delegate` call launched (the call
+// settles at launch, so the row's state has to come from the subagent).
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
-// detail, at every level): a failed or still-running call the projector routed
-// through its intent entry keeps everything, so the reader can always see why
-// a call failed — the ruling covers the settled row.
+// detail): a failed or still-running call the projector routed through its
+// intent entry keeps everything, so the reader can always see why a call
+// failed — the ruling covers the settled row. A failed call shows at every
+// level, Chat included; a running one shows at every level but Chat, whose
+// screen drops it because the status tray already shows the live step
+// (transcriptPresentation.ts, conversationOnly).
 function intentRow(
 	entry: Extract<ProjectedEntry, { kind: "intent" }>,
 	context: ProjectedRowContext,
@@ -285,12 +290,15 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs } = row.detail;
-	const clock = startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {};
+	const { startedAtMs, endedAtMs, callId } = row.detail;
+	const metadata = {
+		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
+		...(callId !== undefined ? { callId } : {}),
+	};
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments, ...clock }
-			: { description: entry.rationale, ...clock };
+			? { arguments: row.detail.arguments, ...metadata }
+			: { description: entry.rationale, ...metadata };
 	return {
 		...row,
 		state: entry.failed ? "failed" : row.state,

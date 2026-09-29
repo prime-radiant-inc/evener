@@ -144,7 +144,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	// probe (older daemon, mid-restart race) clears current capability — it
 	// never changes process ownership or this probe's residency verdict.
 	lifecycle, lifecycleFresh := probeDaemonLifecycle(ctx, appClient)
-	result := probeResultFromThread(root)
+	result := ProbeResultFromThread(root)
 	result.RunningSubagentIDs = runningSubagentIDs
 	result.RunningSubagentStates = runningSubagentStates
 	result.ChildWatches = childWatches
@@ -154,13 +154,15 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	return result
 }
 
-// probeResultFromThread builds the ProbeResult fields a single thread
-// projection carries, from its root row. Both the full probe (over its listed
-// root) and ReadSpawnedThread call it, so a field a row reads from the thread
-// is set on both paths at once instead of being listed twice and missed on one
-// (#2962). The caller adds the fields the thread row alone cannot answer:
-// descendant IDs and states, child watches, the daemon lifecycle, and OK.
-func probeResultFromThread(root appwire.Thread) ProbeResult {
+// ProbeResultFromThread builds the ProbeResult fields a single thread
+// projection carries, from its root row. The full probe (over its listed
+// root), ReadSpawnedThread and package hub's remote tree row all read a
+// thread's facts through it, so a field a row reads from the thread is set on
+// every path at once instead of being listed per caller and missed on one
+// (#2962, #2638). The caller adds the fields the thread row alone cannot
+// answer: descendant IDs and states, child watches, the daemon lifecycle, and
+// OK.
+func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	var subagents appwire.SubagentTally
 	if root.Evener.Subagents != nil {
 		subagents = *root.Evener.Subagents
@@ -191,6 +193,33 @@ func probeResultFromThread(root appwire.Thread) ProbeResult {
 		LastMessage:       root.Evener.LastMessage,
 		CurrentModel:      root.ModelProvider,
 	}
+}
+
+// LiveEntryThreadFacts copies the thread-row facts a ProbeResult carries onto
+// in, so every hub row that reads a thread projection fills them the same way:
+// the ask flag, escalation cards, jobs, watches, turn end and tasks, beside
+// the row's other summary fields. The caller keeps the fields only a local
+// probe answers — Capabilities, CapabilitiesKnown and ActiveFlags — as it holds
+// them, so a remote row leaves those absent. The result is a CloneLiveEntry
+// copy, so the row never aliases the probe's slices or pointers. (#2638)
+func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
+	in.Status = r.Status
+	in.PendingAsk = r.PendingAsk
+	in.PendingEscalation = r.PendingEscalation
+	in.PendingEscalations = r.PendingEscalations
+	in.PendingQuestion = r.PendingQuestion
+	in.Failure = r.Failure
+	in.RunningJobs = r.RunningJobs
+	in.CompletedJobs = r.CompletedJobs
+	in.Watches = r.Watches
+	in.Tasks = r.Tasks
+	in.Activity = r.Activity
+	in.Subagents = r.Subagents
+	in.LastTurnEndedAt = r.LastTurnEndedAt
+	in.Profile = r.Profile
+	in.LastMessage = r.LastMessage
+	in.CurrentModel = r.CurrentModel
+	return CloneLiveEntry(in)
 }
 
 // probeRootSessionID names the session whose row in the probe's list is the
@@ -279,13 +308,6 @@ func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.Evener
 		return nil
 	}
 	return diagnostics.Watches
-}
-
-// DiagnosticsWatches is the exported form of diagnosticsWatches, shared with
-// package hub's own tree projection so the two cannot drift. It is the same
-// logic; the package-local name stays for the existing in-package callers.
-func DiagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	return diagnosticsWatches(diagnostics)
 }
 
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal
