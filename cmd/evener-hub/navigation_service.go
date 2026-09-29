@@ -1110,24 +1110,20 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
+		// A project resource serves no archived rows (evener/archived/list does),
+		// so they are not part of its fingerprint; their count is, in the summary.
 		logical := struct {
-			Project  hubapi.NavigationProjectSummary
-			Current  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-			Recent   hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-			Archived hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+			Project hubapi.NavigationProjectSummary
+			Current hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+			Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
 		}{Project: projection.projectSummary(project)}
 		current, _ := project.TierRows("current")
 		recent, _ := project.TierRows("recent")
-		archived, _ := project.TierRows("archived")
 		logical.Current, err = navigationLogicalNodesContext(ctx, projection, current)
 		if err != nil {
 			return nil, nil, err
 		}
 		logical.Recent, err = navigationLogicalNodesContext(ctx, projection, recent)
-		if err != nil {
-			return nil, nil, err
-		}
-		logical.Archived, err = navigationLogicalNodesContext(ctx, projection, archived)
 		if err != nil {
 			return nil, nil, err
 		}
