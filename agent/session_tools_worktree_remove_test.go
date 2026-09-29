@@ -441,7 +441,8 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 // TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied covers step
 // 10's sidecar-mark-removed error branch (the survives, not-deleted arm):
 // the sidecar FILE itself (not its directory) is made read-only, so
-// UpdateSidecar's read succeeds but its truncating write fails.
+// UpdateSidecar's read succeeds but its atomic replace refuses the
+// write-permission check on the unwritable target.
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	sr := newScriptedLaneRepo(t)
@@ -599,7 +600,7 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 	// git's normal one-checkout-per-branch rule) — lane is unchanged, so
 	// evener's merge gate passes trivially, and the only refusal is git's own
 	// "branch checked out elsewhere" rule at the `branch -D` step.
-	otherPath := filepath.Join(t.TempDir(), "other-checkout")
+	otherPath := filepath.Join(realTempDirForTest(t), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "lane")
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
