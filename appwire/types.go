@@ -1413,6 +1413,13 @@ type ThreadCapabilities struct {
 	// subagents), and from a subagent's own thread: the stop targets the root
 	// that owns the tree.
 	StopSubagent bool `json:"stopSubagent,omitempty"`
+	// PageBefore advertises that thread/turns/list pages this thread from a
+	// before position, with or without a cursor: a client that trimmed rows
+	// from the top of its window can page them back. The hub answers for its
+	// own local and saved threads. A thread on another host stays masked until
+	// the hub can join such a page to its remote paging window (#3176); an
+	// older hub never sends it.
+	PageBefore bool `json:"pageBefore,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

@@ -1326,7 +1326,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	readThread := func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if err := appwire.ValidateThreadReadParams(params); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -1501,6 +1501,13 @@ func registerThreadHandlers(
 			}
 		}
 		return resp, nil
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		response, err := readThread(ctx, params)
+		if err == nil {
+			response.Thread.Evener.Capabilities.PageBefore = hubPagesBefore(response.Thread.Evener.Ref)
+		}
+		return response, err
 	})
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away

@@ -287,21 +287,19 @@ func TestApplyBeforeRebasesTheCursorAndKeepsItsFence(t *testing.T) {
 	_, err = DecodeCursor(got.Cursor, identity)
 	assertStaleCursorError(t, err)
 
-	// No cursor: before is left for the source to mint under its identity.
+	// No cursor: before is left for the source to take under its identity.
 	cursorless := appwire.ThreadTurnsListParams{Ref: "local:thread", Before: &boundary}
 	if got, err := ApplyBefore(cursorless); err != nil || got != cursorless {
 		t.Fatalf("ApplyBefore without a cursor = %+v, %v; want it unchanged", got, err)
 	}
-	minted, err := MintCursor(cursorless, identity)
-	if err != nil {
-		t.Fatal(err)
+	if position, err := Boundary(cursorless, identity); err != nil || position != boundary {
+		t.Fatalf("Boundary without a cursor = %+v, %v; want %+v", position, err, boundary)
 	}
-	if position, err := DecodeCursor(minted, identity); err != nil || position != boundary {
-		t.Fatalf("minted cursor decodes to %+v, %v; want %+v", position, err, boundary)
+	if position, err := Boundary(plain, identity); err != nil || position != (appwire.ThreadItemPosition{Entry: 40}) {
+		t.Fatalf("Boundary with a cursor = %+v, %v; want the cursor's", position, err)
 	}
-	if kept, err := MintCursor(plain, identity); err != nil || kept != cursor {
-		t.Fatalf("MintCursor with a cursor = %q, %v; want the request's own", kept, err)
-	}
+	_, err = Boundary(plain, CursorIdentity{ThreadRef: "local:other", Incarnation: "inc-1", ProjectionVersion: 1})
+	assertStaleCursorError(t, err)
 
 	// A malformed cursor has no fence to keep.
 	_, err = ApplyBefore(appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: "not-a-cursor", Before: &boundary})

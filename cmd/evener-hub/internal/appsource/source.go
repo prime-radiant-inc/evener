@@ -285,30 +285,33 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		return ItemCandidateResult{}, err
 	}
 
-	// A Before boundary with no cursor pages from a cursor minted under a
-	// fresh snapshot's identity, the one the cursor path below checks.
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+
+	// A Before boundary with no cursor pages from a fresh snapshot, under its
+	// identity: from the snapshot itself when it holds the whole thread, or
+	// from its native cursor rebased onto the boundary. Two daemon reads at
+	// most, the snapshot and the page.
 	if params.Cursor == "" && params.Before != nil {
-		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
 		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
+		if snapshot.state.NativeCursor == "" {
+			if !snapshot.state.Prefix {
+				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+			}
+			return s.localDaemonSnapshotWindow(ctx, resolved, snapshot, *params.Before, itemLimit)
+		}
 		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		if params.Cursor, err = appitempaging.MintCursor(params, localDaemonItemSnapshotIdentity(snapshot)); err != nil {
-			return ItemCandidateResult{}, err
-		}
+		return s.localDaemonNativeWindow(ctx, resolved, snapshot.state, localDaemonItemSnapshotIdentity(snapshot), *params.Before, params.ItemsView, itemLimit)
 	}
 
 	if params.Cursor == "" {
-		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
 		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
@@ -341,34 +344,15 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if !state.Prefix {
 			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
-		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
 		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		identity := localDaemonItemSnapshotIdentity(snapshot)
-		before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+		before, err := appitempaging.DecodeCursor(params.Cursor, localDaemonItemSnapshotIdentity(snapshot))
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, &before, params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
-		window := appitempaging.TranscriptItemWindow{Candidates: selected}
-		if hasOlder && len(selected) > 0 {
-			window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
-			if err != nil {
-				return ItemCandidateResult{}, err
-			}
-		}
-		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
-			return ItemCandidateResult{}, err
-		}
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
+		return s.localDaemonSnapshotWindow(ctx, resolved, snapshot, before, itemLimit)
 	}
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         state.ThreadRef,
@@ -379,11 +363,34 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	nativeCursor, err := appitempaging.RebaseCursor(state.NativeCursor, before)
+	return s.localDaemonNativeWindow(ctx, resolved, state, identity, before, params.ItemsView, itemLimit)
+}
+
+// localDaemonSnapshotWindow is the page before a boundary out of a snapshot
+// that holds the whole thread, retained for the next page.
+func (s *LocalDaemonSource) localDaemonSnapshotWindow(ctx context.Context, resolved localDaemonItemThread, snapshot localDaemonItemSnapshot, before appwire.ThreadItemPosition, itemLimit int) (ItemCandidateResult, error) {
+	identity := localDaemonItemSnapshotIdentity(snapshot)
+	selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, &before, itemLimit)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	window := appitempaging.TranscriptItemWindow{Candidates: selected}
+	if hasOlder && len(selected) > 0 {
+		window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+	}
+	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
+}
+
+// localDaemonNativeWindow is the page before a boundary from the daemon, its
+// retained native cursor rebased onto the boundary.
+func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolved localDaemonItemThread, state itemSnapshotState, identity appitempaging.CursorIdentity, before appwire.ThreadItemPosition, itemsView string, itemLimit int) (ItemCandidateResult, error) {
+	nativeCursor, err := appitempaging.RebaseCursor(state.NativeCursor, before)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -391,7 +398,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		Ref:       resolved.routeRef,
 		ThreadID:  resolved.threadID,
 		Cursor:    nativeCursor,
-		ItemsView: params.ItemsView,
+		ItemsView: itemsView,
 		ItemLimit: itemLimit,
 	})
 	if err != nil {

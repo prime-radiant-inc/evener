@@ -51,8 +51,8 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 }
 
 // before pages the request's ItemLimit items before its cursor from the
-// transcript, or before its Before boundary when it has no cursor, under a
-// cursor minted at the current incarnation (appitempaging.MintCursor). A
+// transcript, or before its Before boundary when it has no cursor, taken under
+// the current incarnation (appitempaging.Boundary). A
 // cursor naming another thread or an incarnation other than the current one is
 // appwire.TranscriptItemCursorStale(): the client re-reads the latest window.
 func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
@@ -62,12 +62,7 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 		if err != nil {
 			return err
 		}
-		identity := historyCursorIdentity(threadRef, incarnation)
-		cursor, err := appitempaging.MintCursor(params, identity)
-		if err != nil {
-			return err
-		}
-		position, err := appitempaging.DecodeCursor(cursor, identity)
+		position, err := appitempaging.Boundary(params, historyCursorIdentity(threadRef, incarnation))
 		if err != nil {
 			return err
 		}

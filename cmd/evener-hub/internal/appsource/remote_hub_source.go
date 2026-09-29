@@ -775,6 +775,13 @@ func remoteItemPagingKey(sourceID, threadID string) string {
 // page mints (or continues) a controller-owned identity, and the remote cursor
 // is retained behind it.
 func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
+	// Each remote page mints its own controller identity, so there is none to
+	// page a Before with no cursor under. Refuse it plainly rather than serve
+	// the remote's latest window as the page asked for (#3176). The phone
+	// never asks: remote threads don't advertise pageBefore.
+	if params.Cursor == "" && params.Before != nil {
+		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
+	}
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
@@ -797,12 +804,6 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	// travels, since an older remote rejects the field outright.
 	remote.Before = nil
 
-	// Each remote page mints its own controller identity, so there is none to
-	// mint a cursor under for a Before with no cursor. Refuse it plainly
-	// rather than serve the remote's latest window as the page asked for.
-	if params.Cursor == "" && params.Before != nil {
-		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
-	}
 	if params.Cursor == "" {
 		remote.Cursor = ""
 		candidates, native, history, err := s.remoteItemPage(ctx, remote)
