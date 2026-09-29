@@ -5222,9 +5222,25 @@ it("drops the Continue reading row when its two hours run out, even on an idle B
 // makes itself lands clear of them. Elsewhere, and while Reduce Transparency
 // is on, the bar is opaque and the chips sit above the scroller as before.
 describe("the nav bar's glass (spec 16.3)", () => {
-	const glassBlock = (tree: ReactTestRenderer) => tree.root.find((node) => node.props.testID === "board-glass");
+	const glassBlock = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "board-header" && String(node.type) === "View");
 	const measureGlass = (tree: ReactTestRenderer, height: number) =>
 		act(() => glassBlock(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+	const fieldHeight = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	/** A Board on the glass, measured with the bar's room and a 48pt chip row. */
+	async function mountOnGlass(shape: Fleet = { ...fleet, catalogs: { projects: [evenerProject()] } }) {
+		systemGlass.available = true;
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const fake = hub(shape);
+		connect(id, fake.client, "ready");
+		const nav = navigation();
+		const mounted = await mountWithInstances(nav);
+		await act(async () => {});
+		measureGlass(mounted.tree, 64 + 48);
+		return { ...mounted, nav, fake };
+	}
 
 	it("runs the Board under one glass spanning the bar and the chips, and scrolls clear of it", async () => {
 		systemGlass.available = true;
@@ -5268,17 +5284,115 @@ describe("the nav bar's glass (spec 16.3)", () => {
 	});
 
 	it("keeps the opaque bar and the chips above the scroller without the glass, following Reduce Transparency", async () => {
+		// The Board as it is where the device has no glass.
+		const layoutOf = async () => {
+			const id = hubId();
+			adoptedAnHourAgo(id);
+			connect(id, hub(fleet).client, "ready");
+			const nav = navigation();
+			const tree = await mount(nav);
+			await act(async () => {});
+			const { contentOffset, contentInset, scrollIndicatorInsets, contentContainerStyle } = boardScroller(tree).props;
+			return {
+				nav,
+				tree,
+				layout: {
+					scroller: { contentOffset, contentInset, scrollIndicatorInsets, contentContainerStyle },
+					header: glassBlock(tree).props.style,
+					glass: glassBlock(tree).findAll((node) => String(node.type) === "GlassView").length,
+					chipsInScroller: boardScroller(tree).findAll((node) => node.props.testID === "chips").length,
+					chipsFill: tree.root.find((node) => node.props.testID === "chips").props.style.backgroundColor,
+				},
+			};
+		};
+		const withoutGlass = await layoutOf();
+		expect(withoutGlass.layout.glass).toBe(0);
+		expect(withoutGlass.layout.chipsInScroller).toBe(0);
 		systemGlass.available = true;
 		systemGlass.setReduceTransparency(true);
-		const id = hubId();
-		adoptedAnHourAgo(id);
-		connect(id, hub(fleet).client, "ready");
-		const nav = navigation();
-		const tree = await mount(nav);
-		await act(async () => {});
+		const { nav, layout } = await layoutOf();
 		expect(headerOptions(nav)).toMatchObject({ headerTransparent: false, scrollEdgeEffects: { top: "automatic" } });
-		expect(tree.root.findAll((node) => node.props.testID === "board-glass")).toEqual([]);
-		expect(boardScroller(tree).props.contentInset?.top ?? 0).toBe(0);
-		expect(boardScroller(tree).findAll((node) => node.props.testID === "chips")).toHaveLength(0);
+		expect(layout).toEqual(withoutGlass.layout);
+	});
+
+	it("starts the Board just under a glass already known when it mounts", async () => {
+		// A Board already following Reduce Transparency makes it known to the
+		// next one from its first render.
+		const first = await mountOnGlass();
+		const { tree, scrollTo } = await mountOnGlass();
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 112, animated: false });
+		act(() => first.tree.unmount());
+	});
+
+	it("reads Live's next page by what shows below the glass", async () => {
+		const { tree, fake } = await mountOnGlass({
+			...fleet,
+			live: [[failing, working], [finished]],
+			catalogs: { projects: [evenerProject()] },
+		});
+		const scroller = boardScroller(tree);
+		act(() => {
+			scroller.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+			tree.root
+				.find((node) => node.props.testID === "live-block")
+				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 1600 } } });
+		});
+		await settle();
+		const scrollAt = (y: number) =>
+			act(() =>
+				scroller.props.onScroll({
+					nativeEvent: {
+						contentOffset: { x: 0, y },
+						contentSize: { width: 390, height: 1600 },
+						layoutMeasurement: { width: 390, height: 700 },
+					},
+				}),
+			);
+		// Below the glass shows 700 - 112 of the Board from 112 past the
+		// scroller's offset: two screens of that from 300 end short of Live's.
+		scrollAt(300);
+		await settle();
+		expect(liveReads(fake)).toEqual([0]);
+		scrollAt(312);
+		await settle();
+		expect(liveReads(fake)).toEqual([0, 2]);
+	});
+
+	it("lands Search's reveal under the glass the chips leave when search starts", async () => {
+		const { tree, nav, scrollTo } = await mountOnGlass();
+		act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -112, animated: true });
+		// The field's focus starts search, which hides the chips: the glass
+		// shrinks to the bar while the reveal is still under way.
+		searchField(tree).focus();
+		measureGlass(tree, 64);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: -64, animated: true });
+	});
+
+	it("tucks the field back under the glass on Cancel as the chips return", async () => {
+		const { tree, scrollTo } = await mountOnGlass();
+		searchField(tree).focus();
+		measureGlass(tree, 64);
+		listEvent(tree, "onMomentumScrollEnd");
+		searchField(tree).cancel();
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 64, animated: true });
+		measureGlass(tree, 64 + 48);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: fieldHeight(tree) - 112, animated: true });
+	});
+
+	it("reveals a project from search a third of the way down what shows below the glass", async () => {
+		const { tree, scrollTo } = await mountOnGlass({
+			...fleet,
+			catalogs: { projects: [evenerProject()] },
+			projectPages: { "evener:current": [localWork] },
+		});
+		layOutAt(boardScroller(tree), 0, 600);
+		await revealFromSearch(tree);
+		await settle();
+		// Leaving search brings the chips back to the glass.
+		measureGlass(tree, 64 + 48);
+		layOutAt(revealTarget(tree), 60, 48);
+		layOutAt(projectSection(tree, "projects"), 900, 400);
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 112 - 48) - 112, animated: true });
 	});
 });

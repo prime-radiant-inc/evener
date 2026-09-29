@@ -8,7 +8,6 @@ import {
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { GlassView } from "expo-glass-effect";
 import { SymbolView } from "expo-symbols";
 import {
 	type ReactNode,
@@ -45,7 +44,8 @@ import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
-import { headerRowFill, navBarGlassOptions, useSystemGlass } from "../design/systemGlass";
+import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { headerRowFill, navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -379,8 +379,8 @@ function Board({
 	// lands clear of them. Until the glass has measured, that's the bar alone.
 	const headerHeight = useHeaderHeight();
 	const navGlass = useSystemGlass();
-	const [glassHeight, setGlassHeight] = useState(0);
-	const underGlass = navGlass ? Math.max(headerHeight, glassHeight) : 0;
+	const [headerPanel, setHeaderPanel] = useState({ height: 0, onGlass: false });
+	const underGlass = navGlass ? reservedUnderGlass(headerHeight, headerPanel, true) : 0;
 	// Search is bound only while the Board is in view (the plugin poll's
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
@@ -511,18 +511,9 @@ function Board({
 		scroller.current?.scrollTo?.({ y: searchFieldHeight - underGlass, animated: false });
 	}, [searchFieldHeight, searching]);
 	// The scroller's own offset, which the glass's inset shifts from the
-	// content's: where it starts (contentOffset below), then each scroll.
-	const scrollerOffset = useRef(searchFieldHeight);
-	// When the glass comes or goes, or grows or shrinks (the chips appear, or
-	// search hides them), the same content stays at the glass's lower edge.
-	const shownUnderGlass = useRef(underGlass);
-	useLayoutEffect(() => {
-		const change = underGlass - shownUnderGlass.current;
-		shownUnderGlass.current = underGlass;
-		if (change === 0) return;
-		scrollerOffset.current -= change;
-		scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: false });
-	}, [underGlass]);
+	// content's: where it starts (contentOffset below), then each scroll, or
+	// where a scroll the Board makes itself is headed.
+	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -782,10 +773,23 @@ function Board({
 	const scrollBoardTo = useCallback(
 		(y: number) => {
 			if (!reduceMotion) list.send("appScrollStart");
-			scroller.current?.scrollTo?.({ y: y - underGlass, animated: !reduceMotion });
+			scrollerOffset.current = y - underGlass;
+			scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: !reduceMotion });
 		},
 		[list, reduceMotion, underGlass],
 	);
+	// When the glass comes or goes, or grows or shrinks (the chips appear, or
+	// search hides them), the same content stays at the glass's lower edge.
+	// A scroll the Board is making (Search's reveal, which hides the chips as
+	// it starts) goes on to its content's new place instead of stopping.
+	const shownUnderGlass = useRef(underGlass);
+	useLayoutEffect(() => {
+		const change = underGlass - shownUnderGlass.current;
+		shownUnderGlass.current = underGlass;
+		if (change === 0) return;
+		scrollerOffset.current -= change;
+		scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: list.state === "appScrolling" });
+	}, [underGlass, list]);
 	// The field sits above the Board, scrolled out of view, so Search brings
 	// it down (spec 7.4).
 	const revealSearch = useCallback(() => {
@@ -1178,8 +1182,17 @@ function Board({
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{/* Fixed under the header; their sections aren't there while
-			    search results are. On the glass they sit on it, below. */}
-			{!navGlass && chips.length && !searching ? <Chips chips={chips} onGlass={false} /> : null}
+			    search results are. On the glass the Board runs under them, and
+			    the panel comes before the scroller in the tree, so it's raised
+			    over it. */}
+			<GlassHeaderPanel
+				testID="board-header"
+				style={navGlass ? GLASS_PANEL : undefined}
+				glassTop={navGlass ? headerHeight : undefined}
+				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+			>
+				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
 					ref={scroller}
@@ -1276,23 +1289,6 @@ function Board({
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
-			{navGlass ? (
-				<View
-					testID="board-glass"
-					pointerEvents="box-none"
-					style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-					onLayout={(event) => setGlassHeight(event.nativeEvent.layout.height)}
-				>
-					<GlassView
-						pointerEvents="none"
-						glassEffectStyle="regular"
-						colorScheme="auto"
-						style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
-					/>
-					<View testID="nav-bar-room" pointerEvents="none" style={{ height: headerHeight }} />
-					{chips.length && !searching ? <Chips chips={chips} onGlass /> : null}
-				</View>
-			) : null}
 			{/* The toolbar lies over the Board's end, so the Board runs under it. */}
 			{selecting ? (
 				<SelectBar
@@ -1549,6 +1545,9 @@ function useSearch(client: ConversationClientLike | null) {
 
 /** The search field's row: an 8pt margin around a field that grows with the
  * text size, never shorter than the 44pt touch target. */
+/** The chips' panel on the glass: over the Board's top, which runs under it. */
+const GLASS_PANEL = { position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 } as const;
+
 const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
 
 /** Board search's field (spec 7.4), first in the Board's scroller. Cancel
