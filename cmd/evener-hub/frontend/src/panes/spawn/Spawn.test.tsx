@@ -6817,6 +6817,141 @@ test("a stale answer from an earlier visit to the same host cannot move the dire
   expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
 });
 
+// The guard belongs to the form INSTANCE, not to the draft store: the store is
+// module scope and outlives the pane, so a validation still in flight when the
+// pane goes away (a route change) must not seed the form a later mount shows
+// for the same draft.
+test("an answer still in flight when the pane unmounts cannot seed the remount", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/unmount-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/unmount-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The pane goes away while the answer is out, and comes back on the same
+  // draft: a fresh mount's first run only records, so a host+draft check alone
+  // would let the dead instance's answer through.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+
+  // The answer finally lands. It belongs to a form that no longer exists.
+  await act(async () => {
+    held.resolve({ path: "/tmp/unmount-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// Drafts are keyed by directory and outlive a draft transition: picking another
+// directory and then back returns the SAME draft object. An answer issued
+// before that round trip must not pass for the draft that came back - only the
+// question asked for the visit it belongs to may decide.
+test("an answer issued before a directory round trip cannot seed the returned draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/trip-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      if (path === "/tmp/trip-a" || path === "/tmp/trip-b") return { path, valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/trip-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question about trip-a hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The person visits another directory and comes back to the first one, which
+  // returns the original draft.
+  await setWorkingDir(user, "/tmp/trip-b");
+  await settled();
+  await setWorkingDir(user, "/tmp/trip-a");
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The trip's question finally answers - with a refusal, which late would
+  // re-seed the returned draft from buildbox's home.
+  await act(async () => {
+    held.resolve({ path: "/tmp/trip-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// The re-seed moves the live draft onto a key another draft may already occupy
+// (a directory visited earlier by a draft that has since moved on). The live
+// draft wins the key - the person's current work must not be dropped for stale
+// state - and the displaced draft becomes unreachable: drafts are keyed by the
+// directory, and nothing else holds a reference to it. Pinned as the
+// deliberate tradeoff rather than inventing storage the pane does not have.
+test("a re-seed onto an occupied directory keeps the live draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  // An earlier visit's draft for the host's home directory...
+  const displaced = selectSpawnDirectory("/home/buildbox");
+  setDraftField(displaced, "prompt", "stale home draft");
+  window.history.pushState({}, "", "/new?dir=/tmp/collide-a");
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "live work");
+
+  // ...and the live draft, which the switch re-seeds onto that same key.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expectWorkingDir("/home/buildbox");
+  expect(promptField().value).toBe("live work");
+  expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("live work");
+  expect(spawnDraftsStore.getState().drafts.get("/home/buildbox")).toBe(spawnDraftsStore.getState().current);
+  // The displaced draft is unreachable: no key resolves to it any more.
+  expect([...spawnDraftsStore.getState().drafts.values()]).not.toContain(displaced);
+});
+
 // A picked directory is the person's own choice, and it opens that directory's
 // own draft (drafts are keyed by the exact directory). Selecting another draft
 // is not a switch of the selected host, so the picked directory's draft keeps

@@ -552,18 +552,39 @@ function SpawnForm({
   // A -> B -> A -> B): the issuance counter is what tells an answer apart from
   // an answer to an earlier visit's question. The non-switch runs above must
   // not bump it, so a resolution still in flight for this host and this draft
-  // can still land.
+  // can still land; a draft transition does invalidate it (below) without
+  // asking anything.
   const cwdIssuanceRef = useRef(0);
+  // The guard belongs to the form INSTANCE and dies with it: the draft store is
+  // module scope and outlives the pane, so an answer still in flight at unmount
+  // must not seed the form a later mount shows for the same draft. Reset at
+  // setup (StrictMode runs setup/cleanup/setup) and set in the cleanup, which
+  // every run returns so an unmount always cancels.
+  const cwdCancelledRef = useRef(false);
   useEffect(() => {
+    cwdCancelledRef.current = false;
+    const cancel = () => {
+      cwdCancelledRef.current = true;
+    };
     const previous = cwdHostRef.current;
     cwdHostRef.current = { host: submittedSource, draft };
-    if (previous === null || previous.draft !== draft || previous.host === submittedSource) return;
+    if (previous === null) return cancel;
+    if (previous.draft !== draft) {
+      // A draft transition invalidates whatever was in flight: the same draft
+      // object can come back (a directory round trip), and an answer from
+      // before the trip must not pass for the return.
+      cwdIssuanceRef.current++;
+      return cancel;
+    }
+    if (previous.host === submittedSource) return cancel;
     const issuedFor = submittedSource;
     const issuance = ++cwdIssuanceRef.current;
     // Every answer below is a statement about the machine selected NOW, for the
-    // question asked NOW: one that lands after another switch (or after the
-    // draft moved on) describes a moment the form has left, so it is dropped.
+    // question asked NOW: one that lands after another switch, after the draft
+    // moved on, or after this form went away describes a moment the form has
+    // left, so it is dropped.
     const superseded = () =>
+      cwdCancelledRef.current ||
       cwdIssuanceRef.current !== issuance ||
       cwdHostRef.current?.host !== issuedFor ||
       cwdHostRef.current.draft !== draft;
@@ -592,6 +613,7 @@ function SpawnForm({
       },
       () => {},
     );
+    return cancel;
   }, [client, draft, submittedSource]);
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
