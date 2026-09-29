@@ -184,9 +184,9 @@ type hostManagerConfig struct {
 	// try-acquires rather than proceeding ungated.
 	gate hostops.Gate
 	// bootID identifies this controller process incarnation for the durable
-	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2; crash-fencing
-	// spec §4). Empty refuses the probe: an epoch that cannot be bound to a boot
-	// is not a fencible epoch.
+	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2). Empty
+	// refuses the probe: an epoch that cannot be bound to a boot is not a
+	// usable epoch.
 	bootID string
 	// probeTimeout bounds one evener/host/running round trip in the plan's
 	// gated probe (§6 step 2's "explicit owner-adjustable probe timeout").

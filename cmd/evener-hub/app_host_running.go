@@ -13,9 +13,10 @@ package hub
 // probe — and refuses a browser-origin or forwarded request. It never forwards
 // onward to a third hub: the answer is this process's own state.
 //
-// EPOCH ADMISSION. The serving hub admits and persists the presented epoch
-// before the write half and refuses stale epochs without probing, then runs the
-// write probe authorized by that epoch under the caller's host gate. The
+// EPOCH ADMISSION. The serving hub validates the presented epoch against the
+// guard epoch it last admitted, refuses a stale same-boot epoch without
+// persisting it or probing, persists the admitted epoch, then runs the write
+// probe authorized by that epoch under the caller's host gate. The
 // crash-fencing execution that once sat behind this boundary (the remote
 // guard-file compare-and-advance and the takeover/kill/wait steps) was removed
 // with the rest of the program (comp08).
