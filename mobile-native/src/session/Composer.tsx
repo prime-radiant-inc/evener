@@ -3,10 +3,11 @@
 // model and effort controls, and the one Send. Stop lives in the status
 // tray; steering is something you do to a queued message.
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, type RefObject, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useState } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { useHoldAlerts } from "../alerts/alertsContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import type { ComposerFocus } from "./composerFocus";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
@@ -19,6 +20,9 @@ export interface ComposerProps {
 	editable: boolean;
 	onChangeText(text: string): void;
 	inputRef?: RefObject<TextInput | null>;
+	/** Where the field reports its focus, for what steps aside while you type
+	 * (useComposerTyping). */
+	focus?: ComposerFocus;
 	placeholder: string;
 	sendLabel: string;
 	sendEnabled: boolean;
@@ -38,6 +42,7 @@ export function Composer({
 	editable,
 	onChangeText,
 	inputRef,
+	focus,
 	placeholder,
 	sendLabel,
 	sendEnabled,
@@ -58,6 +63,8 @@ export function Composer({
 	// it. Sending empties it, and that lets them go.
 	const [focused, setFocused] = useState(false);
 	useHoldAlerts(focused && value.trim() !== "", "quiet");
+	// A composer that leaves the screen while focused reports no blur.
+	useEffect(() => () => focus?.set(false), [focus]);
 	// Typed line breaks count before layout has measured anything; the
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
@@ -98,8 +105,14 @@ export function Composer({
 					scrollEnabled
 					value={value}
 					onChangeText={onChangeText}
-					onFocus={() => setFocused(true)}
-					onBlur={() => setFocused(false)}
+					onFocus={() => {
+						setFocused(true);
+						focus?.set(true);
+					}}
+					onBlur={() => {
+						setFocused(false);
+						focus?.set(false);
+					}}
 					onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
 					editable={editable}
 					placeholder={placeholder}

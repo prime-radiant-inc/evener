@@ -1,7 +1,7 @@
 import { Text } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keyboard, render, renderedText } from "../renderNative.testkit";
+import { composerFocusedAs, keyboard, render, renderedText } from "../renderNative.testkit";
 import { FloatingStack, transcriptEndRoomAt } from "./FloatingStack";
 
 vi.mock("react-native", async () => ({
@@ -36,15 +36,13 @@ describe("what floats above the transcript's end", () => {
 	// Next steps aside while you type in the composer, reading the keyboard
 	// itself so the keyboard coming and going re-renders the stack alone.
 	it("steps Next aside while the keyboard is up for the composer, and only then", () => {
-		const stack = (composerKeyboard: boolean) => (
-			<FloatingStack toast={null} next={<Text>next</Text>} pill={null} composerKeyboard={composerKeyboard} />
-		);
-		const tree = render(stack(true));
+		const focus = composerFocusedAs(true);
+		const tree = render(<FloatingStack toast={null} next={<Text>next</Text>} pill={null} composerFocus={focus} />);
 		act(() => keyboard.show());
 		expect(renderedText(tree)).not.toContain("next");
-		act(() => tree.update(stack(false)));
+		act(() => focus.set(false));
 		expect(renderedText(tree)).toContain("next");
-		act(() => tree.update(stack(true)));
+		act(() => focus.set(true));
 		act(() => keyboard.hide());
 		expect(renderedText(tree)).toContain("next");
 	});

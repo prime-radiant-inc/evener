@@ -7,6 +7,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import {
+	composerFocusedAs,
 	keyboard,
 	playedHaptics,
 	pressable,
@@ -102,8 +103,8 @@ function mount(
 		backdrop = "surface" as "surface" | "page",
 		// The keyboard is up, for the composer.
 		typing = false,
-		// Whether a keyboard up is the composer's.
-		composerKeyboard = true,
+		// Whether the composer has focus.
+		composerFocused = true,
 	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
@@ -115,7 +116,7 @@ function mount(
 			canEdit={canEdit}
 			editHint={editHint}
 			backdrop={backdrop}
-			composerKeyboard={composerKeyboard}
+			composerFocus={composerFocusedAs(composerFocused)}
 			onAction={onAction}
 			onMore={onMore}
 		/>,
@@ -463,7 +464,7 @@ describe("while you type", () => {
 	});
 
 	it("stays open while the keyboard is up for something other than the composer", () => {
-		const { tree } = mount([queued], { typing: true, composerKeyboard: false });
+		const { tree } = mount([queued], { typing: true, composerFocused: false });
 		expect(renderedText(tree)).toContain(queued.text);
 		expect(pressable(tree, "1 queued")).toBeUndefined();
 	});

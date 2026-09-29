@@ -6,6 +6,7 @@ import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
 import { Composer, ModelChip } from "./Composer";
+import { ComposerFocus } from "./composerFocus";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
 
@@ -50,6 +51,21 @@ function fields(tree: ReactTestRenderer): ReactTestInstance[] {
 }
 
 describe("Composer", () => {
+	it("reports its field's focus, and lets go of it when it leaves the screen", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ focus });
+		const [field] = fields(tree);
+		act(() => field?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => field?.props.onBlur());
+		expect(focus.getSnapshot()).toBe(false);
+		act(() => field?.props.onFocus());
+		// A composer unmounted while focused (a dock takes its place) reports
+		// no blur of its own.
+		act(() => tree.unmount());
+		expect(focus.getSnapshot()).toBe(false);
+	});
+
 	it("shows the placeholder in a 17/24 field", () => {
 		const { tree } = composer();
 		const [field] = fields(tree);

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import type { ComposerFocus } from "./session/composerFocus";
 import { Keyboard, Platform } from "react-native";
 
 /** Whether the software keyboard is up. iOS says so as the keyboard starts
@@ -21,17 +22,20 @@ export function useKeyboardShown(): boolean {
 	return shown;
 }
 
-/** Whether you're typing in the composer: the keyboard is up and it is the
- * composer's (`composerKeyboard`: the composer shows and nothing else, such
- * as the find bar or a dock's field, has the keyboard). While you type, what
- * crowds the transcript folds or steps aside: the queue, Next, the header's
- * chips and note, a question's options.
+/** Whether you're typing in the composer: the keyboard is up and the
+ * composer's field has focus (`focus`, which the Composer reports), whatever
+ * else is open, such as the find bar. While you type, what crowds the
+ * transcript folds or steps aside: the queue, Next, the header's chips and
+ * note, a question's options.
  *
- * Each of those calls this itself, so the keyboard coming and going
- * re-renders only them. A screen-wide render as the keyboard starts to rise
- * would re-render the transcript's cells, and Reanimated holds its own
+ * Each of those calls this itself, so the keyboard and the focus coming and
+ * going re-render only them. A screen-wide render as the keyboard starts to
+ * rise would re-render the transcript's cells, and Reanimated holds its own
  * commits while React commits, stalling the keyboard controller's per-frame
  * padding for as long as that takes (#3247). */
-export function useComposerTyping(composerKeyboard: boolean): boolean {
-	return useKeyboardShown() && composerKeyboard;
+export function useComposerTyping(focus: ComposerFocus | undefined): boolean {
+	const focused = useSyncExternalStore(focus?.subscribe ?? neverChanges, focus?.getSnapshot ?? unfocused);
+	return useKeyboardShown() && focused;
 }
+const neverChanges = () => () => {};
+const unfocused = () => false;

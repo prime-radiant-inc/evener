@@ -12,7 +12,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { keyboard, render, screenConnection } from "./renderNative.testkit";
+import { keyboard, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { TimelineItem } from "./TimelineItem";
 
@@ -294,16 +294,26 @@ it("keeps one fork callback across the same re-render", async () => {
 
 afterEach(() => keyboard.reset());
 
-// The keyboard rising or falling changes only what folds or steps aside over
-// the composer (the queue, Next, the header's chips); each reads the keyboard
-// itself, so the flip never re-renders the screen or its transcript rows. A
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
+// The keyboard rising or falling, and the composer's focus, change only what
+// folds or steps aside over the composer (the queue, Next, the header's
+// chips); each reads them itself, so the flip never re-renders the screen or its transcript rows. A
 // screen-wide commit as the keyboard starts to move holds back the keyboard
 // controller's per-frame padding for as long as it takes (#3247).
 it("re-renders no transcript row when the keyboard comes up or goes down", async () => {
 	const { tree } = await mount(twoTurns("ref-memo-keyboard"));
 	expect(tree.root.findAll((node) => node.type === TimelineItem)).not.toEqual([]);
 	rows.renders = 0;
-	act(() => keyboard.show());
+	typeInComposer(tree);
 	await settle();
 	act(() => keyboard.hide());
 	await settle();
@@ -329,8 +339,11 @@ it("re-renders no transcript row when the bottom bar re-lays out as the keyboard
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
 	await settle();
+	expect(renderedText(tree)).toContain("check the logs");
 	rows.renders = 0;
-	act(() => keyboard.show());
+	typeInComposer(tree);
+	// Folded to one line.
+	expect(renderedText(tree)).not.toContain("check the logs");
 	// The fold shrinks the bar, which reports its new height.
 	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 560, width: 390, height: 200 } } }));
 	await settle();
