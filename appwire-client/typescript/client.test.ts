@@ -115,6 +115,25 @@ describe("decodeInitializeResponse", () => {
     ).toThrow("invalid initialize response");
   });
 
+  // Additive wire changes need no version bump: a hub that advertises a feature
+  // this build has never heard of must not fail the handshake. The decoder
+  // ignores unknown feature keys (and preserves them) while staying strict
+  // about the keys it does know.
+  test("accepts and preserves an additive feature flag the client has never seen", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, someFutureFeature: true },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("still requires the known feature keys to be present", () => {
+    const { tasks: _omitted, ...withoutTasks } = FAKE_INITIALIZE_RESULT.features;
+    expect(() => decodeInitializeResponse({ ...FAKE_INITIALIZE_RESULT, features: withoutTasks })).toThrow(
+      "invalid initialize response",
+    );
+  });
+
   test.each([
     ["serverInfo", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
     ["protocolVersion", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
