@@ -137,6 +137,14 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   (`STORAGE_WAIT_MS = 10_000`). On deadline, open failure, or miss, the
   hydration proceeds exactly as today, with `beginThreadHydration` receiving
   `undefined` as its model. No pane ever waits on storage longer than 250 ms.
+  The lookup is serial by necessity, and the trade is stated rather than
+  hidden: the held identity must exist before the request goes out (the
+  store's own contract — `issueLatestWindowRead` runs synchronously before
+  the wire call), and issuing the read concurrently would cold-read every
+  cache hit, forfeiting the daemonless `changes` and replacing the shell's
+  pages wholesale. The serial cost is a warm IndexedDB get, single-digit
+  milliseconds; the 250 ms bound is reached only in the pathological
+  wedged-open case, after which behavior is exactly today's.
 - **The lookup has no pre-existing slot to occupy.** `ensureThread`'s
   sequence is check-then-arm (`threads.has(ref)` short-circuit, then
   `beginThreadHydration`'s synchronous `pendingThreadHydrations.set`). The
@@ -280,26 +288,30 @@ the stale-snapshot retry already uses), not a merge.** The pages are
 dropped, the response's cursor is taken, and the user re-pages if they want
 the older content back — the honest alternative to rendering a transcript
 with a silent hole in it. A response carrying `changes` merges as usual.
-The comparison is one position check (the window's first item against the
-record's last held item) at a seam the design already owns; no reducer or
-protocol change is involved.
+The predicate is exact: it applies only when the read's disposition is
+`merge` (the existing rules already answer replace and discard), the
+shell's held turns are non-empty (an empty record takes the ordinary cold
+merge), and the fresh window's first item position is strictly greater
+than the shell's newest held item position — `comparePositions` on
+`ThreadItemPosition`, so a window that overlaps the record or abuts it
+exactly merges, and only a window fully above replaces. The check lives at
+a seam the design already owns; no reducer or protocol change is involved.
 
 ### Eviction, cap, and cross-tab
 
 - One IndexedDB database per hub origin (browsers scope IndexedDB to the
   origin), `evener-session-cache`, one object store keyed by `ref`.
-- `SESSION_CACHE_MAX_BYTES = 32 MB`, `SESSION_CACHE_MAX_RECORD_BYTES = 8 MB`.
-- The cap is enforced statelessly: each debounced write enumerates the
-  store's keys, `bytes`, and `savedAt` (no record bodies) and evicts
-  least-recently-saved records until the total fits. No running total to
-  go stale across tabs; the cap always describes what the database actually
-  holds.
-- A record over the per-record cap is trimmed by dropping its oldest pages
-  until it fits, keeping the newest end the fresh window merges into; a
-  record still over the cap with only its latest window is skipped whole.
-  Trimming at the newest end would manufacture the live-gap hole above, so
-  it never trims there. This keeps the cache working for exactly the
-  heavy-tool-output sessions that motivated it.
+- `SESSION_CACHE_MAX_BYTES = 32 MB`, with no per-record cap. A per-record
+  ceiling with oldest-page trimming was cut: a trimmed record would keep
+  one `olderCursor` naming a boundary below the dropped pages, cursors are
+  opaque server tokens the client cannot mint, and restoring the invariant
+  would mean persisting a per-page cursor chain — machinery the total cap
+  makes unnecessary. One oversized record costs at most the headroom under
+  the total; eviction stays whole-record LRU.
+- The cap is enforced atomically per write: the enumeration of keys,
+  `bytes`, and `savedAt` (no record bodies), the insert, and any evictions
+  run in one read-write IndexedDB transaction, which the database
+  serializes across tabs, so no writer evicts against a stale total.
 - Cross-tab: last write wins per ref. A tab holding only the window can
   replace a sibling's deeper record; the dropped pages simply re-fetch on
   a later reload. This design deliberately rejects a no-shrink comparison
@@ -393,10 +405,9 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    throws; the diagnostic seam records the open failure; a lookup still
    resolves as a miss at its own 250 ms deadline.
 3. Cap: writing past `SESSION_CACHE_MAX_BYTES` evicts the
-   least-recently-saved record; the stateless enumeration sees a sibling
-   tab's writes; an oversize record trims oldest pages to fit; a record
-   over the cap with window alone is skipped whole; a forced write during
-   quota failure drops silently.
+   least-recently-saved record; enumeration, insert, and eviction share one
+   transaction (a sibling tab's interleaved write is either fully seen or
+   fully unseen); a forced write during quota failure drops silently.
 4. Clear: deletes every record and resets the accounting.
 
 Store integration (`stores/threads.test.ts` additions and a new
@@ -411,10 +422,11 @@ Store integration (`stores/threads.test.ts` additions and a new
    empty `changes`) merges without dropping or duplicating items, and the
    window's arrival is asserted rather than assumed away.
 6. Reload replay, live, growth under a window: the scripted reply carries
-   the window and no `changes`; the fresh window overlaps the record; the
-   held pages below survive the merge and the deepest cursor is kept (this
-   also pins the existing reducer rule in the reload scenario; it lands
-   green as a characterization of 792c379eca).
+   the window and no `changes`; one variant with an overlapping window and
+   one with a window abutting the record's newest held item exactly both
+   merge, the held pages below survive, and the deepest cursor is kept
+   (this also pins the existing reducer rule in the reload scenario; it
+   lands green as a characterization of 792c379eca).
 7. Reload replay, live, growth past a window: the fresh window starts
    entirely above the record; the reconcile applies as a replacement; the
    pages are dropped, the response's cursor is taken, and the rendered
@@ -446,7 +458,8 @@ Store integration (`stores/threads.test.ts` additions and a new
     flush skips a ref closed by deletion; the settings clear empties the
     adapter, suppresses this tab's open refs until reload, and a re-open of
     a cleared ref starts caching again.
-15. Write gating: `failed` history writes nothing.
+15. Write gating: `failed` history writes nothing; a zero-turn record's
+    reload takes the ordinary cold merge (the gap rule's empty case).
 16. Flush: `releaseThread` commits a pending debounced write; the pinned
     drain (`dropUnpinnedModel`) commits it too; a reload after an unflushed
     crash still reconciles to the same content.
@@ -477,10 +490,13 @@ transient invalidation fields are reset and the history identity round-trips.
    cached `threadId`.
 5. **Open-pane models only**, enforced by the write seam's threads-map-only
    placement; watched/rail reads never load or write.
-6. **32 MB cap, 8 MB per-record cap with oldest-pages trimming, stateless
-   per-write accounting, cross-tab last-write-wins.** A no-shrink rule was
-   considered and rejected: its failure modes (LRU inversion, frozen
-   superseded content) cost more than the pages it saved.
+6. **32 MB whole-record LRU cap, one atomic read-write transaction per
+   write, cross-tab last-write-wins.** A no-shrink rule was considered and
+   rejected: its failure modes (LRU inversion, frozen superseded content)
+   cost more than the pages it saved. A per-record cap with oldest-page
+   trimming was cut with it: trimming dangles the single `olderCursor`
+   below the dropped pages, and repairing it needs a per-page cursor chain
+   the total cap makes unnecessary.
 7. **Zero reducer changes.** The deepest-held-cursor rule already exists
    (792c379eca) and is pinned, not re-implemented. The one new behavioral
    rule — a no-`changes` reconcile whose window starts above the held pages
