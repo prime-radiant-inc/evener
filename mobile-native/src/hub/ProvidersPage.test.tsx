@@ -454,6 +454,55 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	expect(hasControl(tree, "Remove")).toBe(true);
 });
 
+it("goes back to the provider's detail when its edit is cancelled", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Base URL");
+	press(tree, (label) => label === "Cancel");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(hasControl(tree, "Edit")).toBe(true);
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+});
+
+it("won't let a swipe down drop an edit whose save is still in flight", async () => {
+	const hub = scriptedClient(rows);
+	let answer = (_rows: InstanceListResponse) => {};
+	const request = hub.client.request as (method: string, params?: unknown) => Promise<unknown>;
+	hub.client.request = ((method: string, params?: unknown) =>
+		method === "evener/instance/edit"
+			? new Promise((resolve) => (answer = resolve))
+			: request(method, params)) as typeof hub.client.request;
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = { route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(renderedText(tree)).toContain("Base URL");
+	await act(async () => answer(rows));
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
 // The editor was opened on one row of the listing, so its save asserts that
 // row's endpoint; the hub's refusal of the assertion is its own class, not a
 // generic save failure: the editor clears, the provider list is re-read, and
@@ -480,7 +529,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	await act(async () => {});
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	press(tree, (label) => label === "Save instance");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 
@@ -494,7 +543,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	expect(text).toContain("changed to a different endpoint");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
-	expect(text).not.toContain("Save instance");
+	expect(text).not.toContain("Base URL");
 	expect(hasControl(tree, "Edit")).toBe(true);
 });
 
@@ -576,7 +625,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 	act(() => {
 		nameInput.props.onChangeText("work");
 	});
-	press(tree, (label) => label === "Save instance");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 
@@ -586,7 +635,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 	expect(text).toContain("Save could not be confirmed");
 	expect(text).not.toContain("changed to a different endpoint");
 	// The form survives for the correction.
-	expect(text).toContain("Save instance");
+	expect(text).toContain("Base URL");
 });
 
 // Keeping the screen mounted across a flap lets the row move under an open
@@ -641,7 +690,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
-	press(tree, (label) => label === "Save instance");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 
@@ -663,7 +712,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 	]);
 	const text = renderedText(tree);
 	expect(text).toContain("changed to a different endpoint");
-	expect(text).not.toContain("Save instance");
+	expect(text).not.toContain("Base URL");
 });
 
 // No over-fencing: a flap whose recovery finds the endpoint unchanged must
@@ -688,7 +737,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	await act(async () => {});
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	const url = tree.root.find((node) => node.props.accessibilityLabel === "Base URL (optional)");
+	const url = tree.root.find((node) => node.props.accessibilityLabel === "Base URL");
 	act(() => {
 		url.props.onChangeText("https://work2.example");
 	});
@@ -702,7 +751,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
-	press(tree, (label) => label === "Save instance");
+	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 
@@ -717,7 +766,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
 	expect(text).not.toContain("changed to a different endpoint");
-	expect(text).not.toContain("Save instance");
+	expect(text).not.toContain("Base URL");
 });
 
 it("shows the connection status inside an open editor modal, with no Reconnect", async () => {
@@ -737,11 +786,11 @@ it("shows the connection status inside an open editor modal, with no Reconnect",
 	// covers the page's status line, so the status has to live inside it -
 	// with the draft still intact.
 	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
-	const modal = modalContaining(tree, "Save instance");
+	const modal = modalContaining(tree, "Base URL");
 	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	// The draft survived: the modal is still the editor's.
-	expect(subtreeText(modal)).toContain("Save instance");
+	expect(subtreeText(modal)).toContain("Base URL");
 });
 
 it("starts a sign-in from behind the banner without a doomed client", async () => {

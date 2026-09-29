@@ -111,15 +111,17 @@ fuzz:
 # wire answers, which the TUI and the React pane decode instead of hand-building
 # InstanceEntry/AuthStatusResponse values of their own. The fourth records the
 # daemon's delegate and job notification frames as steering items, which the
-# AppWire package and the phone parse instead of hand-building frames.
+# AppWire package and the phone parse instead of hand-building frames; the
+# fifth records a coordinator's delegate and other tool calls as history
+# carries them, which the phone's subagent rows read.
 ## Regenerate the decode SNAPSHOT goldens from the current decoders, and the
-## hub credential-wire and notification-frame fixtures its clients decode. Run
-## ONLY after an intended change, then commit the diff.
+## hub credential-wire, notification-frame and tool-call fixtures its clients
+## decode. Run ONLY after an intended change, then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
-	@sh -c "cd agent && go test -run '^TestSteeringNotificationWireFixtures' . -update-notificationwire"
+	@sh -c "cd agent && go test -run 'WireFixtures\$$' . -update-wire"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

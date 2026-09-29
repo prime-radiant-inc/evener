@@ -9,7 +9,7 @@ import type { ContentLevel } from "@evener/appwire-client";
 import { liveAsksFor, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
-import { configForLevel } from "../session/detailLevels.js";
+import { displayForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
@@ -38,9 +38,13 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 function open(slug: string, level: ContentLevel = "intent") {
 	const thread = threadOf(slug);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
-	const config = configForLevel(level, null) ?? undefined;
+	const display = displayForLevel(level, null);
+	const config = display.config ?? undefined;
 	const conversation = projectConversation(model, liveAsksFor(model), config);
-	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	const presentation = projectNativeTranscript(conversation, config, {
+		justTheConversation: display.justTheConversation,
+	});
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
 	return { thread, model, conversation, rows };
 }
 
@@ -147,6 +151,38 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			}),
 		);
 	});
+
+	// A real delegate call settles as soon as its launch receipt returns, so a
+	// demo that gave the call its subagent's state would hide a row that reads
+	// the call instead of the subagent (the transcript audit's first gap).
+	it("settles every subagent call at launch with its receipt, as the hub does", () => {
+		const calls = sessions.flatMap((thread) =>
+			(thread.turns ?? []).flatMap((turn) => turn.items ?? []).filter((item) => item.toolName === "delegate"),
+		);
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) {
+			expect(call.status).toBe("completed");
+			expect(JSON.parse(call.output ?? "{}")).toMatchObject({
+				delegate_id: expect.any(String),
+				transcript_ref: expect.any(String),
+			});
+		}
+	});
+
+	it.each(["s-pr2138", "s-retry", "s-tasklist"])(
+		"reads each subagent row in %s at Intent by its subagent's own state, and can open it",
+		(slug) => {
+			const { model, rows } = open(slug);
+			const subagentRows = subagentsOf(rows);
+			expect(subagentRows.length).toBeGreaterThan(0);
+			for (const row of subagentRows) {
+				const delegate = model.delegates?.find((candidate) => candidate.originToolCallId === row.detail.callId);
+				const line = subagentLine(row, model.delegates, NOW);
+				expect(line.ref).toBe(delegate?.transcriptRef);
+				expect(line.stateText).toMatch(/^(running|failed|done) · \d+[smhd]/);
+			}
+		},
+	);
 
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");

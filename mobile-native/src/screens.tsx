@@ -146,7 +146,7 @@ import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
-import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
+import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
@@ -375,7 +375,8 @@ export function ConversationScreen({
 	const levels = detailLevels(route.params.hubId);
 	useSyncExternalStore(levels.subscribe, levels.getRevision);
 	const chosenLevel = levels.get(route.params.ref);
-	const displayConfig = useMemo(() => configForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
+	const display = useMemo(() => displayForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
+	const displayConfig = display.config;
 	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
 	displayConfigRef.current = displayConfig;
 	const resolveDisplayConfig = useCallback(() => displayConfigRef.current, []);
@@ -1148,8 +1149,8 @@ export function ConversationScreen({
 	// only reshapes (member unrolling, attachment adjacency) and computes the
 	// footer's accounting — no second, screen-level projection.
 	const presentation = useMemo(
-		() => projectNativeTranscript(conversation, displayConfig),
-		[conversation, displayConfig],
+		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation: display.justTheConversation }),
+		[conversation, displayConfig, display.justTheConversation],
 	);
 	const timelineRows = useMemo(
 		() =>

@@ -325,14 +325,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
-	if (!tasks) throw new Error("no Tasks item in the header menu");
-	act(() => tasks.onPress());
+	act(() => menuAction("Tasks").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
@@ -347,14 +340,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 	const { tree } = mount(withCapabilities({ sharedNotes: true }));
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
-	if (!notes) throw new Error("no Notes & links item in the header menu");
-	act(() => notes.onPress());
+	act(() => menuAction("Notes & links").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",

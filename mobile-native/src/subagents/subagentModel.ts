@@ -44,12 +44,18 @@ export interface SubagentRow {
 const STOPPED_OUTCOMES = new Set(["stopped", "cancelled"]);
 const STATE_WORDS: Record<SubagentState, string> = { running: "Running", failed: "Failed", done: "Done" };
 
+/** The delegate fields the state rule reads. The Subagents list passes its
+ * ActivityDelegate (turns included); the Session chip passes an
+ * EvenerDelegateInfo, which is always the stable "delegate" shape and so
+ * carries no turns. `subagentState` is the one classifier for both. */
+export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "turns">;
+
 /** Running, failed or done, as the hub's job counts are (active, failed,
  * completed; agent/jobs_activity.go aggregateActivity): the subagent's own
  * outcome, never its children's (ruling 4). A stable delegate runs until its
  * run is terminal; a turn container (the wire allows one, though the daemon
  * builds none today) is read by its turns. */
-export function subagentState(delegate: ActivityDelegate): SubagentState {
+export function subagentState(delegate: SubagentStateSource): SubagentState {
 	if (isTurnContainer(delegate)) {
 		const turns = delegate.turns ?? [];
 		if (turns.some((turn) => !turn.terminal)) return "running";
