@@ -79,17 +79,20 @@ export interface FormFront {
 	latest: { current: { ready: boolean; client: unknown } };
 }
 
-const fronts = new WeakMap<NewSessionStore, FormFront>();
+/** Each store's forms, oldest first: the last is in front. */
+const fronts = new WeakMap<NewSessionStore, FormFront[]>();
 
-/** Makes `front` the store's form in front, newest first, until the returned
- * release runs. */
+/** Makes `front` the store's form in front until the returned release runs;
+ * then the form under it, if any, is in front again. */
 export function showForm(store: NewSessionStore, front: FormFront): () => void {
-	fronts.set(store, front);
+	fronts.set(store, [...(fronts.get(store) ?? []), front]);
 	return () => {
-		if (fronts.get(store) === front) fronts.delete(store);
+		const rest = (fronts.get(store) ?? []).filter((shown) => shown !== front);
+		if (rest.length > 0) fronts.set(store, rest);
+		else fronts.delete(store);
 	};
 }
 
 export function formFront(store: NewSessionStore): FormFront | undefined {
-	return fronts.get(store);
+	return fronts.get(store)?.at(-1);
 }

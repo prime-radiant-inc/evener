@@ -5,8 +5,11 @@ import {
 	creationService,
 	creationStore as hubStore,
 	type DraftStorage,
+	type FormFront,
 	forgetCreationForHub,
+	formFront,
 	releaseCreations,
+	showForm,
 } from "./creations";
 
 const noDrafts: DraftStorage = () => ({ read: () => null, write: () => {}, clear: () => {} });
@@ -59,5 +62,27 @@ it("lets go of a client the connection has left, so a start on it doesn't wait f
 	// Disconnected (or another hub, or a new connection): the start is let go, uncertain.
 	releaseCreations(null);
 	expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
+	forgetCreationForHub("hub-a");
+});
+
+it("puts back the form underneath when the newer one on a store goes (#3104)", () => {
+	const store = creationStore("hub-a");
+	const front = (): FormFront => ({
+		navigation: { isFocused: () => true, getParent: () => undefined },
+		latest: { current: { ready: true, client: null } },
+	});
+	const older = front();
+	const newer = front();
+	const releaseOlder = showForm(store, older);
+	const releaseNewer = showForm(store, newer);
+	expect(formFront(store)).toBe(newer);
+	releaseNewer();
+	expect(formFront(store)).toBe(older);
+	// Released out of order, the newest still in place stays in front.
+	const releaseAgain = showForm(store, newer);
+	releaseOlder();
+	expect(formFront(store)).toBe(newer);
+	releaseAgain();
+	expect(formFront(store)).toBeUndefined();
 	forgetCreationForHub("hub-a");
 });
