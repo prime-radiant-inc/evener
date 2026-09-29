@@ -1741,11 +1741,12 @@ type TurnError struct {
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a
-// warning/error notification. Today the only Kind is "provider" (an HTTP
-// failure from an LLM adapter); consumers can typed-branch on Kind
-// instead of substring-matching the message (kata cmfz). The agent's
-// events.ErrorCause projects to this shape; absence is signaled by an
-// omitted/nil pointer on the carrying envelope.
+// warning/error notification. Kinds today are "provider" (an HTTP failure
+// from an LLM adapter) and "signInRequired" (the user must sign in to a
+// provider instance again); consumers can typed-branch on Kind instead of
+// substring-matching the message (kata cmfz). The agent's events.ErrorCause
+// projects to this shape; absence is signaled by an omitted/nil pointer on
+// the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
