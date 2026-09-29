@@ -3,7 +3,6 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActivityIndicator,
 	Alert,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -32,6 +31,7 @@ import {
 	isStaleListingRefusal,
 	staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { appliedInstanceWrite } from "./appliedInstanceWrite";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";
@@ -445,7 +445,7 @@ function Providers({
 					</Pressable>
 				)}
 			/>
-			<Modal
+			<HoldingModal
 				visible={!!instance || configuration === "create"}
 				animationType="slide"
 				presentationStyle="pageSheet"
@@ -716,7 +716,7 @@ function Providers({
 						</ScrollView>
 					</View>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</SafeAreaView>
 	);
 }

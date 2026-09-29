@@ -11,7 +11,7 @@ import { requestBoardJump } from "../board/boardJump";
 import { useConnection } from "../ConnectionProvider";
 import type { Routes } from "../screens";
 import { AlertBanner } from "./AlertBanner";
-import { useAlertCenter, useAlertSnapshot, useNoticeFor } from "./AlertsProvider";
+import { useAlertCenter, useAlertSnapshot, useNoticeFor } from "./alertsContext";
 
 export function AlertBannerHost({ navigation }: { navigation: NavigationContainerRef<Routes> }) {
 	const center = useAlertCenter();
