@@ -59,7 +59,11 @@ describe("the host a session runs on", () => {
 	});
 
 	it("reads every host as offline while the hub is away, whatever the manifest last said", () => {
-		const host = sessionHosts(sources.map((source) => ({ ...source, online: true })), "Work hub", false);
+		const host = sessionHosts(
+			sources.map((source) => ({ ...source, online: true })),
+			"Work hub",
+			false,
+		);
 		expect(host("local")).toEqual({ label: "Work hub", online: false });
 		expect(host("paradise-park")).toEqual({ label: "paradise-park", online: false });
 	});
