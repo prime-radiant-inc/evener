@@ -577,6 +577,9 @@ test("a stalled capture read dispatches the steer directly and never fails close
     await flushPendingTurnsProjectionForTests();
   }
   await act(async () => delivered);
+  // The fallback send succeeded, so the composer clears the input exactly as
+  // it does for any successful steer.
+  expect(textarea()?.textContent).toBe("");
   // Releasing the stalled read after the fallback send must not send again.
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
