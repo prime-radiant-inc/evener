@@ -7,7 +7,7 @@
 // (ruling 18).
 import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import { useConnection } from "../ConnectionProvider";
@@ -39,9 +39,10 @@ export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSessio
 	const { profiles } = useConnection();
 	const { navigation } = props;
 	// A removed hub has no store to make or show: its sheet closes, whether the
-	// hub went while the sheet was open or on its way here.
+	// hub went while the sheet was open or on its way here. It closes in a
+	// layout effect, before the empty sheet is ever painted.
 	const removed = !profiles.some((profile) => profile.id === props.route.params.hubId);
-	useEffect(() => {
+	useLayoutEffect(() => {
 		if (removed) navigation.goBack();
 	}, [removed, navigation]);
 	if (removed) return null;
