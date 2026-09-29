@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -1432,7 +1433,7 @@ func registerThreadHandlers(
 		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -1480,7 +1481,7 @@ func registerThreadHandlers(
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
@@ -1543,6 +1544,10 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		params, err := appitempaging.ApplyBefore(params)
+		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
 		// Live source first; fall back to the saved transcript (paged on the

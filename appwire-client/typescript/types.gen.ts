@@ -3472,6 +3472,15 @@ export interface ThreadCapabilities {
    * that owns the tree.
    */
   stopSubagent?: boolean;
+  /**
+   * PageBefore advertises that thread/turns/list pages this thread from a
+   * before position, with or without a cursor: a client that trimmed rows
+   * from the top of its window can page them back. The hub answers for its
+   * own local and saved threads. A thread on another host stays masked until
+   * the hub can join such a page to its remote paging window (#3176); an
+   * older hub never sends it.
+   */
+  pageBefore?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -3987,6 +3996,14 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  /**
+   * Before, when set, ends the page just before this position. With a
+   * Cursor it moves the cursor's boundary, keeping the cursor's identity
+   * fence; with none the source mints a cursor there under the thread's
+   * current identity. A client that dropped rows from the top of its window
+   * names the oldest row it kept and pages the dropped rows back.
+   */
+  before?: ThreadItemPosition;
 }
 
 export interface ThreadTurnsListResponse {
