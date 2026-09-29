@@ -804,6 +804,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	defer func() {
 		cancelBackground()
 		background.Wait()
+		// The refresh group is not the background group: a request-triggered
+		// refresh is started by a handler, not by startBackground, so it is
+		// awaited here. cancelBackground has already canceled its context.
+		web.waitLaunchRefreshes()
 	}()
 	startBackground := func(fn func()) {
 		background.Go(fn)

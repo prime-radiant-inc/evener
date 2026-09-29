@@ -147,7 +147,15 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 	entry := s.launchModels.entries[workingDir]
 	s.launchModels.mu.Unlock()
 	if entry == nil {
-		return s.loadLaunchModels(ctx, workingDir, gen)
+		// A shared load runs on the server lifetime, not this request's context:
+		// singleflight hands the leader's result to every waiter, so a leader
+		// whose client disconnected must not fail the readers that joined it.
+		if err := ctx.Err(); err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		loadCtx, cancel := launchModelsFetchContext(s.lifetime)
+		defer cancel()
+		return s.loadLaunchModels(loadCtx, workingDir, gen)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
 	// inventory, refreshed by the same prefetch cadence.
@@ -157,10 +165,21 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
 	if s.beginLaunchModelsRefresh(workingDir) {
-		go s.refreshLaunchModels(workingDir, gen)
+		s.startLaunchRefresh(workingDir, gen)
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
+
+// startLaunchRefresh runs a request-triggered refresh under the server's
+// refresh group, so runMain can await it at shutdown instead of returning while
+// an `evener launch-check` child is still running.
+func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64) {
+	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen) })
+}
+
+// waitLaunchRefreshes blocks until every in-flight request-triggered refresh
+// has returned.
+func (s *WebServer) waitLaunchRefreshes() { s.launchRefreshes.Wait() }
 
 // beginLaunchModelsRefresh claims the refresh slot for one working dir,
 // returning false when a refresh of it is already running. The periodic warm
@@ -202,10 +221,15 @@ func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen
 }
 
 // storeLaunchModels publishes one load's answer, evicting the oldest key once
-// the cap is reached.
+// the cap is reached. A load that finished late does not overwrite an entry
+// installed at a newer generation: the holder generation only advances, so a
+// higher entry is the fresher one.
 func (s *WebServer) storeLaunchModels(workingDir string, gen uint64, resp appwire.ModelListResponse) {
 	s.launchModels.mu.Lock()
 	defer s.launchModels.mu.Unlock()
+	if existing := s.launchModels.entries[workingDir]; existing != nil && existing.gen > gen {
+		return
+	}
 	if _, exists := s.launchModels.entries[workingDir]; !exists && len(s.launchModels.entries) >= launchModelsMaxEntries {
 		evictOldestLaunchModelsEntry(s.launchModels.entries)
 	}
@@ -258,23 +282,14 @@ func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
 // first picker open after hub start is served instantly instead of blocking on
 // the live provider listing. Best-effort: a failure leaves the cache cold and
-// the next picker open (or prefetch tick) retries. loadLaunchModels collapses
-// this pass with any request-triggered refresh already in flight.
+// the next picker open (or prefetch tick) retries. It warms through the
+// configured loader, so an embedder's own WebConfig.LaunchModels is warmed
+// rather than bypassed; the built-in loader fills the same cache it serves from.
 func (s *WebServer) warmLaunchModels(ctx context.Context) {
-	if !hasEvenerLaunchModelLister(s.cfg) {
+	if !hasEvenerLaunchModelLister(s.cfg) || s.cfg.LaunchModels == nil {
 		return
 	}
-	gen, ok := liveModelsGeneration(s)
-	if !ok {
-		return
-	}
-	// Claim the same slot a request-triggered refresh uses, so a tick landing on
-	// one does not spawn a second launch check for the same list.
-	if !s.beginLaunchModelsRefresh("") {
-		return
-	}
-	defer s.endLaunchModelsRefresh("")
-	_, _ = s.loadLaunchModels(ctx, "", gen)
+	_, _ = s.cfg.LaunchModels(ctx, "")
 }
 
 // startLaunchModelsPrefetch warms the unscoped launch model list once at

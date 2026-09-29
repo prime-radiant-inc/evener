@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -593,18 +594,21 @@ func (f *countLaunchContractSpawner) ListLaunchModelContractForWorkingDir(ctx co
 	return f.record(ctx, workingDir)
 }
 
+// record notes the call under the lock, then runs modelsFn outside it: a test
+// whose modelsFn blocks must still be able to read callCount and contextOf.
 func (f *countLaunchContractSpawner) record(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls++
 	f.lastCtx = ctx
-	if f.err != nil {
-		return appwire.ModelListResponse{}, f.err
+	call, fn, err := f.calls, f.modelsFn, f.err
+	f.mu.Unlock()
+	if err != nil {
+		return appwire.ModelListResponse{}, err
 	}
-	if f.modelsFn == nil {
+	if fn == nil {
 		return appwire.ModelListResponse{}, nil
 	}
-	return f.modelsFn(f.calls, workingDir), nil
+	return fn(call, workingDir), nil
 }
 
 func (f *countLaunchContractSpawner) callCount() int {
@@ -816,46 +820,55 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 
 // TestFetchLaunchModelsCoalescesColdLoads: concurrent reads of one uncached key
 // share a single launch check, so a burst of cold picker opens — or a read
-// racing the startup warm — spawns one child, not one per reader. RoboRev's
-// Medium finding on the cold-miss path; the second and later readers return the
-// leader's result instead of listing again.
+// racing the startup warm — spawns one child, not one per reader.
 func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
 	t.Parallel()
-	entered := make(chan struct{})
 	release := make(chan struct{})
+	entered := make(chan struct{})
+	var enterOnce sync.Once
 	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
+		// close-once, so both a coalesced run (one entry) and a broken one (many
+		// entries) signal exactly once and the test can never block on it.
+		enterOnce.Do(func() { close(entered) })
 		<-release
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
 
 	const readers = 8
+	var started atomic.Int32
 	var wg sync.WaitGroup
 	errs := make(chan error, readers)
-	read := func() {
-		resp, err := web.fetchLaunchModels(context.Background(), "")
-		if err != nil {
-			errs <- err
-			return
-		}
-		if len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5.5" {
-			errs <- fmt.Errorf("models=%+v", resp.Data)
-		}
+	start := make(chan struct{})
+	for range readers {
+		wg.Go(func() {
+			<-start
+			started.Add(1)
+			resp, err := web.fetchLaunchModels(context.Background(), "")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5.5" {
+				errs <- fmt.Errorf("models=%+v", resp.Data)
+			}
+		})
 	}
+	close(start)
 
-	// The first reader leads and blocks inside the launch check; the rest are
-	// started while its flight is in progress, so they must join it. The sleep
-	// gives them time to reach the shared flight before it completes.
-	wg.Go(read)
-	<-entered
-	for range readers - 1 {
-		wg.Go(read)
-	}
-	time.Sleep(50 * time.Millisecond)
+	// The leader is blocked inside the launch check until release, so every
+	// reader that has started reaches the shared flight while it is in progress.
+	// singleflight exposes no in-flight count, so "all readers started" plus the
+	// blocked leader is the observable bound; the assertion below is still exact.
+	waitFor(t, func() bool { return started.Load() == readers }, "the readers did not all start")
+	waitFor(t, func() bool {
+		select {
+		case <-entered:
+			return true
+		default:
+			return false
+		}
+	}, "no reader entered the launch check")
 	close(release)
 	wg.Wait()
 	close(errs)
@@ -864,6 +877,18 @@ func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
 	}
 	if got := spawner.callCount(); got != 1 {
 		t.Fatalf("launch contract called %d times for %d concurrent cold readers, want 1", got, readers)
+	}
+}
+
+// waitFor polls cond until it holds or five seconds pass.
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(msg)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -906,6 +931,123 @@ func TestRefreshLaunchModelsUsesTheServerLifetime(t *testing.T) {
 	}
 	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
 		t.Fatalf("the refresh's context does not descend from the server lifetime: marker=%q, ctx=%v", got, spawner.contextOf())
+	}
+}
+
+// TestColdLaunchLoadUsesTheServerLifetime: the shared cold load runs on the
+// server lifetime, so a leader whose client disconnected cannot fail the
+// readers that joined its singleflight flight.
+func TestColdLaunchLoadUsesTheServerLifetime(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	reg := newBumpableProviderRegistry(t)
+	type lifetimeKey struct{}
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{Registry: reg, Spawner: spawner},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.WithValue(context.Background(), lifetimeKey{}, "hub-lifetime"),
+	}
+
+	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		t.Fatalf("fetchLaunchModels: %v", err)
+	}
+	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
+		t.Fatalf("the cold load did not run on the server lifetime: marker=%q", got)
+	}
+}
+
+// TestStoreLaunchModelsDoesNotClobberANewerEntry: the holder generation only
+// advances, so a load that finished late must not overwrite an entry installed
+// at a newer generation.
+func TestStoreLaunchModelsDoesNotClobberANewerEntry(t *testing.T) {
+	t.Parallel()
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+	}
+	newer := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "newer"}}}
+	older := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "older"}}}
+	web.storeLaunchModels("", 7, newer)
+	web.storeLaunchModels("", 3, older)
+	if got := web.launchModels.entries[""].resp.Data[0].Model; got != "newer" {
+		t.Fatalf("a load from generation 3 clobbered the generation 7 entry: got %q", got)
+	}
+}
+
+// TestWarmLaunchModelsUsesTheConfiguredLoader: the startup warm goes through
+// WebConfig.LaunchModels, so an embedder's own loader is warmed rather than
+// bypassed by a direct evenerLaunchModelList call.
+func TestWarmLaunchModelsUsesTheConfiguredLoader(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	web := newLaunchModelsTestWeb(t, spawner, true)
+	inner := web.cfg.LaunchModels
+	var calls atomic.Int32
+	web.cfg.LaunchModels = func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+		calls.Add(1)
+		return inner(ctx, workingDir)
+	}
+
+	web.warmLaunchModels(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("the warm called the configured loader %d times, want 1 (it bypassed it)", got)
+	}
+	if got := spawner.callCount(); got != 1 {
+		t.Fatalf("the warm did not fill the cache through the loader: launch contract called %d times", got)
+	}
+}
+
+// TestWaitLaunchRefreshesAwaitsInFlightRefresh: a request-triggered refresh is
+// tracked, so runMain's shutdown can wait for it instead of returning while its
+// evener launch-check child is still running.
+func TestWaitLaunchRefreshesAwaitsInFlightRefresh(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	spawner := &countLaunchContractSpawner{modelsFn: func(call int, _ string) appwire.ModelListResponse {
+		// Only the refresh (call 2) blocks; the initial cold load must return so
+		// the test can retire the entry and trigger the refresh.
+		if call >= 2 {
+			<-release
+		}
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	reg := newBumpableProviderRegistry(t)
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{Registry: reg, Spawner: spawner},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.Background(),
+	}
+
+	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		t.Fatalf("fetchLaunchModels: %v", err)
+	}
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		t.Fatalf("fetchLaunchModels after bump: %v", err)
+	}
+	waitFor(t, func() bool { return spawner.callCount() == 2 }, "the refresh never started")
+
+	waited := make(chan struct{})
+	go func() {
+		web.waitLaunchRefreshes()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("waitLaunchRefreshes returned while the refresh was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitLaunchRefreshes did not return after the refresh finished")
 	}
 }
 

@@ -56,6 +56,10 @@ type WebServer struct {
 	// picker open does not re-run `evener launch-check --models` (a live
 	// provider listing that takes seconds) every time.
 	launchModels *launchModelsCache
+	// launchRefreshes tracks request-triggered launch-model refreshes so the
+	// shutdown path can await them; otherwise their `evener launch-check` child
+	// outlives the hub.
+	launchRefreshes sync.WaitGroup
 	// lifetime is the hub run's context. Background work a request triggers —
 	// the launch-model refresh — hangs off it rather than off the request, so
 	// shutdown cancels it instead of leaving the child to outlive the hub.
