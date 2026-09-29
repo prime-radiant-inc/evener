@@ -168,3 +168,17 @@ func TestPastRootSignal_ReturnCoversRootHookOnly(t *testing.T) {
 		t.Fatal("root rename did not report a hook fire")
 	}
 }
+
+// A shown field outside contentFingerprint (Model) still fires the root hook
+// and is reported as a hook fire, while the full signal stays quiet.
+func TestPastRootSignal_ShownFieldOutsideContentFingerprintFires(t *testing.T) {
+	idx, _, fires := rootSignalIndex(t)
+	root, _ := idx.findCached(rootSignalRootID)
+	root.Meta.Model = "other-model"
+	if !idx.UpdateMeta(rootSignalRootID, root.Meta) {
+		t.Fatal("a Model change did not report a hook fire")
+	}
+	if full, rootFires := fires(); full != 0 || rootFires != 1 {
+		t.Fatalf("fires full=%d root=%d after a Model-only change, want 0 and 1", full, rootFires)
+	}
+}

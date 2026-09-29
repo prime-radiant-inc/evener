@@ -132,9 +132,12 @@ func writeHashValue(h hash.Hash64, v reflect.Value) {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		binary.LittleEndian.PutUint64(b[:], v.Uint())
 	case reflect.Slice:
+		binary.LittleEndian.PutUint64(b[:], uint64(v.Len())) // frames the elements
+		_, _ = h.Write(b[:])
 		for n := range v.Len() {
 			writeHashValue(h, v.Index(n))
 		}
+		return
 	case reflect.Struct:
 		t, ok := reflect.TypeAssert[time.Time](v)
 		if !ok {
