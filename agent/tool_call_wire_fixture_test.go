@@ -56,8 +56,9 @@ const toolWireFixturePath = "testdata/toolwire/calls.json"
 const toolWireCwd = "/home/jesse/git/evener"
 
 // toolWireAnswers is the user's reply to call_ask_user, choosing its
-// recommended option, in the [answers] form both clients compose
-// (appwire-client's composeAskAnswers; a test there pins the match).
+// recommended option. It is a hand-written constant: the [answers] composer
+// lives only in the TypeScript clients (appwire-client's composeAskAnswers),
+// so askUserCorpus.test.ts pins that this string is what it composes.
 const toolWireAnswers = "[answers]\n1. [Deploy] → \"Ship tonight\""
 
 // toolWireEarlierSession is the earlier session in the project's state bucket.

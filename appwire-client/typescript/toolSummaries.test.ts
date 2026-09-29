@@ -190,6 +190,18 @@ test("words a job list's filter and a job tool it doesn't know", () => {
   expect(step("job_read_output", { job_id: "job_x" })).toBe("Checked job_x");
 });
 
+// An ask_user line names each question's header; with none that parse it
+// says it asked, never "Asked: " with nothing after it.
+test("says the headers an ask_user call asked, or that it asked", () => {
+  const asked = (questions: unknown) =>
+    toolStepSummary({ toolName: "ask_user", argumentsJSON: JSON.stringify({ questions }) });
+  const question = (header: string) => ({ header, question: `${header}?`, options: [{ label: "Yes", detail: "." }] });
+  expect(asked([question("Deploy"), question("Notify")])).toBe("Asked: [Deploy], [Notify]");
+  expect(asked([])).toBe("Asked a question");
+  expect(asked(undefined)).toBe("Asked a question");
+  expect(asked([{ question: "no options, no header" }])).toBe("Asked a question");
+});
+
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
     "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
@@ -289,7 +301,11 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
   ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
   ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
-  ["ask_user", { questions: [{ header: "Deploy", question: "Ship?", options: [] }] }, "Asking a question"],
+  [
+    "ask_user",
+    { questions: [{ header: "Deploy", question: "Ship?", options: [{ label: "Yes", detail: "Ship it." }] }] },
+    "Asking a question",
+  ],
   ["job_status", { target: "job_x" }, "Checking job_x"],
   ["job_list", {}, "Listing jobs"],
   ["job_stop", { target: "job_x" }, "Stopping job_x"],
