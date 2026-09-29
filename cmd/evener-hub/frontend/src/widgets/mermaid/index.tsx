@@ -12,6 +12,18 @@ const CLASS = {
   svg: requireClass(styles.svg, "mermaid.module.css", "svg"),
 };
 
+// The error fallback renders the source through CodeBlock's own stylesheet so
+// a failed diagram looks identical to a mermaid fenced block; the borrowed
+// classes go through requireClass like every other class-lookup table
+// (widgets/markdown/index.tsx's own CODEBLOCK_CLASS is the precedent).
+const CODEBLOCK_CLASS = {
+  root: requireClass(codeblockStyles.root, "codeblock.module.css", "root"),
+  header: requireClass(codeblockStyles.header, "codeblock.module.css", "header"),
+  language: requireClass(codeblockStyles.language, "codeblock.module.css", "language"),
+  pre: requireClass(codeblockStyles.pre, "codeblock.module.css", "pre"),
+  code: requireClass(codeblockStyles.code, "codeblock.module.css", "code"),
+};
+
 type State = { status: "loading" } | { status: "ok"; svg: string } | { status: "error" };
 
 /** Renders one mermaid diagram inline. The source is model-authored, so the
@@ -53,12 +65,12 @@ export function MermaidDiagram({
   if (state.status === "error") {
     // Same styling as a fenced code block, plus the honest note.
     body = (
-      <div className={codeblockStyles.root}>
-        <div className={codeblockStyles.header}>
-          <span className={codeblockStyles.language}>mermaid</span>
+      <div className={CODEBLOCK_CLASS.root}>
+        <div className={CODEBLOCK_CLASS.header}>
+          <span className={CODEBLOCK_CLASS.language}>mermaid</span>
         </div>
-        <pre className={codeblockStyles.pre}>
-          <code className={codeblockStyles.code}>{source}</code>
+        <pre className={CODEBLOCK_CLASS.pre}>
+          <code className={CODEBLOCK_CLASS.code}>{source}</code>
         </pre>
         <p className={CLASS.error}>Couldn&apos;t render this diagram.</p>
       </div>
