@@ -96,8 +96,10 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // list_dir ends its listing with the count it returned: "3 entries" after a
 // blank line, the count alone for an empty directory, or "2 of 5 entries
 // (offset 0) — more…" for a page of a longer one. A summary says how many it
-// returned; an output without a count counts its lines.
-const LIST_DIR_COUNT_RE = /(?:^|\n)(\d+)(?: of (\d+))? entries/;
+// returned; an output without a count counts its lines. The footer is the
+// whole output or follows a blank line, so an entry named like a count
+// ("2 entries.md") never reads as one.
+const LIST_DIR_COUNT_RE = /(?:^|\n\n)(\d+)(?: of (\d+))? entries/;
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
