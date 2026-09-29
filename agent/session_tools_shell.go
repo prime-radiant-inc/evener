@@ -160,6 +160,12 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 // incomplete marks a directory too large to scan fully, whose page cannot be
 // continued by offset.
 func paginateDirEntriesBudgeted(path string, entries []execenv.DirEntry, offset, limit int, incomplete bool) listDirResult {
+	if incomplete {
+		// The entries are only the smallest among those scanned, not the global
+		// ordering, so slicing them by offset has no defined meaning: return the
+		// first scanned prefix instead.
+		offset = 0
+	}
 	r := paginateDirEntries(path, entries, offset, limit)
 	r.Partial = true
 	r.Truncated = true

@@ -558,7 +558,10 @@ func (s *sandboxFS) walkDirFd(ctx context.Context, dirFd int, relPrefix, baseAbs
 			}
 		}
 		*out = append(*out, de)
-		if ent.IsDir() && depth > 1 {
+		// Do not descend when no entry budget remains: the child's contents
+		// could not be retained, and listing it would only mark the page
+		// incomplete without adding anything.
+		if ent.IsDir() && depth > 1 && budget.remainingEntries() != 0 {
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
 			childFd, cerr := secureOpenat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)

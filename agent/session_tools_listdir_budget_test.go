@@ -61,3 +61,12 @@ func TestListDirBudget_IncompleteFooterHasNoOffset(t *testing.T) {
 		t.Fatalf("incomplete footer must not offer an offset continuation:\n%s", out)
 	}
 }
+
+// An incomplete page's entries are only the smallest among those scanned, so an
+// offset must not slice them as if they were a later page.
+func TestPaginateDirEntriesBudgeted_IncompleteIgnoresOffset(t *testing.T) {
+	r := paginateDirEntriesBudgeted(".", []execenv.DirEntry{{Name: "a"}, {Name: "b"}}, 5, 10, true)
+	if r.Offset != 0 || len(r.Entries) != 2 || r.Entries[0].Name != "a" {
+		t.Fatalf("incomplete page = %+v, want the first scanned prefix regardless of offset", r)
+	}
+}

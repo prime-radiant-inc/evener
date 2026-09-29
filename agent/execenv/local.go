@@ -2043,11 +2043,11 @@ func readDirPrefix(ctx context.Context, f *os.File, read func(*os.File, int) ([]
 			// incomplete rather than stepped over, because proving the visible
 			// listing complete can require reading a masked run past the bound.
 			batch, rerr := read(f, 1)
-			if len(batch) > 0 {
-				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
-			}
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
 				return dirPrefixResult{}, rerr
+			}
+			if len(batch) > 0 {
+				return dirPrefixResult{entries: sortedPrefix(), more: true, incomplete: true}, nil
 			}
 			return dirPrefixResult{entries: sortedPrefix(), more: dropped}, nil
 		}
@@ -2176,7 +2176,10 @@ func (e *LocalExecutionEnvironment) ListDirectoryBudget(ctx context.Context, pat
 				}
 			}
 			out = append(out, de)
-			if ent.IsDir() && d > 1 {
+			// Do not descend when no entry budget remains: the child's contents
+			// could not be retained, and listing it would only mark the page
+			// incomplete without adding anything.
+			if ent.IsDir() && d > 1 && budget.remainingEntries() != 0 {
 				if err := walk(filepath.Join(absDir, name), relName, d-1); err != nil {
 					return err
 				}
