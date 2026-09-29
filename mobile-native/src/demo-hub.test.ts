@@ -1446,6 +1446,35 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
+	// The hub's notices (S11): evener/notices/list answers them, and a host
+	// going offline or coming back announces the new list to every client.
+	it("lists its notices, and announces the new list when paradise-park goes offline and comes back", async () => {
+		const commands = new PassThrough();
+		const hub = await createDemoHub(0, undefined, {}, { commands });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const announced: string[][] = [];
+		client.onNotification((notification) => {
+			if (notification.method === "evener/notices/changed")
+				announced.push((notification.params as { notices: { id: string }[] }).notices.map((notice) => notice.id));
+		});
+		try {
+			await client.connect();
+			expect((await client.request("evener/notices/list", {})).notices.map((notice) => notice.id)).toEqual([
+				"signInRequired:codex-jesse-fsck.com",
+			]);
+			commands.write("host-offline\nhost-online\n");
+			await vi.waitFor(() =>
+				expect(announced).toEqual([
+					["signInRequired:codex-jesse-fsck.com", "hostOffline:paradise-park"],
+					["signInRequired:codex-jesse-fsck.com"],
+				]),
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("grows the working session by a finished step at a time on grow, for scroll checks", async () => {
 		const commands = new PassThrough();
 		const hub = await createDemoHub(0, undefined, {}, { commands, growEveryMs: 5 });

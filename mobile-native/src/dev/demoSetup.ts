@@ -93,6 +93,11 @@ const MODELS: [string, string, string, number, number, number, boolean, string[]
 	["qwen3-coder:30b", "Qwen3 Coder 30B (local)", "ollama", 128, 0, 0, false, ["low", "medium", "high"]],
 ];
 const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
+/** The provider instance each catalog model runs on, for the fleet's sign-in
+ * notice count (DemoFleetOptions.modelProviders). */
+export const DEMO_MODEL_PROVIDERS: Readonly<Record<string, string>> = Object.fromEntries(
+	MODELS.map(([model, , provider]) => [model, provider]),
+);
 // What a provider's "Check for new models" finds that its listing lacks.
 const FOUND_ON_CHECK: Record<string, string[]> = { lunaroute: ["glm-5.4"] };
 
@@ -214,6 +219,7 @@ const SETUP_METHODS = [
 	"evener/instance/setModelDisabled",
 	"evener/instance/refreshModels",
 	"evener/auth/list",
+	"evener/notices/list",
 	"evener/auth/device/start",
 	"evener/auth/device/poll",
 	"evener/marketplace/list",
@@ -441,6 +447,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			}));
 			return { providers: [...fleetStatuses, ...signedIn] };
 		},
+		"evener/notices/list": () => fleet.answerNoticesList(),
 		"evener/marketplace/list": () => ({
 			marketplaces: MARKETPLACES.map((marketplace) => ({
 				name: marketplace.id,
