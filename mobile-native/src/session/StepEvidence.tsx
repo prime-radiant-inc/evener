@@ -50,11 +50,7 @@ function Output({ text, lines, title }: { text: string; lines: number; title: st
 	const [viewing, setViewing] = useState(false);
 	// Only the preview's own lines are parsed: the output can run to 64 KiB.
 	const preview = useMemo(
-		() =>
-			keyedByOffset(
-				parseOutputLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")),
-				ansiLineLength,
-			),
+		() => keyedByOffset(parseOutputLines(text.split("\n", EVIDENCE_PREVIEW_LINES).join("\n")), ansiLineLength),
 		[text],
 	);
 	const showAll = `Show all ${lines} lines`;
