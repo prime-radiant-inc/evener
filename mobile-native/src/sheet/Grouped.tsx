@@ -174,6 +174,10 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** A control of its own at the row's end, such as a mini button
+	 * ("Install"): outside what a press on the row opens, so each is its own
+	 * target and its own VoiceOver element. */
+	accessory?: ReactNode;
 }
 
 /** Between the label and a value that wrapped under it. */
@@ -273,6 +277,7 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	accessory,
 }: RowProps) {
 	const { palette } = useColors();
 	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
@@ -314,23 +319,31 @@ export function Row({
 		opacity: disabled ? 0.4 : 1,
 	} as const;
 	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
-	if (!onPress)
-		return (
-			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
-				{body}
-			</View>
-		);
-	return (
+	// With a control at its end, the row's own part takes the rest of the
+	// width and the control sits beside it, inset like the row's text.
+	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
+	const row = !onPress ? (
+		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+			{body}
+		</View>
+	) : (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
 			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
-			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
+			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
 		>
 			{body}
 		</Pressable>
+	);
+	if (!accessory) return row;
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center" }}>
+			{row}
+			<View style={{ paddingHorizontal: space.rowInset }}>{accessory}</View>
+		</View>
 	);
 }
 
@@ -391,11 +404,12 @@ export function SwitchRow({
 					accessibilityRole="button"
 					accessibilityLabel={accessibilityLabel ?? [label, sub].filter(Boolean).join(", ")}
 					onPress={onPress}
+					// Pressed, it shades as a Row does.
 					style={({ pressed }) => ({
 						flex: 1,
 						alignSelf: "stretch",
 						justifyContent: "center",
-						opacity: pressed ? 0.6 : 1,
+						backgroundColor: pressed ? palette.pressed : undefined,
 					})}
 				>
 					{text}

@@ -1,4 +1,4 @@
-import { AccessibilityInfo, Platform, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
@@ -521,5 +521,48 @@ describe("a text field row", () => {
 		).root.findByType("TextInput" as never);
 		expect(input.props.multiline).toBe(true);
 		expect(input.props.editable).toBe(false);
+	});
+});
+
+describe("a row's trailing control (audit M13)", () => {
+	it("draws its own control after the row's text, outside what a press on the row opens", () => {
+		const open = vi.fn();
+		const install = vi.fn();
+		const tree = render(
+			<Row
+				label="code-review"
+				sub="Review changes for correctness"
+				onPress={open}
+				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={install} />}
+			/>,
+		);
+		const row = tree.root.find((node) => node.type === Pressable && node.props.accessibilityLabel?.startsWith("code-review"));
+		// The row's own button doesn't hold the control, so each is its own
+		// VoiceOver element and its own target.
+		expect(row.findAll((node) => node.props.accessibilityLabel === "Install")).toHaveLength(0);
+		const control = tree.root.find((node) => node.type === Pressable && node.props.accessibilityLabel === "Install");
+		act(() => control.props.onPress());
+		expect(install).toHaveBeenCalledTimes(1);
+		expect(open).not.toHaveBeenCalled();
+		act(() => row.props.onPress());
+		expect(open).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a row with a control and no press a single reading for VoiceOver, beside the control", () => {
+		const tree = render(
+			<Row label="pdf" accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={() => {}} />} />,
+		);
+		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "pdf")).not.toHaveLength(0);
+		expect(tree.root.findAll((node) => node.type === Pressable && node.props.accessibilityLabel === "Install")).toHaveLength(1);
+	});
+});
+
+describe("a switch row's text, pressed (audit M13)", () => {
+	it("shades like a row does, rather than dimming", () => {
+		const tree = render(<SwitchRow label="superpowers" value onChange={() => {}} onPress={() => {}} />);
+		const text = tree.root.find((node) => node.type === Pressable);
+		const pressed = merged(text.props.style({ pressed: true }));
+		expect(pressed.backgroundColor).toBe(light.pressed);
+		expect(pressed.opacity ?? 1).toBe(1);
 	});
 });
