@@ -238,7 +238,7 @@ var testForwardBareFlags = map[string]bool{
 // testRefusedValueFlags take a value and are refused: consuming the pair first
 // is what keeps `-run -race` from reading the caller's regex as a build flag.
 var testRefusedValueFlags = map[string]bool{
-	"-args": true, "-bench": true, "-benchtime": true, "-blockprofile": true,
+	"-bench": true, "-benchtime": true, "-blockprofile": true,
 	"-blockprofilerate": true, "-covermode": true, "-coverpkg": true,
 	"-coverprofile": true, "-cpu": true, "-cpuprofile": true, "-exec": true,
 	"-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
@@ -255,6 +255,10 @@ var testRefusedBareFlags = map[string]bool{
 	// -n prints the commands instead of running them, so the build it
 	// describes never produces the binary the shards are handed.
 	"-n": true,
+	// -args takes no value of its own: everything after it is the test
+	// binary's argument list, so the walk stops on the flag itself rather
+	// than taking the next word as its value.
+	"-args": true,
 }
 
 // refusalReason is the sentence that goes with the flag's name, for the few
