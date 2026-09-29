@@ -12617,6 +12617,62 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // The fallback send's RPC is its only transport, so a failure on the wire
+  // must be retried rather than surfaced. The id is minted once and reused
+  // across the attempts, so a reply lost after the daemon applied the mutation
+  // is deduped on the retry instead of applied twice. The composer stays in its
+  // "Sending" state through the ladder (the submission wraps the whole enqueue).
+  test("a fallback send retries a wire failure under the same clientMutationId", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-retry";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // The first attempt fails on the wire; the second answers.
+    let attempts = 0;
+    fake.on("turn/start", (params) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("FakeClient: socket closed");
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+
+    // Retire the connection, then make the factory's next open never answer:
+    // storage is wedged for every call the send makes.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "retried while storage is wedged");
+      // The capture's open never answers; the watchdog ends it and the send
+      // takes the direct-dispatch fallback, whose first RPC then fails.
+      await vi.advanceTimersByTimeAsync(10_000);
+      // The retry delay elapses; the second attempt delivers.
+      await vi.advanceTimersByTimeAsync(50);
+      await send;
+
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent).toHaveLength(2);
+      const ids = sent.map((call) => (call.params as { clientMutationId?: string }).clientMutationId);
+      expect(ids[0]).toBeTruthy();
+      expect(ids[1]).toBe(ids[0]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
   // The fallback is not the ref's durable FIFO head. The dispatcher sends only
   // nextDispatchable (the ref's head) and re-checks its admission before every
   // attempt; the fallback must re-earn that admission and must not jump an

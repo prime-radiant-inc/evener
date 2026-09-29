@@ -2550,17 +2550,31 @@ function isStorageUnavailable(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
 }
 
+// The fallback send's RPC is its only transport, so a failure on the wire is
+// retried rather than surfaced. Only a transport failure earns the second
+// attempt: a settled WireError is the daemon's own answer (a conflict or a
+// malformed request cannot succeed on an identical retry), while a timeout or a
+// dropped connection leaves the outcome unknown. The clientMutationId is minted
+// ONCE, before the ladder, and every attempt reuses it - the daemon dedups by
+// clientMutationId, so a reply lost after the mutation applied replays as a
+// no-op on the retry instead of applying twice.
+const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
+
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. The client mints
 // the clientMutationId exactly as those operations do, so the daemon still
 // dedups a replay; a rejection maps a conflict the same way they do.
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
-  try {
-    const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
-    await request.call(client, intent.method, { ...intent.payload, clientMutationId });
-  } catch (err) {
-    throw mapConflict(err);
+  const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+      return;
+    } catch (err) {
+      if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
+      await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
+    }
   }
 }
 
