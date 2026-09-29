@@ -220,13 +220,13 @@ fences: {recordId: string, host: string, kind: "deploy" | "restart", clientOpera
 incarnationId: string}[]}` — `recordIds` carries every imported record's original
 controller-assigned id verbatim so the replacement store imports by id, and
 `allocatorHighWaterMark` carries the pre-quarantine maximum so the replacement
-allocator starts above it; one fence entry per open fenced record carrying the full record
-identity that entry imports under — (a prior file's retired `quarantine: bool`
-and `boundary: BoundaryEntry[]` fields stay decodable and are dropped, never
-rewritten)
+allocator starts above it; one fence entry per open `orphan-unverified` record carrying the full
+record identity that entry imports under —
 `recordId`, host, kind, client operation ID, and the pinned (generation,
 incarnation id) pair — so a fence import builds its `OperationRecord` from the
-entry itself and never joins an ambiguous per-host `recordIds` row; one
+entry itself and never joins an ambiguous per-host `recordIds` row. (A prior
+file's retired `quarantine: bool` and `boundary: BoundaryEntry[]` fields stay
+decodable and are dropped, never rewritten.) one
 ownership entry per name the corrupt file
 yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is addressable: boot imports each fence entry as
 an `orphan-unverified` record under its original
