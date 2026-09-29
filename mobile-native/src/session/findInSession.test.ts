@@ -79,6 +79,30 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 		expect(findMatches(web, "rust lifetimes")).toEqual([0]);
 	});
 
+	// A settled step with an intent of its own keeps its words but not its
+	// summary (projectedRows' intentRow), and its line sets their target in
+	// Menlo: the target is on screen, so it's findable.
+	it("matches an intent row by the target its words name", () => {
+		const intent: TimelineRow[] = [
+			{
+				kind: "run",
+				id: "run:i",
+				steps: [
+					{
+						kind: "activity",
+						id: "i",
+						label: "read_file",
+						family: "tool",
+						state: "completed",
+						summaryOnly: true,
+						detail: { description: "Read the settle pass", words: { verb: "Read", target: "agent/tree.go" } },
+					},
+				],
+			},
+		];
+		expect(findMatches(intent, "agent/tree.go")).toEqual([0]);
+	});
+
 	it("starts at the newest match and steps both ways", () => {
 		const matches = [1, 2, 4];
 		expect(stepMatch(matches, null, -1)).toBe(4);
