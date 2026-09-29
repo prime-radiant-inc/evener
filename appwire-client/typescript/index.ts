@@ -246,6 +246,7 @@ export {
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";
 export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
@@ -546,7 +547,14 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
+export {
+  prettyJSON,
+  type ShellOutput,
+  shellOutput,
+  skillContext,
+  toolJSONResult,
+  webFetchResult,
+} from "./toolEvidence";
 export {
   applyPatchSummary,
   askUserSummary,

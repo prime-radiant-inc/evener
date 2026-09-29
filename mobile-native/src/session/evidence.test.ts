@@ -197,6 +197,51 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	it("shows a job's status and what it runs, not the JSON around them", () => {
+		expect(real("call_job_status")).toEqual([
+			{ kind: "output", text: "running — printf 'started\\n'; sleep 600", lines: 1 },
+		]);
+	});
+
+	// The line says only the stop's status; its evidence keeps the whole
+	// footer, its codes in words.
+	it("shows a job stop's whole footer, its codes in words", () => {
+		expect(real("call_job_stop")).toEqual([
+			{
+				kind: "output",
+				text: "[shell job_fixture_1 · cancelled · cancelled by request · stopped by parent]",
+				lines: 1,
+			},
+		]);
+	});
+
+	// A listing's status and bracketed codes read as words; a command in its
+	// label keeps its own spelling.
+	it("shows a job list with its codes in words", () => {
+		const [evidence] = real("call_job_list");
+		expect(evidence?.kind === "output" && evidence.text.split("\n")).toEqual([
+			"# id  type  status  label  [started · reason · exit · bytes]",
+			"job_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit zero · exit 0 · 13893 bytes]",
+			"job_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]",
+			"",
+			"2 job(s).",
+		]);
+	});
+
+	// Only a listing and a stop footer carry codes. Anything else a job tool
+	// prints, a job's own output among it, reads as printed.
+	it("shows other job output as printed, codes and all", () => {
+		const output = "a  b  exit_zero  d\nbuilt [tree_order]";
+		for (const label of ["job_read_output", "job_watch"])
+			expect(stepEvidence({ label, detail: { output } })).toEqual([{ kind: "output", text: output, lines: 2 }]);
+	});
+
+	it("shows what a job check printed when it isn't the tool's JSON", () => {
+		expect(stepEvidence({ label: "job_status", detail: { output: "not json" } })).toEqual([
+			{ kind: "output", text: "not json", lines: 1 },
+		]);
+	});
+
 	it("shows a command's output without the shell tool's exit footer", () => {
 		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
 	});

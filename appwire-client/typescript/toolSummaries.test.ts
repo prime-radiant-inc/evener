@@ -170,6 +170,47 @@ test("says what a worktree adopt or dispose did, and an operation it doesn't kno
   );
 });
 
+// A job tool this build has no words for says which one, never its raw name;
+// a list filtered by status says the filter.
+test("words a job list's filter and a job tool it doesn't know", () => {
+  const step = (toolName: string, args: Record<string, unknown>) =>
+    toolStepSummary({ toolName, argumentsJSON: JSON.stringify(args) });
+  expect(step("job_list", { status: ["running", "failed"] })).toBe("Listed jobs (running, failed)");
+  expect(step("job_frobnicate", { operation: "spin" })).toBe("Used job frobnicate: spin");
+  expect(step("job_frobnicate", {})).toBe("Used job frobnicate");
+  // A stop says the status its footer's first line reports, a subagent's too.
+  expect(
+    toolStepSummary({
+      toolName: "job_stop",
+      argumentsJSON: JSON.stringify({ target: "dlg_1" }),
+      output: "[delegate dlg_1 · stopped · stop_completed · stopped_by_parent · was running]\nrequested by: parent",
+    }),
+  ).toBe("Stopped dlg_1 · stopped");
+  // The footer's reason, its fourth segment after the outcome, words the
+  // status as every other job surface does.
+  expect(
+    toolStepSummary({
+      toolName: "job_stop",
+      argumentsJSON: JSON.stringify({ target: "job_x" }),
+      output: "[shell job_x · failed · already_terminal · exit_nonzero]",
+    }),
+  ).toBe("Stopped job_x · Command failed");
+  // The legacy name reads as job_status does.
+  expect(step("job_read_output", { job_id: "job_x" })).toBe("Checked job_x");
+});
+
+// An ask_user line names each question's header; with none that parse it
+// says it asked, never "Asked: " with nothing after it.
+test("says the headers an ask_user call asked, or that it asked", () => {
+  const asked = (questions: unknown) =>
+    toolStepSummary({ toolName: "ask_user", argumentsJSON: JSON.stringify({ questions }) });
+  const question = (header: string) => ({ header, question: `${header}?`, options: [{ label: "Yes", detail: "." }] });
+  expect(asked([question("Deploy"), question("Notify")])).toBe("Asked: [Deploy], [Notify]");
+  expect(asked([])).toBe("Asked a question");
+  expect(asked(undefined)).toBe("Asked a question");
+  expect(asked([{ question: "no options, no header" }])).toBe("Asked a question");
+});
+
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
     "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
@@ -190,6 +231,8 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   expect(toolFamily("find_session_transcripts")).toBe("sessions");
   expect(toolFamily("manage_worktree")).toBe("worktree");
   expect(toolFamily("ask_user")).toBe("ask");
+  for (const name of ["job_status", "job_read_output", "job_list", "job_stop", "job_frobnicate"])
+    expect(toolFamily(name)).toBe("jobs");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -267,7 +310,14 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
   ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
   ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
-  ["ask_user", { questions: [{ header: "Deploy", question: "Ship?", options: [] }] }, "Asking a question"],
+  [
+    "ask_user",
+    { questions: [{ header: "Deploy", question: "Ship?", options: [{ label: "Yes", detail: "Ship it." }] }] },
+    "Asking a question",
+  ],
+  ["job_status", { target: "job_x" }, "Checking job_x"],
+  ["job_list", {}, "Listing jobs"],
+  ["job_stop", { target: "job_x" }, "Stopping job_x"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {

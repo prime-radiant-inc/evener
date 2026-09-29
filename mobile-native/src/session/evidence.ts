@@ -9,6 +9,7 @@ import {
 	diffStats,
 	editDiffText,
 	filePathOf,
+	jobStatusDisplay,
 	freshNotes,
 	lineCount,
 	parseArgs,
@@ -19,6 +20,7 @@ import {
 	skillContext,
 	str,
 	toolFamily,
+	toolJSONResult,
 	turns,
 	webFetchResult,
 	worktreeMessage,
@@ -88,6 +90,33 @@ function shellNotes(run: ShellOutput): Evidence[] {
 	return notes;
 }
 
+// A code the job tools print ("cancelled_by_request") in words ("cancelled by
+// request"). A local stand-in until a shared code-to-words helper lands
+// (#3327); swap this for it then.
+const JOB_CODE_RE = /^[a-z]+(?:_[a-z]+)+$/;
+function codeInWords(text: string): string {
+	return JOB_CODE_RE.test(text) ? text.replace(/_/g, " ") : text;
+}
+
+// A job footer's bracketed codes, and a listing row's status column, in
+// words. Only those: a command in a listing's label keeps its own spelling
+// ("tree_order.go"). A listing row reads "<id>  <type>  <status>  <label>
+// [<started · reason · exit · bytes>]", its header "# …".
+function jobCodesInWords(text: string): string {
+	return text
+		.split("\n")
+		.map((line) => {
+			const bracket = /\[([^\]]*)\]\s*$/.exec(line);
+			const withCodes = bracket
+				? `${line.slice(0, bracket.index)}[${(bracket[1] ?? "").split(" · ").map(codeInWords).join(" · ")}]`
+				: line;
+			const columns = withCodes.split("  ");
+			if (columns.length >= 4 && !withCodes.startsWith("#")) columns[2] = codeInWords(columns[2] ?? "");
+			return columns.join("  ");
+		})
+		.join("\n");
+}
+
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
 // checklist, a transcript a read returned, what a worktree operation says it
@@ -142,6 +171,18 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		case "worktree":
 			// What the operation says it did, not the JSON around it.
 			return rawOutput(worktreeMessage(text) ?? text);
+		case "jobs": {
+			// A job check: its status and what it runs, not the JSON around
+			// them. A list and a stop print lines of their own, their codes
+			// in words; anything else reads as printed.
+			if (label === "job_list" || label === "job_stop") return rawOutput(jobCodesInWords(text));
+			const job = toolJSONResult(text);
+			const status = job ? str(job, "status") : undefined;
+			if (!job || !status) return rawOutput(text);
+			const description = str(job, "description");
+			const line = jobStatusDisplay(status, str(job, "reason"));
+			return rawOutput(description ? `${line} — ${description}` : line);
+		}
 		case "mcp":
 		case "tool": {
 			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;

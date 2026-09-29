@@ -1,6 +1,14 @@
 // Descriptors for job_* and delegate_send follow-up calls.
 import type { ItemModel } from "@evener/appwire-client";
-import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
+import {
+  clip,
+  jobListSummary,
+  jobStatusSummary,
+  jobStopSummary,
+  parseArgs,
+  str,
+  toolStepSummary,
+} from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
 import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
@@ -90,30 +98,13 @@ function JobListBody({ item, live }: ToolRenderProps) {
   );
 }
 
-function jobControlTarget(item: ItemModel): string {
-  const args = parseArgs(item.argumentsJSON);
-  const parsedOutput = parseJSONObject(item.output);
-  return (
-    (parsedOutput && (str(parsedOutput, "id") ?? str(parsedOutput, "job_id"))) ??
-    str(args, "target") ??
-    str(args, "job_id") ??
-    ""
-  );
-}
-
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
   // Background work is state a reader tracks across a turn, so every job
   // row stays on its own line rather than folding into a run.
   fold: "never",
-  summary(item: ItemModel) {
-    const parsedOutput = parseJSONObject(item.output);
-    const jobId = jobControlTarget(item);
-    const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    const reason = parsedOutput ? str(parsedOutput, "reason") : undefined;
-    return status ? `Checked ${jobId} · ${jobStatusDisplay(status, reason)}` : `Checked ${jobId}`;
-  },
+  summary: jobStatusSummary,
   body: DelegateStatusBody,
 });
 
@@ -121,12 +112,7 @@ registerToolRenderer({
   match: "job_list",
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const status = args.status;
-    const filter = Array.isArray(status) ? status.filter((s) => typeof s === "string").join(", ") : "";
-    return filter ? `Listed jobs (${filter})` : "Listed jobs";
-  },
+  summary: jobListSummary,
   body: JobListBody,
 });
 
@@ -134,12 +120,7 @@ registerToolRenderer({
   match: "job_stop",
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
-    const footer = trailingBracketFooter(item.output ?? "");
-    return footer ? `Stopped ${jobId} · ${footer}` : `Stopped ${jobId}`;
-  },
+  summary: jobStopSummary,
   body: HeadClippedOutputBody,
 });
 
@@ -378,10 +359,8 @@ registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const operation = str(args, "operation");
-    return operation ? `${item.toolName}: ${operation}` : (item.toolName ?? "");
-  },
+  // The package's words for a job tool this build doesn't know: which
+  // operation it ran, never the raw tool name.
+  summary: (item: ItemModel) => toolStepSummary(item),
   body: HeadClippedOutputBody,
 });
