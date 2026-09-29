@@ -35,8 +35,10 @@ const CODE_INVALID_PARAMS = -32602;
 // asked for happened, and resending it unchanged can only get the same answer.
 // Any other failure, a timeout or a lost connection among them, leaves open
 // whether it ran. It holds only for a request the hub validates before running
-// any of it, as the mutation dispatcher's are; thread/start is not one, since
-// it can refuse the initial input after spawning the session (#3184).
+// any of it, as the mutation dispatcher's are. thread/start is not one, since it
+// can refuse the initial input after spawning the session; the hub marks the
+// refusals that came before any session with mutationOutcome "notAccepted"
+// instead (#3184).
 export function refusedBeforeRunning(error: unknown): error is WireError {
   return error instanceof WireError && (error.code === CODE_INVALID_PARAMS || error.code === CODE_INVALID_REQUEST);
 }

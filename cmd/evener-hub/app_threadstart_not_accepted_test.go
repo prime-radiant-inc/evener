@@ -8,17 +8,19 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// threadStartRefusal is a failed thread/start's wire error and its standard
-// data, as a client decodes them.
-func threadStartRefusal(t *testing.T, err error) (appwire.WireError, appwire.ErrorData) {
+// wireErrorData is a failed call's wire error and its standard data, as a
+// client decodes them.
+func wireErrorData(t *testing.T, err error) (appwire.WireError, appwire.ErrorData) {
 	t.Helper()
 	if err == nil {
-		t.Fatal("thread/start succeeded, want a refusal")
+		t.Fatal("the call succeeded, want a refusal")
 	}
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
@@ -99,7 +101,7 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 			}
 
 			_, err := client.ThreadStart(context.Background(), tc.params(t))
-			wire, data := threadStartRefusal(t, err)
+			wire, data := wireErrorData(t, err)
 			if wire.Code != tc.code || data.EvenerErrorInfo != tc.info {
 				t.Fatalf("refusal code=%d info=%q, want %d %q: %v", wire.Code, data.EvenerErrorInfo, tc.code, tc.info, err)
 			}
@@ -107,6 +109,30 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 				t.Fatalf("mutationOutcome=%q, want %q: %v", data.MutationOutcome, appwire.MutationOutcomeNotAccepted, err)
 			}
 		})
+	}
+}
+
+// A plain error from a check before the spawn goes out as the internal error it
+// always did, marked not accepted like the rest: every refusal the local
+// checks make, they make before any session exists.
+func TestThreadStartMarksAPlainErrorBeforeTheSpawnNotAccepted(t *testing.T) {
+	resolve := hubResolveLaunch
+	hubResolveLaunch = func(string, string, launchconfig.Layer) (launchconfig.Resolved, error) {
+		return launchconfig.Resolved{}, errors.New("launch.toml: unreadable")
+	}
+	t.Cleanup(func() { hubResolveLaunch = resolve })
+	cfg := hubcore.WebConfig{LaunchConfigRoot: t.TempDir(), Spawner: &recordingSpawner{}}
+
+	_, err := hubThreadStart(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5",
+		CWD:   t.TempDir(),
+	})
+	wire, data := wireErrorData(t, err)
+	if wire.Code != appwire.CodeInternalError || data.EvenerErrorInfo != appwire.ErrorInternal {
+		t.Fatalf("refusal code=%d info=%q, want an internal error: %v", wire.Code, data.EvenerErrorInfo, err)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+		t.Fatalf("mutationOutcome=%q, want %q: %v", data.MutationOutcome, appwire.MutationOutcomeNotAccepted, err)
 	}
 }
 
@@ -148,7 +174,7 @@ func TestThreadStartRefusalAfterTheSpawnLeavesItsOutcomeOpen(t *testing.T) {
 		CWD:   "/tmp",
 		Input: skillInputHubSelection(),
 	})
-	wire, data := threadStartRefusal(t, err)
+	wire, data := wireErrorData(t, err)
 	if spawned != 1 {
 		t.Fatalf("spawned=%d, want the refusal to come after the spawn", spawned)
 	}
