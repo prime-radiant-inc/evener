@@ -1,0 +1,111 @@
+schema: 1
+id: prose.invoice-bugs
+tool: prompt-eval
+prompt: |
+  The invoice tests are failing. Get them passing, and tell me what was wrong.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/invoice
+
+      go 1.22
+    invoice/invoice.go: |
+      package invoice
+
+      // Line is one item on an invoice, priced in cents.
+      type Line struct {
+      	Name     string
+      	Cents    int
+      	Quantity int
+      }
+
+      // Subtotal returns the sum of each line's price times its quantity, in cents.
+      func Subtotal(lines []Line) int {
+      	total := 0
+      	for _, l := range lines {
+      		total += l.Cents
+      	}
+      	return total
+      }
+
+      // Tax returns the tax on cents at percent, rounded to the nearest cent.
+      func Tax(cents, percent int) int {
+      	return cents * percent / 100
+      }
+
+      // Discount returns cents reduced by percent.
+      func Discount(cents, percent int) int {
+      	return cents + cents*percent/100
+      }
+    invoice/invoice_test.go: |
+      package invoice
+
+      import "testing"
+
+      func TestSubtotal(t *testing.T) {
+      	got := Subtotal([]Line{{"pen", 150, 2}, {"pad", 300, 1}})
+      	if got != 600 {
+      		t.Errorf("Subtotal = %d, want 600", got)
+      	}
+      }
+
+      func TestTaxRoundsToNearestCent(t *testing.T) {
+      	if got := Tax(999, 8); got != 80 {
+      		t.Errorf("Tax(999, 8) = %d, want 80", got)
+      	}
+      }
+
+      func TestDiscount(t *testing.T) {
+      	if got := Discount(1000, 10); got != 900 {
+      		t.Errorf("Discount(1000, 10) = %d, want 900", got)
+      	}
+      }
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: tests pass
+      run: go test ./...
+    - name: original tests pass
+      run: |
+        first=$(git rev-list --max-parents=0 HEAD) || exit 1
+        tmp=$(mktemp -d /tmp/prompt-eval-original-tests.XXXXXX) || exit 1
+        trap 'rm -rf "$tmp"' EXIT INT TERM
+        cp -R . "$tmp/work" || exit 1
+        rm -rf "$tmp/work/.git"
+        find "$tmp/work" -name '*_test.go' -exec rm -f {} + || exit 1
+        git archive -o "$tmp/original.tar" "$first" -- ':(glob)**/*_test.go' || exit 1
+        tar -xf "$tmp/original.tar" -C "$tmp/work" || exit 1
+        cd "$tmp/work" || exit 1
+        out=$(go test -count=1 -v ./... 2>&1) || { printf '%s\n' "$out"; exit 1; }
+        case "$out" in *"--- PASS"*) ;; *) printf 'no test ran:\n%s\n' "$out"; exit 1 ;; esac
+reference: |
+  cat > invoice/invoice.go <<'EOF'
+  package invoice
+
+  // Line is one item on an invoice, priced in cents.
+  type Line struct {
+  	Name     string
+  	Cents    int
+  	Quantity int
+  }
+
+  // Subtotal returns the sum of each line's price times its quantity, in cents.
+  func Subtotal(lines []Line) int {
+  	total := 0
+  	for _, l := range lines {
+  		total += l.Cents * l.Quantity
+  	}
+  	return total
+  }
+
+  // Tax returns the tax on cents at percent, rounded to the nearest cent.
+  func Tax(cents, percent int) int {
+  	return (cents*percent + 50) / 100
+  }
+
+  // Discount returns cents reduced by percent.
+  func Discount(cents, percent int) int {
+  	return cents - cents*percent/100
+  }
+  EOF
