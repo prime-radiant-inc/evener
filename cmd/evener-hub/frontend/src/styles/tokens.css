@@ -207,15 +207,19 @@
 
   /* --- motion ---------------------------------------------------------
    * The law is "no idle motion": nothing animates unless the user acted or
-   * the agent's state genuinely changed. Three budgets: attention onset (a
+   * the agent's state genuinely changed. Four budgets: attention onset (a
    * state crossing into needs-you), the 120ms fade-scale overlays
-   * (menu/dialog), and 150ms hover/focus/press responses on interactive
+   * (menu/dialog), 150ms hover/focus/press responses on interactive
    * chrome (color/background/border/shadow only — transitions name their
-   * properties, never `all`). No idle pulses, no shimmer.
+   * properties, never `all`), and the 240ms spatial budget for
+   * user-initiated geometry changes (the activity sidebar sliding in, a
+   * zoom column opening). Data arriving never animates geometry. No idle
+   * pulses, no shimmer.
    */
   --motion-duration-attention: 200ms;
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
+  --motion-duration-spatial: 240ms;
   --motion-easing-standard: ease-out;
 }
 

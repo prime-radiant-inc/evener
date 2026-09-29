@@ -1,10 +1,12 @@
 import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
+import { subagentWireStep } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
+import "./subagentModule";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -721,7 +723,7 @@ test("delegate_send: openTranscriptRef reads transcript_ref from valid raw state
 test("delegate_send: openTranscriptRef is undefined for absent, malformed, or blank-ref raw state", () => {
   const d = toolRendererFor("delegate_send");
   expect(d.openTranscriptRef?.(item({ toolName: "delegate_send" }))).toBeUndefined();
-  // Missing running_in_background: not a valid delegateSendResult at all.
+  // Missing running_in_background: not a valid isDelegateSendResult state at all.
   expect(
     d.openTranscriptRef?.(item({ toolName: "delegate_send", raw: { action: "steered", transcript_ref: "local:c" } })),
   ).toBeUndefined();
@@ -951,4 +953,14 @@ test("the generic job_* descriptor never wins over an exact match", () => {
 
 test("job_watch resolves to its own descriptor, not the generic family fallback", () => {
   expect(toolRendererFor("job_watch")).not.toBe(toolRendererFor("job_zzz_unlisted"));
+});
+
+// The recorded delegate and delegate_send calls (agent/testdata/subagentwire),
+// as their rows' lines: a delegate's is its intent, a send's names the
+// delegate and the status its footer reports.
+test("says the recorded delegate and delegate_send calls as their rows' lines", () => {
+  expect(toolRendererFor("delegate").summary(subagentWireStep("call_delegate_1"))).toBe("Fix race in tree settle");
+  expect(toolRendererFor("delegate_send").summary(subagentWireStep("call_send_1"))).toBe(
+    "Sent a message to delegate dlg_02wMz5TxvSettleRace001 · running",
+  );
 });

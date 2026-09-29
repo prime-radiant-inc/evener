@@ -73,3 +73,23 @@ func TestFinishEventsCarryAFailedRunsError(t *testing.T) {
 		t.Fatalf("a cancelled finish carries no error, got %q", got)
 	}
 }
+
+// A failed run's reason is a code that says which failure it was (#3327): a
+// run that errored is run_error, and one that ended without reporting,
+// with no error, is ended_without_report. Neither says the bare "failed",
+// which the outcome already says.
+func TestFailedRunReasonNamesTheFailure(t *testing.T) {
+	t.Parallel()
+	errored := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500")})
+	if errored.outcome != delegatestore.OutcomeFailed || errored.reason != "run_error" {
+		t.Fatalf("errored run outcome=%q reason=%q, want failed/run_error", errored.outcome, errored.reason)
+	}
+	silent := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "I looked around."})
+	if silent.outcome != delegatestore.OutcomeFailed || silent.reason != "ended_without_report" || silent.errorText != "" {
+		t.Fatalf("silent run outcome=%q reason=%q error=%q, want failed/ended_without_report and no error", silent.outcome, silent.reason, silent.errorText)
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(errored.packet.Metadata, &metadata); err != nil || metadata.Reason != "run_error" {
+		t.Fatalf("metadata reason=%q (%v), want run_error", metadata.Reason, err)
+	}
+}

@@ -21,13 +21,14 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 }));
 const alerts = vi.hoisted(() => ({ alert: vi.fn() }));
+const clipboard = vi.hoisted(() => ({ getStringAsync: vi.fn(async () => "{}") }));
 vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
 	return { ...mock, Alert: { alert: alerts.alert } };
 });
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
-vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {}, getStringAsync: clipboard.getStringAsync }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),
 	dismissBrowser: async () => ({ type: "dismiss" }),
@@ -195,11 +196,9 @@ it("refuses a credential-JSON save for a destination the hub cannot fingerprint"
 	await act(async () => {});
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Set credential JSON");
-	const input = tree.root
-		.findAll((node) => String(node.type) === "TextInput")
-		.find((node) => node.props.accessibilityLabel === "Google credential JSON");
-	if (!input) throw new Error("no credential JSON input");
-	act(() => input.props.onChangeText("{}"));
+	clipboard.getStringAsync.mockResolvedValue("{}");
+	pressLabel(tree, "Paste credential JSON");
+	await act(async () => {});
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("so nothing was saved");

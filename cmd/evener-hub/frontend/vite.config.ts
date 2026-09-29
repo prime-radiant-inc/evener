@@ -112,9 +112,10 @@ export default defineConfig({
       // suites transform that import through this server, which denies any
       // file outside the allow list. The daemon's recorded notification frames
       // (agent/testdata/notificationwire), its system events and steers
-      // (agent/testdata/systemeventwire) and its tool calls
-      // (agent/testdata/toolwire) reach the same suites the same way, through
-      // the package's testing/*WireFixtures.ts loaders.
+      // (agent/testdata/systemeventwire), its tool calls
+      // (agent/testdata/toolwire) and its subagent calls
+      // (agent/testdata/subagentwire) reach the same suites the same way,
+      // through the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
         fs.realpathSync(path.join(__dirname, "node_modules")),
@@ -123,6 +124,7 @@ export default defineConfig({
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
       ],
     },
     proxy: {

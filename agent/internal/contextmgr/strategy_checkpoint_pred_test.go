@@ -108,17 +108,30 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	}
 
 	var layers []string
+	var warnings []events.WarningData
 	emitFn := func(kind events.EventKind, data events.EventData) {
 		if kind == events.EventContextCompaction {
 			if cd, ok := data.(events.ContextCompactionData); ok {
 				layers = append(layers, cd.Layer)
 			}
 		}
+		if warning, ok := data.(events.WarningData); ok && kind == events.EventWarning {
+			warnings = append(warnings, warning)
+		}
 	}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	// The fallback already worked, so its warning is an informational
+	// context notice ("no action needed"), coded so clients show it only at
+	// their most detailed level. Its message stays bare: the error can carry
+	// a provider body echoing the conversation (#3386).
+	if len(warnings) != 1 || warnings[0].Message != "Predictive checkpoint failed, using deterministic" ||
+		warnings[0].Code != events.WarningCodeContextBudget {
+		t.Fatalf("fallback warnings = %+v, want one context_budget notice naming the failure", warnings)
 	}
 
 	// Should have fallen back to checkpoint.

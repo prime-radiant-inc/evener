@@ -42,6 +42,7 @@
     "systemEventCopy.ts",
     "toolEvidence.ts",
     "stepWords.ts",
+    "delegateSteps.ts",
     "jobSteps.ts",
     "jobWatchSteps.ts",
     "toolSummaries.ts",

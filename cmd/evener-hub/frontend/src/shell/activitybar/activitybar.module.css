@@ -1,0 +1,142 @@
+/* The activity sidebar and its tabs: a right shell region scoped to the
+ * session being read. Tokens only; the rows carry the state hues on their
+ * glyphs (the one place color means something here). */
+
+.sidebar {
+  width: 320px;
+  flex: none;
+  border-left: 1px solid var(--edge);
+  background: var(--surface-canvas);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--edge);
+  flex: none;
+}
+
+.tabs {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--edge);
+  flex: none;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  min-height: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 3px var(--space-1);
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.rowBtn {
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-pane);
+}
+
+.rowBtn:hover {
+  background: var(--hover-1);
+}
+
+.rowGlyph {
+  flex: none;
+  width: 14px;
+  display: flex;
+  justify-content: center;
+  line-height: 18px;
+  color: var(--ink-low);
+}
+
+.glyphAlive {
+  color: var(--alive);
+}
+
+.glyphAttention {
+  color: var(--attention);
+}
+
+.glyphDanger {
+  color: var(--danger);
+}
+
+.glyphQuiet {
+  color: var(--ink-low);
+}
+
+.rowBody {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rowName {
+  color: var(--ink-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMeta {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.watchGlyph {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.foldButton {
+  padding-top: var(--space-1);
+}
+
+.passiveMore {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  padding: 2px var(--space-1);
+}
+
+.emptyNote {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  padding: var(--space-2) var(--space-1);
+}

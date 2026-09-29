@@ -215,7 +215,7 @@ test("says a failed run's cause as the hub recorded it", () => {
     (entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_failed",
   );
   if (failed?.kind !== "delegate") throw new Error("no failed delegate in the corpus");
-  expect(failed.delegate.reason).toBe("failed");
+  expect(failed.delegate.reason).toBe("run_error");
   expect(delegateEndingText(failed.delegate)).toBe("provider returned 500");
 });
 

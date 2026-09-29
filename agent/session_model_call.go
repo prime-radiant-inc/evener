@@ -267,7 +267,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+				s.emit(events.EventWarning, bareWarningDataFromError("context strategy error", err))
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
@@ -837,7 +837,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// Content filter recovery: compaction often removes the offending content,
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
-		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
+		s.emit(events.EventWarning, bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the round loop's own
 		// ManageContext); forceCompactForModelRecovery publishes through the
@@ -865,7 +865,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
 	if dec.EmitContextLenWarn && !contextWarningEmitted {
-		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
+		s.emit(events.EventWarning, bareWarningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
@@ -1452,7 +1452,24 @@ func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Req
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {
-	if s == nil || profile == nil || !budget.LimitedOutput {
+	if s == nil || profile == nil {
+		return
+	}
+	// A clamp that holds round after round is one fact: a long conversation
+	// clamps every round, and a notice each time floods the transcript. Once
+	// input fills the window the admitted allocation is what the window
+	// leaves, so it shrinks every round and cannot tell one clamp from the
+	// next. Warn when the clamp first applies, when its model or requested
+	// allocation changes, and when it returns after an unclamped round.
+	clamp := ""
+	if budget.LimitedOutput {
+		clamp = fmt.Sprintf("%s/%s:%d", profile.ID(), profile.Model(), budget.RequestedOutput)
+	}
+	s.outputReductionMu.Lock()
+	unchanged := clamp == s.outputReductionWarned
+	s.outputReductionWarned = clamp
+	s.outputReductionMu.Unlock()
+	if clamp == "" || unchanged {
 		return
 	}
 	// An explicit neutral title and hint, both because this is budget
