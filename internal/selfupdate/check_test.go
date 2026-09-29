@@ -120,7 +120,7 @@ func TestCheckRateLimitSurfacesGitHubMessage(t *testing.T) {
 // answer with GitHub's JSON error surface, so the status is all the error
 // can carry.
 func TestCheckSnapshotDownloadStatusSurfacesError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(http.NotFound))
+	server := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(server.Close)
 	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70029", RepoURL: fakeRepoURL(server)})
 	if err == nil || !strings.Contains(err.Error(), "404") {
