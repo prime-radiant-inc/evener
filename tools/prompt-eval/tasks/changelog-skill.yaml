@@ -1,0 +1,103 @@
+schema: 1
+id: prose.changelog-skill
+tool: prompt-eval
+prompt: |
+  PR #481 fixed the CSV export dropping its last row. Add the changelog entry for it.
+fixture:
+  files:
+    go.mod: |
+      module example.com/export
+
+      go 1.22
+    export.go: |
+      package export
+
+      // Export writes rows to w in CSV format.
+      func Export(rows [][]string) error { return nil }
+    CHANGELOG.md: |
+      # Changelog
+
+      ## [1.4.0] - 2026-08-01
+      ### Fixed
+      - Fix header row (#402)
+
+      ## [1.3.0] - 2026-07-15
+      ### Added
+      - Add streaming export (#390)
+    skills/changelog-entries/SKILL.md: |
+      ---
+      name: changelog-entries
+      description: Use when adding or editing CHANGELOG.md entries
+      ---
+
+      # Changelog entries
+
+      As of version 2.0, CHANGELOG.md follows a new house format. Every new
+      entry MUST use it, even though the released entries above it still use
+      the old style.
+
+      - New entries go under a `## [Unreleased]` section. That section must be
+        the first section in the file after the title, above every released
+        `## [X.Y.Z]` section.
+      - Group entries by type in a subsection under `## [Unreleased]`:
+        `### Added`, `### Changed`, or `### Fixed`.
+      - Write each entry as a past-tense sentence ending with a period.
+      - Link the PR at the end of the entry as
+        `[#N](https://github.com/acme/export/pull/N)`.
+      - Never edit or reformat the released sections below `## [Unreleased]`.
+
+      Example:
+
+      ```
+      ## [Unreleased]
+
+      ### Fixed
+      - Fixed the widget from exploding. [#123](https://github.com/acme/export/pull/123)
+      ```
+    skills/release-notes/SKILL.md: |
+      ---
+      name: release-notes
+      description: Use when writing customer-facing release notes for the website
+      ---
+
+      # Release notes
+
+      Release notes are marketing copy published on the website, not
+      CHANGELOG.md. Write them in an upbeat, benefit-focused voice, group
+      entries by feature area rather than by Added/Changed/Fixed, and never
+      mention internal PR numbers.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: Unreleased is the first section
+      run: "grep -m1 '^## ' CHANGELOG.md | grep -qx '## \\[Unreleased\\]'"
+    - name: Unreleased has a Fixed subsection
+      run: |
+        set -e
+        awk '/^## \[Unreleased\]/{flag=1; next} /^## /{flag=0} flag' CHANGELOG.md | grep -qx '### Fixed'
+    - name: entry links the PR
+      run: grep -qF '[#481](https://github.com/acme/export/pull/481)' CHANGELOG.md
+    - name: entry is a past-tense sentence ending with a period before the link
+      run: grep -qE '^- [A-Za-z].*[a-z]\. \[#481\]\(https://github\.com/acme/export/pull/481\)$' CHANGELOG.md
+    - name: released 1.4.0 section is unchanged
+      run: |
+        set -e
+        grep -qF -- '## [1.4.0] - 2026-08-01' CHANGELOG.md
+        grep -qF -- '- Fix header row (#402)' CHANGELOG.md
+    - name: released 1.3.0 section is unchanged
+      run: |
+        set -e
+        grep -qF -- '## [1.3.0] - 2026-07-15' CHANGELOG.md
+        grep -qF -- '- Add streaming export (#390)' CHANGELOG.md
+reference: |
+  {
+    echo '# Changelog'
+    echo
+    echo '## [Unreleased]'
+    echo
+    echo '### Fixed'
+    echo '- Fixed the CSV export dropping its last row. [#481](https://github.com/acme/export/pull/481)'
+    echo
+    tail -n +3 CHANGELOG.md
+  } > CHANGELOG.md.new
+  mv CHANGELOG.md.new CHANGELOG.md
