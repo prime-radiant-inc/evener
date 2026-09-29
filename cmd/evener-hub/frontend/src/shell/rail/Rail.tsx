@@ -31,6 +31,13 @@ import {
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import {
+  type ArchivedList,
+  archivedListKey,
+  loadMoreArchivedList,
+  refreshArchivedList,
+  useArchivedLists,
+} from "../../stores/archivedList";
 import { useConnectionStore } from "../../stores/connection";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
@@ -564,7 +571,9 @@ function returnedRootRows(resource: ResourceState, slot: string, field: string):
   const rows = data?.[field];
   return Array.isArray(rows) ? rows.length : 0;
 }
-const PROJECT_TIERS = ["current", "recent", "archived"] as const;
+// The tiers a project resource serves rows for. Archived rows come from the
+// project's archived list (withArchivedList), not from navigation.
+const PROJECT_TIERS = ["current", "recent"] as const;
 function projectPageStates(
   pages: ReadonlyMap<string, ResourceState>,
   projectKey: string,
@@ -691,7 +700,7 @@ function projectFromSummary(
   const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
   if (cached) return cached;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const base = root?.[tier];
@@ -719,7 +728,6 @@ function projectFromSummary(
     sessions: all,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   };
   return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
 }
@@ -754,7 +762,7 @@ function projectFromGraph(
   if (!projectEntity) return null;
   const metadata = normalized.graph.metadata;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const container = normalized.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier));
@@ -789,7 +797,6 @@ function projectFromGraph(
     nextOffsets,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   });
 }
 function asArchivedProject(project: RailProject): RailProject {
@@ -800,7 +807,30 @@ function asArchivedProject(project: RailProject): RailProject {
   archivedProjectModelCache.set(project as object, archived);
   return archived;
 }
-function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
+// withArchivedList adds a project's loaded archived rows, from its archived list,
+// to the rows navigation served for its other tiers, and leaves more_archived
+// as the archived rows not loaded yet: the summary's more_archived is the
+// project's whole archived count. Cached per built project and list entry so
+// an unchanged pair keeps one identity across renders.
+const archivedListProjectCache = new WeakMap<object, { list: ArchivedList | undefined; result: RailProject }>();
+function withArchivedList(project: RailProject, catalog: CatalogKind, list: ArchivedList | undefined): RailProject {
+  const cached = archivedListProjectCache.get(project);
+  if (cached && cached.list === list) return cached.result;
+  const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
+  const result = {
+    ...project,
+    catalog,
+    sessions: [...project.sessions, ...rows],
+    more_archived: Math.max(0, (project.more_archived ?? 0) - rows.length),
+  };
+  archivedListProjectCache.set(project, { list, result });
+  return result;
+}
+function projectsFor(
+  state: ReturnType<typeof navigationStore.getState>,
+  catalog: CatalogKind,
+  archivedLists: Readonly<Record<string, ArchivedList>>,
+): RailProject[] {
   const output: RailProject[] = [];
   const catalogResources = [...state.resources.values()]
     .filter(
@@ -847,7 +877,9 @@ function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog
       );
     }
   }
-  return output;
+  return output.map((project) =>
+    withArchivedList(project, catalog, archivedLists[archivedListKey(catalog, project.key)]),
+  );
 }
 function catalogOverflowFor(
   state: ReturnType<typeof navigationStore.getState>,
@@ -877,7 +909,10 @@ function catalogOverflowFor(
     limit: pageKey.limit,
   };
 }
-function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
+function railResources(
+  state: ReturnType<typeof navigationStore.getState>,
+  archivedLists: Readonly<Record<string, ArchivedList>> = {},
+): RailResources {
   const live = loadedSection(state, "live");
   const needsYou = loadedSection(state, "needs_you");
   const pinCatalog = [...state.resources.values()]
@@ -927,9 +962,9 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
     liveOverflow: { remaining: live.remaining, offset: live.offset, limit: live.limit },
     needsYouOverflow: { remaining: needsYou.remaining, offset: needsYou.offset, limit: needsYou.limit },
     pinSections,
-    projects: projectsFor(state, "projects"),
-    archivedProjects: projectsFor(state, "archived_projects").map(asArchivedProject),
-    testRuns: projectsFor(state, "test_runs"),
+    projects: projectsFor(state, "projects", archivedLists),
+    archivedProjects: projectsFor(state, "archived_projects", archivedLists).map(asArchivedProject),
+    testRuns: projectsFor(state, "test_runs", archivedLists),
     catalogOverflow: {
       projects: catalogOverflowFor(state, "projects"),
       archived_projects: catalogOverflowFor(state, "archived_projects"),
@@ -1058,9 +1093,10 @@ function NavigationRail({
   const railRef = useRef<HTMLDivElement>(null);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
+  const archivedLists = useArchivedLists();
   const base = useMemo(
-    () => railResources({ ...navigationStore.getState(), resources: resourcesState }),
-    [resourcesState],
+    () => railResources({ ...navigationStore.getState(), resources: resourcesState }, archivedLists),
+    [resourcesState, archivedLists],
   );
   const resources = useMemo(
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
@@ -1218,6 +1254,15 @@ function NavigationRail({
       loadProjectRoot(project.key);
     }
   }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
+  // A hydrated project with archived sessions loads its archived list, as its
+  // navigation resource used to carry its first archived rows.
+  useEffect(() => {
+    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
+      if (!project.loaded || !project.catalog || (project.more_archived ?? 0) === 0) continue;
+      if (archivedLists[archivedListKey(project.catalog, project.key)]) continue;
+      void refreshArchivedList(project.catalog, project.key);
+    }
+  }, [resources, archivedLists]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -1252,10 +1297,14 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
-      currentState,
-      locationKey,
-    );
+    const location = resourceData<{
+      project_key?: string;
+      tier?: string;
+      pin_section_id?: string;
+      session?: unknown;
+      top_level?: boolean;
+      top_level_ref?: string;
+    }>(currentState, locationKey);
     if (!location) {
       if (revealLookupInFlight.current?.target !== revealTarget) {
         const target = revealTarget;
@@ -1302,6 +1351,27 @@ function NavigationRail({
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
       );
+      // An archived row lives in its project's archived list, not in a
+      // navigation resource: page the list until the row loads, then the fold
+      // chain above opens it. A list that ends without the row cannot reveal it.
+      if (location.tier === "archived") {
+        const project = [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].find(
+          (candidate) => candidate.key === location.project_key,
+        );
+        const catalog = project?.catalog;
+        const list = catalog ? archivedLists[archivedListKey(catalog, location.project_key)] : undefined;
+        // A nested row (a fork original) is found through the row that carries
+        // it, the location's top_level_ref.
+        const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
+        if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
+          const cursor = list.nextCursor;
+          if (cursor)
+            requestRevealResource(revealTarget, `archived:${catalog}:${cursor}`, () =>
+              loadMoreArchivedList(catalog, location.project_key as string),
+            );
+          else if (list.error === null) consumeReveal();
+        }
+      }
       return;
     }
     if (location.pin_section_id) {
@@ -1327,6 +1397,7 @@ function NavigationRail({
     requestRevealResource,
     openRevealSection,
     projectPlacement,
+    archivedLists,
   ]);
 
   function handleToggle(node: RailNode) {
@@ -1373,6 +1444,10 @@ function NavigationRail({
     handleToggle(node);
   }
   async function loadOverflowPage(page: OverflowPage): Promise<void> {
+    if (page.projectKey && page.tier === "archived" && page.catalog) {
+      await loadMoreArchivedList(page.catalog, page.projectKey);
+      return;
+    }
     if (page.projectKey && page.tier) {
       await navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit);
       return;

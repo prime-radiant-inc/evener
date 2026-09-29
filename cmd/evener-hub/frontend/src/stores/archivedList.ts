@@ -106,6 +106,10 @@ export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string
   return useStore(archivedListStore, (state) => state.lists[archivedListKey(catalog, projectKey)]);
 }
 
+export function useArchivedLists(): Record<string, ArchivedList> {
+  return useStore(archivedListStore, (state) => state.lists);
+}
+
 // Test-only.
 export function resetArchivedListStoreForTests(): void {
   generations.clear();

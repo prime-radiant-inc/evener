@@ -3,6 +3,7 @@
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import {
   assignSessionPin,
@@ -538,5 +539,49 @@ describe("per-source fan-out settlement", () => {
 
     expect(result.favorite).toBe(true);
     expect(result.failedSources).toEqual(["local"]);
+  });
+});
+
+describe("actions refresh the loaded archived lists", () => {
+  beforeEach(() => resetArchivedListStoreForTests());
+
+  const navigation = { generation_id: "g", targets: [] };
+  const cases: Array<[string, (client: FakeClient) => Promise<unknown>]> = [
+    ["archive", () => setArchived("session", "s1", false)],
+    ["pin", (client) => assignSessionPin(client, "local:s1", { section_id: "notes" })],
+    ["unpin", (client) => unpinSession(client, "local:s1")],
+    ["delete session", (client) => deleteSession(client, "local:s1")],
+    ["delete project", () => deleteProject("p", "/w/p")],
+  ];
+  test.each(cases)("%s refetches a loaded archived list", async (_name, act) => {
+    const client = new FakeClient("ready");
+    let listReads = 0;
+    client.on("evener/archived/list", () => {
+      listReads++;
+      return { sessions: [], total: 0 };
+    });
+    client.on("evener/archive/set", () => ({ ok: true, navigation }));
+    client.on("evener/session-pin/assign", () => ({
+      ok: true,
+      changed: true,
+      assignment: { sessionRef: "local:s1", section: { id: "notes", name: "Notes", memberCount: 1 } },
+      navigation,
+    }));
+    client.on("evener/session-pin/unpin", () => ({
+      ok: true,
+      changed: true,
+      assignment: { sessionRef: "local:s1" },
+      navigation,
+    }));
+    client.on("evener/session/delete", () => ({ deleted: ["s1"], skipped: [], navigation }));
+    client.on("evener/project/delete", () => ({ deleted: [], skipped: [], navigation }));
+    connectionStore.getState().connect(client);
+    archivedListStore.setState({
+      lists: { [archivedListKey("projects", "p")]: { rows: [], total: 0, loading: false, error: null } },
+    });
+
+    await act(client);
+
+    await expect.poll(() => listReads).toBe(1);
   });
 });

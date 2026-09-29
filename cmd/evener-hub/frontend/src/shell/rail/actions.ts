@@ -15,6 +15,7 @@ import type {
   SessionPinUnpinResponse,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { refreshLoadedArchivedLists } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import type { NavigationPinSectionSummary } from "../../stores/navigation/selectors";
 
@@ -220,16 +221,20 @@ export async function assignSessionPin(
   ref: string,
   target: { section_id: string } | { section_name: string },
 ): Promise<SessionPinAssignResponse> {
-  return client.request(
+  const response = await client.request(
     "evener/session-pin/assign",
     "section_id" in target
       ? { sessionRef: ref, sectionId: target.section_id }
       : { sessionRef: ref, sectionName: target.section_name },
   );
+  void refreshLoadedArchivedLists();
+  return response;
 }
 
 export async function unpinSession(client: AppwireClientLike, ref: string): Promise<SessionPinUnpinResponse> {
-  return client.request("evener/session-pin/unpin", { sessionRef: ref });
+  const response = await client.request("evener/session-pin/unpin", { sessionRef: ref });
+  void refreshLoadedArchivedLists();
+  return response;
 }
 
 export async function renamePinSection(
@@ -283,6 +288,7 @@ export async function setArchived(
     }),
   );
   if (!settled.receipt) throw fanOutFailure(settled.failures);
+  void refreshLoadedArchivedLists();
   return { ...settled.receipt, failedSources: settled.failures.map((failure) => ownerName(failure.owner)) };
 }
 
@@ -305,12 +311,16 @@ export async function deleteProject(
   if (!client) {
     throw new Error("project delete action: no client connected; call connectionStore.connect(client) first");
   }
-  return client.request("evener/project/delete", { key, workingDir });
+  const result = await client.request("evener/project/delete", { key, workingDir });
+  void refreshLoadedArchivedLists();
+  return result;
 }
 
 /** Deletes one ended or crashed local session through the typed hub method.
  * Live or concurrently reserved targets resolve in `skipped`; validation and
  * server failures reject through AppWire. */
 export async function deleteSession(client: AppwireClientLike, ref: string): Promise<SessionDeleteResponse> {
-  return client.request("evener/session/delete", { ref });
+  const response = await client.request("evener/session/delete", { ref });
+  void refreshLoadedArchivedLists();
+  return response;
 }
