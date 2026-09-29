@@ -1,13 +1,13 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { isSuppressedSteeringKind, STEERING_KIND_LABELS, steeringKindLabel } from "./steeringLabels";
+import { isSuppressedSteeringKind, STEERING_KIND_LABELS, steeringLabel } from "./steeringLabels";
 import { STEERING_KINDS } from "./types.gen";
 
 test("labels every daemon steer the transcript shows, and no other", () => {
   for (const kind of STEERING_KINDS) {
     const shown = !isSuppressedSteeringKind(kind) && kind !== "notification";
-    expect(steeringKindLabel(kind) !== undefined, kind).toBe(shown);
+    expect(steeringLabel(kind) !== "System steered", kind).toBe(shown);
   }
 });
 
@@ -19,13 +19,13 @@ test("leaves out the current task and the task list, which the tasks surfaces ow
 });
 
 test("says the task reminders the way the phone always has, in both clients", () => {
-  expect(steeringKindLabel("tasks-done")).toBe("Tasks complete");
-  expect(steeringKindLabel("task-nudge")).toBe("Task reminder");
+  expect(STEERING_KIND_LABELS["tasks-done"]).toBe("Tasks complete");
+  expect(STEERING_KIND_LABELS["task-nudge"]).toBe("Task reminder");
 });
 
 test("says a detector's and a provider's steers as events", () => {
-  expect(steeringKindLabel("loop-detected")).toBe("Loop detected");
-  expect(steeringKindLabel("provider-failure")).toBe("Provider failed");
+  expect(STEERING_KIND_LABELS["loop-detected"]).toBe("Loop detected");
+  expect(STEERING_KIND_LABELS["provider-failure"]).toBe("Provider failed");
 });
 
 test("puts the engineering labels in plain words (spec 5)", () => {
@@ -38,7 +38,15 @@ test("puts the engineering labels in plain words (spec 5)", () => {
 });
 
 test("names no kind it doesn't know, rather than inventing a label from a slug", () => {
-  expect(steeringKindLabel("some-future-kind")).toBeUndefined();
-  expect(steeringKindLabel(undefined)).toBeUndefined();
-  expect(steeringKindLabel("toString")).toBeUndefined();
+  expect(steeringLabel("some-future-kind")).toBe("System steered");
+  expect(steeringLabel(undefined)).toBe("System steered");
+  expect(steeringLabel("toString")).toBe("System steered");
+});
+
+test("says a steer as the system's, naming its kind, or bare when the kind has no label", () => {
+  expect(steeringLabel("compact-nudge")).toBe("System steered: Running low on context");
+  expect(steeringLabel("human-note")).toBe("System steered: Human note");
+  // A colon promises a value, so a kind with no label gets none.
+  expect(steeringLabel("some-future-kind")).toBe("System steered");
+  expect(steeringLabel(undefined)).toBe("System steered");
 });

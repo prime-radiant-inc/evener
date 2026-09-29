@@ -455,7 +455,7 @@ export {
   isSuppressedSteeringKind,
   type LabelledSteeringKind,
   STEERING_KIND_LABELS,
-  steeringKindLabel,
+  steeringLabel,
 } from "./steeringLabels";
 export {
   decodeNotificationEntities,
@@ -491,6 +491,7 @@ export {
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
+export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";

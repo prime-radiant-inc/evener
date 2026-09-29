@@ -440,7 +440,7 @@ test("delegate card carries status, mandate, agent/model, duration, and usage", 
   expect(text).toContain("reviewer");
   expect(text).toContain("gpt-test");
   expect(text).toContain("2s");
-  expect(text).toContain("↑1k ↓300");
+  expect(text).toContain("↑1.2K ↓300");
 });
 
 // A blank resolvedModel is absence, not a model name: the card falls through

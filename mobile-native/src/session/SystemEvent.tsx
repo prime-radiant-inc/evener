@@ -36,9 +36,11 @@ export function SystemEvent({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
+	// A long label truncates to one line so its chevron stays in view; the
+	// button's accessibility label still says it in full.
 	const line = label ? (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-			<Text allowFontScaling={allowFontScaling} style={quiet}>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...quiet, flexShrink: 1 }}>
 				{label}
 			</Text>
 			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />

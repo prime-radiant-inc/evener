@@ -185,6 +185,76 @@ function rendersSomething(node: ReactNode): boolean {
 	return node !== undefined && node !== null && typeof node !== "boolean" && node !== "";
 }
 
+/** A row's label and its second line: Row draws the label on a wrapping line
+ * with its value, SwitchRow stacks the two. One definition keeps the two rows'
+ * text in step. */
+function RowText({
+	label,
+	sub,
+	subTone = "normal",
+	machineLabel = false,
+	machineSub = false,
+	labelColor,
+	children,
+}: {
+	label: string;
+	sub?: string;
+	subTone?: "normal" | "danger";
+	machineLabel?: boolean;
+	machineSub?: boolean;
+	/** A row's action or destructive ink overrides the default inkHi. */
+	labelColor?: string;
+	/** A row's value, drawn on the label's wrapping line. */
+	children?: ReactNode;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<>
+			<View
+				testID="row-line"
+				style={{
+					flexDirection: "row",
+					flexWrap: "wrap",
+					alignItems: "center",
+					columnGap: space.rowGap,
+					rowGap: WRAPPED_VALUE_GAP,
+				}}
+			>
+				<Text
+					testID="row-label"
+					allowFontScaling={allowFontScaling}
+					style={{
+						flexGrow: 1,
+						flexShrink: 1,
+						color: labelColor ?? palette.inkHi,
+						...scaledType(uiType.listRow, scale),
+						...(machineLabel ? { fontFamily: fonts.mono } : null),
+					}}
+				>
+					{label}
+				</Text>
+				{children}
+			</View>
+			{sub ? (
+				<Text
+					testID="row-sub"
+					allowFontScaling={allowFontScaling}
+					style={[
+						{
+							color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+							...scaledType(uiType.footnote, scale),
+						},
+						machineSub ? { fontFamily: fonts.mono } : null,
+					]}
+				>
+					{sub}
+				</Text>
+			) : null}
+		</>
+	);
+}
+
 /** A grouped row. The label and the value share one wrapping line, with the
  * second line below it. The label is sized by its own text and grows into the
  * free space, so a value that doesn't fit beside it moves under it: the
@@ -205,7 +275,6 @@ export function Row({
 	accessibilityLabel,
 }: RowProps) {
 	const { palette } = useColors();
-	const scale = useTextScale();
 	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
 	const plainValue = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 	const reading = accessibilityLabel ?? [label, sub, plainValue].filter(Boolean).join(", ");
@@ -217,49 +286,20 @@ export function Row({
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
 			<View style={{ flex: 1, gap: 2 }}>
-				<View
-					testID="row-line"
-					style={{
-						flexDirection: "row",
-						flexWrap: "wrap",
-						alignItems: "center",
-						columnGap: space.rowGap,
-						rowGap: WRAPPED_VALUE_GAP,
-					}}
+				<RowText
+					label={label}
+					sub={sub}
+					subTone={subTone}
+					machineLabel={machineLabel}
+					machineSub={machineSub}
+					labelColor={labelColor}
 				>
-					<Text
-						testID="row-label"
-						allowFontScaling={allowFontScaling}
-						style={{
-							flexGrow: 1,
-							flexShrink: 1,
-							color: labelColor,
-							...scaledType(uiType.listRow, scale),
-							...(machineLabel ? { fontFamily: fonts.mono } : null),
-						}}
-					>
-						{label}
-					</Text>
 					{rendersSomething(value) ? (
 						<View testID="row-value" style={{ flexShrink: 1 }}>
 							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
 						</View>
 					) : null}
-				</View>
-				{sub ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={[
-							{
-								color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
-								...scaledType(uiType.footnote, scale),
-							},
-							machineSub ? { fontFamily: fonts.mono } : null,
-						]}
-					>
-						{sub}
-					</Text>
-				) : null}
+				</RowText>
 			</View>
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
@@ -328,23 +368,9 @@ export function SwitchRow({
 	switchLabel?: string;
 }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
 	const text = (
 		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}>
-				{label}
-			</Text>
-			{sub ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{
-						color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
-						...scaledType(uiType.footnote, scale),
-					}}
-				>
-					{sub}
-				</Text>
-			) : null}
+			<RowText label={label} sub={sub} subTone={subTone} />
 		</View>
 	);
 	return (
