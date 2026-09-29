@@ -187,6 +187,25 @@ type hostManagerConfig struct {
 	// orphanAttestationMaxAge is §5's owner-set maximum attestation age; zero
 	// takes the shipped default (one hour). See OrphanResolve.
 	orphanAttestationMaxAge time.Duration
+	// bootstrapRunner returns the one-shot remote-command runner the
+	// first-contact delivery and its self-test run through (crash-fencing
+	// §6:131's one exempt delivery step). In production it is the manager's
+	// fence runner — the same ssh process seam the resolve's remote-fencing arm
+	// uses. Nil leaves the flow's remote steps unavailable, which fails closed.
+	bootstrapRunner func(host string) hostfence.Runner
+	// bootstrapQuiesce returns the host-side atomic claim-plus-quiesce primitive
+	// §6:135's delivery gate requires. Nil is the honest production value today:
+	// no pre-existing trusted host-side claim-plus-quiesce primitive exists in
+	// this build, so delivery stays unavailable and the flow refuses fail-closed
+	// with the typed `fencing-helper-absent` (§6:137/:141's out-of-band
+	// provisioning posture). A later slice that lands the primitive wires it
+	// here; nothing in this build falls back to an ordinary-SSH claim-then-check.
+	bootstrapQuiesce func(entry hostreg.Host) hostfence.ClaimQuiesce
+	// bootstrapProbe returns §6:139's read-only recovery re-probe of a crashed
+	// attempt. Nil is the honest production value today: until a host-side probe
+	// exists, recovery of an attempt-fenced host refuses fail-closed as §6's
+	// absent class rather than opening the fenced path unverified.
+	bootstrapProbe func(entry hostreg.Host) hostfence.AttemptProbe
 	// planControllerDirty reports whether the running controller's build is
 	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
 	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
@@ -1540,6 +1559,20 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			return manager.FenceCommandRunnerFor(entry)
 		}
 	}
+	// The first-contact delivery and its self-test ride the same ssh process
+	// seam as the resolve's remote-fencing arm (crash-fencing §6:131: the one
+	// exempt delivery step). A hub with no manager leaves the runner nil, which
+	// fails closed; the claim primitive and the recovery probe stay nil until a
+	// later slice lands a host-side implementation (§6:135/:139).
+	if m.cfg.bootstrapRunner == nil && manager != nil {
+		m.cfg.bootstrapRunner = func(name string) hostfence.Runner {
+			entry, ok := hosts.Get(name)
+			if !ok {
+				return nil
+			}
+			return manager.FenceCommandRunnerFor(entry)
+		}
+	}
 	// The remnant fence is wired to the real record set (registry spec 08 §6):
 	// every gate that consults it — the retention and capacity exemptions, the
 	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the
@@ -1599,6 +1632,11 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// pendingRestart) is its own durable operation for the same reason
 		// (§6), so its ssh subprocesses are armed under the record too.
 		manager.SetEnsureRestartHook(m.EnsureRestart)
+		// The first-attach repair runs the hub's first-contact caller before its
+		// launch's first mutating remote command (crash-fencing §6:131): the
+		// exemption and its refusal classes are the caller's, and sshconn only
+		// orders it.
+		manager.SetBootstrapHook(m.BootstrapFirstContact)
 	}
 	if m.cfg.deployHost == nil && manager != nil {
 		// The production deploy step (deploy pipeline 08b §6): the 04b deploy

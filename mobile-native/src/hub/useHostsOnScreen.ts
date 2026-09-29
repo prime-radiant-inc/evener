@@ -2,7 +2,7 @@
 // is on screen, each host's live-session count, read on focus and on each
 // return of the connection, and the hub's own version for the drift tag.
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { HostsState } from "../hosts/hostsController";
 import { liveCountsByHost } from "../hosts/liveCounts";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
@@ -36,4 +36,17 @@ export function useHostsOnScreen(): HostsOnScreen {
 		liveCount: (host) => counts.get(host) ?? 0,
 		hubVersion,
 	};
+}
+
+/** Goes back, once, when the host a page shows leaves the hub's list (removed
+ * here or elsewhere). Each page on the stack does this for itself: the stack
+ * pops only the page that asks, so a page above one that went back would
+ * otherwise stay on a host that is gone. */
+export function useLeavesWithHost(listed: boolean | null, goBack: () => void): void {
+	const left = useRef(false);
+	useEffect(() => {
+		if (listed !== false || left.current) return;
+		left.current = true;
+		goBack();
+	}, [listed, goBack]);
 }
