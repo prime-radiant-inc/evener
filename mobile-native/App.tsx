@@ -254,6 +254,8 @@ function Navigation() {
 						options={({ route }) => ({
 							title: route.params.title || "Conversation",
 							animationTypeForReplace: replaceAnimation(route.params),
+							headerTransparent: true,
+							headerStyle: { backgroundColor: "transparent" },
 						})}
 					/>
 					<Stack.Screen
