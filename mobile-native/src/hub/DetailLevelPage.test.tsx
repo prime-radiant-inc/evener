@@ -1,0 +1,267 @@
+// The hub's default detail level, chosen and saved at once (spec 12's
+// Display; spec 8.2's levels). It carries the states the old transcript
+// editor handled, calmly: an unreadable saved draft (the shared store allows
+// exactly that record to be discarded, so the page must offer it even with no
+// draft to show), a write the hub never confirmed (checked again on its own
+// once the hub is back), and a conflict with the hub's newer setting.
+import { createHubUpdateController, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { act } from "react-test-renderer";
+import { beforeEach, expect, it, vi } from "vitest";
+import type { NativePreferencesSnapshot } from "../nativePreferences";
+import { render, renderedText } from "../renderNative.testkit";
+import { DetailLevelPage } from "./DetailLevelPage";
+import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
+
+const preferences = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+vi.mock("../NativePreferencesProvider", () => ({ useNativePreferences: () => preferences.value }));
+vi.mock("../board/connectionStatus", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../board/connectionStatus")>()),
+	useConnectionStatusText: () => null,
+}));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+}));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+const ADVANCED = {
+	roundTimings: false,
+	tokenCounts: false,
+	estimatedCost: false,
+	systemEvents: false,
+	promptEvents: false,
+	hookExits: "none" as const,
+};
+const PRESET: TranscriptDisplayConfigV1 = {
+	version: 1,
+	content: { kind: "preset", level: "intent" },
+	advanced: ADVANCED,
+};
+const CUSTOM: TranscriptDisplayConfigV1 = {
+	version: 1,
+	content: { kind: "custom", toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
+	advanced: ADVANCED,
+};
+
+function transcript(
+	over: Partial<NativePreferencesSnapshot["transcriptMobile"]> = {},
+): NativePreferencesSnapshot["transcriptMobile"] {
+	return {
+		support: "supported",
+		loading: false,
+		saving: false,
+		confirmed: { revision: 3, config: PRESET },
+		draft: null,
+		error: null,
+		conflict: false,
+		writeUncertain: false,
+		storageUnavailable: false,
+		draftUnreadable: false,
+		...over,
+	};
+}
+
+const context: HubSheetContextValue = {
+	hubId: "hub-1",
+	hubName: "Work hub",
+	client: null,
+	ready: true,
+	canUseConnection: () => true,
+	updates: createHubUpdateController({
+		client: () => {
+			throw new Error("not in this test");
+		},
+		awaitRestart: async () => true,
+	}),
+};
+
+function model() {
+	const calls: [string, unknown?][] = [];
+	return {
+		calls,
+		editTranscript: vi.fn(async (config: TranscriptDisplayConfigV1) => {
+			calls.push(["edit", config]);
+		}),
+		saveTranscript: vi.fn(async () => {
+			calls.push(["save"]);
+		}),
+		refresh: vi.fn(async () => {
+			calls.push(["refresh"]);
+		}),
+		discardTranscriptDraft: vi.fn(async () => {
+			calls.push(["discard"]);
+		}),
+		rebaseTranscriptDraft: vi.fn(async (revision: number) => {
+			calls.push(["rebase", revision]);
+		}),
+	};
+}
+
+function mount(state: NativePreferencesSnapshot["transcriptMobile"] | null, connected = true) {
+	const fake = model();
+	preferences.value = { model: fake, snapshot: state ? { transcriptMobile: state } : null, connected };
+	const page = () => (
+		<HubSheetProvider value={context}>
+			<DetailLevelPage
+				navigation={{} as NativeStackScreenProps<HubRoutes, "DetailLevel">["navigation"]}
+				route={{ key: "DetailLevel", name: "DetailLevel", params: { hubId: "hub-1" } }}
+			/>
+		</HubSheetProvider>
+	);
+	const tree = render(page());
+	const button = (label: string) =>
+		tree.root.findAllByProps({ accessibilityRole: "button" }).find((node) => node.props.accessibilityLabel === label) ??
+		null;
+	const press = async (label: string) => {
+		await act(async () => {
+			button(label)?.props.onPress();
+		});
+	};
+	const update = (next: NativePreferencesSnapshot["transcriptMobile"], nextConnected = connected) => {
+		preferences.value = { model: fake, snapshot: { transcriptMobile: next }, connected: nextConnected };
+		act(() => tree.update(page()));
+	};
+	return { tree, fake, button, press, update };
+}
+
+const CALM = /\bReconnect\b|\bRefresh\b|transcript display|verbosity/i;
+
+beforeEach(() => {
+	preferences.value = {};
+});
+
+it("says it is connecting before the hub's setting has loaded", () => {
+	const { tree } = mount(null);
+	expect(renderedText(tree)).toContain("Connecting to Work hub…");
+});
+
+it("lists spec 8.2's levels with their descriptions, then Custom, with the saved one checked", () => {
+	const { tree, button } = mount(transcript());
+	for (const label of ["Chat", "Intent", "Tools", "Activity", "Full", "Custom"])
+		expect(
+			tree.root
+				.findAllByProps({ accessibilityRole: "button" })
+				.some((node) => String(node.props.accessibilityLabel).startsWith(`${label},`)),
+		).toBe(true);
+	const intent = tree.root
+		.findAllByProps({ accessibilityRole: "button" })
+		.find((node) => String(node.props.accessibilityLabel).startsWith("Intent,"));
+	expect(intent?.props.accessibilityState).toMatchObject({ selected: true });
+	expect(renderedText(tree)).toContain("Choose what the transcript shows");
+	expect(button("Chat, Just the conversation")).not.toBeNull();
+});
+
+it("saves a chosen level at once", async () => {
+	const { fake, press } = mount(transcript());
+	await press("Full, Everything, including the agent's reasoning");
+	expect(fake.calls).toEqual([["edit", { ...PRESET, content: { kind: "preset", level: "full" } }], ["save"]]);
+});
+
+it("holds every row while a save is in flight", () => {
+	const { tree } = mount(transcript({ saving: true }));
+	const rows = tree.root.findAllByProps({ accessibilityRole: "button" });
+	expect(rows.length).toBeGreaterThan(0);
+	for (const row of rows) expect(row.props.disabled).toBe(true);
+});
+
+it("shows Custom's switches and hook events, and saves each change at once", async () => {
+	const { tree, fake } = mount(transcript({ confirmed: { revision: 3, config: CUSTOM } }));
+	const text = renderedText(tree);
+	for (const label of ["SHOWS", "MORE DETAIL", "HOOK EVENTS"]) expect(text.toUpperCase()).toContain(label);
+	for (const label of [
+		"Action summaries",
+		"Tool calls",
+		"Reasoning",
+		"Open details by default",
+		"Timing",
+		"Token counts",
+		"Estimated cost",
+		"System events",
+		"Prompt events",
+	])
+		expect(tree.root.findAllByType("Switch" as never).some((node) => node.props.accessibilityLabel === label)).toBe(
+			true,
+		);
+	for (const label of ["Failures only", "Successful exits and failures", "All hook events"])
+		expect(text).toContain(label);
+	const reasoning = tree.root
+		.findAllByType("Switch" as never)
+		.find((node) => node.props.accessibilityLabel === "Reasoning");
+	await act(async () => {
+		reasoning?.props.onValueChange(true);
+	});
+	expect(fake.calls).toEqual([["edit", { ...CUSTOM, content: { ...CUSTOM.content, reasoning: true } }], ["save"]]);
+});
+
+it("offers to keep your choice or use the hub's after a conflict", async () => {
+	const draft = { revision: 3, config: { ...PRESET, content: { kind: "preset" as const, level: "full" as const } } };
+	const hubs = { revision: 4, config: PRESET };
+	const { tree, fake, press } = mount(transcript({ conflict: true, draft, confirmed: hubs }));
+	expect(renderedText(tree)).toContain("The hub's setting changed while you were choosing.");
+	await press("Keep mine");
+	expect(fake.calls).toEqual([["rebase", 4], ["save"]]);
+	fake.calls.length = 0;
+	await press("Use the hub's");
+	expect(fake.calls).toEqual([["discard"]]);
+});
+
+it("checks the hub's setting on its own once the hub is back, once per uncertain write", () => {
+	const { tree, fake, update } = mount(transcript({ writeUncertain: true }), false);
+	expect(renderedText(tree)).toContain("Checking the hub's setting…");
+	expect(fake.refresh).not.toHaveBeenCalled();
+	update(transcript({ writeUncertain: true }), true);
+	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	update(transcript({ writeUncertain: true }), false);
+	update(transcript({ writeUncertain: true }), true);
+	expect(fake.refresh).toHaveBeenCalledTimes(1);
+	update(transcript(), true);
+	update(transcript({ writeUncertain: true }), true);
+	expect(fake.refresh).toHaveBeenCalledTimes(2);
+});
+
+it("offers to discard a saved change the phone can't read, even with no draft to show", async () => {
+	const { tree, fake, press, button } = mount(
+		transcript({
+			confirmed: null,
+			draftUnreadable: true,
+			storageUnavailable: true,
+			error: "Could not restore the saved transcript draft.",
+		}),
+	);
+	expect(renderedText(tree)).toContain("A saved change to this setting couldn't be read on this phone.");
+	expect(button("Discard it")?.props.disabled).toBe(false);
+	await press("Discard it");
+	expect(fake.calls).toEqual([["discard"]]);
+});
+
+it("offers no discard when nothing unreadable is stored, or a readable draft is", () => {
+	expect(mount(transcript()).button("Discard it")).toBeNull();
+	const readable = { revision: 3, config: PRESET };
+	expect(mount(transcript({ draft: readable })).button("Discard it")).toBeNull();
+});
+
+it("holds the discard while the hub is away", () => {
+	const { button } = mount(transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }), false);
+	expect(button("Discard it")?.props.disabled).toBe(true);
+});
+
+it("shows a failed load as a line with nothing to press", () => {
+	const { tree } = mount(transcript({ confirmed: null, error: "Couldn't load this hub's setting." }));
+	expect(renderedText(tree)).toContain("Couldn't load this hub's setting.");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Try again" })).toHaveLength(0);
+});
+
+it("says so when the hub doesn't keep a default detail level", () => {
+	const { tree } = mount(transcript({ support: "unsupported" }));
+	expect(renderedText(tree)).toContain("This hub doesn't keep a default detail level.");
+});
+
+it.each([
+	["loaded", transcript()],
+	["conflicted", transcript({ conflict: true })],
+	["uncertain", transcript({ writeUncertain: true })],
+	["unreadable", transcript({ draftUnreadable: true, storageUnavailable: true })],
+])("never asks to reconnect or refresh when %s", (_name, state) => {
+	expect(renderedText(mount(state).tree)).not.toMatch(CALM);
+});

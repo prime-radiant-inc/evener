@@ -68,7 +68,11 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	};
 	if (options.check) await updates.controller.runCheck();
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const navigation = { getParent: () => root } as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
+	const sheet = { navigate: vi.fn() };
+	const navigation = { getParent: () => root, navigate: sheet.navigate } as unknown as NativeStackScreenProps<
+		HubRoutes,
+		"HubHome"
+	>["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -81,10 +85,18 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		act(() => {
 			find(label)?.props.onPress();
 		});
-	return { tree, root, find, press, calls: fake.calls, readiness, live };
+	return { tree, root, sheet, find, press, calls: fake.calls, readiness, live };
 }
 
-const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Keyboard shortcuts", "Launch defaults", "Hub settings"];
+const ROWS = [
+	"Providers",
+	"Plugins",
+	"Display, System",
+	"Hubs",
+	"Keyboard shortcuts",
+	"Launch defaults",
+	"Hub settings",
+];
 
 beforeEach(() => {
 	status.line = null;
@@ -103,7 +115,6 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
-		["Display", "TranscriptPreferences"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -202,4 +213,11 @@ it("says so when the hub restarts without the update", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
+});
+
+it("opens Display inside the sheet, valued with this phone's appearance", async () => {
+	const { sheet, press, find } = await mount();
+	expect(find("Display, System")).not.toBeNull();
+	press("Display, System");
+	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });

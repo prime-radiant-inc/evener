@@ -10,6 +10,8 @@ import { isReady } from "../connectionDisplay";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useColors } from "../ui";
+import { DetailLevelPage } from "./DetailLevelPage";
+import { DisplayPage } from "./DisplayPage";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
@@ -63,6 +65,8 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						),
 					}}
 				/>
+				<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
+				<HubStack.Screen name="DetailLevel" component={DetailLevelPage} options={{ title: "Default detail level" }} />
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);

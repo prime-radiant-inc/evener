@@ -60,7 +60,6 @@ import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
-import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
@@ -188,11 +187,6 @@ function Navigation() {
 						name="KeybindingPreferences"
 						component={KeybindingPreferencesScreen}
 						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="TranscriptPreferences"
-						component={TranscriptPreferencesScreen}
-						options={{ title: "Transcript display" }}
 					/>
 					<Stack.Screen name="Providers" component={ProvidersScreen} />
 					<Stack.Screen name="Plugins" component={PluginsScreen} />

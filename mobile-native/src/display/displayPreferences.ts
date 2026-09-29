@@ -11,6 +11,9 @@ export interface DisplayChoices {
 	readingFont: ReadingFont;
 }
 
+/** Each appearance as Display names it. */
+export const APPEARANCE_LABELS: Record<AppearanceChoice, string> = { system: "System", light: "Light", dark: "Dark" };
+
 export const DEFAULT_DISPLAY: DisplayChoices = { appearance: "system", readingFont: "serif" };
 export const DISPLAY_KEY = "evener.native.display";
 
