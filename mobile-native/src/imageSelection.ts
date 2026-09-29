@@ -6,6 +6,9 @@ export interface PickedImage {
 	name: string;
 	type: string;
 	size: number;
+	/** The pixel size the picker reports; absent or 0 when it doesn't know. */
+	width?: number;
+	height?: number;
 }
 interface PendingImage extends PickedImage {
 	id: string;
@@ -21,8 +24,8 @@ export interface ImagePicker {
 	/** One photo from the camera; rejects with CameraAccessDenied when the
 	 * person has turned camera access off. */
 	capture(): Promise<PickedImage[]>;
-	/** The image as base64 ENCODED_IMAGE_TYPE, scaled to fit the attachment
-	 * limit where it can be (imageFit.ts). */
+	/** The image as base64 ENCODED_IMAGE_TYPE, scaled down to fit the
+	 * attachment limit. */
 	encode(image: PickedImage): Promise<string>;
 	id(): string;
 }
@@ -35,14 +38,22 @@ export class CameraAccessDenied extends Error {
 	}
 }
 
-/** The largest picked file the phone decodes to scale it: above any camera
- * original, ProRAW included, and below what would risk its memory. */
-export const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
+/** The largest picked file the phone decodes to scale it: far above a camera
+ * HEIC or JPEG, and a bound on the memory decoding takes. */
+export const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
-/** What ImagePicker.encode returns: JPEG, scaled to fit (imageFit.ts). */
+/** The most pixels the phone decodes: a full frame from a 48 megapixel
+ * iPhone camera, 8064 by 6048. */
+export const MAX_SOURCE_PIXELS = 8064 * 6048;
+
+function tooLargeToDecode(image: PickedImage): boolean {
+	return image.size > MAX_SOURCE_BYTES || (image.width ?? 0) * (image.height ?? 0) > MAX_SOURCE_PIXELS;
+}
+
+/** What ImagePicker.encode returns: JPEG, scaled to fit. */
 export const ENCODED_IMAGE_TYPE = "image/jpeg";
 
-export function base64ByteLength(data: string): number {
+function base64ByteLength(data: string): number {
 	const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
 	return (data.length * 3) / 4 - padding;
 }
@@ -105,14 +116,14 @@ export class ImageSelection {
 			const pending: PendingImage[] = [];
 			for (const image of picked) {
 				// The picked file's own size isn't the attachment limit: the phone
-				// scales the photo down (imageFit.ts) and its encoding is checked
-				// below. Only a file too big to decode safely is refused here, so
-				// the shared check sees no size and applies its type and count limits.
+				// scales the photo down and its encoding is checked below. Only an
+				// image too big to decode safely is refused here, so the shared
+				// check sees no size and applies its type and count limits.
 				const reason =
 					!Number.isFinite(image.size) || image.size < 0
 						? `${image.name} (could not read file size)`
-						: image.size > MAX_SOURCE_BYTES
-							? `${image.name} (too large to process)`
+						: tooLargeToDecode(image)
+							? `${image.name}: This photo is too large to attach. Try a screenshot or a smaller image.`
 							: rejectionReason({ ...image, size: 0 }, reserved);
 				if (reason) {
 					errors.push(reason);

@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import { CameraAccessDenied, ImageSelection, type PickedImage } from "./imageSelection";
+import { CameraAccessDenied, ImageSelection, MAX_SOURCE_BYTES, type PickedImage } from "./imageSelection";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 const databases: SqliteDoubleDatabase[] = [];
@@ -52,22 +52,52 @@ it("takes a photo bigger than the limit on disk when the phone's encoding of it 
 	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
 });
 
-it("refuses a file too big to process before decoding it", async () => {
-	const huge = { ...photo, name: "huge.jpg", size: 200 * 1024 * 1024 };
+const TOO_LARGE = "This photo is too large to attach. Try a screenshot or a smaller image.";
+
+/** Picks `images`, counting the decodes the selection asks for. */
+async function chooseCounting(images: PickedImage[]) {
 	let decoded = 0;
 	const { document, selection } = setup(
-		async () => [huge],
+		async () => images,
 		async () => {
 			decoded++;
 			return "AQID";
 		},
 	);
-
 	await selection.choose();
+	return { decoded, attached: document.getSnapshot().record.images ?? [], error: selection.getSnapshot().error };
+}
 
-	expect(decoded).toBe(0);
-	expect(document.getSnapshot().record.images ?? []).toHaveLength(0);
-	expect(selection.getSnapshot().error).toContain("huge.jpg (too large to process)");
+it("refuses a file over 25 MB before decoding it, and says what to do", async () => {
+	const result = await chooseCounting([{ ...photo, name: "huge.jpg", size: MAX_SOURCE_BYTES + 1 }]);
+	expect(result.decoded).toBe(0);
+	expect(result.attached).toHaveLength(0);
+	expect(result.error).toBe(`huge.jpg: ${TOO_LARGE}`);
+});
+
+it("takes a file at exactly 25 MB", async () => {
+	const result = await chooseCounting([{ ...photo, size: MAX_SOURCE_BYTES }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
+});
+
+it("refuses a photo over 48 megapixels by the size the picker reports, before decoding it", async () => {
+	const result = await chooseCounting([{ ...photo, name: "pano.jpg", width: 16000, height: 4000 }]);
+	expect(result.decoded).toBe(0);
+	expect(result.attached).toHaveLength(0);
+	expect(result.error).toBe(`pano.jpg: ${TOO_LARGE}`);
+});
+
+it("takes a full-frame 48 megapixel camera photo", async () => {
+	const result = await chooseCounting([{ ...photo, width: 8064, height: 6048 }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
+});
+
+it("takes a photo whose pixel size the picker doesn't know", async () => {
+	const result = await chooseCounting([{ ...photo, width: 0, height: 0 }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
 });
 
 it("rejects an encoded image over the server byte limit without persisting it", async () => {
@@ -127,7 +157,7 @@ it("enforces current-web type, count and source-size limits before encoding", as
 	const { document, selection } = setup(
 		async () => [
 			{ ...photo, type: "text/plain" },
-			{ ...photo, size: 9 * 1024 * 1024 },
+			{ ...photo, size: MAX_SOURCE_BYTES + 1 },
 			...Array.from({ length: 9 }, () => photo),
 		],
 		async () => {
