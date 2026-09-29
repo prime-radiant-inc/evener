@@ -105,6 +105,54 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
   recoveryReason?: string;
 }
 
+// --- receipt settlement ------------------------------------------------------
+
+// The accepted optimistic copy of a record a "pending" receipt settled: the
+// one whitelist of fields the web IndexedDB adapter and the native adapter
+// both build by hand, so the two can no longer drift. Every field is named
+// explicitly rather than spread, because a source may be a recovery record
+// (recoveryKind/recoveryReason) or an outbox record (attempted, its own
+// state) and none of those is part of MutationOptimisticRecord: spreading one
+// would leak the outbox-only `attempted` flag into the accepted row the
+// optimistic table and its readers expect.
+export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  source: MutationRecord<A>,
+): MutationOptimisticRecord<A> {
+  return {
+    version: source.version,
+    clientMutationId: source.clientMutationId,
+    // Provenance survives the outbox -> optimistic transition: dropping it
+    // would make the accepted-but-unreflected mutation unattributed, and every
+    // tab would claim it as its own send.
+    originClientId: source.originClientId,
+    intentSequence: source.intentSequence,
+    createdAt: source.createdAt,
+    targetRef: source.targetRef,
+    threadId: source.threadId,
+    // The enqueue-time instance rides the transition like provenance does:
+    // dropping it would leave the accepted record identifying itself by
+    // threadId alone, the pre-instance shape a replacement that retains the
+    // thread id is invisible to.
+    instanceId: source.instanceId,
+    method: source.method,
+    payload: source.payload,
+    attachments: source.attachments,
+    optimisticDisplay: source.optimisticDisplay,
+    state: "accepted",
+  };
+}
+
+// The "receipt carries input display" half of the rule both adapters use to
+// decide whether a "pending" receipt keeps (or creates) the optimistic copy:
+// the source record's display holds an input array the pending row renders.
+// The receipt's own state (whether it is "pending" at all) is the caller's to
+// check; a host may keep a copy for a reason beyond a display (the web keeps
+// a notes/human/set copy so a retry lookup sees the accepted save as pending).
+export function carriesOptimisticInput(record: { optimisticDisplay: unknown }): boolean {
+  const display = record.optimisticDisplay;
+  return display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input);
+}
+
 // --- client provenance -------------------------------------------------------
 
 // The store this client's identity is remembered in: per client, stable across
