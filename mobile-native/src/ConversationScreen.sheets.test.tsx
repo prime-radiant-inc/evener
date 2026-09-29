@@ -64,12 +64,13 @@ vi.mock("react-native", async () => {
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
-		// The real Modal renders its children only while visible; the inert host
-		// string would render them always, so the panel would look mounted even
-		// with the modal closed. This stub keeps the screen's open/closed state
-		// observable in the tree: no visible modal, no panel.
+		// The real Modal renders its children while visible, its own default
+		// being visible; the inert host string would render them always, so the
+		// panel would look mounted even with the modal closed. This stub keeps
+		// the screen's open/closed state observable in the tree: a modal told to
+		// hide renders no panel, and one that says nothing holds, as it does.
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
-			props.visible ? createElement("Modal", null, props.children) : null,
+			props.visible !== false ? createElement("Modal", null, props.children) : null,
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -505,6 +506,33 @@ it("shows the chosen detail level and confirms it", async () => {
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
+	tree.unmount();
+});
+
+/** The ⋯ button in the header, as the screen last set it. */
+function menuButton(): ReactElement<{ onPress(): void }> {
+	const button = header().headerRight?.({ canGoBack: true });
+	if (!button) throw new Error("the header set no ⋯ button");
+	return button as ReactElement<{ onPress(): void }>;
+}
+
+it("opens Find in session from the Android ⋯ menu", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuButton().props.onPress());
+	const find = tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
+	)[0];
+	if (!find) throw new Error("no Find in session in the ⋯ menu");
+	act(() => find.props.onPress());
+	await flush();
+
+	expect(
+		tree.root.findAll(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		),
+	).toHaveLength(1);
 	tree.unmount();
 });
 
