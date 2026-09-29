@@ -10,7 +10,7 @@ import { useStore } from "zustand";
 import { createNewSessionService } from "../../../mobile/src/services/newSession";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { HubPaths } from "../hubPaths";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 
@@ -61,9 +61,9 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			{label ? <GroupLabel machine>{label.label}</GroupLabel> : null}
+			{label && folders.length === 0 ? <GroupLabel machine>{label.label}</GroupLabel> : null}
 			{folders.length > 0 ? (
-				<Group>
+				<Group label={label?.label} machineLabel>
 					{folders.map((row) =>
 						row.kind === "parent" ? (
 							<Row key={row.key} label="Up one folder" icon="arrow.up" onPress={() => open(row.path)} />
@@ -74,7 +74,6 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 				</Group>
 			) : null}
 			{status ? <GroupFooter>{status.text}</GroupFooter> : null}
-			<GroupGap />
 			<Group>
 				{dir ? (
 					<Row

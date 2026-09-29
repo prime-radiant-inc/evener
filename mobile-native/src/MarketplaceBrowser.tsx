@@ -16,6 +16,7 @@ import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-clien
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
+import { space, uiType } from "./design/tokens";
 import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
@@ -24,7 +25,7 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { Group, GroupFooter, GroupGap, GroupLabel, Row } from "./sheet/Grouped";
+import { Group, GroupFooter, Row } from "./sheet/Grouped";
 import { SheetStatus } from "./sheet/SheetStatus";
 import { Action, allowFontScaling, Choice, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
@@ -342,15 +343,13 @@ export function MarketplaceBrowser({
 	);
 	return (
 		<>
-			<GroupGap />
 			{problems}
 			{selected ? (
 				<>
 					<Group>
 						<Row label="All marketplaces" tone="accent" onPress={() => select(null)} />
 					</Group>
-					<GroupLabel machine>{selected}</GroupLabel>
-					<Group>
+					<Group label={selected} machineLabel>
 						{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
 						{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
 						<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
@@ -365,8 +364,7 @@ export function MarketplaceBrowser({
 					{segment === "browse" ? (
 						<>
 							{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
-							<GroupLabel>Catalog</GroupLabel>
-							<Group>
+							<Group label="Catalog">
 								<TextInput
 									accessibilityLabel="Filter marketplace plugins"
 									placeholder="Filter this catalog"
@@ -376,7 +374,12 @@ export function MarketplaceBrowser({
 									autoCapitalize="none"
 									autoCorrect={false}
 									allowFontScaling={allowFontScaling}
-									style={{ minHeight: 44, paddingHorizontal: 16, fontSize: 17 * scale, color: palette.inkHi }}
+									style={{
+										minHeight: 44,
+										paddingHorizontal: space.rowInset,
+										fontSize: uiType.listRow.fontSize * scale,
+										color: palette.inkHi,
+									}}
 								/>
 							</Group>
 							{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
@@ -410,7 +413,6 @@ export function MarketplaceBrowser({
 							) : null}
 							{catalogPlugins.length > 0 ? (
 								<>
-									<GroupGap />
 									<Group>
 										{catalogPlugins.map((item) => {
 											const target = { plugin: item.name, marketplace: selected };
@@ -479,7 +481,6 @@ export function MarketplaceBrowser({
 					) : null}
 					{segment === "marketplaces" ? (
 						<>
-							<GroupGap />
 							<Group>
 								<Row
 									label="Add marketplace…"
