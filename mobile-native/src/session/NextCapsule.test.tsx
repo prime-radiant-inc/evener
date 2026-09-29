@@ -41,6 +41,19 @@ describe("the Next capsule (spec 8.3)", () => {
 		expect(chevron.props.name).toBe("chevron.right");
 	});
 
+	// Small, at the trailing edge (spec 8.3): the whole capsule stays within
+	// 60% of the screen's width (the test window is 390pt), and a long title
+	// gives way inside it, so the transcript's leading side stays free to drag.
+	it("stays within 60% of the width, its title giving way", () => {
+		const long = { ...target, title: "Audit tool descriptions for implied options across every plugin" };
+		const tree = render(<NextCapsule target={long} onOpen={() => {}} onHold={() => {}} />);
+		const style = capsule(tree).props.style({ pressed: false });
+		expect(style).toMatchObject({ maxWidth: 234 });
+		const title = tree.root.findAll((node) => String(node.type) === "Text")[1];
+		expect(title.props.style).toMatchObject({ flexShrink: 1 });
+		expect(title.props.style.maxWidth).toBeUndefined();
+	});
+
 	it("opens the session on a tap, and the list on a hold", () => {
 		const onOpen = vi.fn();
 		const onHold = vi.fn();

@@ -28,6 +28,9 @@ export function NextCapsule({
 			onLongPress={onHold}
 			style={({ pressed }) => ({
 				...floatingCapsule(palette),
+				// Small, at the trailing edge (spec 8.3): the leading side of the
+				// transcript stays free to drag.
+				maxWidth: Math.round(width * 0.6),
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
@@ -41,7 +44,7 @@ export function NextCapsule({
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				ellipsizeMode="tail"
-				style={{ ...text, color: palette.inkHi, maxWidth: width * 0.6 }}
+				style={{ ...text, color: palette.inkHi, flexShrink: 1 }}
 			>
 				{target.title}
 			</Text>
