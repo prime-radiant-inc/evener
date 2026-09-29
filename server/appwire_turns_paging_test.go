@@ -552,3 +552,53 @@ func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T)
 		t.Fatalf("seeded turns %v do not carry the persisted reserved id %q", turnIDs(seeded), reserved)
 	}
 }
+
+// A client talking to the daemon directly can send before too: the page ends
+// just before it, the cursor keeping its identity fence.
+func TestAppWireTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_before",
+		schema.NewTurn(schema.TurnUserInput, llm.User("a")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("b")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("c")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("d")),
+	)
+	srv := st.srv
+	wide, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:th_before", IncludeTurns: true, ItemLimit: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var boundary *appwire.ThreadItemPosition
+	for _, turn := range wide.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.Text == "c" {
+				boundary = item.Position
+			}
+		}
+	}
+	if boundary == nil {
+		t.Fatalf("wide read has no positioned c: %+v", wide.Thread.Turns)
+	}
+	latest, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:th_before", IncludeTurns: true, ItemLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := func(before *appwire.ThreadItemPosition) string {
+		t.Helper()
+		older, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: "local:th_before", Cursor: latest.OlderCursor, ItemLimit: 1, Before: before,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(older.Data) != 1 || len(older.Data[0].Items) != 1 {
+			t.Fatalf("older page = %+v, want one item", older.Data)
+		}
+		return older.Data[0].Items[0].Text
+	}
+	if got := page(boundary); got != "b" {
+		t.Fatalf("page before c = %q, want b", got)
+	}
+	if got := page(nil); got != "c" {
+		t.Fatalf("page without before = %q, want c", got)
+	}
+}

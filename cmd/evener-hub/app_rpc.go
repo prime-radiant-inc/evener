@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -1543,6 +1544,10 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		params, err := appitempaging.ApplyBefore(params)
+		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
 		// Live source first; fall back to the saved transcript (paged on the

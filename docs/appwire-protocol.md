@@ -2654,6 +2654,7 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `before` | `*appwire.ThreadItemPosition` | yes |  |
 
 
 ### `ThreadTurnsListResponse`

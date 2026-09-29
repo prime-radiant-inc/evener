@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -1502,6 +1503,10 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
+	}
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
 	}
 	if threadID == "" {

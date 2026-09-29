@@ -110,3 +110,20 @@ func decodeCursor(encoded string) (transcriptItemCursorV1, error) {
 func validIdentity(identity CursorIdentity) bool {
 	return utf8.ValidString(identity.ThreadRef) && utf8.ValidString(identity.Incarnation) && strings.TrimSpace(identity.ThreadRef) != "" && strings.TrimSpace(identity.Incarnation) != "" && identity.ProjectionVersion != 0
 }
+
+// ApplyBefore spends a thread/turns/list request's Before: it rebases the
+// request's cursor onto that boundary, keeping the cursor's identity fence,
+// and clears Before so nothing downstream applies it twice. Without Before
+// the params pass through unchanged.
+func ApplyBefore(params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListParams, error) {
+	if params.Before == nil {
+		return params, nil
+	}
+	cursor, err := RebaseCursor(params.Cursor, *params.Before)
+	if err != nil {
+		return params, err
+	}
+	params.Cursor = cursor
+	params.Before = nil
+	return params, nil
+}

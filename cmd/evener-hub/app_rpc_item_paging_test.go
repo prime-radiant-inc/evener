@@ -1343,3 +1343,107 @@ func TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity(t *testing.T) {
 			page.BootGeneration, page.Epoch, page.Snapshot, initial.BootGeneration, initial.Epoch, *initial.Snapshot)
 	}
 }
+
+// A client that dropped rows from the top of its window pages them back by
+// naming the oldest row it kept: before rebases the cursor it holds onto that
+// boundary, keeping the cursor's identity fence.
+func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
+	const sessionID = "turns-list-before"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	var inputs []string
+	for i := range 45 {
+		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
+	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// A wide read to learn where item-30 sits, and a narrow one whose cursor
+	// points before item-40: the rows between are the ones a trim dropped.
+	wide, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 40})
+	if err != nil {
+		t.Fatalf("wide read: %v", err)
+	}
+	var boundary *appwire.ThreadItemPosition
+	for _, item := range flattenTestItems(wide.Thread.Turns) {
+		if item.Text == "item-30" {
+			boundary = item.Position
+		}
+	}
+	if boundary == nil {
+		t.Fatal("wide read has no positioned item-30")
+	}
+	narrow, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 5})
+	if err != nil {
+		t.Fatalf("narrow read: %v", err)
+	}
+	if narrow.OlderCursor == "" {
+		t.Fatal("narrow read omitted its cursor")
+	}
+	texts := func(page appwire.ThreadTurnsListResponse) []string {
+		var out []string
+		for _, item := range flattenTestItems(page.Data) {
+			out = append(out, item.Text)
+		}
+		return out
+	}
+
+	rebased, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 5, Cursor: narrow.OlderCursor, Before: boundary,
+	})
+	if err != nil {
+		t.Fatalf("turns list before item-30: %v", err)
+	}
+	if got := texts(rebased); !slicesEqual(got, []string{"item-25", "item-26", "item-27", "item-28", "item-29"}) {
+		t.Fatalf("turns list before item-30 = %v, want item-25..29", got)
+	}
+	if rebased.NextCursor == "" {
+		t.Fatal("turns list before item-30 ended paging with older items left")
+	}
+
+	// Without before, the cursor pages from its own boundary, as it always did.
+	plain, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 5, Cursor: narrow.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("turns list without before: %v", err)
+	}
+	if got := texts(plain); !slicesEqual(got, []string{"item-35", "item-36", "item-37", "item-38", "item-39"}) {
+		t.Fatalf("turns list without before = %v, want item-35..39", got)
+	}
+
+	// before rebases a cursor; it can't stand in for one.
+	_, err = client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 5, Cursor: "not-a-cursor", Before: boundary,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("before on a malformed cursor: error = %T %v, want typed stale cursor", err, err)
+	}
+	stale := false
+	switch data := wireErr.Data.(type) {
+	case appwire.ErrorData:
+		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	}
+	if !stale {
+		t.Fatalf("before on a malformed cursor: error data = %#v, want stale cursor", wireErr.Data)
+	}
+}

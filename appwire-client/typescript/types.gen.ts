@@ -3987,6 +3987,14 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  /**
+   * Before, when set, moves Cursor's boundary to this position, keeping the
+   * cursor's identity fence: the page ends just before it. A client that
+   * dropped rows from the top of its window names the oldest row it kept
+   * and pages the dropped rows back. It rebases a cursor and can't stand in
+   * for one.
+   */
+  before?: ThreadItemPosition;
 }
 
 export interface ThreadTurnsListResponse {
