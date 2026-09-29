@@ -37,6 +37,9 @@ requests.
 
 ## Frontend gates
 
+Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
+with each tree's own Biome and re-stages it (`docs/developing-evener/README.md`).
+
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
 ../../../appwire-client/typescript`; see cmd/evener-hub/frontend/package.json).
