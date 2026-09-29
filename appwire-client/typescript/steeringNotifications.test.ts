@@ -1236,6 +1236,12 @@ test("a subagent the user stopped parses as stopped", () => {
   });
 });
 
+test("a parent's stop that cancelled a run carrying its own packet reads as stopped", () => {
+  expect(wireNotifications("delegate-stopped-by-parent-mid-run")).toMatchObject([
+    { type: "delegate", title: "Delegate stopped", outcome: "stopped", name: "Index the docs" },
+  ]);
+});
+
 test("a parent's stop reads as stopped", () => {
   const [n] = wireNotifications("delegate-stopped-by-parent");
   expect(n).toMatchObject({

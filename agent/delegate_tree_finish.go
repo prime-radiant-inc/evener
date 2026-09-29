@@ -349,21 +349,17 @@ func delegateMissingTerminalPacket() delegatestore.TerminalPacket {
 	return delegateTerminalErrorPacket("delegate completed without an accepted communicate result")
 }
 
-// delegateStoppedByParentReason is the reason a parent's stop settles a
-// generation with, on its RunFinished outcome and on its terminal packet.
-const delegateStoppedByParentReason = "stopped_by_parent"
-
 // delegateStoppedTerminalPacket is the packet a parent's stop settles when the
 // run left none. Its metadata carries the same outcome and reason as the
 // RunFinished event it rides (stoppedGenerationFinishEvent), so the owner's
 // delegate-notification frame says the subagent was stopped instead of
-// leaving clients to read a bare terminal_error as a failure. It travels in
-// the new event's payload, so events recorded before it replay unchanged.
+// leaving clients to read a bare terminal_error as a failure.
 func delegateStoppedTerminalPacket() delegatestore.TerminalPacket {
 	packet := delegateTerminalErrorPacket("stopped by parent")
+	// Marshal cannot fail on a struct of strings.
 	packet.Metadata, _ = json.Marshal(delegateTerminalPacketMetadata{
 		Outcome: delegatestore.OutcomeStopped,
-		Reason:  delegateStoppedByParentReason,
+		Reason:  delegatestore.ReasonStoppedByParent,
 	})
 	return packet
 }

@@ -156,6 +156,10 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("Stopped by the user.");
 	});
 
+	it("reads a parent's stop of a run that left its own packet as stopped", () => {
+		expect(renderedText(show("delegate-stopped-by-parent-mid-run").tree)).toContain("Index the docs stopped");
+	});
+
 	it("reads a parent's stop as stopped, not failed", () => {
 		const { tree } = show("delegate-stopped-by-parent");
 		expect(textNode(tree, "Tail the hub log stopped")?.props.style).toMatchObject({ color: INK_LOW });

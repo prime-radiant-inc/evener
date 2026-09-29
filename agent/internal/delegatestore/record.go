@@ -47,6 +47,10 @@ const (
 	OutcomeStopped   OutcomeStatus = "stopped"
 )
 
+// ReasonStoppedByParent is the outcome reason of a generation a parent's stop
+// ended.
+const ReasonStoppedByParent = "stopped_by_parent"
+
 type ExhaustionBudget string
 
 const (

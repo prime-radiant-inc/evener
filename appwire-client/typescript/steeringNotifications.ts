@@ -275,8 +275,8 @@ const PACKET_KIND_OUTCOMES = new Map([
 
 interface TerminalPacket {
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
-  // the packet kind implies when metadata carries none (a parent's bare stop
-  // packet, a run that left no packet).
+  // the packet kind implies when metadata carries none (the fold's own bare
+  // stop packet, agent/internal/delegatestore/fold.go, #3114).
   outcome: string;
   message: string;
   reason: string;
