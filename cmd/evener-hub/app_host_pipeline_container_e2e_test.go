@@ -11,11 +11,15 @@ package hub
 // TestHostDeployNoEvenerE2E (which pins the deploy path itself: a bare host is
 // provisioned and attaches). This check pins the pipeline kept after comp08
 // passes 1–3: the confirmation token's single use, the durable operation
-// records' pending→running→terminal lifecycle and identity pair, the per-host
-// one-operation-at-a-time gate the records ride, and the restart that follows
-// its own operation. It also pins the simplification: the container carries no
-// fencing helper, no claim primitive, and no fencing state, and the happy path
-// emits no fencing-flavoured refusal or prose.
+// records' pending→running→terminal lifecycle and identity pair, the pipeline's
+// one-operation-at-a-time serialization (each listed operation reached its
+// terminal write before the next was created; the typed host-busy refusals a
+// genuinely concurrent attempt would meet are covered by the handler and gate
+// unit suites, which can drive them deterministically — this check does not
+// race for them), and the restart that follows its own operation. It also pins
+// the simplification: the container carries no fencing helper, no claim
+// primitive, and no fencing state, and the happy path emits no
+// fencing-flavoured refusal or prose.
 //
 // Gates: like the sibling deploy check this is an explicitly opted-in WRITE, so
 // it needs EVENER_SSH_E2E=1 and EVENER_SSH_E2E_DEPLOY=1 plus a host source.
@@ -46,19 +50,23 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/e2ecap"
@@ -160,7 +168,11 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	dirName := hostPipelineDirPrefix + "-" + runID
 	hostDir := home + "/" + dirName
 	runTarget := hostDir + "/bin/evener"
-	addr := hostPipelineHostAddr(runID)
+	// The host hub's private loopback address is allocated on the host itself
+	// (bind 127.0.0.1:0 and release, or the probe-verified fallback), before the
+	// private hub.toml and the entry carry it, so a stale or concurrent host
+	// hub can never be addressed by this run.
+	addr := hostPipelineHostAddr(t, host)
 
 	// The same precondition discipline as the sibling deploy check: the test
 	// creates the host directory itself, refuses an existing path before
@@ -336,8 +348,8 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	if len(page.HostBoundaries) != 0 {
 		t.Fatalf("a host-pinned page carries no hostBoundaries map, got %v", page.HostBoundaries)
 	}
-	if len(page.Operations) == 0 || page.NextCursor == "" {
-		t.Fatalf("the operations page listed %d records and cursor %q; at least the deploy and restart records and a continuing cursor were expected", len(page.Operations), page.NextCursor)
+	if len(page.Operations) == 0 {
+		t.Fatalf("the operations page listed no records; at least the deploy and restart records were expected")
 	}
 	var prose []string
 	listed := map[string]appwire.OperationRecord{}
@@ -365,6 +377,53 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 		}
 		if record.Kind != want.kind || record.State != appwire.OperationStateComplete {
 			t.Fatalf("listed record %s = kind %q state %q, want the complete %s operation", want.id, record.Kind, record.State, want.kind)
+		}
+	}
+
+	// The store mints a continuation whenever a page listed at least one record
+	// (hostops/cursor.go's OperationsPage.NextCursor contract: "present exactly
+	// when the page listed at least one record"), so a cursor here is expected
+	// even though the page exhausted this host's records — the first live run
+	// confirmed one is returned. The assertion deliberately does not hinge on
+	// that: it follows the chain when a cursor is present and requires the
+	// continuation to be the empty tail, which is what proves the first page
+	// listed every record this run created.
+	if page.NextCursor != "" {
+		tail, err := clientRequest[appwire.HostOperationsResponse](ctx, client, appwire.MethodEvenerHostOperations, appwire.HostOperationsParams{Name: hostName, Limit: 50, Cursor: page.NextCursor})
+		if err != nil {
+			t.Fatalf("step evener/host/operations (continuation): %v", err)
+		}
+		if len(tail.Operations) != 0 {
+			t.Fatalf("the continuation page listed %v; the first page was expected to hold every record this run created", hostPipelineRecordIDs(tail.Operations))
+		}
+		if tail.NextCursor != "" {
+			t.Fatalf("the empty continuation page carries a further cursor (%q); the mint rule gives no cursor to a page that listed no record", tail.NextCursor)
+		}
+		t.Log("operations page: followed the returned cursor to an empty tail (no records, no further cursor)")
+	} else {
+		t.Logf("operations page: no continuation cursor was returned; the page listed %d records", len(page.Operations))
+	}
+
+	// Deterministic evidence of the pipeline's one-operation-at-a-time
+	// serialization: in controller-id (allocation) order, every record reached
+	// its terminal write before the next record was created. Provoking the typed
+	// host-busy refusal would need a genuinely concurrent attempt whose timing
+	// this check cannot make deterministic, so that refusal is left to the
+	// handler and gate unit suites; this ordering is what the live run can prove
+	// without racing.
+	for i := 1; i < len(page.Operations); i++ {
+		previous, current := page.Operations[i-1], page.Operations[i]
+		previousUpdated, err := time.Parse(time.RFC3339, previous.UpdatedAt)
+		if err != nil {
+			t.Fatalf("record %s updatedAt %q does not parse: %v", previous.ID, previous.UpdatedAt, err)
+		}
+		currentCreated, err := time.Parse(time.RFC3339, current.CreatedAt)
+		if err != nil {
+			t.Fatalf("record %s createdAt %q does not parse: %v", current.ID, current.CreatedAt, err)
+		}
+		if currentCreated.Before(previousUpdated) {
+			t.Fatalf("operation %s was created at %s, before operation %s reached its terminal write at %s; the pipeline must run one operation at a time",
+				current.ID, current.CreatedAt, previous.ID, previous.UpdatedAt)
 		}
 	}
 
@@ -625,16 +684,20 @@ func assertHostPipelineNoFencingHelpers(t *testing.T, host *hostSSH, hostDir str
 	t.Log("fencing absence: the container host has no evener-fence command, no fence/claim helper binary, and no fence/claim/orphan state under the run directory")
 }
 
+// hostPipelineFencingProsePattern matches the withdrawn crash-fencing
+// vocabulary as whole words: a bare substring scan for "claim" also matched
+// benign words like "reclaim" and "disclaim" (roborev's Low finding on the
+// first revision), while the stem alternations keep the teeth for the
+// inflections a fencing refusal would actually carry.
+var hostPipelineFencingProsePattern = regexp.MustCompile(`(?i)\b(?:fenc(?:e|es|ed|ing)|orphan(?:s|ed|ing)?|claim(?:s|ed|ing|ant)?)\b`)
+
 // assertHostPipelineNoFencingProse fails when the happy path carries the
 // withdrawn crash-fencing vocabulary in any record prose or refusal message.
 func assertHostPipelineNoFencingProse(t *testing.T, texts ...string) {
 	t.Helper()
 	for _, text := range texts {
-		lower := strings.ToLower(text)
-		for _, word := range []string{"fence", "orphan", "claim"} {
-			if strings.Contains(lower, word) {
-				t.Fatalf("the happy path carries the withdrawn crash-fencing vocabulary %q: %s", word, text)
-			}
+		if match := hostPipelineFencingProsePattern.FindString(text); match != "" {
+			t.Fatalf("the happy path carries the withdrawn crash-fencing vocabulary %q: %s", match, text)
 		}
 	}
 }
@@ -654,17 +717,173 @@ func hostPipelineHostHealth(t *testing.T, host *hostSSH, addr string) hubapi.Hea
 	if resp.Version == "" {
 		t.Fatalf("the host hub's %s answer carries no version: %s", url, out)
 	}
+	// Ownership: the listener on the configured address must be the hub this run
+	// configured — the hub echoes the address it bound (main.go overwrites
+	// cfg.Addr with hubListener.Addr().String()), so a different process that
+	// grabbed the port, or a stale hub on another address, cannot satisfy this.
+	if resp.HubAddr != addr {
+		t.Fatalf("the listener at %s reports hub_addr %q, want %q (the address's owner must be the hub this run configured)", url, resp.HubAddr, addr)
+	}
 	return resp
 }
 
-// hostPipelineHostAddr returns the private loopback address the deployed host
-// hub listens on. The port is per-run (folded from the run id), so a leftover
-// hub from a crashed run is never addressed by a new run; the address resolves
-// inside the host's own network namespace, where nothing else is listening.
-func hostPipelineHostAddr(runID string) string {
-	digest := fnv.New32a()
-	_, _ = digest.Write([]byte(runID))
-	return fmt.Sprintf("127.0.0.1:%d", 19200+int(digest.Sum32()%400))
+// The bounds on the host hub's private loopback address: probe-verified
+// candidates are drawn from crypto/rand over this range, and the allocation
+// gives up after this many conflicts rather than reading a taken port as free.
+const (
+	hostPipelineHostPortBase     = 20000
+	hostPipelineHostPortSpan     = 20000
+	hostPipelineHostPortAttempts = 12
+)
+
+// hostPipelinePortAllocUnavailable is the allocation script's answer when the
+// host lacks the tools to bind and name a port; the caller then falls back to
+// the probe-verified draw.
+const hostPipelinePortAllocUnavailable = "EVENER_PORT_ALLOC_UNAVAILABLE"
+
+// hostPipelinePortAllocFailed is the allocation script's answer when the host
+// has the tools but the bind could not be named (for example a host whose nc
+// does not take busybox's flags); the caller falls back to the probe-verified
+// draw here too.
+const hostPipelinePortAllocFailed = "EVENER_PORT_ALLOC_FAILED"
+
+// hostPipelinePortAllocPrefix prefixes the allocation script's success answer,
+// e.g. "EVENER_PORT_ALLOC 127.0.0.1:39381".
+const hostPipelinePortAllocPrefix = "EVENER_PORT_ALLOC "
+
+// hostPipelineHostAddr picks the private loopback address the deployed host hub
+// listens on. The port is allocated the way the product allocates its own
+// listener: bind 127.0.0.1:0, read back the port the kernel handed out, release
+// it, and use it. The controller cannot bind in the HOST's network namespace, so
+// the allocation runs on the host itself (hostPipelineBindFreePortScript:
+// busybox nc binds, lsof names the bound port). Where the host lacks those tools
+// — the EVENER_SSH_E2E_HOST override path is not the container image — the same
+// property is reached the other way round: candidates are drawn from crypto/rand
+// and each is PROVED free on the host with the product's own listener probe,
+// retrying on a conflict and failing closed on an unprobeable host.
+//
+// Either way the port is not held between the pick and the host hub's bind — the
+// same residual the product's own bind-:0 allocation documents (cmd/evener-hub/
+// main.go: "sidestepping the TOCTOU race in 'probe a free port, then hope
+// nothing else grabs it'") — and the host hub's bind is the arbiter.
+// hostPipelineHostHealth then proves ownership: the listener answering on the
+// address must report that same address.
+func hostPipelineHostAddr(t *testing.T, host *hostSSH) string {
+	t.Helper()
+	addr, ok, err := hostPipelineBindFreeAddr(host)
+	switch {
+	case err != nil:
+		t.Fatalf("bind and release a free loopback port on host %s: %v", host.target, err)
+	case ok:
+		t.Logf("host hub address %s: allocated by binding 127.0.0.1:0 on the host and releasing it", addr)
+		return addr
+	}
+	addr, err = hostPipelineProbedFreeAddr(host)
+	if err != nil {
+		t.Fatalf("find a free loopback port on host %s: %v", host.target, err)
+	}
+	t.Logf("host hub address %s: verified free with the product's listener probe (this host has no bind-and-release tools)", addr)
+	return addr
+}
+
+// hostPipelineBindFreePortScript binds 127.0.0.1:0 with busybox nc, names the
+// bound port with lsof, prints it, and releases the bind. Every answer is a
+// marker, so a host where the tools are missing is never mistaken for a port.
+func hostPipelineBindFreePortScript() string {
+	return `if ! command -v nc >/dev/null 2>&1 || ! command -v lsof >/dev/null 2>&1; then echo ` + hostPipelinePortAllocUnavailable + `; exit 0; fi
+nc -l -s 127.0.0.1 -p 0 >/dev/null 2>&1 &
+p=$!
+out=""
+i=0
+while [ $i -lt 20 ] && [ -z "$out" ]; do
+  out=$(lsof -p $p -a -iTCP -sTCP:LISTEN -Pn 2>/dev/null | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' | head -1)
+  i=$((i+1))
+  [ -n "$out" ] || sleep 0.05
+done
+kill $p 2>/dev/null
+if [ -z "$out" ]; then echo ` + hostPipelinePortAllocFailed + `; else echo "` + hostPipelinePortAllocPrefix + `127.0.0.1:$out"; fi`
+}
+
+// hostPipelineParseBindFreeAddr maps the allocation script's answer: the
+// success marker with a loopback address is taken; the unavailable marker — and
+// a failed bind, which is what a host whose nc does not take busybox's flags
+// answers — returns ok=false so the caller falls back to the probe-verified
+// draw. Anything unrecognized is an error rather than a port, so a script bug
+// cannot be read as an allocation.
+func hostPipelineParseBindFreeAddr(out []byte) (addr string, ok bool, err error) {
+	line := strings.TrimSpace(string(out))
+	switch {
+	case line == hostPipelinePortAllocUnavailable || line == hostPipelinePortAllocFailed:
+		return "", false, nil
+	case strings.HasPrefix(line, hostPipelinePortAllocPrefix):
+		addr = strings.TrimSpace(strings.TrimPrefix(line, hostPipelinePortAllocPrefix))
+		if !strings.HasPrefix(addr, "127.0.0.1:") {
+			return "", false, fmt.Errorf("the allocation answered %q, want a 127.0.0.1 address", line)
+		}
+		if _, perr := strconv.Atoi(strings.TrimPrefix(addr, "127.0.0.1:")); perr != nil {
+			return "", false, fmt.Errorf("the allocation answered %q, which carries no numeric port", line)
+		}
+		return addr, true, nil
+	default:
+		return "", false, fmt.Errorf("the allocation answered %q", line)
+	}
+}
+
+// hostPipelineBindFreeAddr runs the bind-and-release allocation on the host.
+func hostPipelineBindFreeAddr(host *hostSSH) (string, bool, error) {
+	out, err := host.runStdout(hostPipelineBindFreePortScript())
+	if err != nil {
+		return "", false, fmt.Errorf("allocation script: %w: %s", err, out)
+	}
+	return hostPipelineParseBindFreeAddr(out)
+}
+
+// hostPipelineProbedFreeAddr is the fallback for a host without nc/lsof: it
+// draws candidate ports and returns the first the product's own listener probe
+// proves free. Only NoListenerMarker is read as absence — a named pid and the
+// held-but-unnameable marker are conflicts, and a probe that cannot run fails
+// closed rather than being read as a free port.
+func hostPipelineProbedFreeAddr(host *hostSSH) (string, error) {
+	port, err := hostPipelinePickFreePort(hostPipelineCandidatePort, func(port int) ([]byte, error) {
+		return host.runStdout(sshconn.ListenerProbeRemote(strconv.Itoa(port)))
+	})
+	if err != nil {
+		return "", err
+	}
+	return "127.0.0.1:" + strconv.Itoa(port), nil
+}
+
+// hostPipelineCandidatePort draws one candidate from crypto/rand over the
+// allocation range, so two runs' candidates are never correlated.
+func hostPipelineCandidatePort() (int, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(hostPipelineHostPortSpan))
+	if err != nil {
+		return 0, fmt.Errorf("draw a candidate host port: %w", err)
+	}
+	return hostPipelineHostPortBase + int(n.Int64()), nil
+}
+
+// hostPipelinePickFreePort is the verify-and-retry seam: it draws candidates and
+// returns the first its probe proves free, failing closed after the attempt
+// bound or on a probe that cannot run. Draw and probe are seams, so the logic is
+// testable without a host.
+func hostPipelinePickFreePort(draw func() (int, error), probe func(port int) ([]byte, error)) (int, error) {
+	var last string
+	for attempt := range hostPipelineHostPortAttempts {
+		port, err := draw()
+		if err != nil {
+			return 0, err
+		}
+		out, err := probe(port)
+		if err != nil {
+			return 0, fmt.Errorf("probe candidate port %d (attempt %d): %w: %s", port, attempt+1, err, out)
+		}
+		if strings.TrimSpace(string(out)) == sshconn.NoListenerMarker {
+			return port, nil
+		}
+		last = strings.TrimSpace(string(out))
+	}
+	return 0, fmt.Errorf("no candidate port proved free in %d attempts (last probe answer %q)", hostPipelineHostPortAttempts, last)
 }
 
 // hostPipelineContainer is one disposable alpine+sshd container standing in for
@@ -1015,15 +1234,127 @@ func TestHostPipelineSSHShimOnlyRedirectsTheAlias(t *testing.T) {
 	}
 }
 
-// TestHostPipelineHostAddrIsPerRun pins that two runs never share the host
-// hub's private port, so a leftover hub from a crashed run is never addressed.
-func TestHostPipelineHostAddrIsPerRun(t *testing.T) {
-	first := hostPipelineHostAddr("1234-1")
-	second := hostPipelineHostAddr("1234-2")
-	if first == second {
-		t.Fatalf("host address %q is shared by two runs", first)
+// TestHostPipelineParseBindFreeAddr pins the allocation script's answer handling
+// without a host: the unavailable marker falls back, a valid loopback address is
+// taken, and a failed bind, a portless address, a non-loopback address, or
+// anything unrecognized is an error rather than a port.
+func TestHostPipelineParseBindFreeAddr(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		out     string
+		want    string
+		wantOK  bool
+		wantErr bool
+	}{
+		{name: "allocated", out: hostPipelinePortAllocPrefix + "127.0.0.1:39381\n", want: "127.0.0.1:39381", wantOK: true},
+		{name: "unavailable", out: hostPipelinePortAllocUnavailable + "\n"},
+		{name: "failed bind falls back", out: hostPipelinePortAllocFailed + "\n"},
+		{name: "portless", out: hostPipelinePortAllocPrefix + "127.0.0.1:\n", wantErr: true},
+		{name: "non-loopback", out: hostPipelinePortAllocPrefix + "10.0.0.1:39381\n", wantErr: true},
+		{name: "unrecognized output", out: "hello\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := hostPipelineParseBindFreeAddr([]byte(tc.out))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parse(%q) = (%q, %t, nil), want an error", tc.out, got, ok)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse(%q): %v", tc.out, err)
+			}
+			if ok != tc.wantOK || got != tc.want {
+				t.Fatalf("parse(%q) = (%q, %t), want (%q, %t)", tc.out, got, ok, tc.want, tc.wantOK)
+			}
+		})
 	}
-	if !strings.HasPrefix(first, "127.0.0.1:") {
-		t.Fatalf("host address %q is not a loopback address", first)
+}
+
+// TestHostPipelinePickFreePortSkipsConflicts pins the verify-and-retry logic
+// without a host: a candidate the probe names as held is skipped, only the
+// proved-empty marker is taken, a held-but-unnameable answer is a conflict
+// rather than absence, a probe that cannot run fails closed, and a failed draw
+// is returned rather than read as a port.
+func TestHostPipelinePickFreePortSkipsConflicts(t *testing.T) {
+	t.Run("takes the first proved-free candidate", func(t *testing.T) {
+		next := 20100
+		got, err := hostPipelinePickFreePort(
+			func() (int, error) { next++; return next, nil },
+			func(port int) ([]byte, error) {
+				if port == 20101 {
+					return []byte("4242\n"), nil
+				}
+				return []byte(sshconn.NoListenerMarker + "\n"), nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		if got != 20102 {
+			t.Fatalf("picked %d, want 20102 (the taken candidate must be skipped)", got)
+		}
+	})
+	t.Run("a held-but-unnameable answer is a conflict", func(t *testing.T) {
+		got, err := hostPipelinePickFreePort(
+			func() (int, error) { return 20103, nil },
+			func(int) ([]byte, error) { return []byte(sshconn.ListenerPresentMarker + "\n"), nil },
+		)
+		if err == nil || got != 0 {
+			t.Fatalf("pick = (%d, %v), want an exhaustion error: the unnameable marker is not absence", got, err)
+		}
+	})
+	t.Run("a probe that cannot run fails closed", func(t *testing.T) {
+		_, err := hostPipelinePickFreePort(
+			func() (int, error) { return 20104, nil },
+			func(int) ([]byte, error) { return nil, errors.New("no listener probe is available on this host") },
+		)
+		if err == nil {
+			t.Fatal("pick returned no error for an unprobeable host")
+		}
+	})
+	t.Run("a failed draw is returned", func(t *testing.T) {
+		_, err := hostPipelinePickFreePort(
+			func() (int, error) { return 0, errors.New("no entropy") },
+			func(int) ([]byte, error) { return []byte(sshconn.NoListenerMarker), nil },
+		)
+		if err == nil {
+			t.Fatal("pick returned no error for a failed draw")
+		}
+	})
+}
+
+// TestHostPipelineBindFreePortScriptGatesOnItsTools pins that the allocation
+// script fails over to the unavailable marker — rather than answering as if it
+// allocated a port — when the host lacks nc or lsof, and that its success answer
+// carries the prefix the parser reads.
+func TestHostPipelineBindFreePortScriptGatesOnItsTools(t *testing.T) {
+	script := hostPipelineBindFreePortScript()
+	for _, want := range []string{
+		"command -v nc",
+		"command -v lsof",
+		hostPipelinePortAllocUnavailable,
+		hostPipelinePortAllocPrefix,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("the allocation script does not carry %q:\n%s", want, script)
+		}
+	}
+}
+
+// TestHostPipelineFencingProsePatternMatchesWholeWords pins roborev's Low
+// finding: the scan must catch the fencing stems as words (and the inflections
+// a fencing refusal would carry) while leaving benign words that merely contain
+// them alone.
+func TestHostPipelineFencingProsePatternMatchesWholeWords(t *testing.T) {
+	for _, text := range []string{"a fencing-helper refusal", "the orphaned record", "a claim primitive"} {
+		if !hostPipelineFencingProsePattern.MatchString(text) {
+			t.Fatalf("the pattern does not match %q, so the fencing-absence scan lost its teeth", text)
+		}
+	}
+	for _, text := range []string{"the lock was reclaimed", "it disclaimed the writes", "it reclaims the port"} {
+		if match := hostPipelineFencingProsePattern.FindString(text); match != "" {
+			t.Fatalf("the pattern matched %q in %q; a benign word containing a fencing stem is not fencing prose", match, text)
+		}
 	}
 }
