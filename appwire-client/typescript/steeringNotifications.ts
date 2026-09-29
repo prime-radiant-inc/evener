@@ -56,8 +56,10 @@ export interface ParsedNotification {
   outputBytes?: number;
   exitCode?: number;
   transcriptRef?: string;
+  // The body's excerpt, decoded once here so every caller reads plain text
+  // (the producer escapes the wire form; see decodeNotificationEntities).
   excerpt: string;
-  prose?: string; // body text before any excerpt marker (timers: sentence + note), raw entities
+  prose?: string; // body text before any excerpt marker (timers: sentence + note), decoded to plain text
   message?: string; // a communicate envelope's message (rendered as markdown)
   concerns: string[];
   rawText: string; // the verbatim block, always kept inspectable
@@ -219,15 +221,17 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
       name: name || undefined,
       quiet,
       excerpt: "",
-      prose: body,
+      prose: decodeNotificationEntities(body),
       concerns: [],
       rawText: block,
     };
   }
   // A body with no "excerpt:" marker that is neither shape above (malformed
   // JSON, an array, prose) is kept whole, so the card still says what came.
-  const excerpt = body.includes("\nexcerpt:\n") ? splitNotificationExcerpt(body).excerpt : body;
-  const communicate = parseCommunicateEnvelope(decodeNotificationEntities(excerpt));
+  const excerpt = decodeNotificationEntities(
+    body.includes("\nexcerpt:\n") ? splitNotificationExcerpt(body).excerpt : body,
+  );
+  const communicate = parseCommunicateEnvelope(excerpt);
   const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
@@ -368,8 +372,9 @@ function compactStringArray(value: unknown): string[] {
 // what makes literal entity text round-trip: a note containing "&lt;" rides
 // the wire as "&amp;lt;" and this single full decode restores "&lt;", never
 // "<". &amp; is decoded LAST so double-escaped content only unwraps one
-// level. Exported so NotificationCard.tsx shares this one decoder rather
-// than keeping a second copy for its own excerpt display.
+// level. The parser applies this once to the excerpt and prose it hands
+// callers, so every client reads plain text and never decodes again
+// (issue #3086).
 //
 // Residual asymmetry, documented not fixed: shell/delegate job OUTPUT
 // excerpts also ride the body through escapeNotificationBody ("<"-only), so
@@ -377,7 +382,8 @@ function compactStringArray(value: unknown): string[] {
 // over-decodes here (there is no "&"-first pre-escape on that lane, and
 // adding one would change the wire format in agent/job_notify.go, out of
 // scope). Watch notes — the finding's case — are exact; excerpts are the
-// known remainder.
+// known remainder. Decoding once here rather than in each client does not
+// change this remainder; it only removes the re-escape round trip.
 export function decodeNotificationEntities(text: string): string {
   return text
     .replace(/&lt;/g, "<")
@@ -385,18 +391,6 @@ export function decodeNotificationEntities(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#0*39;|&#x0*27;/gi, "'")
     .replace(/&amp;/g, "&");
-}
-
-// escapeNotificationEntities is decodeNotificationEntities run backward:
-// the producer-side escaping (agent/job_notify.go's escapeNotificationText)
-// for text interpolated into a <job-notification> wrapper. watchProse builds
-// synthesized card prose from an already-DECODED reason, so it re-escapes
-// the synthesis: prose is stored escaped-form throughout (passthrough bodies
-// arrive escaped), and NotificationCard decodes every prose exactly once.
-// Without the re-escape a literal "&lt;" in a matched pattern would decode
-// twice and display wrong (combined RoboRev review).
-export function escapeNotificationEntities(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 interface CommunicateEnvelope {
@@ -725,34 +719,34 @@ function notificationSecondary(
   return bits.join(" · ");
 }
 
-// watchProse is a watch notification's card prose. Most watch bodies ARE
-// their content (timer sentences, teardown notices, event bodies) and pass
-// through verbatim. The one exception is a job-targeted CONDITION fire: the
-// producer's non-empty-job_id path emits only the generic "Job <id> <event>."
-// sentence (formatJobNotificationBlock's fallthrough — the excerpt is ignored
-// for watch frames), keeping the trigger in the escaped reason attr. For that
-// shape the card synthesizes prose from the reason so the expanded card shows
-// what fired instead of the generic sentence (RoboRev PR #954 combined
-// review). The synthesis names the trigger, never invented output context —
-// the reason carries the matched pattern / event name, not surrounding
-// output.
-// watchNoteSection splits a notification body into its lead sentence and its
-// trailing producer note ("Note: …", appended by withNotificationNote to
-// every fire body). Returns the note's DECODED text WITHOUT the "Note:"
-// prefix — the caller re-adds it — so the section is decoded first and the
-// bare note re-escaped by the caller into escaped-form prose (splicing raw
-// would corrupt literal entities). Undefined when the body carries no note.
-function watchNoteSection(bodyText: string): string | undefined {
+// watchProse is a watch notification's card prose, returned DECODED like
+// every other body the parser hands a caller. Most watch bodies ARE their
+// content (timer sentences, teardown notices, event bodies) and pass through
+// verbatim. The one exception is a job-targeted CONDITION fire: the producer's
+// non-empty-job_id path emits only the generic "Job <id> <event>." sentence
+// (formatJobNotificationBlock's fallthrough — the excerpt is ignored for watch
+// frames), keeping the trigger in the escaped reason attr. For that shape the
+// card synthesizes prose from the reason so the expanded card shows what fired
+// instead of the generic sentence (RoboRev PR #954 combined review). The
+// synthesis names the trigger, never invented output context — the reason
+// carries the matched pattern / event name, not surrounding output.
+// watchNoteSection splits an already-DECODED notification body into its lead
+// sentence and its trailing producer note ("Note: …", appended by
+// withNotificationNote to every fire body). Returns the note text WITHOUT the
+// "Note:" prefix — watchProse re-adds it — so the caller splices it verbatim
+// into its decoded synthesis. Undefined when the body carries no note.
+function watchNoteSection(decodedBody: string): string | undefined {
   const head = "\nNote: ";
-  const idx = bodyText.indexOf(head);
+  const idx = decodedBody.indexOf(head);
   if (idx === -1) return undefined;
-  const note = decodeNotificationEntities(bodyText.slice(idx + head.length).trim()).trim();
+  const note = decodedBody.slice(idx + head.length).trim();
   return note === "" ? undefined : note;
 }
 
 function watchProse(attrs: Record<string, string>, bodyText: string): string {
+  const decodedBody = decodeNotificationEntities(bodyText);
   const jobId = (attrs.job_id ?? "").trim();
-  if (!jobId) return bodyText;
+  if (!jobId) return decodedBody;
   // The producer's self job id is internal vocabulary: titles map it to
   // "this session" (titleForJobNotification), so synthesized prose must too
   // ("Matched … on self" leaks the same token the card suppresses).
@@ -760,41 +754,37 @@ function watchProse(attrs: Record<string, string>, bodyText: string): string {
   const reason = decodeNotificationEntities(attrs.reason ?? "").trim();
   // The producer appends the watch's own note to every fire body
   // (withNotificationNote). Synthesized prose replaces the generic lead
-  // sentence but preserves the note — re-escaped into escaped-form prose so
-  // the card's single decode restores it exactly once.
-  const note = watchNoteSection(bodyText);
-  const withNote = (synthesized: string): string =>
-    note ? `${synthesized}\n${escapeNotificationEntities(`Note: ${note}`)}` : synthesized;
+  // sentence but preserves the note, already decoded, spliced as-is.
+  const note = watchNoteSection(decodedBody);
+  const withNote = (synthesized: string): string => (note ? `${synthesized}\nNote: ${note}` : synthesized);
   // Teardown notices ("watch ended:" / "watch cleared:") keep their own
   // prose when the producer emitted it — but a job-targeted teardown's body
   // is the same generic "Job <id> watch." sentence as a condition fire's
   // (formatJobNotificationBlock's non-empty-JobID fallthrough covers every
   // reason). Only a body that already carries the reason passes through; a
-  // generic body falls to the reason below (combined RoboRev review). The
-  // comparison decodes the body first: the body is escaped-form and the
-  // reason decoded-form, so a raw includes() misses whenever either carries
-  // an entity.
+  // generic body falls to the reason below (combined RoboRev review). Both
+  // sides are decoded here, so the comparison sees literal text.
   if (reason.startsWith("watch ended:") || reason.startsWith("watch cleared:")) {
-    if (decodeNotificationEntities(bodyText).includes(reason)) return bodyText;
-    return withNote(escapeNotificationEntities(reason));
+    if (decodedBody.includes(reason)) return decodedBody;
+    return withNote(reason);
   }
   // Timer fires with a job_id are not a producer shape (timers emit watch_id
   // with an empty job_id), but if one ever arrives the body is already its
   // content — leave it alone.
-  if (/^timer fired/i.test(bodyText)) return bodyText;
+  if (/^timer fired/i.test(decodedBody)) return decodedBody;
   // Value patterns are dot-all: matched output can span lines, and the
   // reason attr carries raw text (only entity-escaped, never line-folded).
   const outputMatch = /^output_match:\s*([\s\S]+)$/.exec(reason)?.[1]?.trim();
-  if (outputMatch) return withNote(escapeNotificationEntities(`Matched output_match: ${outputMatch} on ${jobLabel}.`));
+  if (outputMatch) return withNote(`Matched output_match: ${outputMatch} on ${jobLabel}.`);
   const eventFire = /^event:\s*([\s\S]+)$/.exec(reason)?.[1]?.trim();
-  if (eventFire) return withNote(escapeNotificationEntities(`Watch event triggered: ${eventFire} on ${jobLabel}.`));
-  if (/^progress_tick$/.test(reason)) return withNote(escapeNotificationEntities(`Progress tick on ${jobLabel}.`));
+  if (eventFire) return withNote(`Watch event triggered: ${eventFire} on ${jobLabel}.`);
+  if (/^progress_tick$/.test(reason)) return withNote(`Progress tick on ${jobLabel}.`);
   // Not a recognized trigger reason — the body is whatever the producer
-  // sent; only the exact generic sentence is worth replacing, with the
-  // escaped reason as the honest fallback.
+  // sent; only the exact generic sentence is worth replacing, with the reason
+  // as the honest fallback.
   const generic = new RegExp(`^Job ${escapeRegExp(jobId)} \\S+\\.`);
-  if (generic.test(bodyText.trim())) return withNote(escapeNotificationEntities(reason)) || bodyText;
-  return bodyText;
+  if (generic.test(decodedBody.trim())) return withNote(reason) || decodedBody;
+  return decodedBody;
 }
 
 function escapeRegExp(text: string): string {
@@ -841,21 +831,24 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // of showing the generic sentence (RoboRev PR #954 combined review).
   // Teardown notices ("watch ended:" / "watch cleared:") and timer/event
   // bodies already carry their own prose and pass through untouched.
-  const { prose, excerpt } =
-    type === "watch" && !watchCompletion
-      ? { prose: watchProse(attrs, bodyText), excerpt: "" }
-      : splitNotificationExcerpt(bodyText);
+  // The parser decodes the body once, so callers read plain text.
+  let prose = "";
+  let excerpt = "";
+  if (type === "watch" && !watchCompletion) {
+    prose = watchProse(attrs, bodyText);
+  } else {
+    const split = splitNotificationExcerpt(bodyText);
+    prose = decodeNotificationEntities(split.prose);
+    excerpt = decodeNotificationEntities(split.excerpt);
+  }
   // A communicate envelope can only ride a delegate's report (the delegate
   // calls communicate to produce it - agent/session_tools_communicate.go).
   // Gate on the actual job type, not on whether the excerpt happens to parse
   // as JSON with message/data keys: shell stdout is literal output even when
   // it coincidentally looks like an envelope (kata 9cnq). The excerpt is
-  // producer-escaped (kata 77sf) - decode before parsing, or the envelope's
-  // own JSON quotes (now &quot;) are no longer valid JSON syntax. excerpt
-  // itself stays raw/undecoded: NotificationCard's Excerpt decodes it
-  // separately, only when there is no communicate message to show instead.
-  const communicate =
-    attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
+  // already decoded above, so the envelope's own JSON quotes (&quot; on the
+  // wire, kata 77sf) are valid JSON syntax again.
+  const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(excerpt) : null;
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   const intent = decodeNotificationEntities(attrs.intent ?? "").trim();
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
@@ -923,7 +916,7 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
     title: "Observer callback",
     tone: rawTone === "success" ? "warning" : rawTone,
     secondary: "",
-    excerpt: output || proseOnly,
+    excerpt: decodeNotificationEntities(output || proseOnly),
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],
     rawText: stripped,

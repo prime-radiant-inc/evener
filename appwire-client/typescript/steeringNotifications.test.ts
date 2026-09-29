@@ -2,7 +2,6 @@
 
 import { expect, test } from "vitest";
 import {
-  decodeNotificationEntities,
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
@@ -606,8 +605,35 @@ ${escapeLikeProducer(dangerous)}
   expect(fragments[2]).toMatchObject({ kind: "text", text: "epilogue" });
   const n = notif(notifications, 0);
   expect(n.jobId).toBe("job_X");
-  expect(n.excerpt).toBe(escapeLikeProducer(dangerous));
+  // Issue #3086: the parser decodes the body once, so the excerpt is the
+  // original text, not the producer's escaped form.
+  expect(n.excerpt).toBe(dangerous);
   expect(n.rawText).toBe(block);
+});
+
+// Issue #3086: the parser decodes the body once and hands callers plain text.
+// These pin the contract at the parser boundary, so a client that reads
+// `excerpt`/`prose` never has to (and must never) decode again.
+test("the parser hands a job excerpt back as plain text", () => {
+  const original = 'before & after <tag> "quoted"';
+  const block = `<job-notification job_id="job_p" event="completed" job_type="shell" status="completed" reason="" output_bytes="0">
+Job job_p completed.
+excerpt:
+${escapeLikeProducer(original)}
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.excerpt).toBe(original);
+});
+
+test("the parser hands a job-targeted watch's synthesized prose back as plain text", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready &amp;lt; wait" output_bytes="0">
+Job job_a1b2 watch.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  // A literal "&lt;" in the matched pattern stays "&lt;" (decoded exactly
+  // once), never "<".
+  expect(n.prose).toBe("Matched output_match: ready &lt; wait on job_a1b2.");
 });
 
 test("a communicate envelope inside a notification exposes its message for markdown rendering", () => {
@@ -679,7 +705,8 @@ Note: PR #123: newer than id 456 &lt;x&gt;
   expect(n.type).toBe("watch");
   expect(n.watchId).toBe("w1");
   expect(n.prose).toContain("Timer fired (every 300s), 3 times since your last turn.");
-  expect(n.prose).toContain("Note: PR #123: newer than id 456 &lt;x&gt;");
+  // The parser hands prose as plain text (issue #3086).
+  expect(n.prose).toContain("Note: PR #123: newer than id 456 <x>");
 });
 
 // A timer's body is note prose, never a job-output excerpt, so the note is
@@ -859,22 +886,21 @@ Job job_x watch. Output is available through read_transcript if needed.
 });
 
 // --- RoboRev combined review (43fe73f): single entity decode (L1) -----------
-// The producer escapes once; the card decodes once. A matched pattern that
-// literally contains "&lt;" arrives double-escaped ("&amp;lt;") and must
-// decode to the literal "&lt;" text — never all the way to "<".
+// The producer escapes once; the parser decodes once (issue #3086) and hands
+// plain text. A matched pattern that literally contains "&lt;" arrives
+// double-escaped ("&amp;lt;") and must decode to the literal "&lt;" text —
+// never all the way to "<".
 
 test("a literal entity sequence in a job-targeted reason decodes exactly once (L1)", () => {
-  // Prose is stored ESCAPED-form (passthrough bodies arrive escaped, so
-  // synthesized prose is re-escaped to match) and NotificationCard decodes
-  // once at render. A matched pattern literally containing "&lt;" arrives
-  // double-escaped ("&amp;lt;"): stored prose keeps one level, the card
-  // renders the literal text — never "<".
+  // The parser synthesizes prose in decoded form. A matched pattern literally
+  // containing "&lt;" arrives double-escaped ("&amp;lt;") and decodes to the
+  // literal "&lt;" text — never "<".
   const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: a &amp;lt; b" output_bytes="0">
 Job job_a1b2 watch. Output is available through read_transcript if needed.
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.prose).toContain("a &amp;lt; b");
-  expect(decodeNotificationEntities(n.prose ?? "")).toContain("a &lt; b");
+  expect(n.prose).toBe("Matched output_match: a &lt; b on job_a1b2.");
+  expect(n.prose).not.toContain("<");
 });
 
 test("a status-only watch frame earns no tone chip (combined review M2)", () => {
@@ -1055,11 +1081,9 @@ Note: ${escapeNoteLikeProducer(note)}
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
-  // Prose stays escaped-form in the parse (passthrough bodies arrive escaped);
-  // the card decodes exactly once at render.
-  expect(n.prose).toContain(`Note: ${escapeNoteLikeProducer(note)}`);
-  expect(decodeNotificationEntities(n.prose ?? "")).toContain(`Note: ${note}`);
-  expect(decodeNotificationEntities(n.prose ?? "")).not.toContain("Note: <tag>");
+  // The parser hands prose decoded once (issue #3086).
+  expect(n.prose).toContain(`Note: ${note}`);
+  expect(n.prose).not.toContain("Note: <tag>");
 });
 
 test("a job-targeted fire preserves a note containing literal entity text (MEDIUM)", () => {
@@ -1071,9 +1095,8 @@ Note: ${escapeNoteLikeProducer(note)}
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.prose).toContain("ready");
-  expect(n.prose).toContain(`Note: ${escapeNoteLikeProducer(note)}`);
-  expect(decodeNotificationEntities(n.prose ?? "")).toContain(`Note: ${note}`);
-  expect(decodeNotificationEntities(n.prose ?? "")).not.toContain("Note: <done>");
+  expect(n.prose).toContain(`Note: ${note}`);
+  expect(n.prose).not.toContain("Note: <done>");
 });
 
 // --- RoboRev combined review of 51bb12b (MEDIUM): watch_id reclassification -

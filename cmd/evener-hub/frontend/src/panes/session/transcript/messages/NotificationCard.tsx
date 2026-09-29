@@ -6,10 +6,10 @@
 // seated at full strength in the head's rail: an "error" pill beside a title
 // that already says "Job failed" restated the fact without adding anything
 // the glyph doesn't show). The verbatim block is always kept inspectable in
-// a raw disclosure, and the excerpt is entity-decoded then rendered as
-// ESCAPED text (React's default), never as live HTML - a communicate
-// message is the one thing rendered as markdown, through the sanitizing
-// Markdown widget.
+// a raw disclosure, and the excerpt arrives from the parser already decoded
+// to plain text (issue #3086), then rendered as ESCAPED text (React's
+// default), never as live HTML - a communicate message is the one thing
+// rendered as markdown, through the sanitizing Markdown widget.
 //
 // Scope-out recorded for T8's sweep: the legacy card's full communicate FACTS
 // list (status/commit_hashes/test_summary/artifacts as a <dl>) is not rebuilt -
@@ -17,7 +17,6 @@
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
 import {
-  decodeNotificationEntities,
   entityOpenTarget,
   isValidTranscriptRef,
   type NotificationTone,
@@ -116,16 +115,18 @@ function boundedShellTailPreview(decoded: string): string {
 }
 
 function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
-  const decoded = decodeNotificationEntities(text.trim());
-  if (decoded === "") return null;
+  // The parser hands the excerpt already decoded (issue #3086), so this slice
+  // and the tail bound work on plain text.
+  const body = text.trim();
+  if (body === "") return null;
   // Direction matches the parse mode: a shell excerpt (ansi) is bounded to
   // its tail, a delegate report head (non-ansi) keeps its existing
   // head-truncated preview.
   const preview = ansi
-    ? boundedShellTailPreview(decoded)
-    : decoded.length <= EXCERPT_PREVIEW
-      ? decoded
-      : `${decoded.slice(0, EXCERPT_PREVIEW)}…`;
+    ? boundedShellTailPreview(body)
+    : body.length <= EXCERPT_PREVIEW
+      ? body
+      : `${body.slice(0, EXCERPT_PREVIEW)}…`;
   // Keep unstructured output bounded in the primary card. The complete
   // diagnostic payload remains available in the card's one raw disclosure.
   return (
@@ -393,7 +394,7 @@ export function NotificationCard({
             <NotificationMetadata notification={notification} />
             {notification.prose && (
               <pre className={CLASS.prose} data-testid="notification-prose">
-                {decodeNotificationEntities(notification.prose)}
+                {notification.prose}
               </pre>
             )}
             {notification.message ? (
