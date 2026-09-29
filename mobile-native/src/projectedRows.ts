@@ -38,13 +38,13 @@ import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
 	configFingerprint,
-	createdWatchNote,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
 	isSuppressedSteeringKind,
+	jobWatchEvidence,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
@@ -135,9 +135,10 @@ export interface ActivityDetail {
 	// state), read once here like summary. Absent for every other tool, and
 	// for a call from a daemon that didn't return one.
 	tasks?: readonly DetailTask[];
-	// A job_watch create's note (the package's createdWatchNote), what the
-	// watch says when it fires. Absent for every other step.
-	watchNote?: string;
+	// What a job_watch step shows when opened, in words (the package's
+	// jobWatchEvidence): "" when its line says it all. Absent for every other
+	// step, and for a watch result this build can't read.
+	watchEvidence?: string;
 }
 
 // A task as a step's detail carries it: only what the checklist draws. The
@@ -595,7 +596,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		it.toolName === "task_list"
 			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
 			: undefined;
-	const watchNote = it.toolName === "job_watch" ? createdWatchNote(it) : undefined;
+	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
@@ -607,7 +608,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		startedAtMs: start,
 		endedAtMs: end,
 		...(tasks ? { tasks } : {}),
-		...(watchNote ? { watchNote } : {}),
+		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 	};
 }
 
@@ -1295,7 +1296,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
-	const watchNote = detail.watchNote ? bound(detail.watchNote) : detail.watchNote;
+	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
 	if (
@@ -1305,7 +1306,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error &&
-		watchNote === detail.watchNote
+		watchEvidence === detail.watchEvidence
 	) {
 		return detail;
 	}
@@ -1317,7 +1318,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		arguments: args,
 		output,
 		error,
-		watchNote,
+		watchEvidence,
 	};
 }
 

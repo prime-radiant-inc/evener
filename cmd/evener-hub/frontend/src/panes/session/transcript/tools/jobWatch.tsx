@@ -24,10 +24,10 @@ import {
   humanizeInterval,
   humanizeSeconds,
   isRecognizedWatchResult,
-  isTerminalCatchup,
   type JsonObject,
   jobWatchOperation,
   jobWatchSummary,
+  rowConditionPhrase,
   normalizeRow,
   parseArgs,
   parseConditionText,
@@ -38,7 +38,7 @@ import {
   type WatchRow,
   watchDisplayState,
   watchEventLabel,
-  watchTriggerPhrases,
+  watchRowStateWord,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
@@ -78,39 +78,6 @@ const NOTE_CLAMP_LINES = 20;
 function heartbeatPhrase(spec: ConditionSpec): string | undefined {
   if (spec.progressIntervalMS === undefined) return undefined;
   return `heartbeat ${humanizeInterval(spec.progressIntervalMS / 1000)}`;
-}
-
-// conditionSentence renders one humanized trigger sentence from a parsed
-// Condition: pattern, timer cadence, heartbeat, events, and filter in
-// prose, machine tokens in mono. Shared by list rows (short form) and
-// inspect bodies (full form) so the two never drift.
-function rowConditionPhrase(row: WatchRow): string {
-  const state = watchDisplayState(row);
-  if (state === "watching") {
-    if (row.condition) {
-      const source = sourceLabel(row.source);
-      const parsed = parseConditionText(row.condition, row.note);
-      // The trigger wording comes from the shared composer, so this row and the
-      // watch card can never word the same condition differently.
-      const { timer, bits } = watchTriggerPhrases(parsed);
-      if (timer) return `${timer} · ${source}`;
-      if (bits.length > 0) return `${bits.join(" · ")} · ${source}`;
-      // No trigger bits parsed: the condition is either a bare note or
-      // unrecognized grammar. A note-only row still names its note (the
-      // structured field verbatim, else the parsed note: clause) — never the
-      // raw Condition grammar ("note: …"). Anything else names just the
-      // source rather than echoing machine tokens.
-      const fallbackNote = row.note ?? parsed.note;
-      if (fallbackNote) return `${fallbackNote} · ${source}`;
-      return source;
-    }
-    return sourceLabel(row.source);
-  }
-  // A missing watch has no source to name — sourceLabel would invent "this
-  // session" for a watch that is not there (RoboRev PR #954 combined review).
-  if (state === "missing") return "not found";
-  if (state === "pending") return `pending · ${sourceLabel(row.source)}`;
-  return row.endReason ? `ended: ${endReasonPhrase(row.endReason)}` : "ended";
 }
 
 function NoteSection({ note }: { note: string }) {
@@ -259,7 +226,7 @@ function joinNodes(nodes: ReactNode[], separator: string): ReactNode[] {
 }
 
 function CreateBody({ raw, item }: { raw: JsonObject; item: ItemModel }) {
-  if (isTerminalCatchup(raw)) return null;
+  if (boolField(raw, "terminal_catchup")) return null;
   const timer = timerSpec(raw);
   if (timer?.note) return <NoteSection note={timer.note} />;
   if (timer) return null;
@@ -304,8 +271,7 @@ function WatchListRow({ row }: { row: WatchRow }) {
   // with a no-op onClick is a control that does nothing (RoboRev PR #954
   // combined review).
   const detail = row.watching ? rowDetailPhrase(row) : undefined;
-  const state = watchDisplayState(row);
-  const chip = state === "watching" ? "watching" : state === "missing" ? "not found" : state;
+  const chip = watchRowStateWord(row);
   // No per-row wrapper div: rows are direct children of the list container
   // so the container's :not(:first-child) separator applies (a wrapper
   // would make every row a first child and erase all separators).
@@ -841,7 +807,7 @@ function JobWatchBody(props: ToolRenderProps) {
     case "clear":
       return null;
     default: {
-      if (isTerminalCatchup(raw)) return null;
+      if (boolField(raw, "terminal_catchup")) return null;
       const timer = timerSpec(raw);
       if (timer && !timer.note) return null;
       // A recognized create with only a source has no sentence to render —
@@ -870,7 +836,7 @@ function jobWatchHasBody(item: ItemModel): boolean {
   const operation = jobWatchOperation(item, raw);
   if (operation === "clear") return false;
   if (operation === "list" || operation === "inspect") return true;
-  if (isTerminalCatchup(raw)) return false;
+  if (boolField(raw, "terminal_catchup")) return false;
   const timer = timerSpec(raw);
   if (timer && !timer.note) return false;
   if (!timer && !conditionSpec(raw, asJsonObject(parseArgs(item.argumentsJSON)))) return false;

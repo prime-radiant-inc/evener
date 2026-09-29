@@ -13,7 +13,7 @@ import { jobStatusDisplay } from "./activityData";
 import type { ItemModel } from "./model";
 import { type StepWords, summaryOf, withDetail } from "./stepWords";
 import { clip, parseArgs, str } from "./toolCallText";
-import { filterSummaryPhrase, watchEventLabel } from "./watchConditionPhrase";
+import { filterSummaryPhrase, watchEventLabel, watchTriggerPhrases } from "./watchConditionPhrase";
 import {
   asJsonObject,
   boolField,
@@ -24,9 +24,11 @@ import {
   type JsonObject,
   normalizeRow,
   numField,
+  parseConditionText,
   sourceLabel,
   strArrayField,
   strField,
+  type WatchRow,
   watchDisplayState,
 } from "./watchRows";
 
@@ -65,22 +67,16 @@ export function timerSpec(raw: JsonObject): TimerSpec | undefined {
   return { afterSeconds, repeatSeconds, note: strField(raw, "note") };
 }
 
-// The cadence suffix a condition summary carries ("· every 2m").
-// Undefined when the watch has no progress cadence.
-function cadenceSuffix(spec: ConditionSpec): string | undefined {
+// The progress cadence a condition line names ("every 2m"). Undefined when
+// the watch has no progress cadence.
+function progressCadence(spec: ConditionSpec): string | undefined {
   if (spec.progressIntervalMS === undefined) return undefined;
-  return `· ${humanizeInterval(spec.progressIntervalMS / 1000)}`;
+  return humanizeInterval(spec.progressIntervalMS / 1000);
 }
 
 function noteHead(note: string): string {
   const firstLine = note.split("\n")[0] ?? "";
   return clip(firstLine.trim(), NOTE_HEAD_CHARS);
-}
-
-/** Whether a create result is a terminal catch-up: the watched job ended
- * before the watch could fire, or fired on the terminal scan. */
-export function isTerminalCatchup(raw: JsonObject): boolean {
-  return boolField(raw, "terminal_catchup");
 }
 
 // isRecognizedWatchResult gates the structured words and renderers: the raw
@@ -160,7 +156,7 @@ export function jobWatchOperation(step: Pick<JobWatchStep, "argumentsJSON">, raw
 }
 
 function createWords(raw: JsonObject, step: JobWatchStep): StepWords {
-  if (isTerminalCatchup(raw)) {
+  if (boolField(raw, "terminal_catchup")) {
     const source = strField(raw, "source") ?? "";
     const status = strField(raw, "status");
     const reason = strField(raw, "reason");
@@ -223,12 +219,12 @@ function createWords(raw: JsonObject, step: JobWatchStep): StepWords {
   // An event-filter watch names the watched shape in words, both statuses
   // explicitly, never the raw filter keys.
   if (condition.filterStatus || condition.filterToolName) clauses.push(filterSummaryPhrase(condition));
-  const cadence = cadenceSuffix(condition);
-  if (cadence) clauses.push(cadence.replace(/^· /, ""));
+  const cadence = progressCadence(condition);
+  if (cadence) clauses.push(cadence);
   if (clauses.length === 0) return { verb: `Watch ${source}` };
   // A bare heartbeat keeps its "Watch X · every 2m" shape: "for" needs a
   // trigger to read against.
-  if (clauses.length === 1 && cadence) return { verb: `Watch ${source} ${cadence}` };
+  if (clauses.length === 1 && cadence) return { verb: `Watch ${source} · ${cadence}` };
   return { verb: `Watch ${source} for ${clauses.join(" · ")}` };
 }
 
@@ -340,10 +336,73 @@ export function jobWatchWords(step: JobWatchStep): StepWords {
 
 export const jobWatchSummary = summaryOf(jobWatchWords);
 
-/** The note a job_watch create armed, what the watch says when it fires:
- * undefined for any other operation, or a create with no note. */
-export function createdWatchNote(step: JobWatchStep): string | undefined {
+/** A watch row's state as a word: "watching", "pending", "ended", "not
+ * found". */
+export function watchRowStateWord(row: WatchRow): string {
+  const state = watchDisplayState(row);
+  return state === "missing" ? "not found" : state;
+}
+
+/** A watch row's trigger and source in words ("in 5m · this session"), or
+ * what became of it ("ended: fired", "not found"). List rows and inspect
+ * bodies share it so the two never drift. */
+export function rowConditionPhrase(row: WatchRow): string {
+  const state = watchDisplayState(row);
+  if (state === "watching") {
+    if (row.condition) {
+      const source = sourceLabel(row.source);
+      const parsed = parseConditionText(row.condition, row.note);
+      // The trigger wording comes from the shared composer, so this row and
+      // the watch card can never word the same condition differently.
+      const { timer, bits } = watchTriggerPhrases(parsed);
+      if (timer) return `${timer} · ${source}`;
+      if (bits.length > 0) return `${bits.join(" · ")} · ${source}`;
+      // No trigger bits parsed: the condition is either a bare note or
+      // unrecognized grammar. A note-only row still names its note (the
+      // structured field verbatim, else the parsed note: clause), never the
+      // raw Condition grammar ("note: …"). Anything else names just the
+      // source rather than echoing machine tokens.
+      const fallbackNote = row.note ?? parsed.note;
+      if (fallbackNote) return `${fallbackNote} · ${source}`;
+      return source;
+    }
+    return sourceLabel(row.source);
+  }
+  // A missing watch has no source to name: sourceLabel would invent "this
+  // session" for a watch that is not there.
+  if (state === "missing") return "not found";
+  if (state === "pending") return `pending · ${sourceLabel(row.source)}`;
+  return row.endReason ? `ended: ${endReasonPhrase(row.endReason)}` : "ended";
+}
+
+/** What a job_watch step shows when opened, in words, as the web's body shows
+ * it: a list's rows ("watching  watch_x  in 5m · this session"), an inspected
+ * watch's trigger and note, a create's note. "" when the line says it all (a
+ * clear, a terminal catch-up, a create with no note); undefined when the
+ * step's state isn't one this build reads, so a client shows what the tool
+ * printed. */
+export function jobWatchEvidence(step: JobWatchStep): string | undefined {
   const raw = asJsonObject(step.raw);
-  if (!raw || !isRecognizedWatchResult(raw) || jobWatchOperation(step, raw) !== "create") return undefined;
-  return strField(raw, "note");
+  if (!raw || !isRecognizedWatchResult(raw)) return undefined;
+  switch (jobWatchOperation(step, raw)) {
+    case "list": {
+      const entries = [
+        ...(Array.isArray(raw.watches) ? raw.watches : []),
+        ...(Array.isArray(raw.recent_watches) ? raw.recent_watches : []),
+      ];
+      const rows = entries.map(normalizeRow).filter((row) => row !== undefined);
+      if (rows.length === 0) return "No watches.";
+      return rows.map((row) => `${watchRowStateWord(row)}  ${row.id}  ${rowConditionPhrase(row)}`).join("\n");
+    }
+    case "inspect": {
+      const row = normalizeRow(raw);
+      if (!row) return undefined;
+      return row.note ? `${rowConditionPhrase(row)}\n${row.note}` : rowConditionPhrase(row);
+    }
+    case "clear":
+      return "";
+    default:
+      if (boolField(raw, "terminal_catchup")) return "";
+      return strField(raw, "note") ?? "";
+  }
 }
