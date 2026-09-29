@@ -160,11 +160,12 @@ TEST_SCOPE ?= all
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-# run-module-tests.sh's own contract — including that every test stream gets a
-# private HOME and TMPDIR — is currently unpinned: the shell suite that once
-# proved it faked `go` and `mktemp` on PATH, which docs/developing-evener/testing.md's
-# rule against faking the toolchain in a test bans outright, and was deleted.
-# The port that would pin this contract honestly is tracked as issue #293.
+# run-module-tests.sh's own contract — module selection, the private per-stream
+# HOME and TMPDIR, wave scheduling, failure propagation, and the zero-test
+# refusal — is pinned by gatemodulerunner_test.go, which drives the real script
+# against tiny local modules with the installed toolchain. An earlier shell
+# suite that faked `go` and `mktemp` on PATH was deleted, because
+# docs/developing-evener/testing.md bans faking the toolchain in a test.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend

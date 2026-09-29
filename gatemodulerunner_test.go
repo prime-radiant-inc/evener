@@ -1,0 +1,326 @@
+package evener_test
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// moduleRunnerScript is the gate that owns module selection, the short/full flag
+// rewrite, private per-module HOME/TMPDIR, wave scheduling, the concurrent
+// frontend stream, and the zero-test refusal. Until this file, nothing drove
+// that orchestration end to end: only the libraries under it had direct tests
+// (gatebounded_test.go, gatebudgets_test.go), and make/coverage.mk records the
+// gap in its own comment. The cases here run the real script against tiny local
+// Go modules built by the installed toolchain -- a real `go test` with a real
+// exit status, never a faked `go` on PATH, which testing.md bans outright.
+const moduleRunnerScript = "scripts/gate/run-module-tests.sh"
+
+// controlledScratchEnv makes the runner's scratch deterministic and test-owned.
+// An impossibly large minimum forces gate_scratch_root's fallback to TMPDIR, so
+// the gate's scratch (and any failed-run logs it keeps) lands under ctrl, a
+// t.TempDir the test reclaims, rather than in a shared /dev/shm. WEB=0 keeps the
+// frontend stream out of these Go-only cases.
+func controlledScratchEnv(ctrl string) []string {
+	return []string{"TMPDIR=" + ctrl, "GATE_SCRATCH_MIN_KB=1099511627776", "WEB=0"}
+}
+
+// runnerEnv builds the environment for one runner invocation: the ambient
+// environment minus every variable a case sets for itself (so a value exported
+// by an enclosing gate run cannot leak in and change the scenario), with the
+// overrides applied.
+func runnerEnv(overrides ...string) []string {
+	controlled := map[string]bool{
+		"MODULES": true, "WAVE1": true, "WAVE2": true, "WEB": true,
+		"TMPDIR": true, "GATE_SCRATCH_MIN_KB": true,
+		"EVENER_RUNNER_TEST_OBSERVE": true, "GOFLAGS": true,
+	}
+	base := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !controlled[name] {
+			base = append(base, entry)
+		}
+	}
+	return envOverride(base, overrides...)
+}
+
+// writeRunnerFixtureModule writes a tiny local module under root and returns it.
+// The module carries no dependencies, so the installed toolchain compiles and
+// runs it without the network.
+func writeRunnerFixtureModule(t *testing.T, root, moduleName, testSrc string) {
+	t.Helper()
+	dir := filepath.Join(root, moduleName)
+	writeTestFile(t, filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+moduleName+"\n\ngo 1.21\n"), 0o644)
+	writeTestFile(t, filepath.Join(dir, moduleName+"_test.go"), []byte(testSrc), 0o644)
+}
+
+// newRunnerFixture lays out one case's throwaway tree: root holds everything,
+// modules is the runner's workdir, and ctrl is the TMPDIR its scratch lands
+// under so t.TempDir reclaims any logs a failing run keeps.
+func newRunnerFixture(t *testing.T) (root, modules, ctrl string) {
+	t.Helper()
+	root = t.TempDir()
+	modules = filepath.Join(root, "modules")
+	ctrl = filepath.Join(root, "tmp")
+	for _, dir := range []string{modules, ctrl} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, modules, ctrl
+}
+
+// observingModuleSrc is a fixture test that records the environment the gate
+// handed it into $EVENER_RUNNER_TEST_OBSERVE/<module>.env. The gate runs it with
+// the real toolchain, so the record is the runner's actual per-module
+// environment, not a simulation of it.
+func observingModuleSrc(moduleName string) string {
+	return `package fixture
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestObserve(t *testing.T) {
+	dir := os.Getenv("EVENER_RUNNER_TEST_OBSERVE")
+	if dir == "" {
+		t.Fatal("EVENER_RUNNER_TEST_OBSERVE is unset")
+	}
+	record := "HOME=" + os.Getenv("HOME") + "\n" +
+		"TMPDIR=" + os.Getenv("TMPDIR") + "\n" +
+		"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME") + "\n" +
+		"XDG_CACHE_HOME=" + os.Getenv("XDG_CACHE_HOME") + "\n" +
+		"XDG_STATE_HOME=" + os.Getenv("XDG_STATE_HOME") + "\n" +
+		"GOENV=" + os.Getenv("GOENV") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "` + moduleName + `.env"), []byte(record), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+}
+
+// readRunnerObservation parses one module's recorded environment.
+func readRunnerObservation(t *testing.T, observeDir, moduleName string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(observeDir, moduleName+".env"))
+	if err != nil {
+		t.Fatalf("read %s observation (did the module run?): %v", moduleName, err)
+	}
+	record := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		record[key] = value
+	}
+	return record
+}
+
+// moduleRunnerResult is one run's combined output and exit status.
+type moduleRunnerResult struct {
+	output   string
+	exitCode int
+}
+
+// runModuleRunner runs the real gate from workDir, which holds the fixture
+// modules. workDir is the process CWD, so the gate's relative `cd "$m"` reaches
+// the fixtures while its repo root still resolves from the script's own
+// location.
+func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerResult {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the module runner is a bash script")
+	}
+	script, err := filepath.Abs(moduleRunnerScript)
+	if err != nil {
+		t.Fatalf("abs %s: %v", moduleRunnerScript, err)
+	}
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", moduleRunnerScript, err)
+	}
+	cmd := exec.Command("bash", script, "-short", "-count=1")
+	cmd.Dir = workDir
+	cmd.Env = runnerEnv(env...)
+	out, err := cmd.CombinedOutput()
+	result := moduleRunnerResult{output: string(out)}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run %s: %v\n%s", moduleRunnerScript, err, out)
+		}
+		result.exitCode = exitErr.ExitCode()
+	}
+	return result
+}
+
+// runnerRetainedLogDir returns the "... full logs: <dir>" path a failing run
+// prints, so a case can assert what was kept.
+func runnerRetainedLogDir(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "full logs: "); ok {
+			return rest
+		}
+	}
+	t.Fatalf("runner output names no retained log directory:\n%s", output)
+	return ""
+}
+
+// runnerScratchDirs lists the gate scratch directories under ctrl.
+func runnerScratchDirs(t *testing.T, ctrl string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(ctrl, "evener-module-tests.*"))
+	if err != nil {
+		t.Fatalf("glob scratch under %s: %v", ctrl, err)
+	}
+	return dirs
+}
+
+// assertPrivateModuleEnv checks the hermetic environment the gate promises each
+// stream: a per-module TMPDIR whose last element is the module name, with HOME
+// and every XDG directory beneath it, and never the ambient TMPDIR.
+func assertPrivateModuleEnv(t *testing.T, record map[string]string, module, ambientTMPDIR string) {
+	t.Helper()
+	tmp := record["TMPDIR"]
+	if tmp == "" {
+		t.Fatalf("%s recorded no TMPDIR", module)
+	}
+	if base := filepath.Base(tmp); base != module {
+		t.Errorf("%s TMPDIR = %q, want its last element to be the module name %q", module, tmp, module)
+	}
+	if tmp == ambientTMPDIR {
+		t.Errorf("%s TMPDIR = %q is the ambient TMPDIR; each stream must get a private one", module, tmp)
+	}
+	for key, sub := range map[string]string{
+		"HOME":            "home",
+		"XDG_CONFIG_HOME": "xdg-config",
+		"XDG_CACHE_HOME":  "xdg-cache",
+		"XDG_STATE_HOME":  "xdg-state",
+	} {
+		if want := filepath.Join(tmp, sub); record[key] != want {
+			t.Errorf("%s %s = %q, want %q", module, key, record[key], want)
+		}
+	}
+	if env := record["GOENV"]; env != "off" && !strings.HasPrefix(env, tmp+string(filepath.Separator)) {
+		t.Errorf("%s GOENV = %q, want it private under %q", module, env, tmp)
+	}
+}
+
+// TestModuleRunnerRunsSelectedModulesWithPrivateHomes pins the selection and the
+// isolation in one real run: only the MODULES-selected modules execute (an
+// unscheduled module on disk stays untouched), each reports PASS, and each
+// stream gets its own private HOME/TMPDIR/XDG. A regression that ran an
+// unselected module, shared one environment between streams, or left the
+// ambient HOME in place would flip an assertion even with every helper test
+// green.
+func TestModuleRunnerRunsSelectedModulesWithPrivateHomes(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	observeDir := filepath.Join(root, "observe")
+	if err := os.MkdirAll(observeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, module := range []string{"alpha", "beta", "gamma"} {
+		writeRunnerFixtureModule(t, modules, module, observingModuleSrc(module))
+	}
+
+	env := append(controlledScratchEnv(ctrl),
+		"EVENER_RUNNER_TEST_OBSERVE="+observeDir,
+		// gamma sits on disk but is not selected: it must not run.
+		"MODULES=alpha beta",
+	)
+	result := runModuleRunner(t, modules, env...)
+	if result.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0 for passing selected modules:\n%s", result.exitCode, result.output)
+	}
+	for _, module := range []string{"alpha", "beta"} {
+		if !strings.Contains(result.output, "PASS  "+module) {
+			t.Errorf("runner did not report PASS for selected module %s:\n%s", module, result.output)
+		}
+	}
+	if strings.Contains(result.output, "gamma") {
+		t.Errorf("runner reported an unselected module:\n%s", result.output)
+	}
+	if _, err := os.Stat(filepath.Join(observeDir, "gamma.env")); !os.IsNotExist(err) {
+		t.Errorf("unselected module gamma ran (observe file err = %v)", err)
+	}
+
+	alpha := readRunnerObservation(t, observeDir, "alpha")
+	beta := readRunnerObservation(t, observeDir, "beta")
+	assertPrivateModuleEnv(t, alpha, "alpha", ctrl)
+	assertPrivateModuleEnv(t, beta, "beta", ctrl)
+	if alpha["TMPDIR"] == beta["TMPDIR"] {
+		t.Errorf("alpha and beta share TMPDIR %q; each stream must get a private one", alpha["TMPDIR"])
+	}
+
+	// A successful run reclaims its scratch.
+	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) != 0 {
+		t.Errorf("successful run left scratch behind: %v", leftovers)
+	}
+}
+
+// TestModuleRunnerPropagatesAModuleFailure pins that a failing module's exit
+// status reaches the runner's exit code and its output is surfaced, and that a
+// failed run keeps its logs for the reader.
+func TestModuleRunnerPropagatesAModuleFailure(t *testing.T) {
+	_, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "bad", `package fixture
+
+import "testing"
+
+func TestBad(t *testing.T) { t.Fatal("fixture failure") }
+`)
+
+	env := append(controlledScratchEnv(ctrl), "MODULES=bad")
+	result := runModuleRunner(t, modules, env...)
+	if result.exitCode == 0 {
+		t.Fatalf("runner exit = 0 for a failing module:\n%s", result.output)
+	}
+	if !strings.Contains(result.output, "FAIL  bad") {
+		t.Errorf("runner did not report the module failure:\n%s", result.output)
+	}
+	if !strings.Contains(result.output, "fixture failure") {
+		t.Errorf("runner did not surface the failing test's output:\n%s", result.output)
+	}
+	logdir := runnerRetainedLogDir(t, result.output)
+	if _, err := os.Stat(logdir); err != nil {
+		t.Errorf("failed run did not retain its logs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(logdir, "bad.log")); err != nil {
+		t.Errorf("retained logs have no per-module log: %v", err)
+	}
+	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) == 0 {
+		t.Errorf("failed run removed its scratch; logs a reader needs are gone")
+	}
+}
+
+// TestModuleRunnerRefusesAZeroTestRun pins the silent-no-op guard: a module
+// whose only tests are outside the gate's Test/Example surface reports PASS yet
+// executes nothing, so the runner must fail the whole run rather than prove
+// nothing.
+func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
+	_, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "fuzzonly", `package fixture
+
+import "testing"
+
+func FuzzOnly(f *testing.F) {
+	f.Add("seed")
+	f.Fuzz(func(t *testing.T, _ string) {})
+}
+`)
+
+	env := append(controlledScratchEnv(ctrl), "MODULES=fuzzonly")
+	result := runModuleRunner(t, modules, env...)
+	if result.exitCode == 0 {
+		t.Fatalf("runner exit = 0 when no scheduled module executed a test:\n%s", result.output)
+	}
+	if !strings.Contains(result.output, "ran zero tests") {
+		t.Errorf("runner did not explain the silent no-op:\n%s", result.output)
+	}
+}
