@@ -165,8 +165,13 @@ function emptyActivityTree(ref: string) {
   };
 }
 
-function connectFakeClient(): FakeClient {
+// prepare scripts handlers BEFORE the connect: a connected ready client
+// starts serving requests synchronously (the command catalog's
+// connection-driven load fires inside connect's own publish), so a handler
+// scripted after the wiring would miss the request it existed to answer.
+function connectFakeClient(prepare?: (fake: FakeClient) => void): FakeClient {
   const fake = new FakeClient("ready");
+  prepare?.(fake);
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -290,8 +295,7 @@ async function mountComposerWithHandle(
   overrides: Partial<Thread> = {},
   options: { focused?: boolean; prepare?: (fake: FakeClient) => void } = {},
 ) {
-  const fake = connectFakeClient();
-  options.prepare?.(fake);
+  const fake = connectFakeClient(options.prepare);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
@@ -4613,6 +4617,32 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
     expect.stringContaining("/release"),
     expect.stringContaining("/project"),
   ]);
+});
+
+// The reported bug: a fresh browser never saw a user-global command like /par
+// in this menu, because nothing loaded the catalog until the palette had been
+// opened once on a session page. No useCommandCatalog.setState seeds the
+// catalog here - the connection-driven load must carry it from the hub.
+test("a user command from the hub catalog autocompletes without a palette open", async () => {
+  const user = userEvent.setup();
+  await mountComposerWithHandle(
+    "ref_slash_par",
+    {},
+    {
+      prepare: (fake) =>
+        fake.on("evener/command/list", () => ({
+          commands: [{ name: "par", description: "adversarial review", source: "user" }],
+        })),
+    },
+  );
+
+  await user.type(textarea(), "/pa");
+
+  // /compact fuzzy-matches "pa" too; the claim is /par's presence, not the
+  // whole list.
+  await vi.waitFor(() => {
+    expect(slashOptions().map((el) => el.textContent)).toContainEqual(expect.stringContaining("/par"));
+  });
 });
 
 test("slash completion hides excluded plugin commands but keeps loaded plugin commands", async () => {

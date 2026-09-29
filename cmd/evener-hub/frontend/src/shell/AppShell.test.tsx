@@ -3111,8 +3111,14 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
+  // evener/command/list is the command catalog's connection-driven read
+  // (stores/commandCatalog.ts): a ready client loads it without waiting for
+  // a palette open.
   expect(
-    client.calls.every(({ method }) => method === "evener/navigation/read" || method === "evener/instance/list"),
+    client.calls.every(
+      ({ method }) =>
+        method === "evener/navigation/read" || method === "evener/instance/list" || method === "evener/command/list",
+    ),
   ).toBe(true);
   expect(client.calls).toContainEqual({
     method: "evener/navigation/read",
