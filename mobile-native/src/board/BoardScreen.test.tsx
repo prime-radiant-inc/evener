@@ -1039,6 +1039,26 @@ it("gives every control a touch target at least 44pt tall", async () => {
 	act(() => tree.unmount());
 });
 
+// The summary wraps between its counts at large text sizes; each separator
+// ends the count before it, so no wrapped line starts with one (spec 7.1).
+it("ends each summary count but the last with its separator, so no wrapped line starts with a dot", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const summary = tree.root.find((node) => node.props.testID === "live-summary" && String(node.type) === "View");
+	const units = summary.children.filter((child): child is ReactTestInstance => typeof child !== "string");
+	expect(units.length).toBeGreaterThan(1);
+	const text = (unit: ReactTestInstance) =>
+		unit.findAll((node) => String(node.type) === "Text").map((node) => [node.props.children].flat().join(""));
+	units.forEach((unit, index) => {
+		const parts = text(unit);
+		expect(parts[0]).not.toBe(" · ");
+		expect(parts.at(-1) === " · ").toBe(index < units.length - 1);
+	});
+	act(() => tree.unmount());
+});
+
 it("starts a fresh Board when you switch hubs, and stops the old hub's", async () => {
 	const first = hubId();
 	const second = hubId();
