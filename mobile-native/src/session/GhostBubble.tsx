@@ -9,6 +9,7 @@ import { SwipeRow } from "../board/SwipeRow";
 import { useReadingType } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
+import { destructiveButton, haptic } from "../haptics";
 
 const BUTTON_LABELS: Record<GhostAction, string> = {
 	steerNow: "Steer now",
@@ -66,6 +67,8 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 				},
 				(index) => {
 					const action = menu[index];
+					// Spec 16.6: the destructive choice is its own confirmation.
+					if (index === destructive) haptic("rigid");
 					if (action) onAction(action);
 				},
 			);
@@ -73,7 +76,11 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		// beneath.
 		else
 			Alert.alert(ghost.caption, ghost.text, [
-				...menu.map((action) => ({ text: MENU_LABELS[action], onPress: () => onAction(action) })),
+				...menu.map((action) =>
+					action === "cancel"
+						? destructiveButton(MENU_LABELS[action], () => onAction(action))
+						: { text: MENU_LABELS[action], onPress: () => onAction(action) },
+				),
 				{ text: "Cancel", style: "cancel" as const },
 			]);
 	}
