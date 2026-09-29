@@ -773,8 +773,7 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		// A live thought as the hub's overlay serves it: opened by a delta
 		// with text, and with no startedAt, which the wire never carries for
 		// reasoning.
-		if ("thinking" in entry)
-			return { id: item.id, type: "reasoning", text: DEMO_THOUGHT, status: "inProgress" };
+		if ("thinking" in entry) return { id: item.id, type: "reasoning", text: DEMO_THOUGHT, status: "inProgress" };
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
 		if ("notice" in entry)
 			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
