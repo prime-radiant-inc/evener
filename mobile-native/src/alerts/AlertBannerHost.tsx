@@ -4,7 +4,7 @@
 // names.
 import { getDefaultHeaderHeight } from "@react-navigation/elements";
 import { type NavigationContainerRef, StackActions } from "@react-navigation/native";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 import { openNotice } from "../board/BoardNotices";
 import { requestBoardJump } from "../board/boardJump";
@@ -32,9 +32,16 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
 		else if (target.kind === "newSession") {
 			// The draft waits in that hub's creation store (#3104); a hub removed
-			// since has none. A start on another hub than the one selected opens
-			// once that hub is selected, so its sheet has its own connection.
-			if (!profiles.some((profile) => profile.id === target.hubId)) return;
+			// since took its draft with it, so the tap says so rather than doing
+			// nothing. A start on another hub than the one selected opens once
+			// that hub is selected, so its sheet has its own connection.
+			if (!profiles.some((profile) => profile.id === target.hubId)) {
+				Alert.alert(
+					`${target.hubName} was removed`,
+					"Its New session draft was removed with it, so there's nothing to open.",
+				);
+				return;
+			}
 			if (target.hubId !== hubId) selectHub(target.hubId);
 			navigation.dispatch(StackActions.push("NewSession", { hubId: target.hubId, hubName: target.hubName }));
 		} else if (target.kind === "needsYou") {

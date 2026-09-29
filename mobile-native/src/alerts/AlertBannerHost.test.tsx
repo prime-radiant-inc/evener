@@ -2,7 +2,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { onBoardJump } from "../board/boardJump";
 import type { Notice } from "../board/notices";
-import { render } from "../renderNative.testkit";
+import { alertRequests, render } from "../renderNative.testkit";
 import { AlertCenter, type Alert } from "./alertCenter";
 
 const harness = vi.hoisted(() => ({
@@ -162,11 +162,19 @@ it("opens the New session of the hub whose start failed, with its draft, whichev
 	]);
 });
 
-it("opens nothing for a failed start whose hub has since been removed (#3104)", () => {
+it("says why a failed start's banner opens nothing once its hub has been removed, and takes it down (#3104)", () => {
 	const { card, dispatched } = mount();
+	alertRequests.length = 0;
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
 	act(() => card().props.onPress());
 	expect(dispatched).toEqual([]);
+	expect(harness.center?.getSnapshot().banner).toBeNull();
+	expect(alertRequests).toEqual([
+		expect.objectContaining({
+			title: "attic was removed",
+			message: "Its New session draft was removed with it, so there's nothing to open.",
+		}),
+	]);
 });
 
 it("opens the selected hub's New session without selecting it again (#3104)", () => {
