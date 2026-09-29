@@ -17,8 +17,24 @@ const realLock = readFileSync(realLockPath, "utf8");
 const scratch = mkdtempSync(path.join(tmpdir(), "check-podfile-lock-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const run = (scriptPath, ...args) => spawnSync(process.execPath, [scriptPath, ...args], { encoding: "utf8" });
-const check = (...args) => run(script, ...args);
+const run = (scriptPath, args = [], env = {}) =>
+	spawnSync(process.execPath, [scriptPath, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+const check = (...args) => run(script, args);
+
+/** A throwaway mobile-native whose expo stub prints FAKE_SHAPE as autolinking's output. */
+function fakeScript() {
+	const fake = mkdtempSync(path.join(scratch, "fake-"));
+	const expoBin = path.join(fake, "mobile-native/node_modules/expo/bin");
+	mkdirSync(expoBin, { recursive: true });
+	writeFileSync(path.join(fake, "mobile-native/node_modules/expo/package.json"), '{"name":"expo","version":"0.0.0"}');
+	writeFileSync(path.join(expoBin, "autolinking.js"), "process.stdout.write(process.env.FAKE_SHAPE);");
+	const scriptDir = path.join(fake, "scripts/native");
+	mkdirSync(scriptDir, { recursive: true });
+	copyFileSync(script, path.join(scriptDir, "check-podfile-lock.mjs"));
+	return path.join(scriptDir, "check-podfile-lock.mjs");
+}
+
+const fakeRun = (shape) => run(fakeScript(), ["--lock", realLockPath], { FAKE_SHAPE: JSON.stringify(shape) });
 
 /** A copy of the real lock without the DEPENDENCIES line for `pod`. */
 function lockWithout(pod) {
@@ -97,25 +113,31 @@ test("a DEPENDENCIES section at end of file with no trailing blank line is read"
 
 test("a DEPENDENCIES line that does not parse exits 2 naming it", () => {
 	const file = path.join(scratch, "garbage.lock");
-	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - not a dependency line\n"));
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - BrokenPod (from /no/backticks)\n"));
 	const run = check("--lock", file);
 	assert.equal(run.status, 2, run.stderr);
 	assert.match(run.stderr, /cannot parse/);
 });
 
+test("a spec-repo dependency line with no local path is skipped", () => {
+	const file = path.join(scratch, "spec-repo.lock");
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - Firebase/Core\n  - SomePod (~> 1.0)\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 0, run.stderr);
+});
+
 test("an unexpected autolinking shape exits 2 with one line, not a stack trace", () => {
 	// A throwaway mobile-native whose expo stub prints the wrong JSON shape, so
 	// the check reaches the autolinking parse without a real dependency tree.
-	const fake = path.join(scratch, "fake");
-	const expoBin = path.join(fake, "mobile-native/node_modules/expo/bin");
-	mkdirSync(expoBin, { recursive: true });
-	writeFileSync(path.join(fake, "mobile-native/node_modules/expo/package.json"), '{"name":"expo","version":"0.0.0"}');
-	writeFileSync(path.join(expoBin, "autolinking.js"), 'process.stdout.write(JSON.stringify({ modules: "not-an-array" }));');
-	const scriptDir = path.join(fake, "scripts/native");
-	mkdirSync(scriptDir, { recursive: true });
-	copyFileSync(script, path.join(scriptDir, "check-podfile-lock.mjs"));
-	const result = run(path.join(scriptDir, "check-podfile-lock.mjs"), "--lock", realLockPath);
+	const result = fakeRun({ modules: "not-an-array" });
 	assert.equal(result.status, 2, result.stderr);
 	assert.match(result.stderr, /^check-podfile-lock: .*modules/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("an autolinking pod without a name and directory exits 2 with one line", () => {
+	const result = fakeRun({ modules: [{ packageName: "expo-camera", pods: [{ podName: "ExpoCamera" }] }] });
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*pod/);
 	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });

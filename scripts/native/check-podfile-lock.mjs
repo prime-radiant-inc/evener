@@ -133,6 +133,9 @@ function resolvedPods() {
 			fail(`expo-modules-autolinking resolve returned a module without pods: ${JSON.stringify(module)}`);
 		}
 		for (const pod of module.pods) {
+			if (typeof pod?.podName !== "string" || typeof pod?.podspecDir !== "string") {
+				fail(`expo-modules-autolinking resolve returned a pod without a name and directory: ${JSON.stringify(pod)}`);
+			}
 			linked.set(podKey(pod.podName, lockPath(pod.podspecDir)), module.packageName);
 			if (!packageDirs.has(module.packageName)) packageDirs.set(module.packageName, lockPath(pod.podspecDir));
 		}
@@ -218,9 +221,13 @@ function lockedPods(lock) {
 	for (const line of lines.slice(start + 1, end < 0 ? undefined : end)) {
 		if (line === "") continue;
 		const match = /^ {2}- "?([^ "]+) \(from `([^`]+)`\)"?$/.exec(line);
-		// Fail rather than skip: a line this cannot read may be a pod the check
-		// would otherwise call missing.
-		if (!match) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
+		if (!match) {
+			// A spec-repo dependency (`  - Firebase/Core`, `  - SomePod (~> 1.0)`)
+			// has no local path and is out of scope; a local-path line this cannot
+			// read may be a pod the check would otherwise call missing, so fail it.
+			if (line.includes("(from ")) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
+			continue;
+		}
 		const dir = path.posix.normalize(match[2]).replace(/\/$/, "");
 		locked.set(podKey(match[1], dir), dir);
 	}
