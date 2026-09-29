@@ -165,8 +165,19 @@ export type MobileTimelineItem =
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
 		// roundKey: the key a reply keeps from its first streamed frame through
-		// its recording (see withRoundKey), where it has one.
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
+		// its recording (see withRowKey), where it has one.
+		// callKey: the same, for a communicate reply, which is keyed by its
+		// call instead of its round (a round can hold both a stream and a
+		// communicate, and the communicate's message is recorded under the
+		// call, not the round).
+		| {
+				kind: "assistant";
+				id: string;
+				markdown: string;
+				streaming: boolean;
+				roundKey?: string;
+				callKey?: string;
+		  }
 		| {
 				kind: "activity";
 				id: string;
@@ -884,7 +895,7 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
-	const keyedRounds = new Set<string>();
+	const keyed = new Set<string>();
 	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
 	for (const entry of projected.entries) {
 		// A failed turn's error shows once, as the failure row at its end, which
@@ -899,7 +910,7 @@ function rowsForProjectedTurn(
 		}
 		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
 		if (plain === null) continue;
-		const row = withRoundKey(plain, entry.item, keyedRounds);
+		const row = withRowKey(plain, entry.item, keyed);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -942,17 +953,31 @@ function rowsForProjectedTurn(
 // and keeps one key through the change: the list doesn't remount it, and a
 // reading position or a "new below" count taken on it still finds it. Only the
 // round's first reply takes the round's key, since a round can record two
-// replies (text before and after a tool call); the later one keeps its own. A
-// communicate preview carries the round too, but its message is recorded with
-// no round id, so it has nothing to share a key with and takes none. The key
-// is for display and reading positions only: timelineIdentity, which the
-// store's merges use, stays transcriptKey-first.
-function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
-	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
-	const key = `round:${item.roundId}:agentMessage`;
-	if (keyedRounds.has(key)) return row;
-	keyedRounds.add(key);
-	return { ...row, roundKey: key };
+// replies (text before and after a tool call); the later one keeps its own.
+//
+// A communicate preview is the same story told with the call's id: the preview
+// ("preview:<callId>") and the message it records (a call id on the recorded
+// item) share one key, so the preview keeps its row when the message is
+// recorded. A call-bearing reply takes the call's key, never the round's, so it
+// leaves the round's key to the round's own stream. The key is for display and
+// reading positions only: timelineIdentity, which the store's merges use, stays
+// transcriptKey-first.
+function withRowKey(row: MobileTimelineItem, item: ItemModel, keyed: Set<string>): MobileTimelineItem {
+	if (row.kind !== "assistant") return row;
+	let field: "callKey" | "roundKey";
+	let key: string;
+	if (item.callId) {
+		field = "callKey";
+		key = `call:${item.callId}:agentMessage`;
+	} else if (item.roundId) {
+		field = "roundKey";
+		key = `round:${item.roundId}:agentMessage`;
+	} else {
+		return row;
+	}
+	if (keyed.has(key)) return row;
+	keyed.add(key);
+	return { ...row, [field]: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.

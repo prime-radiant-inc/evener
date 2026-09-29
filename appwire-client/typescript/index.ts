@@ -559,6 +559,7 @@ export {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -606,7 +607,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

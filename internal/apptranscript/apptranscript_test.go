@@ -1478,6 +1478,12 @@ func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
 	if resultItems[0].Text != "hello" {
 		t.Errorf("Text = %q, want %q (the healed message, not the raw bytes)", resultItems[0].Text, "hello")
 	}
+	// The recorded message carries its originating call id, so the app's
+	// communicate preview (keyed by that call) keeps its row when history
+	// records the message (issue #3173).
+	if resultItems[0].CallID != "call_comm_healed" {
+		t.Errorf("CallID = %q, want %q (the originating call)", resultItems[0].CallID, "call_comm_healed")
+	}
 }
 
 // TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes
@@ -1528,6 +1534,9 @@ func TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes(t
 	}
 	if resultItems[0].Text != rawArgs {
 		t.Errorf("Text = %q, want the raw bytes %q (mirroring the hub's fallback)", resultItems[0].Text, rawArgs)
+	}
+	if resultItems[0].CallID != "call_comm_unrecoverable" {
+		t.Errorf("CallID = %q, want %q (the originating call)", resultItems[0].CallID, "call_comm_unrecoverable")
 	}
 }
 

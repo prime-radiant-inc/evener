@@ -85,6 +85,18 @@ describe("reader positions", () => {
 			streaming: false,
 		};
 		expect(readerKey(reply)).toBe("round:r1:agentMessage");
+		// A communicate reply keys by its call, which the preview and the
+		// recorded message both carry (issue #3173).
+		const communicate: TimelineRow = {
+			kind: "assistant",
+			id: "wire",
+			transcriptKey: "key-wire",
+			roundKey: "round:r1:agentMessage",
+			callKey: "call:c1:agentMessage",
+			markdown: "",
+			streaming: false,
+		};
+		expect(readerKey(communicate)).toBe("call:c1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
