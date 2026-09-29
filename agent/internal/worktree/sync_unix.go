@@ -1,4 +1,4 @@
-//go:build aix || android || darwin || dragonfly || freebsd || hurd || illumos || ios || linux || netbsd || openbsd || solaris
+//go:build unix
 
 package worktree
 
@@ -23,11 +23,12 @@ func syncDir(dir string) error {
 	}
 	syncErr := handle.Sync()
 	closeErr := handle.Close()
-	err = errors.Join(syncErr, closeErr)
-	if syncUnsupported(err) {
-		return nil
+	if syncUnsupported(syncErr) {
+		// The filesystem cannot sync a directory at all; the rename already
+		// committed. A Close failure is unrelated and still reported.
+		return closeErr
 	}
-	return err
+	return errors.Join(syncErr, closeErr)
 }
 
 // syncUnsupported reports whether err is the errno set a filesystem uses to say
