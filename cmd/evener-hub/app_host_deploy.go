@@ -34,12 +34,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -255,14 +253,6 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		return record, nil
 	}
 
-	// §8's admission fence, after the dedup replay and before any token decision
-	// or gate: a quarantined host refuses with the fencing-failure form, and a
-	// host holding an open orphan-unverified record refuses transient busy —
-	// neither admits new lifecycle or mutation work past admission.
-	if err := m.orphanAdmissionRefusal(entry.Name); err != nil {
-		return hostops.Record{}, err
-	}
-
 	// (2) The provisional token check (deploy) is a fail-fast readability check
 	// only: nothing is decided here, and a concurrent plan can supersede the
 	// value before the gate is acquired. Then the remnant fence: a fenced name
@@ -459,12 +449,6 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 // predates the handler and every other read failure is `probe-failed` with the
 // failure half named.
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
-	// The helper-gate refusal is converted first, so a gate that happens to wrap
-	// a probe read (the helper self-test is itself a read-only round trip) is
-	// never `probe-failed` (§8:161).
-	if wire, ok := fencingRefusalWire(name, err); ok {
-		return wire
-	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -481,67 +465,6 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	default:
 		return appwire.ProbeFailed(name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
 			"probing host %q's running state failed: %v", name, err))
-	}
-}
-
-// fencingRefusalWire converts the helper-gate refusal class the fenced probe
-// shares onto its typed envelope, ok=false when err is none of it so the caller
-// keeps its remaining arms.
-//
-//   - The helper gate (§8:161) rides the conflict class: a known discriminator
-//     renders its arm (absent or untrusted, with the pinned or observed
-//     version); a discriminator this build cannot render is still a gate
-//     refusal and refuses as an internal error naming the unknown class —
-//     never as `fencing-helper-absent` and never as `probe-failed`.
-func fencingRefusalWire(name string, err error) (appwire.WireError, bool) {
-	if wire, ok := helperGateWireRefusal(err); ok {
-		return wire, true
-	}
-	if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
-		return appwire.InternalError(fmt.Sprintf(
-			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err)), true
-	}
-	return appwire.WireError{}, false
-}
-
-// helperGateWireRefusal maps crash-fencing §8's typed helper-gate refusal onto
-// its AppWire envelope: the conflict class, with the host and the pinned helper
-// version the operator must install out-of-band. ok is false for any other
-// error, so a caller can only classify a genuine gate refusal this way.
-func helperGateWireRefusal(err error) (appwire.WireError, bool) {
-	gate, ok := errors.AsType[*hostfence.HelperGateError](err)
-	if !ok {
-		return appwire.WireError{}, false
-	}
-	// The wire message is the error's own text: helperAbsentRefusal wraps the
-	// gate with the reason the claim/delivery was refused (a lost claim race, a
-	// live foreign process, a failed probe), and that detail must reach the
-	// caller. gate.Host and gate.PinnedVersion carry the data half.
-	return helperGateWire(gate, err.Error())
-}
-
-// helperGateWire is the one conversion from a helper-gate refusal to §8's
-// conflict-class envelope, shared by every surface (the probe classifier here and
-// orphan-resolve's verify arm). A known discriminator renders as its pinned arm —
-// the pinned version for the absent arm, the distrusted version for the untrusted
-// one — and a discriminator this build does not know returns ok=false, so no
-// surface ever renders an unknown class as absent or untrusted and each refuses
-// it explicitly (§8:161's fail-closed posture).
-func helperGateWire(gate *hostfence.HelperGateError, message string) (appwire.WireError, bool) {
-	switch gate.Discriminator {
-	case hostfence.DiscriminatorHelperAbsent:
-		// §8's data names the version to act on: the pinned version the operator
-		// must install out-of-band.
-		return appwire.FencingHelperAbsent(gate.Host, strconv.Itoa(gate.PinnedVersion), message), true
-	case hostfence.DiscriminatorHelperUntrusted:
-		// The untrusted arm names the distrusted version in place of the absent
-		// one.
-		return appwire.FencingHelperUntrusted(gate.Host, strconv.Itoa(gate.ObservedVersion), message), true
-	default:
-		// A discriminator this build does not know is not the absent class: the
-		// caller refuses it explicitly rather than rendering it as an arm this
-		// build never defined.
-		return appwire.WireError{}, false
 	}
 }
 
@@ -1306,11 +1229,6 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // fencing §3). A nil hook (no operation store wired) refuses, never running the
 // deploy unrecorded.
 func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
-	// §8's fence, before the record is minted: an Ensure-triggered deploy for a
-	// quarantined or orphan-unverified name must never reach a remote step.
-	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
-		return nil, nil, err
-	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
@@ -1355,10 +1273,6 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 // operation store wired) leaves the attempt unrecorded and unarmed, which
 // production never does.
 func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
-	// §8's fence, the EnsureDeploy twin: no restart attempt for a fenced name.
-	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
-		return nil, nil, err
-	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")

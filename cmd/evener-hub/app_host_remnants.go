@@ -41,12 +41,11 @@ package hub
 //     changed-entry refusal and the async debounced reconcile are the read
 //     path's own slice. The `concurrent-edit` type is defined here because the
 //     commit path needs it; the read path does not consult it yet.
-//   - Fencing execution (crash-fencing spec §3-§8, slices S17-S21): the fencing
-//     epoch, the remote lease/guard wrapper, kill/wait of superseded epochs,
-//     the guard advance, and `orphan-fenced-busy`. The retry and recover
-//     attempt records persist the epoch fields those slices fill in; the
-//     takeover of a timed-out attempt records its fenced-closed mark without the
-//     kill/wait.
+//   - Fencing execution (crash-fencing spec §3-§8, slices S17-S21): the remote
+//     lease/guard wrapper, kill/wait of superseded epochs, and the guard
+//     advance. The retry and recover attempt records persist the fencing epoch
+//     fields those slices fill in; the takeover of a timed-out attempt records
+//     its fenced-closed mark without the kill/wait.
 //   - The store-side compensation record (deploy-pipeline spec §9, S7's
 //     `pendingStoreSync`/`pendingCompensation`): pre-commit compensation stays
 //     the hub.toml rollback (plus the re-read preimage), with no cross-file
