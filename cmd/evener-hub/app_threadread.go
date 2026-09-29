@@ -94,7 +94,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
-			thread = applyHubForkCapability(cfg, thread)
+			thread = applyHubCapabilities(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -686,6 +686,27 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 // advertised as forkable and every fork of one is refused as unverifiable. The
 // refusal is retryable and carries the reason, and the hub logs the claim it
 // could not verify.
+// applyHubCapabilities stamps the capability bits the hub owns, not the
+// daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
+// (hubPagesBefore). Every path that serves a thread applies it, so a session
+// reads the same from thread/list and thread/read (#1840).
+func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	thread = applyHubForkCapability(cfg, thread)
+	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	return thread
+}
+
+// hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
+// thread/turns/list pages a thread from a before position, with or without a
+// cursor. This hub mints such pages for its local and saved threads. A thread
+// on another host refuses them until the controller can join one to its
+// remote paging window (#3176), and a live delegate is a read-only alias its
+// parent daemon owns (the same signal fork is fenced on).
+func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
+	parsed, err := appwire.ParseRef(ref)
+	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
+}
+
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
@@ -948,7 +969,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
-		thread = applyHubForkCapability(cfg, thread)
+		thread = applyHubCapabilities(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
