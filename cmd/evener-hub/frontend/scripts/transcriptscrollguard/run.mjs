@@ -57,10 +57,12 @@ const BOOT = {
 // answers with a page plus an olderCursor: the paging row mounted, the page
 // actually overflowing its port (a collapsed pane would otherwise settle
 // trivially at a 0px bottom gap and read as a pass), no older page auto-fetched
-// on open, and the landing held at the true bottom across the settle. The live
-// Session also renders the jump pill; the read-only pane renders none, so it
-// passes `pill: false` to skip that one check.
-function assertPagedOpenContract(failures, label, m, { pill = true } = {}) {
+// on open, no jump pill at open, and the landing held at the true bottom across
+// the settle. `paneFooter` is the surface's own DOM marker - the live Session
+// renders its pane-footer/SessionChrome slot, the read-only pane renders none -
+// so a pass that meant to exercise one surface while the other rendered is
+// caught here instead of passing tautologically.
+function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {}) {
   if (m.errors.length > 0) failures.push(`page errors on the ${label} paged open: ${m.errors.join("; ")}`);
   if (m.clientHeight <= 0) {
     failures.push(
@@ -79,7 +81,13 @@ function assertPagedOpenContract(failures, label, m, { pill = true } = {}) {
         "must wait until the reader approaches the top of history",
     );
   }
-  if (pill && m.pill) failures.push(`${label} shows the jump pill right after opening a session with older history`);
+  if (m.pill) failures.push(`${label} shows the jump pill right after opening a session with older history`);
+  if (m.paneFooter !== paneFooter) {
+    failures.push(
+      `${label} rendered the wrong transcript surface (pane footer present: ${m.paneFooter}, expected ${paneFooter}) ` +
+        "- the pass is not exercising the pane it names",
+    );
+  }
   if (Math.abs(m.bottomGap) > BOTTOM_TOLERANCE_PX) {
     failures.push(
       `${label} opened ${m.bottomGap}px off the true bottom after opening a session with older history ` +
@@ -304,7 +312,7 @@ async function main() {
       const readOnlyOpened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { pill: false });
+      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
     } finally {
       await clearViewportOverride(send);
       page.close();

@@ -301,6 +301,13 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    * row mounts only once the model carries an olderCursor).
    */
   pagingRow: boolean;
+  /**
+   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
+   * The read-only Transcript pane passes no footer, so this distinguishes the
+   * two surfaces from the DOM itself: a pass that claims to exercise the
+   * read-only pane while the live Session rendered would read `true` here.
+   */
+  paneFooter: boolean;
   errors: string[];
 }
 
@@ -317,6 +324,7 @@ function metrics(): TranscriptScrollMetrics {
     renderedRows: document.querySelectorAll('[data-testid="transcript-row"]').length,
     listCalls: olderPageCalls,
     pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
+    paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
     errors: pageErrors(),
   };
 }
