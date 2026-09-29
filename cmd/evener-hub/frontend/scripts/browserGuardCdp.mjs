@@ -640,22 +640,25 @@ export async function navigateTo(
       // live-document identity (currentLoaderId/currentAttempt) that loaderless
       // requests and unseen failures anchor to.
       const { loaderId, parentId } = message.params.frame;
+      if (parentId) {
+        // A subframe's loaderId is bound at SEND time by its own request, and
+        // its requests resolve through that binding (or their send-time owner).
+        // A subframe commit whose loaderId was never seen therefore has no owner
+        // we can prove: it is left UNATTRIBUTED rather than bound to the ambient
+        // retry, so a delayed iframe commit from an earlier document cannot
+        // claim a later attempt.
+        return;
+      }
       if (loaderId) {
-        // Bound to its own navigation when the response named the loaderId;
-        // otherwise the in-flight attempt for a top frame (a response that
-        // reported none), and the send-time binding for a subframe.
-        const bound = navigationAttempts.get(loaderId);
-        const attempt = parentId
-          ? (bound ?? loaderAttempts.get(loaderId) ?? currentAttempt ?? attempts)
-          : (bound ?? attempts);
+        // Bound to the navigation whose response named the loaderId; otherwise
+        // (a response that reported none) the in-flight attempt.
+        const attempt = navigationAttempts.get(loaderId) ?? attempts;
         loaderAttempts.set(loaderId, attempt);
         committedLoaderIds.add(loaderId);
-        if (!parentId) {
-          currentLoaderId = loaderId;
-          currentAttempt = attempt;
-          settleCommitWaiters();
-        }
-      } else if (!parentId) {
+        currentLoaderId = loaderId;
+        currentAttempt = attempt;
+        settleCommitWaiters();
+      } else {
         // A top document that reported no loaderId has no identity to bind, so
         // it takes the OLDEST pending loaderless navigation. A loaderless commit
         // with nothing pending is stale: it names no document we are awaiting,
