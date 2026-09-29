@@ -742,6 +742,13 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+// Per-ref count of durable enqueues whose write is still in flight (from the
+// click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
+// serve this: a background pin refresh clears a ref's arm when the outbox reads
+// empty, which it does while another enqueue's write is still uncommitted, so an
+// arm is not proof that a concurrent enqueue is outstanding. This count is that
+// proof, and only the fallback's ordering guard reads it.
+const inflightDurableEnqueues = new Map<string, number>();
 const olderPageGenerations = new Map<string, number>();
 
 // Refs this connection generation holds a wire subscription for. thread/read
@@ -2196,6 +2203,15 @@ const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
   "turn/drainAsSteer",
 ]);
 
+// Decrement a ref's in-flight durable-enqueue count, dropping the entry at
+// zero. Paired exactly with the increment before enqueueMutationIntent's try,
+// on both the settle and the throw path.
+function releaseInflightDurableEnqueue(ref: string): void {
+  const remaining = (inflightDurableEnqueues.get(ref) ?? 1) - 1;
+  if (remaining > 0) inflightDurableEnqueues.set(ref, remaining);
+  else inflightDurableEnqueues.delete(ref);
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
@@ -2257,15 +2273,23 @@ async function enqueueMutationIntent(
   const armAddedByThisClick =
     (pending?.client !== wiredClient || pending.epoch !== readyEpoch) && !dispatchableMutationRefs.has(ref);
   if (armAddedByThisClick) dispatchableMutationRefs.add(ref);
+  // Register this click's durable write as in flight for the ordering guard
+  // below. It stays counted until the write settles, so a concurrent enqueue
+  // the fallback must not jump stays visible even though it has not committed
+  // (and so has not pinned, and its arm a refresh can clear).
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
     // enqueueDurableMutation).
     const record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+    releaseInflightDurableEnqueue(ref);
     pinnedMutationRefs.add(ref);
     notifyMutationPersistence([ref], { record });
     return record;
   } catch (error) {
+    // This click's write has settled; only OTHER enqueues remain counted.
+    releaseInflightDurableEnqueue(ref);
     // The direct fallback answers ONLY a durable enqueue whose method is one of
     // the composer's four send verbs (DIRECT_FALLBACK_METHODS). Every other
     // durable write keeps its own contract and fails closed here:
@@ -2278,11 +2302,13 @@ async function enqueueMutationIntent(
     // (applyClearResponse) and notes/human/set needs its onCommitted to mark
     // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
     // A storage-unavailable failure on any of those propagates exactly as every
-    // other submission failure: the ref this click armed is disarmed and the
-    // caller sees the refusal. (A Stop therefore lands here, not in the
-    // fallback below, so its fail-closed decision lives with its invariant.)
+    // other submission failure: the caller sees the refusal, and only the arm
+    // THIS click added is disarmed - a ref another enqueue armed keeps its own
+    // arm, so that in-flight send is still dispatched by the next discovery.
+    // (A Stop therefore lands here, not in the fallback below, so its
+    // fail-closed decision lives with its invariant.)
     if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
-      if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+      if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
     // Persistent storage failure on a composer send: the durable write could
@@ -2299,18 +2325,26 @@ async function enqueueMutationIntent(
     // pending reconciliation, a reconciliation failure, a Stop drain via
     // stoppingRefs, the restart obligation with turn/start's resume-only
     // carve-out, and restartRequired). requireArmed is off: the fallback's own
-    // durable-unawareness is why its ordering guard below is pinnedMutationRefs,
-    // not dispatchableMutationRefs - a background pin refresh legitimately
-    // clears that set when the ref has no rows, and requiring it here would
-    // refuse the fallback for a ref with nothing to reorder. And a fallback send
-    // must not jump an earlier undelivered durable send: pinnedMutationRefs is
-    // the in-memory proof this ref holds outbox or optimistic rows, while the
-    // precise answer (whether the ref's nextDispatchable head is this send)
-    // lives in storage - exactly what is unavailable here. Refuse rather than
-    // reorder.
+    // ordering guard is not the dispatcher's arm but the two checks below.
+    //
+    // A fallback send must not jump an earlier durable send for the ref, and
+    // two in-memory facts cover what this tab can see. pinnedMutationRefs is a
+    // committed row: this ref holds outbox or optimistic state, so an earlier
+    // send is undelivered. And inflightDurableEnqueues counts durable enqueues
+    // whose write has not settled yet - the CONCURRENT case a committed row
+    // cannot show: this click's own was just released, so a nonzero count is
+    // another enqueue for this ref still in flight, one that has not committed
+    // (so not pinned) and whose dispatch arm a background refresh can clear.
+    // dispatchableMutationRefs cannot serve this: a refresh legitimately clears
+    // a ref's arm when the outbox reads empty, which it does while another
+    // enqueue's write is still uncommitted. The precise answer - whether the
+    // ref's nextDispatchable head is this send - lives in storage, which is
+    // unavailable here; these two are what the in-memory state proves, and the
+    // fallback refuses on either rather than reorder.
     const dispatchClient = currentDispatchClient(ref, intent.method, false);
-    if (dispatchClient === null || pinnedMutationRefs.has(ref)) {
-      if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+    const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
+    if (dispatchClient === null || pinnedMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
+      if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
     // Disarm only the arm this click added (a pin is not this click's to drop,
@@ -4643,6 +4677,7 @@ export function resetThreadsStoreForTests(): void {
   };
   retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
+  inflightDurableEnqueues.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;

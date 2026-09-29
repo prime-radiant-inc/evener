@@ -12656,6 +12656,42 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // pinnedMutationRefs is populated only after a durable enqueue COMMITS, so a
+  // concurrent enqueue for the same ref whose write is still in flight is
+  // invisible to it - and the fallback would dispatch past it. A's capture
+  // succeeds and its enqueue hangs in flight (arms the ref, never commits, so
+  // never pins); B's enqueue times out. B must refuse, not jump A.
+  test("a fallback send refuses to jump a concurrent in-flight durable send for the ref", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let enqueueAttempts = 0;
+    storage.enqueueIntent = async () => {
+      enqueueAttempts += 1;
+      // A: in flight forever (never commits, never pins). B and its retry:
+      // a storage timeout.
+      if (enqueueAttempts === 1) return new Promise<never>(() => {});
+      throw new MutationStorageTimeoutError();
+    };
+
+    // A's click arms the ref; let it reach its (hanging) enqueue.
+    const sendA = threadsStore.getState().send("ref_a", "A");
+    await flushUntil(() => enqueueAttempts === 1);
+
+    const sendB = threadsStore.getState().send("ref_a", "B");
+    await expect(sendB).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+    // B must not reach the daemon ahead of A's in-flight durable send.
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // A never settled; drop the handle so nothing is awaited.
+    void sendA;
+  });
+
   // The fallback discards the RPC response. What projects the turn, then? The
   // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
   // has NO turn/started case; the only case that builds turns and items is
