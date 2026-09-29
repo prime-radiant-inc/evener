@@ -185,8 +185,10 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			return rawOutput(worktreeMessage(text) ?? text);
 		case "jobs": {
 			// A job check: its status and what it runs, not the JSON around
-			// them. A list and a stop print lines of their own, their codes
-			// in words; anything else reads as printed.
+			// them. A watch's note, what it will say when it fires, not the
+			// footer around it. A list and a stop print lines of their own,
+			// their codes in words; anything else reads as printed.
+			if (detail.watchNote) return rawOutput(detail.watchNote);
 			if (label === "job_list") return rawOutput(jobListInWords(text));
 			if (label === "job_stop") return rawOutput(jobStopInWords(text));
 			const job = toolJSONResult(text);
@@ -216,7 +218,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
-	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode" | "tasks">;
+	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode" | "tasks" | "watchNote">;
 };
 
 export function stepEvidence(step: EvidenceSource): Evidence[] {

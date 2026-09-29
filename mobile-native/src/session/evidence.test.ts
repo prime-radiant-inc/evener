@@ -215,6 +215,13 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A timer's note is what it will say when it fires; the footer's id and
+	// seconds are already in the line.
+	it("shows a watch's note, not the footer around it", () => {
+		expect(real("call_watch_timer")).toEqual([{ kind: "output", text: "Check the deploy finished.", lines: 1 }]);
+		expect(real("call_watch_repeat")).toEqual([{ kind: "output", text: "Look over the open PRs.", lines: 1 }]);
+	});
+
 	// A listing's status and bracketed codes read as words; a command in its
 	// label keeps its own spelling.
 	it("shows a job list with its codes in words", () => {
