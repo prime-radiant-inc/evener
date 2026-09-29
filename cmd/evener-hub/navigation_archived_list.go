@@ -35,8 +35,8 @@ type navigationArchivedListRequest struct {
 
 // parseNavigationArchivedListParams validates the wire params the way a
 // navigation read validates its own: a known catalog, a project key that is a
-// navigation identity, a limit in 1..maxNavigationSectionRows (absent means
-// the maximum), and a cursor this hub minted.
+// navigation identity, a limit in 0..maxNavigationSectionRows (0 or absent
+// means the maximum), and a cursor this hub minted.
 func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navigationArchivedListRequest, error) {
 	catalog, err := parseNavigationCatalog(params.Catalog)
 	if err != nil {
