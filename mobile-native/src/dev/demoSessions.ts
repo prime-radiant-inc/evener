@@ -701,8 +701,6 @@ const THREAD_STATUS: Record<ProtoState, string> = {
 };
 
 const SUBAGENT_STATUS = { running: "running", failed: "failed", done: "completed" } as const;
-const SUBAGENT_ITEM_STATUS = { running: "inProgress", failed: "failed", done: "completed" } as const;
-
 function flatten(subagents: RawSubagent[], parent?: string): { subagent: RawSubagent; parent?: string }[] {
 	return subagents.flatMap((subagent) => [
 		{ subagent, ...(parent ? { parent } : {}) },
@@ -766,6 +764,9 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("subagent" in entry) {
 			const subagent = subagents.get(entry.subagent);
 			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
+			// The call settles as soon as its launch receipt returns, whatever
+			// the subagent goes on to do, as agent's stableDelegateCreateTool
+			// answers it; the row reads the subagent's state from its delegate.
 			return {
 				...item,
 				type: "commandExecution",
@@ -773,8 +774,16 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 				callId: callId(subagent.id),
 				description: subagent.title,
 				argumentsJson: JSON.stringify({ description: subagent.title }),
-				status: SUBAGENT_ITEM_STATUS[subagent.state],
-				...(subagent.state === "running" ? {} : { completedAt: at }),
+				status: "completed",
+				completedAt: at,
+				output: JSON.stringify({
+					delegate_id: subagent.id,
+					child_session_id: demoSessionId(subagent.id),
+					type: "delegate",
+					status: "running",
+					name: subagent.title,
+					transcript_ref: hostSessionRef(session.hostId, subagent.id),
+				}),
 			};
 		}
 		const { step } = entry;

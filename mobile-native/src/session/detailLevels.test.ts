@@ -9,6 +9,7 @@ import {
 	detailMenuLabel,
 	forgetDetailLevels,
 	levelToast,
+	showsJustTheConversation,
 } from "./detailLevels";
 
 function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
@@ -61,14 +62,18 @@ describe("the config a session projects at", () => {
 		expect(config?.advanced).toEqual(hub.advanced);
 	});
 
-	it("projects Chat with no step lines at all", () => {
-		expect(configForLevel("chat", hub)?.content).toEqual({
-			kind: "custom",
-			toolIntent: false,
-			toolCalls: false,
-			reasoning: false,
-			expandByDefault: false,
-		});
+	it("projects Chat at Intent, where a subagent's call survives, and drops its steps on screen", () => {
+		expect(configForLevel("chat", hub)?.content).toEqual({ kind: "preset", level: "intent" });
+		expect(showsJustTheConversation("chat", hub)).toBe(true);
+		expect(showsJustTheConversation("intent", hub)).toBe(false);
+	});
+
+	it("shows just the conversation for the hub's Chat default, and for nothing else it defaults to", () => {
+		const chatHub = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, hub.advanced);
+		expect(showsJustTheConversation(null, chatHub)).toBe(true);
+		expect(showsJustTheConversation(null, hub)).toBe(false);
+		expect(showsJustTheConversation(null, null)).toBe(false);
+		expect(showsJustTheConversation("tools", chatHub)).toBe(false);
 	});
 
 	it("builds on the shipped mobile defaults when the hub has no config", () => {

@@ -7,6 +7,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
+import { isStep } from "./session/transcriptRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -181,9 +182,15 @@ function accountingFor(
 export function projectNativeTranscript(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1 | null | undefined,
+	{ justTheConversation = false }: { justTheConversation?: boolean } = {},
 ): NativeTranscriptPresentation {
 	const source = conversation?.items ?? [];
-	const { items, activityPresentation } = projectTimeline(source, config);
+	const projected = projectTimeline(source, config);
+	const { activityPresentation } = projected;
+	// Chat is just the conversation and its subagents (spec 8.2; the transcript
+	// rows ruling, 2026-09-29): every step goes, while a subagent and a
+	// question stay, being rows of their own.
+	const items = justTheConversation ? projected.items.filter((item) => !isStep(item)) : projected.items;
 	if (!config)
 		return {
 			items,

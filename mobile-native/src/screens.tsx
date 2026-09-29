@@ -144,7 +144,7 @@ import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
-import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
+import { configForLevel, currentLevel, levelToast, showsJustTheConversation } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
@@ -1150,9 +1150,10 @@ export function ConversationScreen({
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
 	// footer's accounting — no second, screen-level projection.
+	const justTheConversation = showsJustTheConversation(chosenLevel, hubDisplayConfig);
 	const presentation = useMemo(
-		() => projectNativeTranscript(conversation, displayConfig),
-		[conversation, displayConfig],
+		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation }),
+		[conversation, displayConfig, justTheConversation],
 	);
 	const timelineRows = useMemo(
 		() =>

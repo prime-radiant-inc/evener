@@ -148,6 +148,38 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		);
 	});
 
+	// A real delegate call settles as soon as its launch receipt returns, so a
+	// demo that gave the call its subagent's state would hide a row that reads
+	// the call instead of the subagent (the transcript audit's first gap).
+	it("settles every subagent call at launch with its receipt, as the hub does", () => {
+		const calls = sessions.flatMap((thread) =>
+			(thread.turns ?? []).flatMap((turn) => turn.items ?? []).filter((item) => item.toolName === "delegate"),
+		);
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) {
+			expect(call.status).toBe("completed");
+			expect(JSON.parse(call.output ?? "{}")).toMatchObject({
+				delegate_id: expect.any(String),
+				transcript_ref: expect.any(String),
+			});
+		}
+	});
+
+	it.each(["s-pr2138", "s-retry", "s-tasklist"])(
+		"reads each subagent row in %s at Intent by its subagent's own state, and can open it",
+		(slug) => {
+			const { model, rows } = open(slug);
+			const subagentRows = subagentsOf(rows);
+			expect(subagentRows.length).toBeGreaterThan(0);
+			for (const row of subagentRows) {
+				const delegate = model.delegates?.find((candidate) => candidate.originToolCallId === row.detail.callId);
+				const line = subagentLine(row, model.delegates, NOW);
+				expect(line.ref).toBe(delegate?.transcriptRef);
+				expect(line.stateText).toMatch(/^(running|failed|done) · \d+[smhd]/);
+			}
+		},
+	);
+
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");
 		expect(modelChipLabel(model, DEMO_MODEL_LIST.data)).toBe("DeepSeek 4.1 Flash · XHigh");
