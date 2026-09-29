@@ -181,7 +181,7 @@ import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
-import { useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
+import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -1252,14 +1252,14 @@ export function ConversationScreen({
 	// A finished subagent's row reads its outcome from the coordinator's tree,
 	// which the screen holds while the transcript shows one.
 	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
-	// On a subagent's screen, under the coordinator's thread as its panel reads
-	// it now: a coordinator that restarted runs under a new thread, and a tree
-	// asked for under the old one is refused.
 	const subagentTreeTarget = useMemo(
 		() =>
-			showsFinishedSubagent && coordinator
-				? { ref: coordinator.ref, threadId: (subagentOf && coordinatorThread) || coordinator.threadId }
-				: null,
+			transcriptTreeTarget({
+				showsFinished: showsFinishedSubagent,
+				coordinator,
+				onSubagentScreen: !!subagentOf,
+				panelThread: coordinatorThread,
+			}),
 		[showsFinishedSubagent, coordinator, subagentOf, coordinatorThread],
 	);
 	const subagentTree = useTranscriptSubagentTree(
@@ -1268,12 +1268,15 @@ export function ConversationScreen({
 		liveClientFor({ client, state: connectionState, activeProfile }, route.params.hubId),
 		{ inFront: focused, receivesUpdates: !subagentOf },
 	);
-	// A subagent row opens the subagent's own session, under its coordinator.
+	// A subagent row opens the subagent's own session, under its coordinator,
+	// on the coordinator's thread as this screen's panel last read it.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+			if (!coordinator) return;
+			const current = subagentOf && coordinatorThread ? { ...coordinator, threadId: coordinatorThread } : coordinator;
+			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator: current });
 		},
-		[navigation, route.params.hubId, coordinator],
+		[navigation, route.params.hubId, coordinator, subagentOf, coordinatorThread],
 	);
 	const answerFor = useCallback((itemId: string) => answerTo(conversation, itemId), [conversation]);
 	// Stable across renders, so a settled agent message keeps its memoized

@@ -30,3 +30,25 @@ export function useTranscriptSubagentTree(
 	}, [inFront, receivesUpdates, tree]);
 	return held?.snapshot.tree ?? null;
 }
+
+/** The coordinator tree a transcript holds for its finished subagent rows:
+ * none while no subagent row has finished; the session's own on a
+ * coordinator's screen; and on a subagent's screen, the coordinator's under
+ * the thread its panel reads now (`panelThread`), and none until the panel
+ * has read it. A coordinator that restarted runs under a new thread, and a
+ * tree asked for under the route's old one is refused. */
+export function transcriptTreeTarget({
+	showsFinished,
+	coordinator,
+	onSubagentScreen,
+	panelThread,
+}: {
+	showsFinished: boolean;
+	coordinator: SubagentTreeTarget | null;
+	onSubagentScreen: boolean;
+	panelThread: string | null;
+}): SubagentTreeTarget | null {
+	if (!showsFinished || !coordinator) return null;
+	if (!onSubagentScreen) return { ref: coordinator.ref, threadId: coordinator.threadId };
+	return panelThread ? { ref: coordinator.ref, threadId: panelThread } : null;
+}

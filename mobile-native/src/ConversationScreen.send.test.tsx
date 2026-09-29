@@ -4136,6 +4136,64 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		});
 	});
 
+	it("opens a subagent's own subagent under the coordinator's thread as it reads now (#3326 RoboRev)", async () => {
+		// The coordinator restarted since this screen opened: the screen it
+		// pushes asks for the coordinator's tree under the thread it runs now.
+		forgetSubagentTrees("hub-1");
+		const served = subagent(false);
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-n",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Check drain ordering" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-nested",
+					ownerSessionId: "fix",
+					rootSessionId: "coord",
+					childSessionId: "nested",
+					transcriptRef: "local:nested",
+					originItemId: "call-n",
+					description: "Check drain ordering",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(served, { jobs: restarted, coordinatorId: "thread-restarted" });
+		const row = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Check drain ordering, "),
+		)[0];
+		if (!row) throw new Error("no subagent row");
+		act(() => row.props.onPress());
+		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+			hubId: "hub-1",
+			ref: "local:nested",
+			title: "Check drain ordering",
+			coordinator: { ...COORDINATOR, threadId: "thread-restarted" },
+		});
+	});
+
 	it("shows the toast once when the subagent stops at your request", async () => {
 		const { tree, hub } = await mountSubagent(subagent(true));
 		const [row] = flattenSubagents(subagentTree() as never);
