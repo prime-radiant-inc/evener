@@ -36,9 +36,13 @@ const MERMAID_WEBVIEW_PROPS = {
 	onShouldStartLoadWithRequest: (request: { url: string }) => request.url === "about:blank",
 };
 
-type PageMessage = { type: "ready" } | { type: "height"; value: number } | { type: "error"; message: string };
+type PageMessage =
+	| { type: "ready" }
+	| { type: "height"; value: number; id?: number }
+	| { type: "error"; message: string; id?: number };
 
 type RenderPost = { type: "render"; source: string; theme: Record<string, string>; mode: "fit" | "zoom" };
+type PostedRender = RenderPost & { id: number };
 
 // The inline and zoom WebViews render under one fixed element id inside one
 // page, so two render messages in flight would race: a theme flip mid-render
@@ -51,19 +55,33 @@ function useSerializedRenderPosts(webView: RefObject<WebView | null>) {
 	const renderInFlight = useRef(false);
 	const renderQueued = useRef(false);
 	// The most recent request, so a queued post re-sends the latest source/theme.
-	const pending = useRef<RenderPost | null>(null);
+	const pending = useRef<PostedRender | null>(null);
+	// Every posted render is stamped with the next id at POST time (a queued one
+	// included), so the latest id always names the newest REQUESTED render. A
+	// reply carrying an older id belongs to a source that has since been
+	// superseded, and must not be applied to the current one.
+	const nextId = useRef(0);
+	const latestId = useRef(0);
+
+	function send(message: PostedRender) {
+		const view = webView.current;
+		if (!view) return;
+		renderInFlight.current = true;
+		view.postMessage(JSON.stringify(message));
+	}
 
 	function post(message: RenderPost) {
-		pending.current = message;
+		const id = nextId.current + 1;
+		nextId.current = id;
+		latestId.current = id;
+		const stamped: PostedRender = { ...message, id };
+		pending.current = stamped;
 		if (!pageReady.current) return;
 		if (renderInFlight.current) {
 			renderQueued.current = true;
 			return;
 		}
-		const view = webView.current;
-		if (!view) return;
-		renderInFlight.current = true;
-		view.postMessage(JSON.stringify(message));
+		send(stamped);
 	}
 
 	// The page reports ready: a fresh page has nothing outstanding from before
@@ -79,11 +97,11 @@ function useSerializedRenderPosts(webView: RefObject<WebView | null>) {
 		renderInFlight.current = false;
 		if (renderQueued.current && pending.current) {
 			renderQueued.current = false;
-			post(pending.current);
+			send(pending.current);
 		}
 	}
 
-	return { post, markReady, settle };
+	return { post, markReady, settle, latestId: () => latestId.current };
 }
 
 function parsePageMessage(raw: string): PageMessage | null {
@@ -92,10 +110,18 @@ function parsePageMessage(raw: string): PageMessage | null {
 		if (typeof message !== "object" || message === null || !("type" in message)) return null;
 		if (message.type === "ready") return { type: "ready" };
 		if (message.type === "height" && "value" in message && typeof message.value === "number") {
-			return { type: "height", value: message.value };
+			return {
+				type: "height",
+				value: message.value,
+				id: "id" in message && typeof message.id === "number" ? message.id : undefined,
+			};
 		}
 		if (message.type === "error" && "message" in message && typeof message.message === "string") {
-			return { type: "error", message: message.message };
+			return {
+				type: "error",
+				message: message.message,
+				id: "id" in message && typeof message.id === "number" ? message.id : undefined,
+			};
 		}
 		return null;
 	} catch {
@@ -191,8 +217,13 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 			return;
 		}
 		if (message.type === "height") {
-			heightCache.set(source, message.value);
-			setHeight(message.value);
+			// Only the newest render's height is valid for the current source: a
+			// reply for a source that has since been superseded must not be stored
+			// here. Its arrival still settles the queue below.
+			if (message.id === renderPosts.latestId()) {
+				heightCache.set(source, message.value);
+				setHeight(message.value);
+			}
 			renderPosts.settle();
 			return;
 		}

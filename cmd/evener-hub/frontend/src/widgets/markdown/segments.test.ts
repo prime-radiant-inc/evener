@@ -62,6 +62,14 @@ describe("splitMarkdownSegments", () => {
     const segments = splitMarkdownSegments(closed, real);
     expect(segments.map((s) => s.kind)).toEqual(["mermaid", "markdown"]);
   });
+
+  it("does not treat a mismatched fence line as the closer", () => {
+    // The opener is backtick-fenced; "~~~" is content, not a closer, so the
+    // real source still ends in an open mermaid fence and must demote.
+    const real = "```mermaid\ngraph TD; A-->\n~~~";
+    const closed = `${real}\n\`\`\``;
+    expect(splitMarkdownSegments(closed, real).map((s) => s.kind)).toEqual(["markdown"]);
+  });
 });
 
 describe("splitLiveMarkdownSegments", () => {
@@ -90,6 +98,16 @@ describe("splitLiveMarkdownSegments", () => {
     const real = `intro\n\n${MERMAID}\ntail prose\n\n\`\`\`mermaid\ngraph TD; A-->`;
     const segments = splitLiveMarkdownSegments(real, cache);
     expect(segments.map((s) => s.kind)).toEqual(["markdown", "mermaid", "markdown", "markdown"]);
+  });
+
+  it("does not freeze a head at a list-item-continuation mermaid fence", async () => {
+    const { splitLiveMarkdownSegments } = await import("./segments");
+    const cache: { current: LiveSegmentsCache | null } = { current: null };
+    // The fence is indented under "- item", so it is a list continuation, not a
+    // top-level split: the whole is ONE list, exactly as the settled parse sees
+    // it. A frozen head here would lex as one list and the tail as a second.
+    const streaming = "- item\n  ```mermaid\n  graph TD; A-->B\n  ```\n- second\n";
+    expect(splitLiveMarkdownSegments(streaming, cache).map((s) => s.kind)).toEqual(["markdown"]);
   });
 });
 

@@ -52,7 +52,12 @@ function mermaidText(token: Token): string {
   return text.length > 0 ? `${text}\n` : text;
 }
 
-const FENCE_CLOSE_LINE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*$/;
+// The opening fence run on a token raw's first line (opener char + length), and
+// a bare closing-fence line. A closer only terminates when it shares the
+// opener's character and is at least as long (CommonMark), so a `~~~` line
+// inside a backtick fence is content, not a closer.
+const FENCE_OPEN_LINE = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 // A code token's raw ends with a closing fence line exactly when the fence
 // terminated in the source. Normalized for CRLF (marked normalizes at lex,
@@ -60,10 +65,37 @@ const FENCE_CLOSE_LINE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*$/;
 // the lexer's own future changes).
 function fenceTokenTerminated(raw: string): boolean {
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  const opener = FENCE_OPEN_LINE.exec(lines[0] ?? "");
+  if (opener === null) return false;
+  const openerRun = opener[1] ?? "";
+  const char = openerRun.charAt(0);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index] ?? "";
     if (line.trim() === "") continue;
-    return FENCE_CLOSE_LINE.test(line);
+    const closer = FENCE_CLOSE_LINE.exec(line);
+    if (closer === null) return false;
+    const closerRun = closer[1] ?? "";
+    return closerRun.charAt(0) === char && closerRun.length >= openerRun.length;
+  }
+  return false;
+}
+
+// The candidate head is a real freeze point only when the lexer agrees: its
+// last non-space top-level token must be a TERMINATED mermaid code token - the
+// same definition splitMarkdownSegments splits on. A fence indented as a
+// list-item continuation is lexed as a code token INSIDE the list, not a
+// top-level code token, so the candidate is rejected and no head is frozen.
+function headEndsAtTerminatedMermaid(headSource: string): boolean {
+  let tokens: Token[];
+  try {
+    tokens = markdownLexer.lexer(headSource);
+  } catch {
+    return false;
+  }
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (token === undefined || token.type === "space") continue;
+    return isMermaidCodeToken(token) && fenceTokenTerminated((token as { raw?: string }).raw ?? "");
   }
   return false;
 }
@@ -138,8 +170,12 @@ const BARE_FENCE_CLOSER = /^ {0,3}(`{3,}|~{3,})$/;
 // depending on what follows it, which would make the same head boundary
 // alternate between 38 and 37 and defeat the cache. The scan tracks ALL top
 // fences, so a mermaid-looking line inside a non-mermaid fence is code, not an
-// opener. Blockquoted/indented fences never reach here (they do not split), the
-// same shapes splitMarkdownSegments ignores.
+// opener. The candidate is then VALIDATED against the token stream
+// (headEndsAtTerminatedMermaid) before it is honored: a fence indented as a
+// list-item continuation line-matches the opener pattern but lexes inside the
+// list, not as a top-level code token, so it must not freeze a head. A rejected
+// candidate returns 0 (the uncached whole-source behavior for that shape). The
+// validation lex runs only on the cache-miss path (a changed head).
 function lastClosedMermaidFenceEnd(source: string): number {
   const lines = source.split("\n");
   let offset = 0;
@@ -169,7 +205,8 @@ function lastClosedMermaidFenceEnd(source: string): number {
     }
     offset += line.length + (index < lines.length - 1 ? 1 : 0);
   }
-  return end;
+  if (end === 0) return 0;
+  return headEndsAtTerminatedMermaid(source.slice(0, end)) ? end : 0;
 }
 
 // Live segmentation with the frozen head cached on its exact text. The head

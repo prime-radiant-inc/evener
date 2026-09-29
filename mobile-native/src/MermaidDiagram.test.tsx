@@ -58,10 +58,22 @@ it("posts the source as JSON once the page reports ready", () => {
 });
 
 it("sizes itself from the page's height message", () => {
-	const tree = render(<MermaidDiagram source="graph TD; A-->B" />);
-	const webview = tree.root.findByType("WebView" as never);
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
 	act(() => {
-		webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "height", value: 213 }) } });
+		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	const webview = () => tree.root.findByType("WebView" as never);
+	act(() => {
+		webview().props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+	});
+	// The page echoes the render id, so the host can tell this reply apart from a
+	// superseded source's.
+	const id = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string).id;
+	act(() => {
+		webview().props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "height", value: 213, id }) } });
 	});
 	expect(wrapper(tree, "Diagram").props.style.height).toBe(213);
 });
@@ -384,4 +396,31 @@ it("clears the error fallback when the source changes to a valid diagram", () =>
 		tree.update(<MermaidDiagram source={"graph TD; A-->B"} />);
 	});
 	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
+});
+
+it("ignores a height reply from a superseded source", () => {
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	const webview = () => tree.root.findByType("WebView" as never);
+	act(() => {
+		webview().props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+	});
+	const supersededId = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string).id;
+	// The source changes before the first render's reply lands, so the new render
+	// queues behind it and the current source is already the second one.
+	act(() => {
+		tree.update(<MermaidDiagram source="graph TD; P-->Q" />);
+	});
+	// The superseded source's late height must not be stored under the new one.
+	act(() => {
+		webview().props.onMessage({
+			nativeEvent: { data: JSON.stringify({ type: "height", value: 999, id: supersededId }) },
+		});
+	});
+	expect(wrapper(tree, "Diagram").props.style.height).toBe(120);
 });

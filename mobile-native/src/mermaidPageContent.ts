@@ -36,6 +36,9 @@ const MERMAID_SANITIZE_CONFIG = {
 
 interface RenderMessage {
 	type: "render";
+	// The host's monotonically increasing render id, echoed on this render's
+	// reply so the host can drop a reply that a newer source has superseded.
+	id: number;
 	source: string;
 	theme: Record<string, string>;
 	mode: "fit" | "zoom";
@@ -73,9 +76,9 @@ async function renderDiagram(message: RenderMessage): Promise<void> {
 		const container = document.getElementById("mermaid-container");
 		if (!container) throw new Error("mermaid container missing");
 		container.innerHTML = DOMPurify.sanitize(svg, MERMAID_SANITIZE_CONFIG);
-		postToHost({ type: "height", value: container.scrollHeight });
+		postToHost({ type: "height", value: container.scrollHeight, id: message.id });
 	} catch (error) {
-		postToHost({ type: "error", message: error instanceof Error ? error.message : String(error) });
+		postToHost({ type: "error", message: error instanceof Error ? error.message : String(error), id: message.id });
 	}
 }
 

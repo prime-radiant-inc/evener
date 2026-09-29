@@ -75,4 +75,10 @@ describe("splitNativeSegments", () => {
 		const segments = splitNativeSegments("```mermaid\r\ngraph TD; A-->B\r\n```\r\n");
 		expect(segments).toEqual([{ kind: "mermaid", source: "graph TD; A-->B\n" }]);
 	});
+
+	it("does not treat a mismatched fence line as the closer", () => {
+		// The opener is backtick-fenced; "~~~" is content, not a closer, so the
+		// fence is still open and must stay prose (no premature diagram).
+		expect(splitNativeSegments("```mermaid\ngraph TD; A-->\n~~~").map((s) => s.kind)).toEqual(["markdown"]);
+	});
 });

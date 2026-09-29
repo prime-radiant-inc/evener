@@ -17,7 +17,8 @@ import { lexer, type Token } from "marked";
 export type NativeSegment = { kind: "markdown"; source: string } | { kind: "mermaid"; source: string };
 
 const MERMAID_FENCE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid(?:[ \t\r]|$)/im;
-const FENCE_CLOSE_LINE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*$/;
+const FENCE_OPEN_LINE = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 function isMermaidCodeToken(token: Token): boolean {
 	return token.type === "code" && (token.lang ?? "").trim().split(/\s+/)[0]?.toLowerCase() === "mermaid";
@@ -28,10 +29,20 @@ function fenceTokenTerminated(raw: string): boolean {
 	// "\n" alone is deliberate (the web sibling does the same, belt-and-braces
 	// replace aside).
 	const lines = raw.split("\n");
+	// A closer only terminates when it shares the opener's fence character and
+	// is at least as long (CommonMark), so a `~~~` line inside a backtick fence
+	// is content, not a closer (kept in step with the web sibling).
+	const opener = FENCE_OPEN_LINE.exec(lines[0] ?? "");
+	if (opener === null) return false;
+	const openerRun = opener[1] ?? "";
+	const char = openerRun.charAt(0);
 	for (let index = lines.length - 1; index >= 0; index -= 1) {
 		const line = lines[index] ?? "";
 		if (line.trim() === "") continue;
-		return FENCE_CLOSE_LINE.test(line);
+		const closer = FENCE_CLOSE_LINE.exec(line);
+		if (closer === null) return false;
+		const closerRun = closer[1] ?? "";
+		return closerRun.charAt(0) === char && closerRun.length >= openerRun.length;
 	}
 	return false;
 }
