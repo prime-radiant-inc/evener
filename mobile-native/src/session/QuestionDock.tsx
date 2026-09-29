@@ -32,6 +32,9 @@ export interface QuestionDockProps {
 	ready: boolean;
 	/** The answers are on their way. */
 	sending: boolean;
+	/** Offline: sending keeps the answers on the phone until the connection
+	 * returns, and the send button says so. */
+	waitsForConnection?: boolean;
 	folded: boolean;
 	onFold(folded: boolean): void;
 	/** Bring the composer back, focused, to answer in your own words. */
@@ -46,6 +49,7 @@ export function QuestionDock({
 	draft,
 	ready,
 	sending,
+	waitsForConnection = false,
 	folded,
 	onFold,
 	onOtherAnswer,
@@ -114,6 +118,8 @@ export function QuestionDock({
 	const composes = composeQuestionAnswers(questions, selections) !== null;
 	const primaryOff = !editable || (advanceTarget === undefined && !composes);
 	const primary = primaryLabel(advanceTarget, questions.length);
+	const primaryAccessibility =
+		waitsForConnection && advanceTarget === undefined ? `${primary} when you're back online` : primary;
 	const filled = advanceTarget === undefined;
 	function select(resolution: AskResolution | null) {
 		const next = { ...selections, [question.key]: { note: answer?.note ?? "", resolution } };
@@ -292,7 +298,7 @@ export function QuestionDock({
 				</Pressable>
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={primary}
+					accessibilityLabel={primaryAccessibility}
 					accessibilityState={{ disabled: primaryOff }}
 					disabled={primaryOff}
 					onPress={() => {

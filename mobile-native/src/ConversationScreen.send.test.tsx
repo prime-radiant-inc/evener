@@ -13,6 +13,7 @@ import {
 	flatListCalls,
 	flatListScrollFailures,
 	alertRequests,
+	dropped as droppedConnection,
 	type PanGestureMock,
 	playedHaptics,
 	pressable,
@@ -425,7 +426,7 @@ async function mount(
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	mountedScreens.push(tree);
 	if (settled) await settle();
-	return { tree, hub };
+	return { tree, hub, route };
 }
 
 function field(tree: ReactTestRenderer) {
@@ -2760,5 +2761,104 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");
+	});
+});
+
+describe("Send while offline (phase 6, spec 8.5)", () => {
+	type Route = ConversationScreenProps["route"];
+	/** The connection drops, or comes back with the same client. */
+	async function reach(tree: ReactTestRenderer, route: Route, live: boolean) {
+		harness.connection = live
+			? { ...harness.connection, state: "ready", downSince: null }
+			: { ...harness.connection, ...droppedConnection(harness.connection) };
+		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		await settle();
+	}
+	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
+
+	it("keeps a message sent offline, and sends it exactly once when the connection returns", async () => {
+		const ref = "ref-train";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "sent on the train");
+		playedHaptics.length = 0;
+		await press(tree, "Send when you're back online");
+		expect(field(tree)?.props.value).toBe("");
+		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
+		expect(renderedText(tree)).toContain("Will send when you're back online");
+		expect(playedHaptics).toEqual(["impact:light"]);
+		expect(hub.mutations()).toEqual([]);
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/queue"]));
+		const sent = hub.requests.find((request) => request.method === "turn/queue");
+		expect(sent?.params.input).toEqual([{ type: "text", text: "sent on the train" }]);
+		await settle();
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+	});
+
+	it("keeps Send off, and the draft, for a session this phone hasn't read since launch", async () => {
+		const read = await mount(thread("ref-read", "idle"));
+		await reach(read.tree, read.route, false);
+		const ref = "ref-never-read";
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		} as unknown as Route;
+		navigationState.state = { index: 0, routes: [route] };
+		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		mountedScreens.push(tree);
+		await settle();
+		await type(tree, "not yet");
+		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({
+			disabled: true,
+		});
+		expect(field(tree)?.props.value).toBe("not yet");
+		expect(await outbox(ref)).toEqual([]);
+	});
+
+	it("answers a question offline, and sends the answer once when the connection returns", async () => {
+		const ref = "ref-question-offline";
+		const { tree, hub, route } = await mount(thread(ref, "awaiting", true));
+		await reach(tree, route, false);
+		await press(tree, "Drop them");
+		await press(tree, "Send answer when you're back online");
+		const records = await outbox(ref);
+		expect(records).toHaveLength(1);
+		expect((records[0]?.payload as { input: unknown }).input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+		// The batch is answered: the dock gives way.
+		expect(pressable(tree, "Send answer when you're back online")).toBeUndefined();
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toHaveLength(1));
+		await settle();
+		expect(hub.mutations()).toHaveLength(1);
+	});
+
+	it("shows a held message refused once a restarted session answers it, with Discard", async () => {
+		const ref = "ref-restarted";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "for the old instance");
+		await press(tree, "Send when you're back online");
+		const request = hub.client.request;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method !== "turn/queue") return request(method, params);
+			hub.requests.push({ method, params });
+			// The daemon's answer to a stale fence (MutationNotAccepted).
+			throw new WireError("thread instance is stale", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't send this · thread instance is stale"));
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(pressable(tree, "Discard")).toBeDefined();
 	});
 });
