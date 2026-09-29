@@ -458,3 +458,21 @@ it("holds Start, and says why, when a chosen model can't be checked against the 
 	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
 	form.dispose();
 });
+
+it("remembers the model and effort a per-launch setting started the session with", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" } });
+	await act(async () =>
+		form.store.getState().setLaunchOverrides({ model: "lunaroute/glm-5.3-vision", reasoningEffort: "high" }),
+	);
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+		model: "lunaroute/glm-5.3-vision",
+		reasoningEffort: "high",
+	});
+	expect(form.memory.history()[0]?.setup).toMatchObject({
+		model: { provider: "lunaroute", model: "glm-5.3-vision" },
+		effort: "high",
+	});
+	form.dispose();
+});

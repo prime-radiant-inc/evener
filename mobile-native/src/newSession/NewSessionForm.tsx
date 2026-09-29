@@ -16,12 +16,12 @@ import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { ImageAttachments } from "../ImageAttachments";
 import { ImageSelection } from "../imageSelection";
 import { nativeImagePicker } from "../nativeImagePicker";
-import { creationModel } from "../newSession";
+import { creationModel, startedSetup } from "../newSession";
 import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, RowValue, Segmented } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { effortLabel, projectName, setupOf } from "./launchSetup";
+import { effortLabel, projectName } from "./launchSetup";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { hostReach, startBlock } from "./startGate";
 
@@ -63,7 +63,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const start = useCallback(async () => {
 		if (!latest.current.ready || latest.current.blocked || imageSelection.getSnapshot().busy) return;
 		const submittedClient = latest.current.client;
-		const setup = setupOf(store.getState());
+		const setup = startedSetup(store.getState());
 		const outcome = await store.getState().submit();
 		if (outcome.status !== "created") return;
 		try {

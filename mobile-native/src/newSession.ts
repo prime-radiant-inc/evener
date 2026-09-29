@@ -19,6 +19,7 @@ import {
 	modelFromId,
 	moveToHost,
 	type SessionSeed,
+	setupOf,
 	withOwnedOverrides,
 } from "./newSession/launchSetup";
 
@@ -80,6 +81,23 @@ export function creationModel(
 	const id = overrides.model?.trim();
 	if (!id) return selected;
 	return modelFromId(id, models);
+}
+
+/** The setup a start runs with, for this phone to remember: a per-launch
+ * model or effort wins over the form's, as it does on the wire
+ * (resolveScalars), so the next New session opens on what actually started. */
+export function startedSetup(form: {
+	source: string;
+	cwd: string;
+	models: ModelDescriptor[];
+	model: ModelDescriptor | null;
+	reasoning: string;
+	launchOverrides: LaunchConfigLayer;
+}): LaunchSetup {
+	const model = creationModel(form.models, form.model, form.launchOverrides);
+	const override = form.launchOverrides.reasoningEffort?.trim();
+	const reasoning = override || (model?.reasoningEffortLevels?.includes(form.reasoning) ? form.reasoning : "");
+	return setupOf({ ...form, model, reasoning });
 }
 
 /** The per-launch overrides without a model or effort of their own: the
