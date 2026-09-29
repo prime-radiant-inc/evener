@@ -1,7 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import {
 	buildComposerInput,
-	harnessSupportsPluginSelection,
 	MAX_ATTACHMENTS,
 	markerText,
 	pluginSelectionFromOverrides,
@@ -9,9 +8,8 @@ import {
 	resolveScalars,
 	stripMarker,
 	WireError,
-	withPluginSelection,
 } from "@evener/appwire-client";
-import type { HarnessDescriptor, LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
+import type { LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
 import { LOCAL_HOST } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
@@ -42,13 +40,11 @@ interface Form {
 	images: DraftImageData[];
 	addImage(image: DraftImageData): void;
 	removeImage(id: string): void;
-	harness: string;
 	model: ModelDescriptor | null;
 	reasoning: string;
 	launchOverrides: LaunchConfigLayer;
 	setLaunchOverrides(value: LaunchConfigLayer): void;
 	projects: string[];
-	harnesses: HarnessDescriptor[];
 	models: ModelDescriptor[];
 	loadingModels: boolean;
 	submitting: boolean;
@@ -57,7 +53,6 @@ interface Form {
 	modelError: string | null;
 	bind(service: NewSessionService | null): void;
 	setCwd(value: string, refresh?: boolean): Promise<void>;
-	setHarness(value: string): Promise<void>;
 	setPrompt(value: string): void;
 	selectModel(value: ModelDescriptor | null): void;
 	setReasoning(value: string): void;
@@ -67,7 +62,14 @@ interface Form {
 	changeHost(host: string, hostLabel: string): Promise<void>;
 	applySetup(setup: LaunchSetup): void;
 	applySeed(seed: SessionSeed): void;
+	/** Cancel's "Delete draft": the saved draft goes and the form empties. */
+	discard(): void;
 }
+/** The place a model list answers for. */
+function modelContext(source: string, cwd: string): string {
+	return JSON.stringify([source, cwd.trim()]);
+}
+
 export function creationModel(
 	models: ModelDescriptor[],
 	selected: ModelDescriptor | null,
@@ -160,7 +162,6 @@ export function createNewSessionStore(
 				prompt: stripMarker(state.prompt, undefined, image.marker).value,
 			});
 		},
-		harness: "",
 		model: null,
 		reasoning: "",
 		launchOverrides: {},
@@ -168,7 +169,6 @@ export function createNewSessionStore(
 			if (!get().submitting) set({ launchOverrides: JSON.parse(JSON.stringify(value)) });
 		},
 		projects: [],
-		harnesses: [],
 		models: [],
 		loadingModels: false,
 		submitting: false,
@@ -188,7 +188,6 @@ export function createNewSessionStore(
 			set({
 				movingHost: false,
 				projects: [],
-				harnesses: [],
 				models: [],
 				loadingModels: false,
 				submitting: false,
@@ -219,18 +218,6 @@ export function createNewSessionStore(
 			});
 			if (refresh) await get().loadModels();
 		},
-		async setHarness(harness) {
-			if (get().submitting) return;
-			pendingModelId = null;
-			set({
-				...(harness !== get().harness ? { model: null, reasoning: "" } : {}),
-				harness,
-				launchOverrides: harnessSupportsPluginSelection(harness, get().harnesses)
-					? get().launchOverrides
-					: withPluginSelection(get().launchOverrides, { mode: "default" }),
-			});
-			await get().loadModels();
-		},
 		setPrompt(prompt) {
 			set({ prompt });
 		},
@@ -260,20 +247,20 @@ export function createNewSessionStore(
 			const host = get().source;
 			if (!current) return;
 			try {
-				const [projects, harnesses] = await Promise.all([current.recentProjects(host), current.harnesses(host)]);
-				// Another host's projects and harnesses never land in this one's form.
-				if (generation === connection && get().source === host) set({ projects, harnesses, metadataError: null });
+				const projects = await current.recentProjects(host);
+				// Another host's projects never land in this one's form.
+				if (generation === connection && get().source === host) set({ projects, metadataError: null });
 			} catch {
 				if (generation === connection && get().source === host)
 					set({
-						metadataError: "Could not load projects and harnesses. Retry options or use hub defaults.",
+						metadataError: "Could not load projects. Retry options or use hub defaults.",
 					});
 			}
 		},
 		async loadModels(refresh = false) {
 			const current = service;
-			const { cwd, harness, source } = get();
-			const context = JSON.stringify([source, cwd.trim(), harness]);
+			const { cwd, source } = get();
+			const context = modelContext(source, cwd);
 			if (current && loadedContext === context && !refresh) return;
 			const selection = get().model;
 			const reasoning = get().reasoning;
@@ -286,13 +273,7 @@ export function createNewSessionStore(
 			});
 			if (!current) return;
 			try {
-				const result = await current.models(
-					{
-						...(cwd.trim() ? { cwd: cwd.trim() } : {}),
-						...(harness ? { harness } : {}),
-					},
-					source,
-				);
+				const result = await current.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
 				if (generation === catalog) {
 					loadedContext = context;
 					const seeded = pendingModelId === null ? null : modelFromId(pendingModelId, result.data);
@@ -324,7 +305,7 @@ export function createNewSessionStore(
 		async submit() {
 			const current = service;
 			const generation = connection;
-			const { source, cwd, prompt, harness, model, reasoning, submitting } = get();
+			const { source, cwd, prompt, model, reasoning, submitting, launchOverrides } = get();
 			if (
 				!current ||
 				submitting ||
@@ -332,12 +313,9 @@ export function createNewSessionStore(
 				refreshingModels ||
 				!cwd.trim() ||
 				!get().storageLoaded ||
-				(model !== null && loadedContext !== JSON.stringify([source, cwd.trim(), harness]))
+				(model !== null && loadedContext !== modelContext(source, cwd))
 			)
 				return { status: "blocked" };
-			const launchOverrides = harnessSupportsPluginSelection(harness, get().harnesses)
-				? get().launchOverrides
-				: withPluginSelection(get().launchOverrides, { mode: "default" });
 			const settingsModel = creationModel(get().models, model, launchOverrides);
 			const input = buildComposerInput(
 				prompt,
@@ -389,7 +367,6 @@ export function createNewSessionStore(
 					source,
 					cwd: cwd.trim(),
 					...(input.length ? { input } : {}),
-					...(harness ? { harness } : {}),
 					...(scalars.model ? { model: scalars.model } : {}),
 					...(scalars.modelProvider ? { modelProvider: scalars.modelProvider } : {}),
 					...(scalars.reasoningEffort ? { reasoningEffort: scalars.reasoningEffort } : {}),
@@ -400,20 +377,7 @@ export function createNewSessionStore(
 					saving = true;
 					try {
 						storage().clear(hubId);
-						movePlacement();
-						set({
-							source: LOCAL_HOST,
-							hostNote: null,
-							cwd: "",
-							prompt: "",
-							images: [],
-							harness: "",
-							model: null,
-							reasoning: "",
-							launchOverrides: {},
-							unconfirmedCreation: false,
-							storageError: null,
-						});
+						emptyForm();
 						lastSaved = creationDraftMetadata(snapshot());
 					} catch {
 						set({
@@ -431,7 +395,7 @@ export function createNewSessionStore(
 					error: startDispatched
 						? (error instanceof WireError ? `${error.message}\n\n` : "") +
 							"Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist."
-						: "Could not validate selected plugins. No session was requested. Try again; your selection is kept.",
+						: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
 				});
 				return { status: "failed" };
 			} finally {
@@ -452,7 +416,6 @@ export function createNewSessionStore(
 				hostNote: null,
 				movingHost: !!current,
 				projects: [],
-				harnesses: [],
 				models: [],
 				loadingModels: false,
 			});
@@ -482,7 +445,7 @@ export function createNewSessionStore(
 			set({
 				source: setup.host,
 				// Another host's recent projects are read below; the old host's go.
-				...(setup.host !== previous.source ? { projects: [], harnesses: [] } : {}),
+				...(setup.host !== previous.source ? { projects: [] } : {}),
 				cwd: setup.cwd,
 				hostNote: null,
 				model: setup.model ? { provider: setup.model.provider, model: setup.model.model } : null,
@@ -499,7 +462,7 @@ export function createNewSessionStore(
 			pendingModelId = seed.model ?? null;
 			set({
 				source: seed.host,
-				...(seed.host !== previous.source ? { projects: [], harnesses: [] } : {}),
+				...(seed.host !== previous.source ? { projects: [] } : {}),
 				cwd: seed.cwd,
 				hostNote: null,
 				model: null,
@@ -509,14 +472,51 @@ export function createNewSessionStore(
 			if (seed.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);
 		},
+		discard() {
+			if (get().submitting) return;
+			if (!storage) {
+				emptyForm();
+				return;
+			}
+			saving = true;
+			try {
+				storage().clear(hubId);
+				emptyForm();
+				lastSaved = creationDraftMetadata(snapshot());
+			} catch {
+				// The empty form saves over the draft instead, or says it couldn't.
+				saving = false;
+				emptyForm();
+			} finally {
+				saving = false;
+			}
+		},
 	}));
+	/** A form with nothing in it: after a start, or when its draft is discarded. */
+	function emptyForm(): void {
+		movePlacement();
+		store.setState({
+			source: LOCAL_HOST,
+			hostNote: null,
+			cwd: "",
+			prompt: "",
+			images: [],
+			model: null,
+			reasoning: "",
+			launchOverrides: {},
+			unconfirmedCreation: false,
+			storageError: null,
+			error: null,
+		});
+	}
 	function snapshot(): CreationDraft {
 		const state = store.getState();
 		return {
 			source: state.source,
 			cwd: state.cwd,
 			prompt: state.prompt,
-			harness: state.harness,
+			// The draft keeps its stored shape; the phone chooses no harness (ruling 13).
+			harness: "",
 			model: state.model,
 			reasoning: state.reasoning,
 			launchOverrides: state.launchOverrides,
@@ -552,7 +552,7 @@ export function createNewSessionStore(
 		try {
 			const draft = storage().read(hubId);
 			if (draft) {
-				const { unconfirmed, source, ...fields } = draft;
+				const { unconfirmed, source, harness: _harness, ...fields } = draft;
 				store.setState({
 					...fields,
 					// A draft saved before hosts has none: the hub's own machine

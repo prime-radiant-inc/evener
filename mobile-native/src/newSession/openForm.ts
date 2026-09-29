@@ -1,0 +1,42 @@
+// Where New session begins when it opens (spec 11): like a session when "New
+// session like this" opened it; else the draft as it was left, when it has a
+// project or a prompt; else the newest start remembered on this hub ("Same as
+// last time", selected by default); else the hub's most recent project, once
+// the hub has listed them.
+import type { NewSessionStore } from "./newSessionContext";
+import { newestSetup, type RememberedSetup, type SessionSeed } from "./launchSetup";
+
+/** Places the form once, as it opens with its draft loaded. The returned stop
+ * lets go of the wait for the hub's recent projects. */
+export function openForm(
+	store: NewSessionStore,
+	history: readonly RememberedSetup[],
+	like: SessionSeed | undefined,
+): () => void {
+	const form = store.getState();
+	if (like) {
+		form.applySeed(like);
+		return () => {};
+	}
+	if (form.cwd.trim() || form.prompt.trim()) return () => {};
+	const setup = newestSetup(history);
+	if (setup) {
+		form.applySetup(setup);
+		return () => {};
+	}
+	// Nothing was ever started here: the most recent project, unless one is
+	// chosen before the hub lists them.
+	let stop = () => {};
+	const takeRecent = () => {
+		const state = store.getState();
+		const recent = state.projects[0];
+		if (state.cwd.trim()) stop();
+		else if (recent) {
+			stop();
+			void state.setCwd(recent);
+		}
+	};
+	stop = store.subscribe(takeRecent);
+	takeRecent();
+	return () => stop();
+}

@@ -13,15 +13,18 @@ export function LaunchOverrides({
 	value,
 	onChange,
 	disabled,
+	defaultOpen = false,
 }: {
 	client: ConversationClientLike | null;
 	cwd: string;
 	value: LaunchConfigLayer;
 	onChange(value: LaunchConfigLayer): void;
 	disabled: boolean;
+	/** Starts with the options shown, for a page that holds nothing else. */
+	defaultOpen?: boolean;
 }) {
 	const colors = useColors();
-	const [open, setOpen] = useState(false);
+	const [open, setOpen] = useState(defaultOpen);
 	const [query, setQuery] = useState("");
 	const [options, setOptions] = useState<LaunchOption[]>([]);
 	const [resolved, setResolved] = useState<LaunchConfigResolved | null>(null);

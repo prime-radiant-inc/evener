@@ -73,6 +73,7 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import type { SessionSeed } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites } from "./reader/documentReferences";
@@ -229,7 +230,9 @@ export type Routes = {
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
-	NewSession: { hubId: string; hubName: string };
+	/** New session (spec 11), a modal holding its own stack of pages. `like`
+	 * opens it on a session's setup ("New session like this"). */
+	NewSession: { hubId: string; hubName: string; like?: SessionSeed };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it

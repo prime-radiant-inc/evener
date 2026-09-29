@@ -2,14 +2,11 @@
 // - start() wraps thread/start, forwards params, returns {thread, turn}
 // - start() forwards optional model/effort fields
 // - recentProjects() wraps evener/projects/recent and returns string[]
-// - harnesses() wraps evener/harnesses/list and returns HarnessDescriptor[]
 // - errors propagate
 
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
-	HarnessDescriptor,
-	HarnessListResponse,
 	MethodName,
 	MethodTypes,
 	ModelDescriptor,
@@ -149,24 +146,6 @@ describe("NewSessionService", () => {
 		expect(params.reasoningEffort).toBe("high");
 	});
 
-	it("start() forwards optional harness field", async () => {
-		const client = new FakeAppwireClient();
-		client.on(
-			"thread/start",
-			() =>
-				({
-					thread: makeThread(),
-					turn: makeTurn(),
-				}) as ThreadStartResponse,
-		);
-
-		const service = createNewSessionService(client);
-		await service.start({ cwd: "/tmp", harness: "evener" });
-
-		const params = client.calls[0]?.params as { harness?: string };
-		expect(params.harness).toBe("evener");
-	});
-
 	it("start() with empty input sends no input field", async () => {
 		const client = new FakeAppwireClient();
 		client.on(
@@ -204,23 +183,6 @@ describe("NewSessionService", () => {
 
 		expect(client.calls[0]?.method).toBe("evener/projects/recent");
 		expect(projects).toEqual(["/a", "/b", "/c"]);
-	});
-
-	it("harnesses() calls evener/harnesses/list and returns descriptors", async () => {
-		const client = new FakeAppwireClient();
-		const harnesses: HarnessDescriptor[] = [
-			{ id: "evener", label: "Evener" },
-			{ id: "codex", label: "Codex" },
-		];
-		client.on("evener/harnesses/list", () => ({ data: harnesses }) as HarnessListResponse);
-
-		const service = createNewSessionService(client);
-		const result = await service.harnesses();
-
-		expect(client.calls[0]?.method).toBe("evener/harnesses/list");
-		expect(result).toHaveLength(2);
-		expect(result[0]?.id).toBe("evener");
-		expect(result[1]?.label).toBe("Codex");
 	});
 
 	it("models() calls model/list with its scope and returns the response", async () => {
@@ -268,16 +230,6 @@ describe("NewSessionService", () => {
 		await expect(service.recentProjects()).rejects.toThrow("unavailable");
 	});
 
-	it("harnesses() propagates errors", async () => {
-		const client = new FakeAppwireClient();
-		client.on("evener/harnesses/list", () => {
-			throw new Error("unavailable");
-		});
-
-		const service = createNewSessionService(client);
-		await expect(service.harnesses()).rejects.toThrow("unavailable");
-	});
-
 	it("asks the hub's own machine directly", async () => {
 		const client = new FakeAppwireClient();
 		client.on("evener/projects/recent", () => ({ data: ["/home/jesse/git/evener"] }) as ProjectsRecentResponse);
@@ -305,8 +257,6 @@ describe("NewSessionService", () => {
 					return { head: "main" };
 				case "evener/launch/resolve":
 					return { effective: { sandbox: "workspace-write" }, layers: {}, provenance: {} };
-				case "evener/harnesses/list":
-					return { data: [{ id: "evener", label: "Evener" }] };
 				default:
 					throw new Error(`unexpected ${request.method}`);
 			}
@@ -320,7 +270,6 @@ describe("NewSessionService", () => {
 		expect(await service.createDirectory("paradise-park", "/Users/jesse/git/scratch")).toBe("/Users/jesse/git/scratch");
 		expect(await service.branch("paradise-park", cwd)).toBe("main");
 		expect((await service.resolveLaunch("paradise-park", cwd, {})).effective.sandbox).toBe("workspace-write");
-		expect(await service.harnesses("paradise-park")).toEqual([{ id: "evener", label: "Evener" }]);
 		expect(client.calls.map((call) => call.params)).toEqual([
 			{ host: "paradise-park", method: "evener/projects/recent", params: {} },
 			{ host: "paradise-park", method: "model/list", params: { cwd } },
@@ -329,7 +278,6 @@ describe("NewSessionService", () => {
 			{ host: "paradise-park", method: "evener/dirs/create", params: { path: "/Users/jesse/git/scratch" } },
 			{ host: "paradise-park", method: "evener/git/head", params: { cwd } },
 			{ host: "paradise-park", method: "evener/launch/resolve", params: { cwd } },
-			{ host: "paradise-park", method: "evener/harnesses/list", params: {} },
 		]);
 	});
 

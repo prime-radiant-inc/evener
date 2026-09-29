@@ -19,12 +19,15 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CreationPlugins({
 	client,
+	host,
 	cwd,
 	value,
 	onChange,
 	disabled,
 }: {
 	client: AppwireClient;
+	/** The host the session starts on; its plugins are previewed there. */
+	host: string;
 	cwd: string;
 	value: LaunchConfigLayer;
 	onChange(value: LaunchConfigLayer): void;
@@ -44,6 +47,7 @@ export function CreationPlugins({
 	const preview = usePluginPreview({
 		client,
 		cwd,
+		host,
 		launchOverrides: value,
 		pluginRevision: revision,
 		enabled: !!cwd,
