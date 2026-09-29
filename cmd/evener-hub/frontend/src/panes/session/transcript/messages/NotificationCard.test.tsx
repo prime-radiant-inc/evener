@@ -381,6 +381,49 @@ test("a valid local child ref opens the shared transcript action beside the focu
   expect(opened?.slot).toBe("secondary");
 });
 
+// A real daemon frame carries delegate_id and name only
+// (agent/delegate_delivery.go delegateNotificationContent) — never a
+// transcript_ref — so the frame alone leaves the Open control dead on every
+// live subagent report. The card resolves the subagent through the session's
+// entity map by delegate id, the resolution the phone already makes (#3075).
+test("a real delegate frame without a transcript_ref opens the subagent resolved by delegate id", async () => {
+  workspaceStore.setState({
+    panes: [{ id: "main", type: "session", params: { ref: "local:s" }, slot: "main" }],
+    focusedPaneId: "main",
+  });
+  const user = userEvent.setup();
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        secondary: ENTITY_DELEGATE,
+        delegateId: ENTITY_DELEGATE,
+        rawText: `<delegate-notification delegate_id="${ENTITY_DELEGATE}">done</delegate-notification>`,
+      })}
+      sessionRef="local:s"
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Open subagent" }));
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "local:child", parentRef: "local:s" });
+});
+
+test("a delegate frame whose delegate id the entity map cannot answer shows no dead Open control", () => {
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        secondary: "dlg_unknown",
+        delegateId: "dlg_unknown",
+        rawText: '<delegate-notification delegate_id="dlg_unknown">done</delegate-notification>',
+      })}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
+});
+
 test("binds Open to the final notification text fragment instead of permitting a lone control line", () => {
   render(
     <NotificationCard

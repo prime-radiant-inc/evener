@@ -554,9 +554,9 @@ const SESSIONS: RawSession[] = [
 		ago: 11,
 		subs: { run: 2, fail: 0, done: 4 },
 		// Spelled out in prose, not as a path: scripts/sdk/
-		// package-import-paths-check.sh greps every quoted string in this tree
-		// for the AppWire package spelled by path, and cannot tell this fixture
-		// string from a real import (its own header comment says so).
+		// package-import-paths-check.sh flags a quoted relative path into the
+		// AppWire package ("./" or "../"), and this fixture string names no
+		// such path.
 		activity: "Running npm test in the AppWire TypeScript package",
 	},
 

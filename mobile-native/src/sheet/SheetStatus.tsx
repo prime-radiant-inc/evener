@@ -5,6 +5,7 @@ import { useConnectionStatusText } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useConnection } from "../ConnectionProvider";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { Spinner } from "./Spinner";
 
 /** The connection's line at the top of a sheet page; nothing while live. */
 export function SheetStatus() {
@@ -28,13 +29,16 @@ export function SheetStatus() {
 	);
 }
 
-/** What a page that has never loaded says while the connection comes up, in
- * place of a wall with a Reconnect button: spec 15's "Connecting to
- * magic-kingdom…", or spec 14's sentence when no retry can help. */
-export function Connecting({ hubName }: { hubName: string }) {
-	const { fatal } = useConnection();
+/** What a page that has never loaded shows until its first read lands: spec
+ * 15's "Connecting to magic-kingdom…" only while the app is connecting,
+ * spec 14's sentence when no retry can help, and otherwise nothing about the
+ * connection (spec 14): the quiet spinner, named by `label`, with the
+ * sheet's status line above saying anything more. */
+export function FirstLoad({ hubName, label }: { hubName: string; label: string }) {
+	const { state, fatal } = useConnection();
 	const { palette } = useColors();
 	const scale = useTextScale();
+	if (!fatal && state !== "connecting" && state !== "reconnecting") return <Spinner label={label} />;
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
