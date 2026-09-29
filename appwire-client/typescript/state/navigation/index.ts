@@ -29,6 +29,7 @@ export type {
   NormalizedResource,
 } from "./codec";
 export {
+  decodeArchivedListSessions,
   decodeNavigationResponse,
   materializeNavigationResource,
   materializeSnapshot,

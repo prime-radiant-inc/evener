@@ -15,6 +15,8 @@ import type {
 	ModelDescriptor,
 	ModelListResponse,
 	PluginLaunchCandidate,
+	TranscriptDisplayConfig,
+	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
 import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
@@ -218,6 +220,8 @@ const SETUP_METHODS = [
 	"evener/dirs/create",
 	"evener/git/head",
 	"evener/launch/resolve",
+	"evener/settings/transcriptDisplay/get",
+	"evener/settings/transcriptDisplay/patch",
 ] as const;
 export type DemoSetupMethod = (typeof SETUP_METHODS)[number];
 
@@ -310,6 +314,12 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		} satisfies Partial<Answers>;
 	}
 	const localLaunch = launchAnswers(local);
+	// The hub's transcript display defaults per layout, from its shipped ones
+	// (appwire/transcript_display.go TranscriptDisplayShippedDefaults).
+	const transcriptDisplay: TranscriptDisplayDefaults = {
+		desktop: { revision: 0, config: shippedTranscriptDisplay("tools") },
+		mobile: { revision: 0, config: shippedTranscriptDisplay("intent") },
+	};
 	// The models each provider has turned off, and the providers whose models
 	// were checked; the hub keeps both in its own config.
 	const disabledModels = new Set<string>();
@@ -353,6 +363,19 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
 		"evener/update/check": demoUpdateCheck,
+		"evener/settings/transcriptDisplay/get": () => structuredClone(transcriptDisplay),
+		// hubcore's TranscriptDisplayStore.Patch: a patch must name the layout's
+		// current revision, and moves it on by one.
+		"evener/settings/transcriptDisplay/patch": ({ layout, expectedRevision, config }) => {
+			if (layout !== "desktop" && layout !== "mobile") throw new Error(`invalid transcript display layout "${layout}"`);
+			const current = transcriptDisplay[layout];
+			if (current.revision !== expectedRevision)
+				throw new Error(
+					`transcript display ${layout} revision conflict: expected ${expectedRevision}, current ${current.revision}`,
+				);
+			transcriptDisplay[layout] = { revision: current.revision + 1, config: structuredClone(config) };
+			return { layout, ...structuredClone(transcriptDisplay[layout]) };
+		},
 		"evener/instance/list": instanceList,
 		"evener/instance/setModelDisabled": ({ name, model, disabled }) => {
 			requireInstance(name);
@@ -463,6 +486,21 @@ const SIGN_IN: Record<
 	},
 	none: { authModes: ["none"], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
 };
+
+function shippedTranscriptDisplay(level: string): TranscriptDisplayConfig {
+	return {
+		version: 1,
+		content: { kind: "preset", level },
+		advanced: {
+			roundTimings: false,
+			tokenCounts: false,
+			estimatedCost: false,
+			systemEvents: false,
+			promptEvents: false,
+			hookExits: "none",
+		},
+	};
+}
 
 function instanceEntry(
 	provider: (typeof PROVIDERS)[number],

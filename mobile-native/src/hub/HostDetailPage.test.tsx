@@ -2,12 +2,13 @@ import { createHubUpdateController, type HostRow, WireError } from "@evener/appw
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { palettes } from "../design/tokens";
+import { fonts, palettes, uiType } from "../design/tokens";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { Group } from "../sheet/Grouped";
 import { HostDetailPage } from "./HostDetailPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -114,6 +115,24 @@ it("puts an offline host's state in the attention ink, its last error in Menlo, 
 	expect(text).toContain("ssh: connect refused");
 	expect(text).toContain("This host is offline, so its sessions can't be reached. Connect to reach them.");
 	expect(page.button("Connect")).not.toBeNull();
+	page.dispose();
+});
+
+it("keeps the last error inside its own group, in footnote Menlo and the danger ink (hub.js:67)", async () => {
+	const page = await mount(
+		scriptedFleet([hostRow("attic", { attached: false, origin: "sidecar", lastAttachError: "ssh: connect refused" })]),
+		"attic",
+	);
+	const group = page.tree.root.findAll((node) => node.type === Group && node.props.label === "Last error");
+	expect(group).toHaveLength(1);
+	const error = group[0]?.find(
+		(node) => typeof node.type === "string" && node.props.children === "ssh: connect refused",
+	);
+	const style = Object.assign({}, ...[error?.props.style].flat());
+	expect(style.fontFamily).toBe(fonts.mono);
+	expect(style.color).toBe(palettes.light.dangerInk);
+	// Footnote-sized, as the prototype's 13px, not a 17pt row label.
+	expect(style.fontSize).toBe(uiType.footnote.fontSize);
 	page.dispose();
 });
 

@@ -873,8 +873,7 @@ func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResou
 	projector := navigationProjector{projection: p}
 	current, currentRemaining := projector.projectTier(project, "current", 0, maxNavigationSectionRows)
 	recent, recentRemaining := projector.projectTier(project, "recent", 0, maxNavigationSectionRows)
-	archived, archivedRemaining := projector.projectTier(project, "archived", 0, maxNavigationSectionRows)
-	resource := hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: archived, Remaining: archivedRemaining}, Truncated: projector.truncated}
+	resource := hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}, Truncated: projector.truncated}
 	fitNavigationProject(&resource)
 	return resource, true
 }
@@ -886,6 +885,11 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 	}
 	if tier != "current" && tier != "recent" && tier != "archived" {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("invalid navigation tier %q", tier)
+	}
+	// Archived rows are read through evener/archived/list; navigation carries
+	// only their count (the summary's more_archived).
+	if tier == "archived" {
+		return hubapi.NavigationProjectPage{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Tier: tier, Offset: offset, Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}, nil
 	}
 	projector := navigationProjector{projection: p}
 	sessions, remaining := projector.projectTier(project, tier, offset, limit)
@@ -1422,7 +1426,7 @@ func navigationResourceWithRevision(resource any, revision uint64) any {
 }
 
 func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi.NavigationProjectSummary {
-	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: project.MoreArchived, Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), Sources: navigationProjectSources(project.Sources), SessionCount: project.TotalSessionCount()}
+	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: archivedCount(project), Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), Sources: navigationProjectSources(project.Sources), SessionCount: project.TotalSessionCount()}
 }
 
 // navigationProjectSources spells a tree project's owning sources for the wire.

@@ -9,7 +9,9 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
-import { clip, formatByteCount, lineCount, parseArgs, parseJSONObject, str } from "./toolCallText";
+import { taskMutationSummary } from "./taskListStep";
+import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
+import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -18,10 +20,20 @@ export interface ToolSummaryContext {
 }
 
 /** The parts of a step its summary reads. */
-export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output">;
+export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw">;
 
 /** The family a run's summary counts a step under. */
-export type ToolFamily = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "skill" | "mcp" | "tool";
+export type ToolFamily =
+  | "read"
+  | "edit"
+  | "search"
+  | "fetch"
+  | "webSearch"
+  | "shell"
+  | "skill"
+  | "tasks"
+  | "mcp"
+  | "tool";
 
 const GREP_PATTERN_CLIP = 50;
 const QUERY_CLIP = 120;
@@ -96,14 +108,27 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // list_dir ends its listing with the count it returned: "3 entries" after a
 // blank line, the count alone for an empty directory, or "2 of 5 entries
 // (offset 0) — more…" for a page of a longer one. A summary says how many it
-// returned; an output without a count counts its lines.
-const LIST_DIR_COUNT_RE = /(?:^|\n)(\d+)(?: of (\d+))? entries/;
+// returned; an output without a count counts its lines. The footer is always
+// the last line, so only the last line is read, and only the whole footer
+// (agent/session_tools_shell.go's formatDirListing) counts: an entry named
+// like a count ("2 entries.md", "2 entries (notes)") never reads as one.
+const LIST_DIR_COUNT_RE = /^(\d+)(?: of \d+ entries \(offset \d+\)(?: — more with list_dir\(offset=\d+\))?| entries)$/;
+
+function entries(n: number | string): string {
+  return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
+}
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
-  const stated = LIST_DIR_COUNT_RE.exec(output)?.[1];
-  if (stated === undefined) return outputCount(output, "entries");
-  return `${stated} ${stated === "1" ? "entry" : "entries"}`;
+  // The footer is the last line of the tool's own output, which may be
+  // followed by an intervention the registry appended.
+  const tails = outputTails(output);
+  for (const tail of tails) {
+    const stated = LIST_DIR_COUNT_RE.exec(lastLine(tail.trimEnd()))?.[1];
+    if (stated !== undefined) return entries(stated);
+  }
+  // No footer: the listing's own lines, without an intervention after it.
+  return entries(lineCount(tails.at(-1) ?? output));
 }
 
 /** "Listed agent/internal · 4 entries", or "Listed files". */
@@ -197,10 +222,10 @@ export function shellSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
 
 // --- web ----------------------------------------------------------------------
 
-/** How big a fetched page was: web_fetch's size_bytes, else its output. */
+/** How big a fetched page was: web_fetch's size_bytes (from the one parse,
+ * webFetchResult), else its output. */
 export function webFetchByteCount(output: string): number {
-  const sizeBytes = parseJSONObject(output)?.size_bytes;
-  return typeof sizeBytes === "number" ? sizeBytes : output.length;
+  return webFetchResult(output)?.bytes ?? output.length;
 }
 
 /** "Fetched https://example.com/release-notes · 48213 bytes", or "Fetched a
@@ -246,6 +271,36 @@ export function skillName(step: Pick<ToolStep, "argumentsJSON">): string {
 export function useSkillSummary(step: ToolStep): string {
   const name = skillName(step);
   return name ? `Activated skill: ${name}` : "Activated a skill";
+}
+
+// --- tasks ----------------------------------------------------------------------
+
+/** Whether a task_list call asked for a change: a bare call, an empty add and
+ * update, or a historical action with nothing in it ("view", an empty
+ * "append" or "update", an action this build doesn't know) only reads the
+ * list. */
+export function taskListChanges(step: Pick<ToolStep, "argumentsJSON">): boolean {
+  const args = parseArgs(step.argumentsJSON);
+  const nonEmpty = (list: unknown) => Array.isArray(list) && list.length > 0;
+  switch (str(args, "action") ?? "") {
+    case "":
+      return nonEmpty(args.add) || nonEmpty(args.update);
+    case "append":
+      return nonEmpty(args.tasks);
+    case "update":
+      return nonEmpty(args.updates);
+    default:
+      return false;
+  }
+}
+
+// The latest task the call touched ("☑ Reproduce the race", "→ Fix the
+// drain"), as the web's task card folds it; a call that touched no task's
+// status says whether it changed the list or only read it.
+function taskListSummary(step: ToolStep): string {
+  const touched = taskMutationSummary(step);
+  if (touched) return touched;
+  return taskListChanges(step) ? "Updated the task list" : "Checked the task list";
 }
 
 // --- every other tool ---------------------------------------------------------
@@ -333,6 +388,8 @@ function progressFor(
       const skill = skillName(step);
       return skill ? `Activating skill: ${skill}` : "Activating a skill";
     }
+    case "tasks":
+      return taskListChanges(step) ? "Updating the task list" : "Checking the task list";
     case "mcp":
     case "tool":
       return `Using ${toolInWords(name)}`;
@@ -363,6 +420,7 @@ const TOOLS: Record<string, ToolEntry> = {
   exec_command: { family: "shell", summary: shellSummary },
   run_shell_command: { family: "shell", summary: shellSummary },
   use_skill: { family: "skill", summary: useSkillSummary },
+  task_list: { family: "tasks", summary: taskListSummary },
 };
 
 function entryFor(toolName: string): ToolEntry | undefined {

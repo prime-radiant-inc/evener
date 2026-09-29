@@ -239,7 +239,7 @@ it("says the hub is connected and lists its pages", async () => {
 	for (const label of ROWS) expect(find(label)).not.toBeNull();
 });
 
-it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
+it("opens today's screens inside the sheet, so Back returns to the Hub (audit M10)", async () => {
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Keyboard shortcuts", "KeybindingPreferences"],
@@ -248,13 +248,10 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	];
 	for (const [label, screen] of interim) {
 		press(label);
-		expect(root.dispatch).toHaveBeenLastCalledWith({
-			type: "REPLACE",
-			payload: { name: screen, params: { hubId: "hub-1" } },
-		});
+		expect(sheet.navigate).toHaveBeenLastCalledWith(screen, { hubId: "hub-1" });
 	}
+	expect(root.dispatch).not.toHaveBeenCalled();
 	expect(root.navigate).not.toHaveBeenCalled();
-	expect(sheet.navigate).not.toHaveBeenCalled();
 });
 
 /** A hub with `count` plugins installed, which can say its plugins changed. */
@@ -322,13 +319,13 @@ it("opens In-app alerts inside the sheet, between Display and Hubs", async () =>
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
 	status.line = "Reconnecting…";
-	const { tree, root, find, press } = await mount();
+	const { tree, sheet, find, press } = await mount();
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
-	// A row still leaving for today's screen works while the connection is down.
+	// A row opening today's screen still works while the connection is down.
 	press("Hub settings");
-	expect(root.dispatch).toHaveBeenCalledTimes(1);
+	expect(sheet.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: "hub-1" });
 });
 
 it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", async () => {

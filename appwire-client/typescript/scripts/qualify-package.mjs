@@ -638,17 +638,17 @@ Promise.all([
     // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
+const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient, createHubWriteGate());
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
-const plugins: PluginsStore = createPluginsStore(pluginsClient);
+const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
 const revision: ListRevision = createListRevision(); void plugins; void revision;
 const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
 const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
-      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
-const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
@@ -656,9 +656,9 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplacesStore = client.createMarketplacesStore(offline);
+const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
 assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
-const pluginsStore = client.createPluginsStore(offline);
+const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");

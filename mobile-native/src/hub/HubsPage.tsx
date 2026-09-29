@@ -1,17 +1,22 @@
-// Hubs (spec 12): the phone's saved hubs, and adding one. Choosing another hub
-// selects it; the sheet then closes onto that hub's Board by itself
-// (useClosesOnHubChange), so this page never navigates for it.
+// Hubs (spec 12): the phone's saved hubs, the selected one with its connection
+// state, and adding one. Choosing another hub selects it; the sheet then closes
+// onto that hub's Board by itself (useClosesOnHubChange), so this page never
+// navigates for it.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { Pressable, View } from "react-native";
+import { useConnectionStatusText } from "../board/connectionStatus";
 import { useConnection } from "../ConnectionProvider";
 import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { useColors } from "../ui";
-import type { HubRoutes } from "./hubSheetContext";
+import { hubConnectionWord } from "./hubHeader";
+import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 
 export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs">) {
 	const { profiles, activeProfile, selectHub } = useConnection();
 	const { palette } = useColors();
+	const { ready } = useHubSheet();
+	const connectionLine = useConnectionStatusText();
 	return (
 		<GroupedPage>
 			<Group label="Hubs">
@@ -25,6 +30,9 @@ export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs
 								<Row
 									label={profile.name}
 									sub={profile.origin}
+									// Only the selected hub has a connection to describe; the
+									// others are simply not in use (prototype hub.js:202).
+									value={selected ? hubConnectionWord(ready, connectionLine) : undefined}
 									machineSub
 									checked={selected}
 									onPress={selected ? undefined : () => selectHub(profile.id)}

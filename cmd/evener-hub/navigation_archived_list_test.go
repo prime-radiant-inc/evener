@@ -265,3 +265,102 @@ func TestHubArchivedListEmptyPageIsAnEmptyArray(t *testing.T) {
 		t.Fatalf("sessions = %s, want []", response.Sessions)
 	}
 }
+
+// more_archived on a project summary is the project's archived session count:
+// the count the rail's Archived fold shows, and the total the archived list
+// pages through. It is the uncapped tier, not the beyond-cap remainder.
+func TestProjectSummaryMoreArchivedIsTheArchivedCount(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	old := now.Add(-30 * 24 * time.Hour)
+	metas := make([]schema.SessionMeta, 0, 62)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-capped-%03d", i), Name: fmt.Sprintf("capped %d", i), CreatedAt: old, UpdatedAt: old.Add(time.Duration(i) * time.Second), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/capped"}})
+	}
+	for i := range 2 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-current-%d", i), Name: fmt.Sprintf("current %d", i), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/capped"}})
+	}
+	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	small := hubcore.TreeProject{Key: "small", Name: "small", Archived: archivedRows("small", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("small %d", i) })}
+	whole := hubcore.TreeProject{Key: "small", Name: "small", IsArchived: true, Archived: archivedRows("whole", 4, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("whole %d", i) })}
+	p := archivedProjection(t, append(append([]hubcore.TreeProject(nil), tree.Projects...), small, whole)...)
+	for _, catalog := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects} {
+		summaries, err := p.CatalogPage(catalog, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, summary := range summaries.Projects {
+			ids, total := pageAllArchived(t, p, catalog, summary.Key, 50)
+			if summary.MoreArchived != total || total != len(ids) {
+				t.Fatalf("%s %s: more_archived=%d, list total=%d, listed=%d", catalog, summary.Key, summary.MoreArchived, total, len(ids))
+			}
+		}
+	}
+	capped, err := p.CatalogPage(navigationResourceProjects, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range capped.Projects {
+		if summary.Key != "small" && summary.MoreArchived != 60 {
+			t.Fatalf("capped project more_archived=%d, want 60", summary.MoreArchived)
+		}
+	}
+}
+
+// Navigation carries a project's archived count, never its archived rows: the
+// project resource's archived tier is empty with nothing remaining, its
+// archived page is empty, and an archived row's change moves no project
+// fingerprint. Locations and pin sections still index archived rows.
+func TestNavigationServesNoArchivedRows(t *testing.T) {
+	old := time.Unix(1_600_000_000, 0).UTC()
+	current := []hubcore.TreeNode{{ID: "session-now", Title: "now", Kind: "session", State: "idle", UpdatedAt: old.Add(time.Hour)}}
+	archived := archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
+	build := func(archived []hubcore.TreeNode) navigationProjection {
+		return archivedProjection(t,
+			hubcore.TreeProject{Key: "project", Name: "project", Current: current, Archived: archived},
+			hubcore.TreeProject{Key: "only-archived", Name: "only archived", Archived: archivedRows("only", 2, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("only %d", i) })},
+		)
+	}
+	p := build(archived)
+
+	resource, ok := p.Project("project")
+	if !ok || len(resource.Current.Sessions) != 1 || len(resource.Archived.Sessions) != 0 || resource.Archived.Remaining != 0 {
+		t.Fatalf("project resource = current %d, archived %d remaining %d", len(resource.Current.Sessions), len(resource.Archived.Sessions), resource.Archived.Remaining)
+	}
+	onlyArchived, _ := p.Project("only-archived")
+	if err := validateNavigationPageProgress(navigationResourceProject, onlyArchived); err != nil {
+		t.Fatalf("a project whose only rows are archived fails page progress: %v", err)
+	}
+	page, err := p.ProjectPage("project", "archived", 0, 50)
+	if err != nil || len(page.Sessions) != 0 || page.Remaining != 0 {
+		t.Fatalf("archived page = %d rows, remaining %d, err %v", len(page.Sessions), page.Remaining, err)
+	}
+	location, ok := p.Location("local:archived-001")
+	if !ok || location.Tier != "archived" || location.ProjectKey != "project" || !location.TopLevel {
+		t.Fatalf("archived location = %#v, found %v", location, ok)
+	}
+
+	renamed := append([]hubcore.TreeNode(nil), archived...)
+	renamed[0].Title = "renamed archived row"
+	before, _, err := navigationLogicalFingerprintsContext(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := navigationLogicalFingerprintsContext(context.Background(), build(renamed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "project"}
+	if before[key] != after[key] {
+		t.Fatal("renaming an archived row moved the project fingerprint")
+	}
+	// The archived count still rides the project summary, so archiving one
+	// more session moves the fingerprint and the rail refetches its list.
+	grown := append(append([]hubcore.TreeNode(nil), archived...), hubcore.TreeNode{ID: "session-archived-new", Title: "newly archived", Kind: "session", State: "idle", UpdatedAt: old.Add(-time.Hour)})
+	moved, _, err := navigationLogicalFingerprintsContext(context.Background(), build(grown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[key] == moved[key] {
+		t.Fatal("archiving one more session left the project fingerprint unchanged")
+	}
+}

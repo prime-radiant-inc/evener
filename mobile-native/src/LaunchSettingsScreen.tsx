@@ -11,12 +11,12 @@ import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
-import type { Routes } from "./screens";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { confirmDiscard } from "./sheet/confirmDiscard";
 
-type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
+type Props = NativeStackScreenProps<HubRoutes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state } = useConnection();
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;

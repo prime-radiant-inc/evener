@@ -24,6 +24,7 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
+import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
@@ -164,7 +165,7 @@ function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
   return outcome?.kind === "applied" ? outcome.marketplaces : undefined;
 }
 
-export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {
+export function createMarketplacesStore(client: MarketplacesClient, gate: HubWriteGate): MarketplacesStore {
   // A browse response is keyed by marketplace name, so it can outlive the
   // catalog it describes: a request started before an edit, a re-source or a
   // removal resolves afterwards and would put the retired catalog straight
@@ -275,52 +276,57 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
     const set = lifecycle.guard(publish);
 
-    /** Runs one mutation: its response's list is written only if no later
-     * revision has committed since, and the catalogs it names are retired
-     * either way within the generation it was issued in (retiring is
-     * monotonic). Rejects as the request does. */
-    function mutate(
+    /** Runs one mutation under the shared hub write gate: its response's list
+     * is written only if no later revision has committed since, and the
+     * catalogs it names are retired either way within the generation it was
+     * issued in (retiring is monotonic). Rejects as the request does, or with
+     * HubWriteBusyError when another plugin or marketplace write already holds
+     * the gate. */
+    async function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
       onFailure?: (error: unknown) => MarketplaceEntry[] | undefined,
     ): Promise<void> {
-      const issuedIn = generation;
-      return writeRevisioned(
-        listRevision,
-        request,
-        (resp) => {
-          // A reset or a dispose ended the generation this write was issued in:
-          // its answer is about a store that has forgotten everything it read.
-          if (issuedIn !== generation) return null;
-          // The catalogs this write names are retired whether or not its list is
-          // the live answer: retiring is monotonic within the generation, so a
-          // catalog stale under an older list is stale under a newer one too.
-          if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
-          // The list, and the two fields that belong to it, go through the fence:
-          // see plugins.ts's mutate for why the live answer owns all three.
-          return () =>
-            set((s) => ({
-              ...publishMarketplaceSnapshot(resp.marketplaces),
-              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
-            }));
-        },
-        onFailure
-          ? (error) => {
-              const applied = onFailure(error);
-              if (applied === undefined || issuedIn !== generation) return null;
-              return () => {
-                if (issuedIn !== generation) return;
-                set((s) => ({
-                  ...publishMarketplaceSnapshot(applied),
-                  browseCatalogs: retireCatalogsAbsentFrom(
-                    retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
-                    applied,
-                  ),
-                }));
-              };
-            }
-          : undefined,
-      );
+      const ran = await gate.run(() => {
+        const issuedIn = generation;
+        return writeRevisioned(
+          listRevision,
+          request,
+          (resp) => {
+            // A reset or a dispose ended the generation this write was issued in:
+            // its answer is about a store that has forgotten everything it read.
+            if (issuedIn !== generation) return null;
+            // The catalogs this write names are retired whether or not its list is
+            // the live answer: retiring is monotonic within the generation, so a
+            // catalog stale under an older list is stale under a newer one too.
+            if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+            // The list, and the two fields that belong to it, go through the fence:
+            // see plugins.ts's mutate for why the live answer owns all three.
+            return () =>
+              set((s) => ({
+                ...publishMarketplaceSnapshot(resp.marketplaces),
+                browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+              }));
+          },
+          onFailure
+            ? (error) => {
+                const applied = onFailure(error);
+                if (applied === undefined || issuedIn !== generation) return null;
+                return () => {
+                  if (issuedIn !== generation) return;
+                  set((s) => ({
+                    ...publishMarketplaceSnapshot(applied),
+                    browseCatalogs: retireCatalogsAbsentFrom(
+                      retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
+                      applied,
+                    ),
+                  }));
+                };
+              }
+            : undefined,
+        );
+      });
+      if (!ran) throw new HubWriteBusyError();
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>

@@ -62,6 +62,11 @@ export interface RailProject {
   // to this hub's own project of the same ID or path.
   sources?: string[];
   session_count?: number;
+  /** The catalog the project was listed in; its archived list is keyed by it. */
+  catalog?: "projects" | "archived_projects" | "test_runs";
+  /** The navigation summary's archived session count. A loaded archived list
+   * whose total differs is stale (rows were archived elsewhere) and refetches. */
+  archived_total?: number;
   sessions: RailSession[];
   loaded?: boolean;
   resourceError?: string;
@@ -295,6 +300,7 @@ function tierOverflowPages(p: RailProject, tiers: readonly TreeTier[]): Overflow
       {
         projectKey: p.key,
         tier,
+        ...(tier === "archived" && p.catalog ? { catalog: p.catalog } : {}),
         offset: p.nextOffsets?.[tier] ?? p.sessions.filter((n) => (n.tier ?? "current") === tier).length,
         limit: Math.min(count, 50),
       },

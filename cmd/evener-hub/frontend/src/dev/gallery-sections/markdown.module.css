@@ -5,3 +5,27 @@
 .frame {
   width: min(440px, calc(100vw - 96px));
 }
+
+/* One labeled case in the Mermaid block: a caption above the frame, mirroring
+ * the gallery's other "one row per documented state" sections. */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rowLabel {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+/* The wide-diagram case is deliberately wider than the reading frame so the
+ * diagram's own max-width/overflow behaviour is visible (the fullscreen
+ * affordance lands in Task 7). min() against the viewport, not max-width: the
+ * ThemeFlip pane is shrink-to-fit, so a percentage would not resolve - the same
+ * reason .frame above uses min(). */
+.wide {
+  width: min(720px, calc(100vw - 96px));
+}

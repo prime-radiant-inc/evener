@@ -11,6 +11,11 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../TranscriptImages", () => ({ TranscriptImages: "TranscriptImages" }));
+vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+// MarkdownResponse renders a MermaidDiagram, whose WebView ships untranspiled
+// Flow source; the other suites that render it mock it the same way.
+vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./evidence", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./evidence")>();
 	return { ...original, stepEvidence: vi.fn(original.stepEvidence) };
@@ -125,5 +130,82 @@ describe("the evidence it draws", () => {
 		act(() => tree.update(<StepEvidence step={{ ...shell }} evidence={evidence} hubId="hub-1" />));
 		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
 		expect(texts(tree.root).some((node) => node.props.accessibilityLabel === "ok")).toBe(true);
+	});
+});
+
+// Each tool's evidence drawn as its words (evidence.ts reads them from what the
+// tools print; agent/testdata/toolwire).
+describe("each tool's evidence, drawn", () => {
+	const drawn = (evidence: Parameters<typeof StepEvidence>[0]["evidence"]) =>
+		render(<StepEvidence step={step("tool", {})} evidence={evidence} hubId="hub-1" />);
+
+	it("says what the shell tool's footer notes, quietly", () => {
+		const tree = drawn([{ kind: "note", text: "Timed out" }]);
+		expect(byText(tree.root, "Timed out")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+
+	it("says a nonzero exit in danger ink", () => {
+		const tree = drawn([{ kind: "exit", code: 1 }]);
+		expect(byText(tree.root, "Exited 1")?.props.style).toMatchObject({ color: DANGER_INK });
+	});
+
+	it("shows a fetched page's answer under where it came from and its size", () => {
+		const tree = drawn([{ kind: "page", text: "Three fixes.", url: "https://example.com/notes", bytes: 48213 }]);
+		expect(byText(tree.root, "Three fixes.")).toBeTruthy();
+		expect(byText(tree.root, "https://example.com/notes")?.props.style).toMatchObject({ fontFamily: "Menlo" });
+		// The web's size, formatByteCount.
+		expect(byText(tree.root, "48213 bytes")).toBeTruthy();
+	});
+
+	it("heads a skill's instructions with its name, the instructions as markdown", () => {
+		const tree = drawn([{ kind: "markdown", title: "systematic-debugging", markdown: "# Debugging" }]);
+		expect(byText(tree.root, "systematic-debugging")).toBeTruthy();
+		expect(tree.root.findAll((node) => node.props.markdown === "# Debugging").length).toBeGreaterThan(0);
+	});
+
+	it("draws a task list as the Tasks sheet does, with the note the call added under its task", () => {
+		const tree = drawn([
+			{
+				kind: "tasks",
+				tasks: [
+					{ id: 1, status: "done", description: "Reproduce the race", note: "Seen in 3 of 20 runs." },
+					{ id: 2, status: "in_progress", description: "Fix the drain" },
+					{ id: 3, status: "open", description: "Run it again" },
+					{ id: 4, status: "cancelled", description: "Bisect" },
+				],
+			},
+		]);
+		expect(byText(tree.root, "✓ Reproduce the race")?.props.accessibilityLabel).toBe("Done: Reproduce the race");
+		expect(byText(tree.root, "● Fix the drain")?.props.accessibilityLabel).toBe("In progress: Fix the drain");
+		expect(byText(tree.root, "○ Run it again")?.props.accessibilityLabel).toBe("Open: Run it again");
+		expect(byText(tree.root, "× Bisect")?.props.accessibilityLabel).toBe("Cancelled: Bisect");
+		expect(byText(tree.root, "Seen in 3 of 20 runs.")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+
+	it("shows the first 40 tasks of a longer list, and the rest on request", () => {
+		const tasks = Array.from({ length: 41 }, (_, n) => ({
+			id: n + 1,
+			status: "open" as const,
+			description: `task ${n + 1}`,
+		}));
+		const tree = drawn([{ kind: "tasks", tasks }]);
+		const shown = () => texts(tree.root).filter((node) => /^○ task \d+$/.test(textOf(node)));
+		expect(shown().map(textOf)).toEqual(Array.from({ length: 40 }, (_, n) => `○ task ${n + 1}`));
+		const showAll = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Show all 41 tasks",
+		)[0];
+		expect(textOf(showAll)).toBe("Show all 41 tasks");
+		act(() => showAll.props.onPress());
+		expect(shown()).toHaveLength(41);
+	});
+
+	it("labels a tool's arguments and result, each in Menlo", () => {
+		const tree = drawn([
+			{ kind: "json", label: "Arguments", text: '{\n  "a": 1\n}' },
+			{ kind: "json", label: "Result", text: '{\n  "b": 2\n}' },
+		]);
+		expect(byText(tree.root, "Arguments")).toBeTruthy();
+		expect(byText(tree.root, "Result")).toBeTruthy();
+		expect(byText(tree.root, '  "a": 1')?.props.style).toMatchObject({ fontFamily: "Menlo" });
 	});
 });

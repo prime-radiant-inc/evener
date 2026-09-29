@@ -20,7 +20,10 @@ const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b|\btry again 
 function productionFiles(dir: string): string[] {
 	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
 		const full = path.join(dir, entry.name);
-		if (entry.isDirectory()) return entry.name === "dev" ? [] : productionFiles(full);
+		// "generated" holds vendored bundle output (src/generated/mermaidPage.ts),
+		// not authored copy; its authored source (src/mermaidPageContent.ts) stays
+		// scanned. "dev" is the browser/CLI dev harnesses.
+		if (entry.isDirectory()) return entry.name === "dev" || entry.name === "generated" ? [] : productionFiles(full);
 		if (!/\.tsx?$/.test(entry.name) || /\.(test|testkit)\.tsx?$/.test(entry.name)) return [];
 		return [full];
 	});
