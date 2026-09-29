@@ -278,14 +278,22 @@ only clears loading on failure, and the
 require Refresh/Load earlier output. No focused live-view test establishes
 automatic following for this component.
 
-**Discuss.** Follow an active job while its transcript is visible, merge new tail
-content with already-loaded history, and demand-page older content. Choose
-subscription or bounded polling, stop it appropriately, and preserve reading
-position instead of polling every background job.
+**Decision.** An open job-output viewer stays current automatically. Follow new
+output while the reader is at the bottom; when they scroll into earlier output,
+continue receiving new output without moving their reading position. Returning
+to the live end shows the latest available output. Load retained older output on
+scroll demand, recover temporary read failures automatically, and obtain final
+output when the job finishes. Use bounded memory and fetch activity appropriate
+to the visible viewer; this does not require monitoring every unopened job.
+Subscription or polling mechanics remain an implementation choice.
+Implementation remains pending.
 
 **Acceptance.** Open before first output and observe output through completion
-without clicking. Read older output while the job continues; no content or
-position is lost. A failed read recovers automatically.
+without clicking. While reading older output, verify new output continues to
+arrive without moving the reading position; returning to the live end shows it.
+Older paging and new output coexist without gaps or duplication, and a failed
+read recovers automatically. A high-volume job does not require unbounded
+client memory.
 
 ### C10 Quiet task panels
 
