@@ -286,13 +286,11 @@ describe("transcript display config", () => {
     });
   });
 
-  test("inventory gates informational notices on expandByDefault (the high verbosity levels)", () => {
-    for (const level of ["activity", "full"] as const) {
-      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
-        "informationalNotices",
-      );
-    }
-    for (const level of ["chat", "intent", "tools"] as const) {
+  test("inventory shows informational notices at full only (reasoning is the field only full turns on)", () => {
+    expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "full" })).visible).toContain(
+      "informationalNotices",
+    );
+    for (const level of ["chat", "intent", "tools", "activity"] as const) {
       expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).hidden).toContain(
         "informationalNotices",
       );
@@ -303,8 +301,8 @@ describe("transcript display config", () => {
           kind: "custom",
           toolIntent: true,
           toolCalls: true,
-          reasoning: false,
-          expandByDefault: true,
+          reasoning: true,
+          expandByDefault: false,
         }),
       ).visible,
     ).toContain("informationalNotices");
