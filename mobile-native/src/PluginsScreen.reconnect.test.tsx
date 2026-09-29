@@ -5,7 +5,7 @@
 // free with the remount; keeping the store mounted hands that duty to the
 // store's own reconnect recovery (storeLifecycle.ts), which only runs when a
 // host drives connectionChanged - the way useCredentialStore drives the
-// credential store (credentialStore.ts). Mirrors ProvidersScreen.test.tsx's
+// credential store (credentialStore.ts). Mirrors hub/ProvidersPage.test.tsx's
 // mocking: every native edge the screen reaches is mocked here and nowhere
 // else, and the hub is the SDK's FakeClient.
 import type { ComponentProps } from "react";

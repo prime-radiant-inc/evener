@@ -19,6 +19,8 @@ export type HubRoutes = {
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
 	HostEdit: { hubId: string; name: string };
+	/** focus opens that provider's detail once; signIn starts its sign-in instead. */
+	Providers: { hubId: string; focus?: string; signIn?: boolean };
 	Hubs: undefined;
 	AddHub: { how: How };
 	HubDetails: { id: string };

@@ -29,6 +29,7 @@ import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
+import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
 import {
@@ -41,7 +42,6 @@ import {
 	ProjectsScreen,
 	SessionLocationScreen,
 } from "./src/ProjectsScreen";
-import { ProvidersScreen } from "./src/ProvidersScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
 import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
@@ -97,9 +97,22 @@ export default function App() {
 	);
 }
 function Navigation() {
-	const { loading, initialLocation, activeProfile, restorationError } =
-		useConnection();
+	const {
+		loading,
+		initialLocation,
+		activeProfile,
+		restorationError,
+		client,
+		state: connectionState,
+	} = useConnection();
 	const [state, setState] = useState<NavigationState>();
+	// What no open session is sending goes on a ready connection (ruling 17).
+	useEffect(() => {
+		outboxFlush.bind(
+			activeProfile?.id ?? null,
+			connectionState === "ready" ? client : null,
+		);
+	}, [activeProfile?.id, connectionState, client]);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	// In-app alerts follow what is on screen (spec 13.3).
 	const reportRoutes = useReportRoutes();
@@ -209,7 +222,6 @@ function Navigation() {
 						component={KeybindingPreferencesScreen}
 						options={{ title: "Keyboard shortcuts" }}
 					/>
-					<Stack.Screen name="Providers" component={ProvidersScreen} />
 					<Stack.Screen name="Plugins" component={PluginsScreen} />
 					<Stack.Screen
 						name="HubSettings"

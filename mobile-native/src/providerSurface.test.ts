@@ -13,7 +13,7 @@ import { useProviderSurface } from "./providerSurface";
 // configuration refused while the listing refuses it or holds a replaced
 // connection's rows), its unmount lifetime guard, and its sanitized
 // single-flight credential probe. This suite drives those rules directly;
-// ProvidersScreen.test.tsx mounts the screen over the same render harness.
+// hub/ProvidersPage.test.tsx mounts the page over the same render harness.
 
 afterEach(() => {
 	vi.useRealTimers();

@@ -4,7 +4,7 @@
 // re-read once the connection is ready again - the wall this screen used to
 // show remounted the store instead, and a manual retry's replacement client
 // is still connecting when the stores around it first read. Mirrors
-// ProvidersScreen.test.tsx's mocking; the focus effect stands in for
+// hub/ProvidersPage.test.tsx's mocking; the focus effect stands in for
 // @react-navigation/native's the way the installed hook (7.3.18) behaves -
 // it runs the callback on mount and on every identity change while the
 // screen is focused, calling the returned cleanup first, which is the re-run
