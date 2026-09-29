@@ -25,7 +25,7 @@ vi.mock("react-native-safe-area-context", () => ({
 // vitest throws if anything reads another export.
 vi.mock("react-native-enriched-markdown", () => ({}));
 vi.mock("@react-navigation/elements", () => ({}));
-vi.mock("@react-navigation/native", () => ({}));
+vi.mock("@react-navigation/native", () => ({ createNavigationContainerRef: () => ({ getRootState: () => undefined }) }));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
 vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-clipboard", () => ({}));
@@ -38,6 +38,7 @@ vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({}));
 vi.mock("expo-secure-store", () => ({}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-application", () => ({ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }));
 vi.mock("expo-web-browser", () => ({}));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,

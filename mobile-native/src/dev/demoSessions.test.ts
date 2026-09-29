@@ -13,6 +13,7 @@ import { configForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
+import { documentReferences } from "../reader/documentReferences.js";
 import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
@@ -194,7 +195,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 10: a working session whose one queued message offers Steer now", () => {
 		const { model } = open("s-tasklist");
 		expect(model.status.type).toBe("active");
-		const queued = ghosts(model, [], null, []);
+		const queued = ghosts(model, [], null, [], true);
 		expect(queued).toHaveLength(1);
 		expect(queued[0]).toMatchObject({ state: "queued", buttons: ["steerNow"] });
 	});
@@ -202,7 +203,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("queues enough on one working session to open the Queue sheet from 'N more queued'", () => {
 		const { model } = open("s-stumble");
 		expect(model.status.type).toBe("active");
-		expect(shownGhosts(ghosts(model, [], null, [])).moreQueued).toBeGreaterThan(0);
+		expect(shownGhosts(ghosts(model, [], null, [], true)).moreQueued).toBeGreaterThan(0);
 	});
 
 	it("frame 11: the last turn failed on a sign-in error", () => {
@@ -269,6 +270,29 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			rename: true,
 			skillInput: true,
 		});
+	});
+
+	it("frame 17: Get PR 2138 Test Clean names the settle-race plan it wrote, so its chip shows with an age", () => {
+		const { thread, model } = open("s-pr2138");
+		expect(documentReferences(model.turns, thread.cwd)).toContainEqual({
+			path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+			updatedAt: expect.any(String),
+		});
+	});
+
+	it("serves a running subagent read-only, and one whose run ended as a past session (ruling 30)", () => {
+		// While a subagent runs in its coordinator's process the hub serves it as
+		// a read-only alias with no capabilities (cmd/evener-hub/app_rpc.go);
+		// once its run ends, as a past session (pastThreadCapabilities).
+		const subagent = (title: string) => {
+			const thread = sessions.find((candidate) => candidate.evener.parentRef && candidate.name === title);
+			if (!thread) throw new Error(`no subagent thread "${title}"`);
+			return thread;
+		};
+		const running = subagent("Check drain ordering in tests");
+		expect(running.status.type).toBe("active");
+		expect(Object.values(running.evener.capabilities).some(Boolean)).toBe(false);
+		expect(subagent("Fix race in tree settle").evener.capabilities).toEqual(threadOf("s-roster").evener.capabilities);
 	});
 
 	it("advertises only readable notes on a session that needs a restart", () => {

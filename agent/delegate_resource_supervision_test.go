@@ -1861,7 +1861,7 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 			blockedBeforeClose := clock.BlockedCount()
 			closeResult := make(chan error, 1)
 			go func() {
-				closeResult <- jm.closeRuntimeState()
+				closeResult <- jm.closeRuntimeState(context.Background())
 			}()
 			clock.BlockUntil(blockedBeforeClose + 1)
 			clock.Advance(time.Second)

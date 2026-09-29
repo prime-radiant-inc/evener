@@ -966,7 +966,7 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 		}
 		for _, delegate := range delegates {
-			projected := appwireDelegateFromAgentStatus(delegate)
+			projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
 			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 		}

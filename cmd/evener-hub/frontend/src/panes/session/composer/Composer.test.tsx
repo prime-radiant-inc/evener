@@ -783,7 +783,7 @@ test("the composer region fills pane height and bottom-anchors the replacement s
 // width: a docked pane squeezed narrow on a desktop display needs the same
 // icon-only Send the phone gets, and a viewport media query cannot see that
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
-// The 559px boundary matches SessionChrome's own GoalControl chip swap.
+// The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
 test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
   expect(css).toMatch(/\.composer\s*\{[^}]*container-type:\s*inline-size/);
@@ -827,7 +827,36 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivityPanelStoreForTests();
   resetActivitySummaryStoreForTests();
+  // A narrow-layout test leaves its stub installed; jsdom has no real
+  // ResizeObserver, so the honest baseline for the next test is none at all.
+  delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 });
+
+// --- narrow (phone-width) layout --------------------------------------------
+//
+// Jesse's 2026-09-28 design ruling on the #1339 phone-width verb wrap:
+// below the composer's phone-width boundary the control row holds Send
+// alone, with Stop and Steer riding in the session menu instead of wrapping
+// below the status row. The narrow gate reads a real ResizeObserver
+// (narrowComposer.ts), which jsdom does not ship, so the narrow side is
+// driven through a stub that reports ONLY for the composer root - the one
+// element whose subtree contains the input card. Every other ResizeObserver
+// in this tree (the textarea's own autoGrow, the popovers') observes an
+// element inside the card, so the stub leaves them exactly as inert as they
+// are without any ResizeObserver at all, and this file's default state (no
+// stub, like every other composer test) pins the wide layout.
+function installNarrowComposer(width: number): void {
+  class ComposerRootResizeObserver implements ResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element): void {
+      if (target.querySelector('[data-testid="composer-input-card"]') === null) return;
+      this.callback([{ contentRect: { width } } as ResizeObserverEntry], this);
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globalThis.ResizeObserver = ComposerRootResizeObserver as unknown as typeof ResizeObserver;
+}
 
 function textarea(): HTMLDivElement {
   return screen.getByRole("textbox", { name: /^message$/i }) as HTMLDivElement;
@@ -2136,6 +2165,87 @@ test("stop and steer both render and both work during the window after status fl
   await user.click(screen.getByTestId("composer-stop"));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
+});
+
+// --- narrow (phone-width) verb layout ---------------------------------------
+//
+// The narrow gate (narrowComposer.ts) is what Jesse's 2026-09-28 ruling
+// rides on: the verbs a phone can't fit beside the status row answer from
+// the session menu instead of wrapping below it.
+
+test("a phone-width composer keeps Send in the row and moves Stop and Steer into the session menu", async () => {
+  installNarrowComposer(320);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "hi");
+  // The row that used to wrap a third verb below the status row holds Send
+  // alone now...
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  // ...and the verbs answer from the session menu. Its items carry the
+  // SessionMenu-owned labels, not the row buttons' testids (the menu has
+  // none), and "Steer" alone stays unambiguous - QueueStrip's longer
+  // "Steer queue now" does not exact-match.
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Steer" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
+  const steerCall = fake.calls.find((c) => c.method === "turn/steer");
+  expect(steerCall?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "hi" }] });
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Stop" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
+});
+
+test("a wide composer keeps the verbs in the row and the session menu carries none", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+
+  await user.type(textarea(), "hi");
+  expect(screen.getByTestId("composer-stop")).toBeTruthy();
+  expect(screen.getByTestId("composer-steer")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+});
+
+test("a phone-width idle composer's session menu carries no turn verbs", async () => {
+  installNarrowComposer(320);
+  const user = userEvent.setup();
+  // The default fixture is idle: no turn is running, so there is nothing to
+  // stop or steer, and the menu must not offer either.
+  await mountComposer("ref_a");
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
 });
 
 // A press is judged on the session's controls at the moment it lands, not on
@@ -5438,7 +5548,7 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
 });
 
-test("a successful /goal response fallback shows the goal chip without rehydration", async () => {
+test("a successful /goal response fallback shows the goal row without rehydration", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_goal_chip");
   fake.on("goal/set", () => ({ started: true }));
@@ -5448,9 +5558,12 @@ test("a successful /goal response fallback shows the goal chip without rehydrati
 
   // This fake emits no notification and never rehydrates the thread, so this
   // exercises the goal/set response fallback stored in ThreadModel. Separate
-  // store tests prove an accepted push or hydration invalidates that fallback.
-  await waitFor(() => expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy());
-  expect(screen.getByTestId("goal-chip-trigger").textContent).toContain("Goal: active");
+  // store tests prove an accepted push or hydration invalidates that
+  // fallback. The composer's goal readout is the CurrentWork goal row now:
+  // the goal chip left the composer row with Jesse's 2026-09-28 "drop goal
+  // inline in the composer" ruling.
+  await waitFor(() => expect(screen.getByTestId("current-work-goal")).toBeTruthy());
+  expect(screen.getByTestId("current-work-goal-value").textContent).toBe("ship the demo");
 });
 
 test("a failed built-in invocation preserves the draft and toasts a friendly message", async () => {

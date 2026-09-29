@@ -586,7 +586,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			if retirement {
 				jobManagerCloseErr = s.jobManager.releaseQuiescentRuntime()
 			} else {
-				jobManagerCloseErr = s.jobManager.closeRuntimeState()
+				jobManagerCloseErr = s.jobManager.closeRuntimeState(budgetCtx)
 			}
 		}
 

@@ -11,7 +11,7 @@
   /* The query container for the Send button's word collapse below (and any
    * future pane-width response in this subtree): a docked pane squeezed to
    * phone width inside a desktop viewport must compact exactly like the phone
-   * does - GoalControl's own compact trigger already answers the same
+   * does - the status row's own compression already answers the same
    * 559px boundary inside SessionChrome. inline-size containment is safe here:
    * this box's width comes from PaneScaffold's footer slot, never its content. */
   container-type: inline-size;
@@ -25,8 +25,7 @@
 /* Positions SlashCompletionMenu (an absolutely-positioned child) above the
  * form it wraps, without affecting this element's own layout - see that
  * component's own slashcompletionmenu.module.css header comment for the
- * anchored-float recipe (matches panes/session/chrome/goalcontrol.module.css's
- * own .anchor/.popover pair). */
+ * anchored-float recipe. */
 .formAnchor {
   position: relative;
 }
@@ -196,8 +195,8 @@
 }
 
 /* The Send button's word. It rides beside the paper-plane glyph while the
- * pane has room; at the compact boundary (the same 559px GoalControl's chip
- * swaps at) the word drops and the glyph carries the button - the button
+ * pane has room; at the compact boundary (the same 559px as the status
+ * row's first container query) the word drops and the glyph carries the button - the button
  * keeps aria-label="Send", so the accessible name survives. Pane width, not
  * viewport width: a narrow docked pane on a desktop display needs the same
  * collapse the phone gets. The spawn pane's Start button plays the same

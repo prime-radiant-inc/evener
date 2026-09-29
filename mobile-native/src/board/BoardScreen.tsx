@@ -76,8 +76,9 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { onBoardJump } from "./boardJump";
 import { BoardStops, stopToast } from "./boardStops";
-import { UPDATE_NEEDED_HINT } from "./connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -117,6 +118,7 @@ import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
+import { destructiveButton, haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -292,7 +294,8 @@ function Board({
 	);
 	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
 	// The document you left partway in the last two hours (spec 7.1). The
-	// window is checked as the Board renders, so it runs no clock.
+	// window is checked as the Board renders, and the Board's minute clock
+	// re-renders it while in view, so the row goes within a minute of expiring.
 	const documents = documentMemory(hubId);
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
@@ -367,6 +370,7 @@ function Board({
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
+		jumpWhenLaidOut.current();
 	};
 	const scrollTo = (key: string, withinLive = false) =>
 		scrollBoardTo((withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0));
@@ -374,6 +378,26 @@ function Board({
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
 	};
+	// A tapped "3 sessions need you" banner asks for Needs you here, since the
+	// Board's route takes no params (boardJump.ts). It can ask before the
+	// Board has laid out (it popped to a Board just mounted), so the jump
+	// waits until Live and the band have, then scrolls.
+	const pendingJump = useRef<Band | null>(null);
+	const jumpWhenLaidOut = useRef(() => {});
+	jumpWhenLaidOut.current = () => {
+		const band = pendingJump.current;
+		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+		pendingJump.current = null;
+		jumpToBand(band);
+	};
+	useEffect(
+		() =>
+			onBoardJump((section) => {
+				pendingJump.current = section;
+				jumpWhenLaidOut.current();
+			}),
+		[],
+	);
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
@@ -972,7 +996,7 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
+							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							{continueReading ? (
 								<ContinueReadingRow
@@ -996,6 +1020,7 @@ function Board({
 									offsets.current.live = y;
 									liveEnd.current = y + height;
 									readMoreLiveIfNear();
+									jumpWhenLaidOut.current();
 								}}
 							>
 								{live}
@@ -1028,8 +1053,6 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
@@ -1077,14 +1100,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	const remove = (section: NavigationPinSectionDescriptor) =>
 		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Delete",
-				style: "destructive",
-				onPress: () => {
-					if (!organizationOpen(organization) || !listed(section.id)) return;
-					void organization.actions?.deletePinSection({ sectionId: section.id });
-				},
-			},
+			destructiveButton("Delete", () => {
+				if (!organizationOpen(organization) || !listed(section.id)) return;
+				void organization.actions?.deletePinSection({ sectionId: section.id });
+			}),
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
 		if (!organizationOpen(organization)) return;
@@ -1215,17 +1234,13 @@ function confirmShutDown(
 ) {
 	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
 		{ text: "Cancel", style: "cancel" },
-		{
-			text: "Shut down",
-			style: "destructive",
-			onPress: () => {
-				if (!client) return;
-				shutDownSession(client, row.ref).then(
-					() => toast.show({ text: "Session shut down" }),
-					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
-				);
-			},
-		},
+		destructiveButton("Shut down", () => {
+			if (!client) return;
+			shutDownSession(client, row.ref).then(
+				() => toast.show({ text: "Session shut down" }),
+				(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
+			);
+		}),
 	]);
 }
 
@@ -1624,7 +1639,10 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						testID="chip"
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
-						onPress={chip.onPress}
+						onPress={() => {
+							haptic("selection");
+							chip.onPress();
+						}}
 						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
 						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
@@ -1736,7 +1754,10 @@ function SummaryLine({
 					) : null}
 					<Pressable
 						accessibilityRole="button"
-						onPress={() => onJump(band)}
+						onPress={() => {
+							haptic("selection");
+							onJump(band);
+						}}
 						// Each count draws 30pt tall; the slop makes a 44pt target.
 						hitSlop={{ top: 7, bottom: 7 }}
 						style={({ pressed }) => ({

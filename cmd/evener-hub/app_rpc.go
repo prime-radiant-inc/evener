@@ -1184,6 +1184,14 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		wirePluginStoreBroadcast(mgr, server)
 	}
 	cfg.PluginManager = mgr
+	// §8's admission fence is installed BEFORE registerThreadHandlers below:
+	// that call captures cfg by value, and the thread-list handler's explicit
+	// SourceIDs attach dials through dialRemoteHost with its own cfg copy — the
+	// second attach trigger, which must refuse while a name is quarantined or
+	// orphan-fenced. Installing it here also covers the attach handler's later
+	// by-value capture. It reads the operation store directly (the manager is
+	// not built yet); a hub without one fences nothing.
+	cfg.HostOrphanFence = func(name string) error { return orphanAdmissionRefusalFor(cfg.RemoteHostOpsStore, name) }
 	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
@@ -1238,6 +1246,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// afterwards would leave the handler reading an empty seam and dialing over
 	// a host whose teardown is still open.
 	cfg.HostRemnantFence = hostManage.openRemnantID
+	// The orphan fence seam was installed earlier (before registerThreadHandlers,
+	// whose by-value cfg copy the thread-list dial path uses); the attach handler
+	// registered below captures the same seam.
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.

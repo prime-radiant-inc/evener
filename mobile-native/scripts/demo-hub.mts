@@ -1,5 +1,6 @@
 // Explicitly launched network fixture for native UI checks; no Evener or LLM runs.
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -21,7 +22,9 @@ import {
 	createDemoFleet,
 	type DemoFleetOptions,
 	fleetSessionRef,
+	fleetSessions,
 } from "../src/dev/demoFleet.js";
+import { createDemoDocuments, SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "../src/dev/demoSubagents.js";
 import {
 	askWorkingSessionQuestion,
 	createDemoSessions,
@@ -74,9 +77,36 @@ export async function createDemoHub(
 	// With the fleet on, New session and the Hub read the prototype's hosts,
 	// providers, plugins, models and folders (demoSetup.ts).
 	const demoSetup = demoFleet ? createDemoSetup(demoFleet, fleetOptions) : null;
-	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
-	await once(server, "listening");
-	const address = server.address();
+	// With the demo fleet, the Reader's /doc/file reaches the same port as
+	// /rpc, as on a real hub: one HTTP server carries both. The plan lives in
+	// Get PR 2138 Test Clean's folder, where its transcript's link names it.
+	const planSession = fleetSessions().find((session) => session.slug === "s-pr2138");
+	const documents =
+		demoFleet && planSession
+			? createDemoDocuments(
+					[
+						{
+							sessionRef: planSession.ref,
+							path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+							text: fleetOptions?.planRevised ? SETTLE_RACE_PLAN_REVISED : SETTLE_RACE_PLAN,
+						},
+					],
+					planSession.workingDir,
+				)
+			: null;
+	const http = createServer((request, response) => {
+		const url = URL.parse(request.url ?? "/", "http://demo");
+		if (!url || !documents || request.method !== "GET" || url.pathname !== "/doc/file") {
+			response.writeHead(404).end();
+			return;
+		}
+		const answer = documents.answerDocFile(url);
+		response.writeHead(answer.status, { "Content-Type": "text/plain; charset=utf-8" }).end(answer.body);
+	});
+	const server = new WebSocketServer({ server: http, path: "/rpc" });
+	http.listen(port, "0.0.0.0");
+	await once(http, "listening");
+	const address = http.address();
 	if (typeof address === "string" || !address)
 		throw new Error("Missing demo address");
 	const subscribers = new Map<WebSocket, Set<string>>();
@@ -321,7 +351,9 @@ export async function createDemoHub(
 						created.sessionId = `demo-session-created-${sessionNumber}`;
 						// Another host's session is named by that host, as a real
 						// hub qualifies a remote ref (appwire/refs.go).
-						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
+						const source = params.source || "demo";
+						created.evener.ref = `${source}:created-${sessionNumber}`;
+						created.source = source;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";
@@ -555,6 +587,9 @@ export async function createDemoHub(
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;
+					case "evener/jobs/list":
+						result = requireFleet().answerJobsList(params);
+						break;
 					case "evener/search":
 						result = requireFleet().answerSearch(params);
 						break;
@@ -602,7 +637,8 @@ export async function createDemoHub(
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
 				for (const socket of server.clients) socket.terminate();
-				server.close((error) => (error ? reject(error) : resolve()));
+				server.close();
+				http.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
 }
@@ -639,6 +675,7 @@ if (
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
 					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 				}
 			: undefined,
 	);

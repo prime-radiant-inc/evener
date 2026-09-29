@@ -51,7 +51,7 @@ export function LaunchResourceEditor({
 		setBusy(true);
 		setError(null);
 		try {
-			if (raw.trim() && !client) throw Error("Reconnect to validate this entry.");
+			if (raw.trim() && !client) throw Error("This entry can be checked once the hub is back.");
 			const next =
 				raw.trim() && client
 					? isMcp
@@ -171,7 +171,9 @@ export function LaunchResourceEditor({
 							{isMcp ? "Add server" : "Add path"}
 						</Action>
 						{busy && <ActivityIndicator accessibilityLabel="Validating entry" />}
-						{!client && <Copy muted>Reconnect to browse and validate entries. Your draft is kept here.</Copy>}
+						{!client && (
+							<Copy muted>You can browse and check entries once the hub is back. Your draft is kept here.</Copy>
+						)}
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>

@@ -26,6 +26,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
+	playedHaptics,
 	render,
 	renderedText,
 	screenConnection,
@@ -37,6 +38,7 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
@@ -577,7 +579,10 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 }
 function pressChip(tree: ReactTestRenderer, label: string) {
 	const chip = tree.root.find((node) => node.props.testID === "chip" && node.props.accessibilityLabel === label);
+	playedHaptics.length = 0;
 	act(() => chip.props.onPress());
+	// Spec 16.6: a selection tick on a chip.
+	expect(playedHaptics).toEqual(["selection"]);
 }
 const chipLabels = (tree: ReactTestRenderer) =>
 	tree.root
@@ -608,7 +613,10 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 			node.type === ("Pressable" as never) &&
 			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
 	);
+	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
+	// Spec 16.6: a selection tick on a summary count.
+	expect(playedHaptics).toEqual(["selection"]);
 	// The unfold applies when the scroll to Idle ends, as any change does.
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -658,6 +666,35 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 52, animated: true });
 	pressChip(tree, "Projects, 4 projects");
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 752, animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls to Needs you when a coalesced banner asks, once the Board has laid out", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	// Asked before this Board existed: the banner popped to it.
+	requestBoardJump("needsYou");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
+	const band = tree.root
+		.findAll(
+			(node) =>
+				typeof node.props.onLayout === "function" &&
+				node.findAll((child) => child.props.children === "NEEDS YOU · 2").length > 0,
+		)
+		.at(-1);
+	act(() => {
+		tree.root
+			.find((node) => node.props.testID === "live-block" && node.props.onLayout)
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 400 } } });
+		band?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 30, width: 390, height: 28 } } });
+	});
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
+	// A Board already laid out scrolls at once.
+	scrollTo.mockClear();
+	act(() => requestBoardJump("needsYou"));
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
 	act(() => tree.unmount());
 });
 
@@ -3615,7 +3652,10 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
 	]);
+	playedHaptics.length = 0;
 	act(() => ask?.buttons?.[1]?.onPress?.());
+	// Spec 16.6: rigid on a destructive confirmation.
+	expect(playedHaptics).toEqual(["impact:rigid"]);
 	await settle();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
 	expect(texts(tree)).toContain("Session shut down");
@@ -4435,4 +4475,22 @@ it("offers nothing for a document left two hours ago, or with none left", async 
 	adoptedAnHourAgo(other);
 	connect(other, hub(fleet).client, "ready");
 	expect(renderedText(await mount(navigation()))).not.toContain("Continue reading");
+});
+
+it("drops the Continue reading row when its two hours run out, even on an idle Board", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+	try {
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		leaveDocument(id, 119);
+		connect(id, hub(fleet).client, "ready");
+		const tree = await mount(navigation());
+		expect(renderedText(tree)).toContain("Continue reading");
+		await act(async () => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(renderedText(tree)).not.toContain("Continue reading");
+	} finally {
+		vi.useRealTimers();
+	}
 });

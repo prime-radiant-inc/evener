@@ -36,7 +36,6 @@ vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => ({
 		state: "ready",
 		error: null,
-		retry: () => {},
 		activeProfile: null,
 	}),
 }));

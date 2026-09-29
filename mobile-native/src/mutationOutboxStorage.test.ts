@@ -693,6 +693,45 @@ test("listRecovery scopes composite targets and discardRecovery requires the exa
 	await expect(storage.getRecovery(first.clientMutationId)).resolves.toBeUndefined();
 });
 
+test("discardUndelivered removes only that target's blocked or Stop-canceled row", async () => {
+	const blocked = await storage.enqueueIntent(intent("blocked"));
+	const waiting = await storage.enqueueIntent(intent("waiting"));
+	await storage.markAttempted(blocked.clientMutationId);
+	await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+	const held = await storage.enqueueIntent(intent("held", "local:thread-2"));
+	await storage.enqueueInterruptAndCancel(interruptIntent("local:thread-2"));
+
+	await expect(storage.discardUndelivered(blocked.clientMutationId, "local:thread-2")).resolves.toBe(false);
+	await expect(storage.discardUndelivered(waiting.clientMutationId, TARGET)).resolves.toBe(false);
+	await expect(storage.discardUndelivered(blocked.clientMutationId, TARGET)).resolves.toBe(true);
+	await expect(storage.discardUndelivered(held.clientMutationId, "local:thread-2")).resolves.toBe(true);
+
+	expect(rawRow("mutation_outbox", blocked.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_outbox", held.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_outbox", waiting.clientMutationId)).toMatchObject({ state: "submitting" });
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: waiting.clientMutationId });
+});
+
+test("releaseCanceled sends a held row after the Stop that held it, and never past a newer Stop", async () => {
+	const held = await storage.enqueueIntent(intent("held"));
+	const stop = await storage.enqueueInterruptAndCancel(interruptIntent());
+	const barrier = { stopEpoch: await storage.readStopEpoch(TARGET) };
+
+	await expect(storage.releaseCanceled(held.clientMutationId, "local:thread-2", barrier)).resolves.toBe(false);
+	await expect(storage.releaseCanceled(stop.clientMutationId, TARGET, barrier)).resolves.toBe(false);
+	await expect(storage.releaseCanceled(held.clientMutationId, TARGET, barrier)).resolves.toBe(true);
+
+	const released = await storage.getOutbox(held.clientMutationId);
+	expect(released).toMatchObject({ state: "submitting", attempted: false });
+	expect(released?.intentSequence).toBeGreaterThan(stop.intentSequence);
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: stop.clientMutationId });
+
+	const again = await storage.enqueueIntent(intent("held again"));
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	await expect(storage.releaseCanceled(again.clientMutationId, TARGET, barrier)).resolves.toBe(false);
+	expect((await storage.getOutbox(again.clientMutationId))?.state).toBe("canceled");
+});
+
 test("listOptimistic scopes to a target ref and sorts by intentSequence", async () => {
 	const a = await storage.enqueueIntent({
 		...intent("a"),
@@ -804,9 +843,12 @@ test("restoreProvenAbsent reopens the omitted set without decoding the target's 
 	const parse = vi.spyOn(JSON, "parse");
 	let parses = 0;
 	try {
-		await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual(
-			expect.arrayContaining([first.clientMutationId, second.clientMutationId]),
-		);
+		// Ascending intent_sequence order, the order the prior listing produced;
+		// RETURNING alone guarantees no order.
+		await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual([
+			first.clientMutationId,
+			second.clientMutationId,
+		]);
 	} finally {
 		parses = parse.mock.calls.length;
 		parse.mockRestore();

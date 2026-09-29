@@ -1,6 +1,6 @@
 // The composer holds its draft in state, so every keystroke re-renders
-// Composer. The inline SessionChrome it mounts (status row, goal chip, menu,
-// and the hidden Details/Activity panels) depends on none of that draft, so a
+// Composer. The inline SessionChrome it mounts (status row, menu, and the
+// hidden Details/Activity panels) depends on none of that draft, so a
 // keystroke must not re-render it. StatusRow renders once per SessionChrome
 // render, so counting StatusRow renders observes the chrome's own renders
 // while the real StatusRow still draws.

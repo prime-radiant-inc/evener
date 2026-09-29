@@ -12,6 +12,102 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
+import { parseActivityTree } from "@evener/appwire-client";
+import { readDocFile } from "@evener/appwire-client/docContent";
+import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
+import { nativeDocPort } from "./nativeDocPort";
+import { flattenSubagents } from "./subagents/subagentModel";
+
+describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
+	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
+	const PLAN = "docs/superpowers/plans/2026-09-25-settle-race.md";
+
+	async function withFleetHub(
+		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
+		options: { planRevised?: boolean } = {},
+	) {
+		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await run(hub, client);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	}
+
+	it("lists Get PR 2138 Test Clean's 55 subagents over a real socket", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const response = await client.request("evener/jobs/list", { ref: PR2138 });
+			const tree = parseActivityTree((response as { data: unknown }).data);
+			if (!tree) throw new Error("no tree");
+			expect(flattenSubagents(tree)).toHaveLength(55);
+		});
+	});
+
+	it("opens a subagent's own session through the real conversation service", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const response = await client.request("evener/jobs/list", { ref: PR2138 });
+			const child = flattenSubagents(parseActivityTree((response as { data: unknown }).data) as never).find(
+				(row) => row.title === "Check drain ordering in tests",
+			);
+			if (!child) throw new Error("no nested subagent");
+			const service = createConversationService(client);
+			try {
+				const conversation = await service.open(child.ref);
+				expect(conversation.items.length).toBeGreaterThan(0);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Subagents list", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const listed = flattenSubagents(
+				parseActivityTree(
+					((await client.request("evener/jobs/list", { ref: PR2138 })) as { data: unknown }).data,
+				) as never,
+			).map((row) => row.ref);
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const transcript = (read.thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.transcriptRef);
+			expect(transcript.length).toBeGreaterThan(0);
+			for (const ref of transcript) expect(listed).toContain(ref);
+			expect(read.thread.id).toBe(PR2138.slice(PR2138.indexOf(":") + 1));
+		});
+	});
+
+	it("serves the plan its link names, by the session's own folder", async () => {
+		await withFleetHub(async (hub, client) => {
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const link = (read.thread.evener.sessionUrls ?? []).find((url) => url.url.endsWith("settle-race.md"));
+			if (!link) throw new Error("no plan link");
+			const absolute = decodeURIComponent(new URL(link.url).pathname);
+			expect(absolute.startsWith(`${read.thread.cwd}/`)).toBe(true);
+			const text = await readDocFile(PR2138, absolute, nativeDocPort(hub.origin, ""));
+			expect(text.text).toBe(SETTLE_RACE_PLAN);
+		});
+	});
+
+	it("serves the plan on the same port, however often it's read", async () => {
+		// A document chip and a Files row read the plan too, so a version that
+		// changed with the read count would reach the Reader already revised.
+		await withFleetHub(async (hub) => {
+			const port = nativeDocPort(hub.origin, "");
+			for (let read = 0; read < 3; read++) expect((await readDocFile(PR2138, PLAN, port)).text).toBe(SETTLE_RACE_PLAN);
+		});
+	});
+
+	it("serves the plan's revision once restarted with EVENER_DEMO_FLEET_PLAN_REVISED", async () => {
+		await withFleetHub(
+			async (hub) => {
+				expect((await readDocFile(PR2138, PLAN, nativeDocPort(hub.origin, ""))).text).toBe(SETTLE_RACE_PLAN_REVISED);
+			},
+			{ planRevised: true },
+		);
+	});
+});
 
 describe("native demonstration hub", () => {
 	it("starts a turn when a resting playground is steered or its held message is sent", async () => {
@@ -347,6 +443,9 @@ describe("native demonstration hub's redesign fleet", () => {
 				source: "paradise-park",
 			});
 			expect(started.thread.evener.ref).toBe("paradise-park:created-1");
+			// A real hub names a remote session's source by its host
+			// (remote_hub_refs.go's fromRemoteThread), matching the ref.
+			expect(started.thread.source).toBe("paradise-park");
 			expect(started.thread.cwd).toBe("/Users/jesse/git/evener");
 			const local = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
 			expect(local.thread.evener.ref).toBe("demo:created-2");
@@ -554,14 +653,14 @@ describe("native demonstration hub's fleet sessions", () => {
 			// Steer now, while the turn runs.
 			const [first, second] = queued.queue?.ids ?? [];
 			if (!first || !second) throw new Error("Missing queue ids");
-			expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
+			expect(ghosts(queued, [], null, [], true).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
 			await service.promoteQueuedAsSteer(0, first, instanceId);
 			// Stop with a message queued holds it, and Send now releases it.
 			await service.interrupt();
 			const stopped = await service.open(fleetSessionRef("s-pr2138"));
 			expect(stopped.status.type).toBe("idle");
 			expect(stopped.queue?.texts).toEqual(["One more thing"]);
-			expect(ghosts(stopped, [], null, [])).toEqual([
+			expect(ghosts(stopped, [], null, [], true)).toEqual([
 				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 			]);
 			await service.promoteQueuedAsSteer(0, second, instanceId);
@@ -598,6 +697,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					reconcilePendingEntries(ref, records, model, new Map(), () => true),
 					null,
 					[],
+					true,
 				);
 			};
 			const opened = await service.open(ref);

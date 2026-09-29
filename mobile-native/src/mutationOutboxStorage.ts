@@ -476,6 +476,46 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		);
 	}
 
+	// The user's Discard on their own message that a Stop held before it left
+	// the phone ("canceled") or whose delivery couldn't be confirmed
+	// ("blockedUnknown"): exactly that row, for exactly that composite target.
+	// A submitting row is still owed to the daemon and is never discarded.
+	async discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean> {
+		return (
+			changedRows(
+				this.db.runSync(
+					`DELETE FROM ${TABLES.outbox}
+					 WHERE client_mutation_id = ? AND target_ref = ? AND state IN ('blockedUnknown', 'canceled')`,
+					clientMutationId,
+					targetRef,
+				),
+			) > 0
+		);
+	}
+
+	// The one release of a canceled row: the user's Send now. It moves the row
+	// to the end of its target's line, with a fresh sequence, so it can never
+	// dispatch ahead of the interrupt whose Stop canceled it (the row never
+	// left the phone, so moving it is safe). The barrier is the press's
+	// stop-epoch capture: a Stop that committed after it outranks the press,
+	// and the row stays canceled. A canceled row was never attempted (a Stop
+	// cancels only rows with attempted = 0, enqueueInterruptAndCancel), so it
+	// goes back exactly as it was. The web adapter's releaseCanceled, plus the
+	// move.
+	async releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean> {
+		return this.transaction("mutation_outbox_release_canceled", () => {
+			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+			if (record?.state !== "canceled" || record.targetRef !== targetRef) return false;
+			if (this.stopEpochOf(targetRef) > barrier.stopEpoch) return false;
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ? WHERE client_mutation_id = ?`,
+				this.allocateSequence(targetRef),
+				clientMutationId,
+			);
+			return true;
+		});
+	}
+
 	// The lowest-sequence submitting outbox record for this target. A
 	// canceled row provably never left the client, so it cannot be reordered
 	// against the daemon and must not park what follows it - including the
@@ -510,17 +550,21 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// changed, instead of decoding every row on the target and updating the
 			// blocked ones one at a time. It stays inside the savepoint: a fault on
 			// any row aborts the single UPDATE and rolls the entire restore back,
-			// the same all-or-nothing the loop's savepoint gave.
+			// the same all-or-nothing the loop's savepoint gave. RETURNING promises
+			// no row order, so carry intent_sequence out and sort here to keep the
+			// ascending order callers saw when this listed the target first.
 			const named = [...authoritativeIds];
 			const namedClause = named.length > 0 ? ` AND client_mutation_id NOT IN (${named.map(() => "?").join(", ")})` : "";
-			const restored = this.db.getAllSync<{ client_mutation_id: string }>(
+			const restored = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
 				`UPDATE ${TABLES.outbox} SET state = 'submitting'
 				 WHERE target_ref = ? AND state = 'blockedUnknown'${namedClause}
-				 RETURNING client_mutation_id`,
+				 RETURNING client_mutation_id, intent_sequence`,
 				targetRef,
 				...named,
 			);
-			return restored.map((row) => row.client_mutation_id);
+			return restored
+				.sort((left, right) => left.intent_sequence - right.intent_sequence)
+				.map((row) => row.client_mutation_id);
 		});
 	}
 

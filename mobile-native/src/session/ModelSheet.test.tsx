@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -281,8 +281,11 @@ describe("effort", () => {
 	it("sets the effort", () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();
+		playedHaptics.length = 0;
 		act(() => pressable(tree, "Low")?.props.onPress());
 		expect(calls).toEqual(["setReasoningEffort:low"]);
+		// Spec 16.6: a selection tick on a segment.
+		expect(playedHaptics).toEqual(["selection"]);
 	});
 
 	it("is hidden for a model with no levels", () => {

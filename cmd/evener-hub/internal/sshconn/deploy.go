@@ -530,13 +530,12 @@ var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own exe
 var errDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
-// run target. Only the shipped `evener` binary can serve a hub: release archives
-// also carry `evener-dev`, but that is the development/test tooling
-// binary — no `hub` subcommand and no `launch-check` — so a host configured to
-// run it installs "successfully" and then fails preflight, health, and restart
-// on a binary that can never serve the hub. Any other basename is no better: the
-// manager records this one path as the host's run target and probes, restarts,
-// and attaches the binary at it.
+// run target. Only the shipped `evener` binary can serve a hub: `evener-dev` is
+// the development/test tooling binary — no `hub` subcommand and no
+// `launch-check` — so a host configured to run it installs "successfully" and
+// then fails preflight, health, and restart on a binary that can never serve
+// the hub. Any other basename is no better: the manager records this one path
+// as the host's run target and probes, restarts, and attaches the binary at it.
 //
 // It is checked before the target is probed, pushed, or installed, and it is
 // terminal (errRunTargetUnservable) with no write. The ordering and the sentinel
