@@ -3,11 +3,7 @@
 import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
-import {
-  MutationOutboxIndexedDB,
-  MutationStorageClosedError,
-  MutationStorageTimeoutError,
-} from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
 
 const intent: MutationIntent = {
@@ -132,8 +128,8 @@ test("a timeout fails the call without deleting anything, and a later call succe
   const databaseName = "evener-mutation-outbox-timeout-recovers";
   const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
   const seeded = await seeder.enqueueIntent(intent);
-  // close() is terminal, so a second adapter is what must open the database
-  // again; the seeder is retired.
+  // The seeder is retired after seeding; a second adapter opens the database
+  // again for the timed-out first open below.
   seeder.close();
   const deleteDatabase = vi.spyOn(IDBFactory.prototype, "deleteDatabase");
   const open = indexedDB.open.bind(indexedDB);
@@ -243,7 +239,7 @@ test("concurrent operations share one open attempt and both settle successfully"
   storage.close();
 });
 
-test("close() while an open is in flight closes the late connection and does not install it", async () => {
+test("close() during an open closes the late connection and does not install it", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "evener-mutation-outbox-close-mid-open";
   const open = indexedDB.open.bind(indexedDB);
@@ -269,31 +265,11 @@ test("close() while an open is in flight closes the late connection and does not
   storage.close();
   hold.release();
   const failure = await read;
-  expect(failure).toBeInstanceOf(MutationStorageClosedError);
-  // The open landed after close(): its connection is closed, not installed.
+  // close() forgot the in-flight open, so its success lands superseded: the
+  // connection closes rather than installing, and the call fails.
+  expect(failure).toBeInstanceOf(Error);
   expect(late).toBeDefined();
   expect(() => late?.transaction("outbox")).toThrow();
-  storage.close();
-});
-
-test("a call after close() throws the closed error and installs no connection", async () => {
-  const indexedDB = new IDBFactory();
-  const databaseName = "evener-mutation-outbox-terminal-close";
-  const open = indexedDB.open.bind(indexedDB);
-  let opens = 0;
-  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
-    opens += 1;
-    return open(name, version);
-  });
-  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-  await storage.listOutbox();
-  expect(opens).toBe(1);
-  storage.close();
-  storage.close(); // idempotent
-  await expect(storage.listOutbox()).rejects.toBeInstanceOf(MutationStorageClosedError);
-  await expect(storage.enqueueIntent(intent)).rejects.toBeInstanceOf(MutationStorageClosedError);
-  // No reopen: the retired adapter never installs another connection.
-  expect(opens).toBe(1);
 });
 
 test("a stalled upgrade times out and fails the call", async () => {

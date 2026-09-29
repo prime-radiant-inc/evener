@@ -12375,9 +12375,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // during this tab's connection setup leaves its bump where the enqueue's own
   // comparison reads it.
   test("an enqueue whose click requests the capture first fences a Stop committed during its connection setup", async () => {
-    // close() is terminal now, so "drop the live connection" uses the adapter's
-    // own versionchange path: dispatch versionchange on the live connection and
-    // the adapter's retire listener drops it (adapter stays usable).
+    // "Drop the live connection" uses the adapter's own versionchange path:
+    // dispatch versionchange on the live connection and the adapter's retire
+    // listener drops it (the adapter stays usable).
     const indexedDB = globalThis.indexedDB;
     const open = indexedDB.open.bind(indexedDB);
     const connections: IDBDatabase[] = [];
@@ -12643,9 +12643,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // equal, and the release resurrects the row into the session the other
   // tab just stopped.
   test("a Retry whose click requests the capture first fences a Stop committed during its connection setup", async () => {
-    // close() is terminal now, so "drop the live connection" uses the adapter's
-    // own versionchange path: dispatch versionchange on the live connection and
-    // the adapter's retire listener drops it (adapter stays usable).
+    // "Drop the live connection" uses the adapter's own versionchange path:
+    // dispatch versionchange on the live connection and the adapter's retire
+    // listener drops it (the adapter stays usable).
     const indexedDB = globalThis.indexedDB;
     const open = indexedDB.open.bind(indexedDB);
     const connections: IDBDatabase[] = [];

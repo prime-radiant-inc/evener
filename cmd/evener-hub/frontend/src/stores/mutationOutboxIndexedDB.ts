@@ -69,15 +69,6 @@ export class MutationStorageTimeoutError extends Error {
   }
 }
 
-// Terminal: close() retired this adapter. It never reopens, so no operation may
-// run and no connection may be installed after it.
-export class MutationStorageClosedError extends Error {
-  constructor() {
-    super("Mutation outbox storage was closed");
-    this.name = "MutationStorageClosedError";
-  }
-}
-
 interface TargetSequence {
   targetRef: string;
   lastSequence: number;
@@ -138,8 +129,6 @@ export class MutationOutboxIndexedDB {
   #stalledWrites = 0;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
-  // Terminal once set by close(): no open is issued and no connection installs.
-  #closed = false;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
@@ -154,9 +143,9 @@ export class MutationOutboxIndexedDB {
   }
 
   close(): void {
-    // Terminal and idempotent: the adapter is retired and never reopens. Drop
-    // every connection so a post-close call cannot install one.
-    this.#closed = true;
+    // Drop the connection we hold and forget it, so a later call simply opens
+    // again. An open still in flight keeps running: its success lands after
+    // this, finds its promise superseded, and closes the late connection.
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
@@ -755,10 +744,8 @@ export class MutationOutboxIndexedDB {
   }
 
   async #open(): Promise<IDBDatabase> {
-    // Terminal close: the adapter is retired, so no operation may run. Nothing
-    // else refuses an attempt: a stuck open is not remembered, so a send after
-    // storage recovers still succeeds.
-    if (this.#closed) throw new MutationStorageClosedError();
+    // A stuck open is not remembered: every later call attempts the open
+    // again, so a send after storage recovers still succeeds.
     if (this.#database) return this.#database;
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
@@ -808,11 +795,9 @@ export class MutationOutboxIndexedDB {
         () => {
           clearTimeout(timer);
           const database = request.result;
-          if (abandoned || this.#databasePromise !== opening || this.#closed) {
+          if (abandoned || this.#databasePromise !== opening) {
             database.close();
-            reject(
-              this.#closed ? new MutationStorageClosedError() : new Error("Mutation outbox connection was closed"),
-            );
+            reject(new Error("Mutation outbox connection was closed"));
             return;
           }
           this.#database = database;
