@@ -5,11 +5,10 @@ import type {
   TranscriptProjection,
 } from "@evener/appwire-client";
 import {
-  type ContentVector,
   configFingerprint,
+  contentVectorForConfig,
   makeTranscriptDisplayConfig,
   normalizeConfig,
-  presetContent,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
@@ -44,10 +43,6 @@ export interface TranscriptRenderContextInput {
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
   thread?: ThreadModel;
-}
-
-export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
 }
 
 export function expandDetailsByDefault(config: TranscriptDisplayConfigV1): boolean {

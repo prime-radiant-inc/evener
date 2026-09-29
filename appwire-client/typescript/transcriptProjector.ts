@@ -11,10 +11,10 @@ import { comparePositions, hasWarningText } from "./reducer";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
+  contentVectorForConfig,
   type HookExitDetail,
   informationalNoticesVisible,
   normalizeConfig,
-  presetContent,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
 import { isInformationalWarning } from "./warnings";
@@ -149,10 +149,6 @@ const INTERACTION_TOOL_NAMES = new Set([
   "sandbox_approval",
   "sandbox_escalation",
 ]);
-
-function contentVector(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
-}
 
 function isMessage(item: ItemModel): boolean {
   return MESSAGE_TYPES.has(item.type);
@@ -416,7 +412,7 @@ function sourceIndexRanks(turns: readonly TurnModel[]): Map<ItemModel, number> {
 
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
   const normalized = normalizeConfig(config);
-  const vector = contentVector(normalized);
+  const vector = contentVectorForConfig(normalized);
   const turns: ProjectedTurn[] = [];
   const anchors: ProjectedAnchor[] = [];
   const eligibleDisclosureIds: string[] = [];
