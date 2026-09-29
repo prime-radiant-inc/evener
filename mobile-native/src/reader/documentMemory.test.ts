@@ -16,8 +16,7 @@ const leaving = (progress: number) => ({
 	title: "Fix the settle/drain race",
 	blocks: ["h1", "p1", "p2"],
 	position: { blockIndex: 1, blockHash: "p1", offset: 12, progress },
-	reviewRef: "local:s-pr2138",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 	updatedAt: "2026-09-26T11:39:00.000Z",
 });
 
@@ -47,8 +46,7 @@ describe("what the phone remembers about a document", () => {
 			sessionRef: "local:s-pr2138",
 			path: "docs/superpowers/plans/settle.md",
 			title: "Fix the settle/drain race",
-			reviewRef: "local:s-pr2138",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Get PR 2138 Test Clean",
 			progress: 0.62,
 			leftAt: 10_000,
 			updatedAt: "2026-09-26T11:39:00.000Z",

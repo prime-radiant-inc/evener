@@ -434,15 +434,14 @@ describe("last mobile location", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle.md",
-			reviewRef: "local:coord",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Fix race",
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		};
 		repository.save(locationForRoute({ name: "Reader", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({
 			hubId: "studio",
-			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
+			conversation: { ref: "local:fix", title: "Fix race" },
 			reader: {
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle.md",
@@ -451,7 +450,7 @@ describe("last mobile location", () => {
 		});
 		expect(restoredStack(saved).routes.slice(-3)).toEqual([
 			{ name: "Sessions" },
-			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ name: "Reader", params },
 		]);
 	});
