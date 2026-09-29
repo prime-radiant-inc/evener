@@ -7,6 +7,7 @@
 // renders the rows instead), so the affordance is asserted on the props the
 // screen hands the list, the way ConversationScreen.send.test.tsx does.
 import type { ComponentProps } from "react";
+import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -56,5 +57,28 @@ it("offers no pull to refresh: the projects list keeps itself current", async ()
 	expect(list.props.onRefresh).toBeUndefined();
 	expect(list.props.refreshing).toBeUndefined();
 	expect(tree.root.findAll((node) => node.props.refreshControl !== undefined)).toEqual([]);
+	tree.unmount();
+});
+
+it("announces that more of the list is loading, since iOS ignores accessibilityLiveRegion (#2903)", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) => {
+		// The next page never lands, so the footer stays in its loading state.
+		if (((params as { offset?: number }).offset ?? 0) > 0) return new Promise(() => {});
+		return wireV2(params as never, { projects: [{ key: "p1", name: "Alpha", session_count: 2 }], remaining: 1 });
+	});
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<ProjectsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+	announce.mockClear();
+	const list = tree.root.findAll(
+		(node) =>
+			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
+	)[0];
+	expect(list).toBeDefined();
+	act(() => list.props.onEndReached());
+	expect(announce).toHaveBeenCalledWith("Loading more…");
 	tree.unmount();
 });

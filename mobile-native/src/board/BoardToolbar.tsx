@@ -75,6 +75,10 @@ export function BoardToolbar({
 			{status ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					// Android reads this live region; iOS has none, and this
+					// connection status stays unannounced there on purpose: it is
+					// ambient and changes on every reconnect and offline-age tick,
+					// so speaking each one would talk over the reader (#2903).
 					accessibilityLiveRegion="polite"
 					style={{ fontSize: 13 * scale, color: palette.inkMid }}
 				>
