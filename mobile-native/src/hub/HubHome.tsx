@@ -9,6 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
 import { useCallback, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
+import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useDisplayChoices } from "../display/displayContext";
@@ -25,6 +26,7 @@ type InterimScreen = "Providers" | "Plugins" | "KeybindingPreferences" | "Launch
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId, hubName, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
+	const { profiles } = useConnection();
 	const { appearance } = useDisplayChoices();
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -92,7 +94,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					chevron
 					onPress={() => navigation.navigate("Display", { hubId })}
 				/>
-				<Row icon="point.3.connected.trianglepath.dotted" label="Hubs" chevron onPress={() => root?.navigate("Hubs")} />
+				<Row
+					icon="point.3.connected.trianglepath.dotted"
+					label="Hubs"
+					value={profiles.length}
+					chevron
+					onPress={() => navigation.navigate("Hubs")}
+				/>
 			</Group>
 			<GroupLabel>More</GroupLabel>
 			<Group>
