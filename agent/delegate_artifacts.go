@@ -127,7 +127,9 @@ func removeDelegateArtifacts(stateDir, childSessionID string) error {
 		}
 		return fmt.Errorf("delegate artifacts dir: inspect %s: %w", parent, err)
 	case !info.IsDir():
-		_ = os.Remove(parent)
+		if err := os.Remove(parent); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delegate artifacts dir: remove %s: %w", parent, err)
+		}
 		return nil
 	}
 	if err := os.RemoveAll(dir); err != nil {
