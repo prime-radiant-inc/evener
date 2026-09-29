@@ -58,8 +58,12 @@ type WebServer struct {
 	launchModels *launchModelsCache
 	// launchRefreshes tracks request-triggered launch-model refreshes so the
 	// shutdown path can await them; otherwise their `evener launch-check` child
-	// outlives the hub.
-	launchRefreshes sync.WaitGroup
+	// outlives the hub. launchRefreshesClosed, guarded by launchRefreshMu, is
+	// the gate that keeps a still-open AppWire request from Adding while that
+	// group is Waited on.
+	launchRefreshes       sync.WaitGroup
+	launchRefreshMu       sync.Mutex
+	launchRefreshesClosed bool
 	// lifetime is the hub run's context. Background work a request triggers —
 	// the launch-model refresh — hangs off it rather than off the request, so
 	// shutdown cancels it instead of leaving the child to outlive the hub.

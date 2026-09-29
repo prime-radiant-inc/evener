@@ -1099,6 +1099,29 @@ func TestWaitLaunchRefreshesAwaitsInFlightRefresh(t *testing.T) {
 	}
 }
 
+// TestStartLaunchRefreshRefusesAfterTheShutdownGate: runMain's defer order
+// awaits refreshes before the AppWire server is drained, so a still-open socket
+// can serve a model/list during shutdown. The gate must refuse that Add rather
+// than mutate the group being Waited on, and must not leave the refresh slot
+// claimed when it refuses.
+func TestStartLaunchRefreshRefusesAfterTheShutdownGate(t *testing.T) {
+	t.Parallel()
+	web := &WebServer{
+		cfg:          hubcore.WebConfig{},
+		launchModels: &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:     context.Background(),
+	}
+	web.waitLaunchRefreshes() // nothing in flight: closes the gate and returns
+
+	web.launchModels.refreshing[""] = true
+	if web.startLaunchRefresh("", 1) {
+		t.Fatal("startLaunchRefresh accepted a refresh after the shutdown gate closed")
+	}
+	if web.launchModels.refreshing[""] {
+		t.Fatal("a refused refresh left its slot claimed")
+	}
+}
+
 // TestHubModelListServesLaunchContractFromCache pins that the model/list RPC
 // the picker calls goes through the cache, so opening a picker twice does not
 // spawn two launch checks.

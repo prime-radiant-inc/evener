@@ -172,14 +172,31 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 
 // startLaunchRefresh runs a request-triggered refresh under the server's
 // refresh group, so runMain can await it at shutdown instead of returning while
-// an `evener launch-check` child is still running.
-func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64) {
+// an `evener launch-check` child is still running. It returns false once the
+// shutdown gate is closed, and releases the refresh slot it was given: a live
+// AppWire socket can still serve a model/list during shutdown, and an Add
+// racing the WaitGroup's Wait from zero is WaitGroup misuse.
+func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64) bool {
+	s.launchRefreshMu.Lock()
+	defer s.launchRefreshMu.Unlock()
+	if s.launchRefreshesClosed {
+		s.endLaunchModelsRefresh(workingDir)
+		return false
+	}
 	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen) })
+	return true
 }
 
-// waitLaunchRefreshes blocks until every in-flight request-triggered refresh
-// has returned.
-func (s *WebServer) waitLaunchRefreshes() { s.launchRefreshes.Wait() }
+// waitLaunchRefreshes closes the gate and blocks until every in-flight
+// request-triggered refresh has returned. Closing under the same lock
+// startLaunchRefresh takes is what makes the wait safe: once closed is visible,
+// no later caller can Add, so the group is never mutated while Waited on.
+func (s *WebServer) waitLaunchRefreshes() {
+	s.launchRefreshMu.Lock()
+	s.launchRefreshesClosed = true
+	s.launchRefreshMu.Unlock()
+	s.launchRefreshes.Wait()
+}
 
 // beginLaunchModelsRefresh claims the refresh slot for one working dir,
 // returning false when a refresh of it is already running. The periodic warm
