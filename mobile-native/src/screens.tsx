@@ -225,12 +225,6 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	HubSettings: { hubId: string };
-	KeybindingPreferences: {
-		hubId: string;
-		editor?: { actionId: string; chord: string };
-	};
-	LaunchSettings: { hubId: string; projectCwd?: string };
 	Project: {
 		hubId: string;
 		projectKey: string;
