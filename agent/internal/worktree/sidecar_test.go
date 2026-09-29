@@ -5,6 +5,7 @@ package worktree
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -717,6 +718,80 @@ func TestCorruptStaleReservation(t *testing.T) {
 	err := CorruptStaleReservation(dir, "torn", grace)
 	if !errors.Is(err, ErrCorruptSidecar) {
 		t.Fatalf("CorruptStaleReservation(stale corrupt) = %v, want an ErrCorruptSidecar error", err)
+	}
+
+	// A file that vanishes between the read and the age probe is indeterminate,
+	// not corruption: reporting it would send repair at a name that is already
+	// free.
+	if err := os.Remove(torn); err != nil {
+		t.Fatal(err)
+	}
+	if err := CorruptStaleReservation(dir, "torn", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(deleted after read) = %v, want nil", err)
+	}
+}
+
+// TestCorruptReservationErrorDecision pins the classification the create path
+// relies on: a torn record is reported only when it is stale and its age could
+// be read. A probe that misses the file (a concurrent delete) is indeterminate,
+// and a fresh record may be a live create caught mid-write; neither is
+// corruption. A probe failing for any other reason is still surfaced.
+func TestCorruptReservationErrorDecision(t *testing.T) {
+	corrupt := fmt.Errorf("%w: boom", ErrCorruptSidecar)
+	grace := ReconcileGrace
+	cases := []struct {
+		name   string
+		age    time.Duration
+		ageErr error
+		want   bool
+	}{
+		{"stale and readable", grace + time.Minute, nil, true},
+		{"fresh may be a live create", time.Second, nil, false},
+		{"vanished between read and probe", 0, os.ErrNotExist, false},
+		{"probe failed otherwise", 0, os.ErrPermission, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := corruptReservationError(corrupt, tc.age, tc.ageErr, grace)
+			if (got != nil) != tc.want {
+				t.Fatalf("corruptReservationError(age=%v, ageErr=%v) = %v, want reported=%v", tc.age, tc.ageErr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWriteSidecarExclCleanupSparesAReplacedFile: the failed-create cleanup
+// removes the file this call created, not whatever sits at that path. If a
+// concurrent actor unlinks the reservation and recreates the path before
+// cleanup runs, the identity check must leave the other file alone — otherwise
+// a failed create could delete a sidecar it does not own.
+func TestWriteSidecarExclCleanupSparesAReplacedFile(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	path := sidecarPath(dir, sc.Name)
+
+	orig := sidecarWrite
+	t.Cleanup(func() { sidecarWrite = orig })
+	sidecarWrite = func(f *os.File, raw []byte) (int, error) {
+		// Replace the path with a different file, then fail the write.
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("simulate concurrent unlink: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("someone else's sidecar"), 0o644); err != nil {
+			t.Fatalf("simulate concurrent recreate: %v", err)
+		}
+		return 0, errors.New("scripted write fault")
+	}
+
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err == nil {
+		t.Fatal("WriteSidecarExcl write fault did not propagate")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cleanup deleted a concurrently replaced sidecar: %v", err)
+	}
+	if string(got) != "someone else's sidecar" {
+		t.Fatalf("concurrently replaced sidecar changed: %q", got)
 	}
 }
 

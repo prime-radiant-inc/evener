@@ -79,23 +79,34 @@ func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 	if err != nil {
 		return err
 	}
+	created, statErr := f.Stat()
 	if _, err := sidecarWrite(f, raw); err != nil {
 		_ = f.Close()
-		return removePartialCreate(path, err)
+		return removeOwnedResidue(path, created, statErr, err)
 	}
 	if err := f.Close(); err != nil {
-		return removePartialCreate(path, err)
+		return removeOwnedResidue(path, created, statErr, err)
 	}
 	return nil
 }
 
-// removePartialCreate deletes the sidecar at path — the residue of a create
+// removeOwnedResidue deletes the sidecar at path — the residue of a create
 // whose O_EXCL open succeeded but whose write or close failed — and returns
-// cause. The caller owns path by construction, so the removal is the opposite
-// of reclaiming a competing reservation. If the removal itself fails the
-// reservation really does persist, so cause is wrapped with that failure
-// rather than dropped; the wrap preserves cause for errors.Is/As.
-func removePartialCreate(path string, cause error) error {
+// cause. It first confirms the pathname still names the file this call created
+// (created, captured from the open handle): if a concurrent actor unlinked this
+// reservation and recreated or replaced the path before cleanup ran, the path
+// now names their sidecar, and removing it would destroy a file this call does
+// not own. When identity cannot be confirmed (Stat failed on the fresh handle,
+// which in practice does not happen) the removal is attempted as before. If the
+// removal itself fails the reservation really does persist, so cause is wrapped
+// with that failure rather than dropped; the wrap preserves cause for
+// errors.Is/As.
+func removeOwnedResidue(path string, created os.FileInfo, statErr error, cause error) error {
+	if statErr == nil {
+		if current, curErr := os.Stat(path); curErr == nil && !os.SameFile(created, current) {
+			return cause
+		}
+	}
 	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 		return fmt.Errorf("%w (removing partial sidecar %s: %w)", cause, path, rmErr)
 	}
@@ -269,14 +280,28 @@ func ListSidecarsWithErrors(metaDir string) ([]Sidecar, []SidecarLoadError, erro
 // reservation from a live one instead of misdirecting repair at a reserved
 // name that is still being written.
 func CorruptStaleReservation(metaDir, name string, grace time.Duration) error {
-	_, err := ReadSidecar(metaDir, name)
-	if err == nil || !errors.Is(err, ErrCorruptSidecar) {
+	_, readErr := ReadSidecar(metaDir, name)
+	if !errors.Is(readErr, ErrCorruptSidecar) {
 		return nil
 	}
-	if age, ageErr := SidecarAge(metaDir, name); ageErr == nil && age < grace {
+	age, ageErr := SidecarAge(metaDir, name)
+	return corruptReservationError(readErr, age, ageErr, grace)
+}
+
+// corruptReservationError decides whether a corrupt sidecar read is a
+// repairable stale reservation. readErr is the ErrCorruptSidecar read result;
+// age and ageErr are the subsequent SidecarAge probe. A file that vanished
+// between the read and the probe (os.IsNotExist) is indeterminate rather than
+// torn, and a file younger than grace may be a live create caught mid-write, so
+// neither is reported; any other probe failure is surfaced as corruption.
+func corruptReservationError(readErr error, age time.Duration, ageErr error, grace time.Duration) error {
+	if os.IsNotExist(ageErr) {
 		return nil
 	}
-	return err
+	if ageErr == nil && age < grace {
+		return nil
+	}
+	return readErr
 }
 
 // SidecarAge returns how long ago name's sidecar file was last written,

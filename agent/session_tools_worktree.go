@@ -3200,7 +3200,11 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 		if registered[ce.Name] {
 			continue // a live registered worktree exists; sweep 1 already reports it "sidecar-less"
 		}
-		if age, ageErr := worktree.SidecarAge(metaDir, ce.Name); ageErr == nil && age < grace {
+		age, ageErr := worktree.SidecarAge(metaDir, ce.Name)
+		if os.IsNotExist(ageErr) {
+			continue // deleted between the listing read and the age probe: indeterminate, not corruption
+		}
+		if ageErr == nil && age < grace {
 			skipped = append(skipped, WorktreePruneEntry{Name: ce.Name, Reason: "in-grace"})
 			continue
 		}
