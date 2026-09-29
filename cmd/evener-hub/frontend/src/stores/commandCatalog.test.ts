@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import type { CommandListResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useCommandCatalog } from "./commandCatalog";
@@ -30,6 +31,35 @@ test("a replaced client's catalog is read on the swap, not only on its later not
   connectionStore.getState().connect(catalogClient(["review"]) as never);
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review"]));
   connectionStore.getState().connect(catalogClient(["release"]) as never);
+  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
+});
+
+// RoboRev #3022 round 2's reconciliation: a swap to a client that is not
+// ready yet triggers no re-read (no ready transition), so a response from the
+// OUTGOING client that lands in that window must not publish its catalog over
+// the connection that replaced it.
+test("a response landing after a swap to a not-yet-ready client is dropped, not published", async () => {
+  const first = new FakeClient("ready");
+  let answerFirst!: (value: CommandListResponse) => void;
+  first.on(
+    "evener/command/list",
+    () =>
+      new Promise<CommandListResponse>((resolve) => {
+        answerFirst = resolve;
+      }),
+  );
+  connectionStore.getState().connect(first as never);
+  await vi.waitFor(() => expect(first.calls).toHaveLength(1));
+
+  const second = new FakeClient("connecting");
+  second.on("evener/command/list", () => ({ commands: [{ name: "release", source: "user" }] }));
+  connectionStore.getState().connect(second as never);
+
+  answerFirst({ commands: [{ name: "stale-from-first", source: "user" }] });
+  await vi.waitFor(() => expect(useCommandCatalog.getState().error ?? "").not.toBe(""));
+  expect(useCommandCatalog.getState().commands).toEqual([]);
+
+  second.emitStateChange("ready");
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
 });
 

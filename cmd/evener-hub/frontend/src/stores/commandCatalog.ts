@@ -15,7 +15,19 @@ const connectionClient: CommandCatalogClient = {
   request: (method, params, opts) => {
     const client = connectionStore.getState().client;
     if (!client) return Promise.reject(new Error("Not connected to the hub"));
-    return client.request(method, params, opts);
+    return client.request(method, params, opts).then((response) => {
+      // A response whose client the connection has since left describes THAT
+      // connection's catalog, not this one's. The loop's dirty coalescing
+      // already supersedes an in-flight read when a re-read is triggered, but
+      // a swap to a not-yet-ready client triggers none, so a late response
+      // would publish over the replacement connection here. Rejecting routes
+      // it to the loop's fail-soft (keep the last catalog, report the error),
+      // and the new connection's own ready-transition load replaces it.
+      if (connectionStore.getState().client !== client) {
+        throw new Error("connection changed while the request was in flight");
+      }
+      return response;
+    });
   },
   onNotification: (handler) => {
     let unwire = connectionStore.getState().client?.onNotification(handler);
