@@ -29,6 +29,8 @@ export type ToolWireCall =
   | "call_grep"
   | "call_glob"
   | "call_list_dir"
+  | "call_list_dir_empty"
+  | "call_list_dir_page"
   | "call_edit_file"
   | "call_write_file"
   | "call_apply_patch"
