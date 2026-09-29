@@ -553,7 +553,9 @@ describe("a row's trailing control (audit M13)", () => {
 				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={install} />}
 			/>,
 		);
-		const row = tree.root.find((node) => node.type === Pressable && node.props.accessibilityLabel?.startsWith("code-review"));
+		const row = tree.root.find(
+			(node) => node.type === Pressable && node.props.accessibilityLabel?.startsWith("code-review"),
+		);
 		// The row's own button doesn't hold the control, so each is its own
 		// VoiceOver element and its own target.
 		expect(row.findAll((node) => node.props.accessibilityLabel === "Install")).toHaveLength(0);
@@ -567,10 +569,15 @@ describe("a row's trailing control (audit M13)", () => {
 
 	it("keeps a row with a control and no press a single reading for VoiceOver, beside the control", () => {
 		const tree = render(
-			<Row label="pdf" accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={() => {}} />} />,
+			<Row
+				label="pdf"
+				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={() => {}} />}
+			/>,
 		);
 		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "pdf")).not.toHaveLength(0);
-		expect(tree.root.findAll((node) => node.type === Pressable && node.props.accessibilityLabel === "Install")).toHaveLength(1);
+		expect(
+			tree.root.findAll((node) => node.type === Pressable && node.props.accessibilityLabel === "Install"),
+		).toHaveLength(1);
 	});
 });
 

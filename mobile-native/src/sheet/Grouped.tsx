@@ -536,7 +536,13 @@ export function Button({
 		? { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" as const }
 		: mini
 			? { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 }
-			: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5, borderColor: palette.edgeStrong };
+			: {
+					borderRadius: 18,
+					paddingHorizontal: 14,
+					paddingVertical: 6,
+					borderWidth: 0.5,
+					borderColor: palette.edgeStrong,
+				};
 	const fill = primary ? palette.accentFill : mini ? undefined : palette.surface;
 	return (
 		<Pressable
