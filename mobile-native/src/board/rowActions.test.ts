@@ -32,7 +32,7 @@ const row = (over: Partial<NavigationSessionSummary> = {}): NavigationSessionSum
 	...over,
 });
 const remote = { ref: "paradise-park:x", host_id: "paradise-park", session_id: "x" };
-const online: RowActionContext = { connected: true, organizationReady: true, archived: false };
+const unarchived: RowActionContext = { archived: false };
 
 describe("the long-press menu per state (spec 7.3)", () => {
 	it.each([
@@ -40,58 +40,34 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			"a working session of this hub",
 			row({ rename: true }),
 			"working",
-			online,
+			unarchived,
 			["pin", "stop", "shutDown", "archive", "rename"],
 		],
-		["a finished one", row({ state: "awaiting" }), "finished", online, ["pin", "markRead", "shutDown", "archive"]],
-		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
+		["a finished one", row({ state: "awaiting" }), "finished", unarchived, ["pin", "markRead", "shutDown", "archive"]],
+		["one seen since", row({ state: "idle" }), "idle", unarchived, ["pin", "markUnread", "shutDown", "archive"]],
 		[
 			"one asking a question",
 			row({ state: "awaiting", ask_pending: true }),
 			"question",
-			online,
+			unarchived,
 			["pin", "shutDown", "archive"],
 		],
-		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
-		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
-		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
-		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
+		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", unarchived, ["pin", "archive"]],
+		["one working on another host", row({ ...remote }), "working", unarchived, ["pin", "stop", "shutDown", "archive"]],
+		[
+			"one on an offline host",
+			row({ ...remote, offline: true, live: false }),
+			"shutDown",
+			unarchived,
+			["pin", "archive"],
+		],
+		["a fork", row({ kind: "fork" }), "working", unarchived, ["stop", "shutDown"]],
 		[
 			"one in an archived tier",
 			row({ state: "ended", live: false }),
 			"shutDown",
-			{ ...online, archived: true },
+			{ archived: true },
 			["pin", "unarchive"],
-		],
-		[
-			"one while a change is unresolved",
-			row({ rename: true }),
-			"working",
-			{ ...online, organizationReady: false },
-			["pin", "stop", "shutDown", "rename"],
-		],
-		// Offline, the actions stay and are held (phase 6 ruling 18), whatever
-		// the journal says, since a held change reaches it only on replay.
-		[
-			"a finished one offline",
-			row({ state: "awaiting" }),
-			"finished",
-			{ ...online, connected: false },
-			["pin", "markRead", "shutDown", "archive"],
-		],
-		[
-			"a seen one offline",
-			row({ state: "idle" }),
-			"idle",
-			{ ...online, connected: false },
-			["pin", "markUnread", "shutDown", "archive"],
-		],
-		[
-			"a working one offline, the journal not ready",
-			row({ rename: true }),
-			"working",
-			{ ...online, connected: false, organizationReady: false },
-			["pin", "stop", "shutDown", "archive", "rename"],
 		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
@@ -104,36 +80,29 @@ describe("swipes (spec 7.3)", () => {
 			"a working session of this hub",
 			row(),
 			"working",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
 		[
 			"a finished one",
 			row({ state: "awaiting" }),
 			"finished",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["pin", "more"] },
 		],
 		[
 			"one working on another host",
 			row({ ...remote }),
 			"working",
-			online,
+			unarchived,
 			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
 		[
 			"one in an archived tier",
 			row({ state: "ended", live: false }),
 			"shutDown",
-			{ ...online, archived: true },
+			{ archived: true },
 			{ leading: "unarchive", trailing: ["pin", "more"] },
-		],
-		[
-			"a working row offline",
-			row(),
-			"working",
-			{ ...online, connected: false },
-			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);

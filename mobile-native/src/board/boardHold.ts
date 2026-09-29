@@ -89,12 +89,14 @@ export function heldVerb(action: HeldAction): string {
  * (spec 14), or null when nothing does. A replacement keeps the first one's
  * place in the order, so the latest is the one held last, not the last in
  * the order. */
-export function waitingLine(records: readonly HeldRecord[], ref: string): string | null {
+export function waitingLine(records: readonly HeldRecord[], ref: string, connected: boolean): string | null {
 	const latest = heldFor(records, ref).reduce<HeldRecord | null>(
 		(last, record) => (last === null || record.heldAt >= last.heldAt ? record : last),
 		null,
 	);
-	return latest ? `${heldVerb(latest.action)} waits for the connection` : null;
+	if (!latest) return null;
+	// Connected, it waits only for the journal to be free.
+	return `${heldVerb(latest.action)} ${connected ? "is waiting to send" : "waits for the connection"}`;
 }
 
 /** What a project will be once the changes held for it go: a held Pin to

@@ -28,14 +28,10 @@ export const ROW_ACTION_LABELS: Record<RowAction, string> = {
 	rename: "Rename",
 };
 
+/** What a row's actions depend on. Neither the connection nor the journal
+ * is here: a change that can't go now is held and sent when it can (phase 6
+ * ruling 18), never refused. */
 export interface RowActionContext {
-	/** The hub connection is ready. Offline, every action is still offered
-	 * and is held until the connection returns (phase 6 ruling 18). */
-	connected: boolean;
-	/** The Board's organization journal can take a change now (ruling 16);
-	 * it gates only a connected Board, since a held change reaches the
-	 * journal on replay. */
-	organizationReady: boolean;
 	/** The row sits in an archived tier. */
 	archived: boolean;
 }
@@ -60,8 +56,8 @@ export function archiveTarget(row: NavigationSessionSummary): Omit<ArchiveParams
 }
 
 /** The long-press menu, in spec 7.3's order. Copy link waits for a session
- * deep link (ruling 27). Offline it offers the same actions, held until the
- * connection returns (phase 6 ruling 18). */
+ * deep link (ruling 27). Offline, or with the journal busy, it offers the
+ * same actions, held until they can go (phase 6 ruling 18). */
 export function rowMenuActions({ row, state }: ClassifiedRow, context: RowActionContext): RowAction[] {
 	const actions: RowAction[] = [];
 	if (isTopLevel(row)) actions.push("pin");
@@ -69,15 +65,9 @@ export function rowMenuActions({ row, state }: ClassifiedRow, context: RowAction
 	if (state === "idle") actions.push("markUnread");
 	if (state === "working") actions.push("stop");
 	if (row.live && !row.offline && row.state !== "restartRequired") actions.push("shutDown");
-	if (organizes(context) && archiveTarget(row)) actions.push(context.archived ? "unarchive" : "archive");
+	if (archiveTarget(row)) actions.push(context.archived ? "unarchive" : "archive");
 	if (row.rename === true) actions.push("rename");
 	return actions;
-}
-
-/** Whether an organization change can be taken now: held while offline,
- * and while connected only when the journal can take it (ruling 16). */
-export function organizes(context: Pick<RowActionContext, "connected" | "organizationReady">): boolean {
-	return !context.connected || context.organizationReady;
 }
 
 export interface SwipeActions {

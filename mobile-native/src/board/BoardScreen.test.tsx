@@ -3041,6 +3041,43 @@ it("queues a project change behind the held one it answers, even once back onlin
 	act(() => tree.unmount());
 });
 
+it("holds a project change while the journal is busy, and sends it once the journal is free", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	let answerFirst: () => void = () => {};
+	let favorites = 0;
+	const request = fake.client.request;
+	fake.client.request = ((method: string, params: unknown) => {
+		if (method !== "evener/favorite/set" || favorites++ > 0) return request(method as never, params as never);
+		const answered = request(method as never, params as never);
+		return new Promise((resolve) => {
+			answerFirst = () => resolve(answered as never);
+		});
+	}) as typeof request;
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [, pin] = openMenu();
+	act(() => pin(0));
+	await vi.waitFor(() => expect(favorites).toBe(1));
+	// The journal is busy with the Pin to top; the menu still offers Archive,
+	// which is held until the journal is free.
+	const [sheet, choose] = openMenu();
+	expect(sheet.options).toContain("Archive project");
+	act(() => choose(sheet.options.indexOf("Archive project")));
+	await settle();
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
+	answerFirst();
+	await vi.waitFor(() =>
+		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
+	);
+	act(() => tree.unmount());
+});
+
 it("offers no menu for a project another host shares", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3681,6 +3718,86 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
 	});
 
+	/** Holds the first request of `method` until the returned function
+	 * answers it; the hub records it at once, as it does any write. */
+	function hangFirst(fake: ReturnType<typeof hub>, method: string): () => void {
+		let answer: () => void = () => {};
+		let count = 0;
+		const request = fake.client.request;
+		fake.client.request = ((name: string, params: unknown) => {
+			if (name !== method || count++ > 0) return request(name as never, params as never);
+			const answered = request(name as never, params as never);
+			return new Promise((resolve) => {
+				answer = () => resolve(answered as never);
+			});
+		}) as typeof request;
+		return () => answer();
+	}
+	const writes = (fake: ReturnType<typeof hub>, method: string) =>
+		fake.mutations.filter((mutation) => mutation.method === method).map((mutation) => mutation.params);
+
+	it("holds a row's archive while the journal is busy with another, and sends it once the journal is free", async () => {
+		const fake = hub(swipeFleet());
+		const answerFirst = hangFirst(fake, "evener/archive/set");
+		const { id, tree } = await mountSwipeFleet(fake);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(1));
+		// The journal is busy, and Archive is still there to take: it is held,
+		// never refused.
+		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
+		await settle();
+		expect(texts(tree)).toContain("Archive is waiting to send");
+		expect(heldIn(id)).toHaveLength(1);
+		answerFirst();
+		await vi.waitFor(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("queues a Shut down behind the held one that is on its way, rather than sending it beside it", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		const answerFirst = hangFirst(fake, "thread/shutdown");
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		const shutDown = () => {
+			const host = menuHost(id);
+			act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+			act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+		};
+		shutDown();
+		await settle();
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(writes(fake, "thread/shutdown")).toHaveLength(1));
+		shutDown();
+		await settle();
+		// The first is still out: the second waits in the hold behind it.
+		expect(writes(fake, "thread/shutdown")).toHaveLength(1);
+		expect(heldIn(id)).toHaveLength(2);
+		answerFirst();
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("offers the row menu's Cancel for a change held after the menu opened", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		const before = menuHost(id);
+		const host = menuHost(id);
+		act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
+		await settle();
+		// The sheet re-reads a host it is given anew: a hold alone gives it one.
+		expect(menuHost(id)).not.toBe(before);
+		expect(menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`))).toEqual([
+			{ id: expect.any(String), label: "Cancel Stop" },
+		]);
+	});
+
 	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
 		const fake = hub(swipeFleet());
 		const { id, tree, nav } = await mountSwipeFleet(fake);
@@ -3791,10 +3908,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
 		const menu = menuHost(id);
 		expect(menu.held(menuItem(menu, ref))).toEqual([]);
-		expect(texts(tree)).toContain("Shut down waits for the connection");
+		expect(texts(tree)).toContain("Shut down is waiting to send");
 		answer();
 		await settle();
-		expect(texts(tree)).not.toContain("Shut down waits for the connection");
+		expect(texts(tree)).not.toContain("Shut down is waiting to send");
 	});
 
 	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
