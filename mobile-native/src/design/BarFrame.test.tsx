@@ -6,7 +6,7 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { keyboard, render, systemGlass } from "../renderNative.testkit";
+import { keyboard, keyboardProgress, render, systemGlass } from "../renderNative.testkit";
 import { BarFrame } from "./BarFrame";
 import { paletteFor } from "./tokens";
 
@@ -22,6 +22,7 @@ vi.mock("react-native-safe-area-context", () => ({
 
 afterEach(() => {
 	keyboard.reset();
+	keyboardProgress.at = null;
 	systemGlass.reset();
 	appearance.scheme = "light";
 });
@@ -60,6 +61,14 @@ describe("BarFrame", () => {
 		expect(style(host(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
 		expect(style(host(tree)).paddingBottom).toBe(inset());
+	});
+
+	// The room closes as the keyboard rises over the indicator, frame by
+	// frame with it, so the bar's content never drops when it starts to move.
+	it("closes the home indicator's room as far as the keyboard has risen", () => {
+		keyboardProgress.at = 0.5;
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		expect(style(host(tree)).paddingBottom).toBe(inset() / 2);
 	});
 
 	it("takes a screen's own layout on top", () => {

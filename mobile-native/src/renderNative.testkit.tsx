@@ -16,8 +16,10 @@ import {
 	type ReactElement,
 	type ReactNode,
 	type Ref,
+	useEffect,
 	useImperativeHandle,
 	useRef,
+	useState,
 } from "react";
 import {
 	act,
@@ -410,8 +412,41 @@ export function reanimatedModuleMock() {
 	for (const step of ["springify", "duration", "dampingRatio"]) transition[step] = () => transition;
 	return {
 		__esModule: true,
-		default: { ScrollView: "ScrollView", View: "Animated.View" },
+		// An animated component renders as the component it wraps.
+		default: {
+			ScrollView: "ScrollView",
+			View: "Animated.View",
+			createAnimatedComponent: <T,>(component: T) => component,
+		},
 		LinearTransition: transition,
+		// An animated style is its worklet's result at render time.
+		useAnimatedStyle: <T,>(updater: () => T) => updater(),
+	};
+}
+
+/** How far the keyboard has risen, 0 to 1, as react-native-keyboard-controller
+ * reports it frame by frame. It follows the testkit keyboard (1 while shown),
+ * unless a test holds it partway with `at`. */
+export const keyboardProgress = { at: null as number | null };
+
+/** react-native-keyboard-controller's useReanimatedKeyboardAnimation for
+ * vitest: the progress above, and a render whenever the keyboard moves, since
+ * a mocked shared value can't drive a style on its own. */
+export function useKeyboardAnimationMock() {
+	const [, rendered] = useState(0);
+	useEffect(() => {
+		const again = () => rendered((count) => count + 1);
+		const subscriptions = [
+			keyboard.addListener("keyboardWillShow", again),
+			keyboard.addListener("keyboardWillHide", again),
+		];
+		return () => {
+			for (const subscription of subscriptions) subscription.remove();
+		};
+	}, []);
+	return {
+		progress: { value: keyboardProgress.at ?? (keyboard.visible ? 1 : 0) },
+		height: { value: 0 },
 	};
 }
 
