@@ -10,6 +10,14 @@
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
 import { vi } from "vitest";
 
+// react-test-renderer logs a deprecation warning through console.error on
+// every create() unless it is told it runs in a React Native test
+// environment; the flag also selects the synchronous root React Native's
+// testing environment uses instead of a concurrent one. Suites that render
+// through renderNative.testkit.tsx would otherwise bury real stderr under one
+// line per render (#2433).
+(globalThis as { IS_REACT_NATIVE_TEST_ENVIRONMENT?: boolean }).IS_REACT_NATIVE_TEST_ENVIRONMENT = true;
+
 vi.mock("expo-haptics", async () => {
 	const { playedHaptics } = await import("./renderNative.testkit");
 	return {

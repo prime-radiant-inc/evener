@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/plugins"
@@ -60,7 +61,10 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	defer stop()
 	run := func() {
 		decisions, _ := archive.Decisions()
-		m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+		m, sum := hubcore.DeriveAttentionFromRoots(past.RootIndex(), func(id string) (schema.SessionMeta, bool) {
+			entry, ok := past.Lookup(id)
+			return entry.Meta, ok
+		}, roster.List(), decisions)
 		w.Tick(m, sum)
 	}
 	run()
