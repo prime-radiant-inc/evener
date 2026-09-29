@@ -1,11 +1,11 @@
 // New session's Access (spec 11; ruling 14): the four access levels, checked
-// on the one the session gets, and Network inside a sandbox. Access is the
+// on the one the session gets once that is known, and Network inside a sandbox. Access is the
 // launch override `sandbox`; choosing the level the hub already defaults to
 // for this project drops the override, so the setup keeps following the hub.
 import { useStore } from "zustand";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
-import { ACCESS_LEVELS, accessOf, networkApplies } from "./launchSetup";
+import { ACCESS_LEVELS, knownAccess, networkApplies } from "./launchSetup";
 import { useNewSession } from "./newSessionContext";
 
 /** The schema's sandbox when the hub sets none: no sandbox. */
@@ -14,7 +14,7 @@ const NO_SANDBOX = "off";
 export function AccessPicker() {
 	const { store, launchDefaults: defaults } = useNewSession();
 	const { launchOverrides, submitting, setLaunchOverrides } = useStore(store);
-	const access = accessOf(launchOverrides.sandbox, defaults?.sandbox);
+	const access = knownAccess(launchOverrides.sandbox, defaults);
 	// Unknown until the hub answers; until then every choice is the session's own.
 	const hubMode = defaults ? defaults.sandbox || NO_SANDBOX : null;
 	const choose = (mode: string) => {
@@ -33,13 +33,13 @@ export function AccessPicker() {
 						key={level.mode}
 						label={level.label}
 						sub={level.detail}
-						checked={level.mode === access.mode}
+						checked={level.mode === access?.mode}
 						disabled={submitting}
 						onPress={() => choose(level.mode)}
 					/>
 				))}
 			</Group>
-			{networkApplies(access) ? (
+			{access && networkApplies(access) ? (
 				<>
 					<GroupGap />
 					<Group>

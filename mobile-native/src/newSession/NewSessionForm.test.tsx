@@ -71,6 +71,8 @@ interface Options {
 	branch?: string;
 	/** The hub's launch defaults for the project. */
 	defaults?: Record<string, unknown>;
+	/** evener/launch/resolve fails, so the hub's defaults stay unknown. */
+	refuseDefaults?: boolean;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -93,8 +95,10 @@ async function mount(options: Options = {}) {
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
 			if (forwarded === "evener/plugin/preview") return options.plugins ?? { plugins: [] };
 			if (forwarded === "evener/git/head") return { head: options.branch ?? "" };
-			if (forwarded === "evener/launch/resolve")
+			if (forwarded === "evener/launch/resolve") {
+				if (options.refuseDefaults) throw new Error("hub away");
 				return { effective: options.defaults ?? {}, layers: {}, provenance: {} };
+			}
 			if (method === "thread/start") {
 				if (options.refuseStart) throw options.refuseStart;
 				if (options.holdStart) await held;
@@ -578,5 +582,16 @@ it("says More options is Custom once one of its settings is set, and opens it", 
 	await act(async () => form.row("More options")?.props.onPress());
 	expect(form.navigation.navigate).toHaveBeenLastCalledWith("MoreOptions");
 	expect(form.text()).not.toContain("Session options");
+	form.dispose();
+});
+
+it("names no access until the hub says its default, unless the person chose one", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, refuseDefaults: true });
+	await settle();
+	expect(form.row("Access")).toBeNull();
+	expect(form.tree.root.findAll((node) => node.props.accessibilityLabel === "Access")).not.toHaveLength(0);
+	expect(form.text()).not.toContain("Full access");
+	await act(async () => form.store.getState().setLaunchOverrides({ sandbox: "restricted" }));
+	expect(form.row("Access")?.props.accessibilityLabel).toBe("Access, Reads and writes only in the project, Restricted");
 	form.dispose();
 });

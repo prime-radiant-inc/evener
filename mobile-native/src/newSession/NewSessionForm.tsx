@@ -21,7 +21,7 @@ import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../../../mobile/src/services/newSession";
-import { accessOf, effortLabel, projectName } from "./launchSetup";
+import { effortLabel, knownAccess, projectName } from "./launchSetup";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
@@ -54,7 +54,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const model = creationModel(form.models, form.model, form.launchOverrides);
 	const pluginsChosen = pluginChoice(form.launchOverrides, plugins);
 	const branch = useHostRead(client, ready, form.source, form.cwd, readBranch);
-	const access = accessOf(form.launchOverrides.sandbox, launchDefaults?.sandbox);
+	const access = knownAccess(form.launchOverrides.sandbox, launchDefaults);
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
@@ -239,8 +239,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				<Row
 					icon="lock.shield"
 					label="Access"
-					sub={access.detail || undefined}
-					value={access.label}
+					sub={access?.detail || undefined}
+					value={access?.label}
 					chevron
 					onPress={() => navigation.navigate("Access")}
 				/>

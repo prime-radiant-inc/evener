@@ -88,3 +88,16 @@ it("offers Network only inside a sandbox, on unless set otherwise", async () => 
 	const hubOff = await mount({ sandbox: "read-only", sandboxNet: false });
 	expect(hubOff.network()?.props.value).toBe(false);
 });
+
+it("checks nothing, and leaves Network out, until the hub says its default", async () => {
+	const page = await mount({}, {}, true);
+	expect(
+		["Full access", "Workspace write", "Read-only", "Restricted"].map(
+			(label) => page.level(label)?.props.accessibilityState.selected,
+		),
+	).toEqual([false, false, false, false]);
+	expect(page.network()).toBeUndefined();
+	act(() => page.level("Read-only")?.props.onPress());
+	expect(page.level("Read-only")?.props.accessibilityState.selected).toBe(true);
+	expect(page.network()?.props.value).toBe(true);
+});

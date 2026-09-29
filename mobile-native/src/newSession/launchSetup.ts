@@ -140,6 +140,14 @@ export function accessOf(sandbox: string | undefined, hubDefault: string | undef
 	return ACCESS_LEVELS.find((level) => level.mode === mode) ?? { mode, label: mode, detail: "" };
 }
 
+/** The access a form can name: the person's own choice, else the hub's
+ * default once the hub has said it (`hubDefaults` null until then). Null while
+ * the default is unknown, since accessOf's fallback, no sandbox, is the least
+ * safe guess. */
+export function knownAccess(sandbox: string | undefined, hubDefaults: { sandbox?: string } | null): AccessLevel | null {
+	return sandbox || hubDefaults ? accessOf(sandbox, hubDefaults?.sandbox) : null;
+}
+
 /** Network matters only inside a sandbox (the schema's sandbox_net: "Has no
  * effect unless a sandbox mode is set"), so its switch shows only then. */
 export function networkApplies(access: AccessLevel): boolean {
