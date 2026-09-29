@@ -1,5 +1,6 @@
 import { type ToolWireCall, toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it } from "vitest";
+import { activityDetail } from "../projectedRows";
 import type { RunStep } from "../timeline";
 import { stepEvidence } from "./evidence";
 
@@ -75,16 +76,53 @@ describe("what a step has to show (spec 8.2)", () => {
 describe("each tool's evidence, as the tools print it", () => {
 	const real = (call: ToolWireCall) => {
 		const item = toolWireStep(call);
-		return stepEvidence({
-			label: item.toolName ?? "",
-			detail: {
-				arguments: item.argumentsJSON,
-				output: item.output,
-				error: item.error,
-				exitCode: item.exitCode,
-			},
-		});
+		// The detail a row carries, as projectedRows reads it from the item.
+		return stepEvidence({ label: item.toolName ?? "", detail: activityDetail(item) });
 	};
+
+	it("shows a task_list call's tasks as a checklist, with the note the call added", () => {
+		expect(real("call_task_list_done")).toEqual([
+			{
+				kind: "tasks",
+				tasks: [
+					{ id: 1, status: "done", description: "Reproduce the settle race", note: "Reproduced in 3 of 20 runs." },
+					{ id: 2, status: "in_progress", description: "Order the drain before settle" },
+					{ id: 3, status: "open", description: "Run the race detector again" },
+				],
+			},
+		]);
+	});
+
+	it("shows only the notes a task_list call added, not ones from before", () => {
+		const tasks = real("call_task_list_view")[0];
+		expect(tasks?.kind === "tasks" && tasks.tasks.map((task) => task.note)).toEqual([undefined, undefined, undefined]);
+	});
+
+	it("shows what task_list printed when the call returned no task list", () => {
+		// A daemon from before the list rode the result, or a replayed
+		// transcript from then.
+		expect(stepEvidence({ label: "task_list", detail: { output: "Updated 1→done." } })).toEqual([
+			{ kind: "output", text: "Updated 1→done.", lines: 1 },
+		]);
+	});
+
+	it("shows what task_list printed, never an empty checklist, when the list it returned is empty", () => {
+		// raw of [] or [null] parses to no tasks.
+		for (const raw of [[], [null]]) {
+			const item = {
+				type: "commandExecution",
+				id: "t",
+				turnId: "turn_1",
+				text: "",
+				toolName: "task_list",
+				output: "No tasks yet.",
+				raw,
+			};
+			expect(stepEvidence({ label: "task_list", detail: activityDetail(item) })).toEqual([
+				{ kind: "output", text: "No tasks yet.", lines: 1 },
+			]);
+		}
+	});
 
 	it("shows a command's output without the shell tool's exit footer", () => {
 		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);

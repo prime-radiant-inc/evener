@@ -405,7 +405,7 @@ describe("a run's one line", () => {
 				step("c", "web_search"),
 				step("d", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "brainstorming" }) } }),
 			]).parts.map((part) => part.text),
-		).toEqual(["fetched 1 page", "used task list once", "searched the web once", "used skill brainstorming"]);
+		).toEqual(["fetched 1 page", "checked the task list", "searched the web once", "used skill brainstorming"]);
 	});
 
 	// Never "N other steps": MCP tools share one part, which names their
@@ -430,6 +430,20 @@ describe("a run's one line", () => {
 		expect(
 			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
 		).toEqual(["used github 2 times"]);
+	});
+
+	it("says a run updated the task list, or only checked it", () => {
+		const tasks = (id: string, args: Record<string, unknown>): RunStep =>
+			step(id, "task_list", { detail: { arguments: JSON.stringify(args) } });
+		const update = { update: [{ id: 1, status: "done" }] };
+		expect(runSummary([tasks("a", update)]).parts.map((part) => part.text)).toEqual(["updated the task list"]);
+		expect(runSummary([tasks("a", {}), tasks("b", {})]).parts.map((part) => part.text)).toEqual([
+			"checked the task list 2 times",
+		]);
+		// One change among the reads makes the part an update.
+		expect(runSummary([tasks("a", {}), tasks("b", update)]).parts.map((part) => part.text)).toEqual([
+			"updated the task list 2 times",
+		]);
 	});
 });
 
