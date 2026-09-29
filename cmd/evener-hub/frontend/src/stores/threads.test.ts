@@ -60,6 +60,7 @@ import {
   hasBlockedUnknown,
   hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
+  MUTATION_STORAGE_RESET_MESSAGE,
   putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
@@ -69,6 +70,7 @@ import {
   resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
+  setMutationResetChannelForTests,
   setMutationStorageForTests,
   subscribeMutationPersistence,
   threadRoutingIndexesForTests,
@@ -13574,9 +13576,25 @@ test("the store latches mutationStorageWedged when a wedged adapter cannot reset
   await read;
 });
 
-test("a destructive storage reset surfaces an error toast about unrecovered queued messages", async () => {
+// The web runtime's own reset channel. A test installs one before the runtime
+// starts, captures this tab's broadcast, and can deliver a sibling's message.
+class RecordingResetChannel {
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  readonly sent: unknown[] = [];
+  closed = false;
+  postMessage(message: unknown): void {
+    this.sent.push(message);
+  }
+  close(): void {
+    this.closed = true;
+  }
+}
+
+test("a destructive storage reset notifies locally and broadcasts once to siblings", async () => {
   resetToastStoreForTests();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const channel = new RecordingResetChannel();
+  setMutationResetChannelForTests(() => channel);
   const open = globalThis.indexedDB.open.bind(globalThis.indexedDB);
   let mainOpens = 0;
   vi.spyOn(globalThis.indexedDB, "open").mockImplementation((name: string, version?: number) => {
@@ -13595,7 +13613,49 @@ test("a destructive storage reset surfaces an error toast about unrecovered queu
     expect(getToasts().filter((toast) => toast.kind === "error" && toast.text === STORAGE_RESET_NOTICE)).toHaveLength(
       1,
     );
+    // The local toast is this tab's; the broadcast is the siblings'.
+    expect(channel.sent).toEqual([MUTATION_STORAGE_RESET_MESSAGE]);
   } finally {
     resetToastStoreForTests();
   }
+});
+
+test("a sibling tab's reset broadcast surfaces the notice and refreshes this tab's tracked refs", async () => {
+  resetToastStoreForTests();
+  const channel = new RecordingResetChannel();
+  setMutationResetChannelForTests(() => channel);
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "sibling-row" });
+  setMutationStorageForTests(storage);
+  connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const seen: string[][] = [];
+  const unsubscribe = subscribeMutationPersistence((refs) => seen.push(refs));
+  try {
+    const baseline = seen.length;
+    // A message that is not this tab's reset is ignored.
+    channel.onmessage?.({ data: "not-a-reset" } as MessageEvent);
+    expect(seen.length).toBe(baseline);
+    expect(getToasts().some((toast) => toast.text === STORAGE_RESET_NOTICE)).toBe(false);
+
+    // The sibling's reset deleted the shared database: this tab surfaces the
+    // same notice and republishes ref_a through the persistence feed, whose
+    // subscribers re-read the rows the deletion took.
+    channel.onmessage?.({ data: MUTATION_STORAGE_RESET_MESSAGE } as MessageEvent);
+    expect(getToasts().filter((toast) => toast.kind === "error" && toast.text === STORAGE_RESET_NOTICE)).toHaveLength(
+      1,
+    );
+    expect(seen.slice(baseline).some((refs) => refs.includes("ref_a"))).toBe(true);
+  } finally {
+    unsubscribe();
+    resetToastStoreForTests();
+  }
+});
+
+test("retiring the runtime closes its reset broadcast channel", async () => {
+  const channel = new RecordingResetChannel();
+  setMutationResetChannelForTests(() => channel);
+  await readMutationPersistence("ref_a");
+  expect(channel.closed).toBe(false);
+  resetThreadsStoreForTests();
+  expect(channel.closed).toBe(true);
 });

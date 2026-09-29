@@ -177,8 +177,11 @@ export class MutationOutboxIndexedDB {
   #closed = false;
   // The one in-flight deletion request, reused across attempts until it settles.
   #deletion: IDBOpenDBRequest | undefined;
-  // The reset notice fires at most once per adapter, the moment the deletion
-  // actually lands (even after the watchdog, even after a later close()).
+  // The reset notice fires at most once per reset EPISODE, the moment the
+  // deletion actually lands (even after the watchdog, even after a later
+  // close()). #deleteWedgedDatabase clears it when it issues a fresh deletion
+  // request, so a later, second reset in this adapter's life is reported too;
+  // retries and a late completion of one request keep the latch.
   #resetNotified = false;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
@@ -1138,6 +1141,12 @@ export class MutationOutboxIndexedDB {
   // a duplicate delete (and a duplicate notice).
   #deleteWedgedDatabase(): Promise<boolean> {
     if (!this.#deletion) {
+      // A brand-new deletion request begins a new reset episode: clear the
+      // previous episode's notice latch so this one can report its own loss.
+      // Retries reuse an in-flight request (the branch above) and keep the
+      // latch, so one episode still fires the notice at most once - including
+      // a request whose success lands after the watchdog.
+      this.#resetNotified = false;
       let request: IDBOpenDBRequest;
       try {
         request = this.#indexedDB.deleteDatabase(this.#databaseName);

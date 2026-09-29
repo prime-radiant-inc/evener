@@ -561,6 +561,55 @@ test("a blocked delete across a cooldown retry issues one deleteDatabase and not
   storage.close();
 });
 
+test("two successive reset episodes each fire the storage-reset notice once", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-two-episodes";
+  const open = indexedDB.open.bind(indexedDB);
+  const wedged = true;
+  // Only the main database wedges: the probe uses a different name and must
+  // stay healthy so each episode reaches its real deletion.
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) =>
+    wedged && name === databaseName ? neverSettlingRequest() : open(name, version),
+  );
+  let now = 0;
+  const resets: number[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName,
+    now: () => now,
+    onStorageReset: () => resets.push(1),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+  // Episode 1: two open timeouts, a healthy probe, a real deletion (notice),
+  // then a reopen that also times out, leaving the adapter latched.
+  const first = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  await settleRealTasks(() => resets.length === 1);
+  await vi.advanceTimersByTimeAsync(10_000); // the post-reset reopen watchdog
+  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
+  expect(resets).toHaveLength(1);
+
+  // The cooldown elapses; a second reset episode issues a fresh deletion and
+  // must report its own loss again (per-episode latch, not per-adapter).
+  now = 15_000;
+  const second = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the cooldown attempt's watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // its recovery retry's watchdog
+  await settleRealTasks(() => resets.length === 2);
+  expect(resets).toHaveLength(2);
+  await vi.advanceTimersByTimeAsync(10_000); // the post-reset reopen watchdog
+  expect(await second).toBeInstanceOf(MutationStorageWedgedError);
+  storage.close();
+});
+
 test("a deletion that lands after DELETE_WAIT_MS still fires the reset notice, once", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "evener-mutation-outbox-late-delete-notice";
