@@ -26,17 +26,15 @@ import type { NewSessionRoutes, NewSessionStore } from "./newSessionContext";
  * imported, so the form can reach this module without loading native storage. */
 export type DraftStorage = () => Pick<CreationDraftRepository, "read" | "write" | "clear">;
 
-let draftStorage: DraftStorage | undefined;
-const stores = perHub((hubId) => createNewSessionStore(hubId, draftStorage));
+const stores = perHub((hubId, storage: DraftStorage) => createNewSessionStore(hubId, storage));
 const services = new WeakMap<ConversationClientLike, NewSessionService>();
 /** Each store bound to a client, and which. */
 const bound = new Map<NewSessionStore, ConversationClientLike>();
 
-/** The hub's creation store, made on first use with `storage` and kept until
- * the hub is removed. */
+/** The hub's creation store, made on first use with `storage`, which it
+ * keeps, and kept until the hub is removed. */
 export function creationStore(hubId: string, storage: DraftStorage): NewSessionStore {
-	draftStorage = storage;
-	return stores.get(hubId);
+	return stores.get(hubId, storage);
 }
 
 /** The one New session service for this client. */
