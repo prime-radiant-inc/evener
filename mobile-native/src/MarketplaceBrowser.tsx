@@ -24,6 +24,7 @@ import {
 	Row,
 	Segmented,
 	TextFieldRow,
+	useErrorInView,
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
@@ -586,6 +587,7 @@ export function AddMarketplace({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const nameInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while
 	// disconnected on its own.
@@ -666,7 +668,7 @@ export function AddMarketplace({
 				</>
 			}
 		>
-			<GroupedPage>
+			<GroupedPage scrollRef={page}>
 				<FormError message={error} />
 				<GroupGap />
 				<Segmented<MarketplaceKind>
@@ -675,6 +677,9 @@ export function AddMarketplace({
 					value={kind}
 					disabled={busy}
 					onChange={(value) => {
+						// Segmented skips a tap on the chosen kind already; this keeps the
+						// source safe even so.
+						if (value === kind) return;
 						setKind(value);
 						setSource("");
 					}}

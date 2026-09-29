@@ -9,7 +9,17 @@ import {
 import type { LiveReadiness } from "./connectionDisplay";
 import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
 import type { TextInput } from "react-native";
-import { FormError, Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, TextFieldRow } from "./sheet/Grouped";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	Row,
+	SearchField,
+	TextFieldRow,
+	useErrorInView,
+} from "./sheet/Grouped";
 import { Sheet } from "./sheet/Sheet";
 
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
@@ -166,6 +176,7 @@ export function ProviderEditor({
 		};
 	}
 	const incomplete = !instance && (!base || !draft.name.trim());
+	const page = useErrorInView(error);
 	return (
 		<Sheet
 			title={instance ? `Edit ${instance.name}` : "Add provider"}
@@ -179,7 +190,7 @@ export function ProviderEditor({
 			}}
 			accessory={accessory}
 		>
-			<GroupedPage>
+			<GroupedPage scrollRef={page}>
 				<FormError message={error} />
 				{!instance && (
 					<>

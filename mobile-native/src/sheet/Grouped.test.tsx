@@ -1,4 +1,4 @@
-import { AccessibilityInfo, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
@@ -7,6 +7,7 @@ import { act } from "react-test-renderer";
 import {
 	FormError,
 	Group,
+	GroupedPage,
 	GroupFooter,
 	GroupLabel,
 	Row,
@@ -15,6 +16,7 @@ import {
 	SwitchRow,
 	Tag,
 	TextFieldRow,
+	useErrorInView,
 } from "./Grouped";
 
 vi.mock("react-native", async () => ({
@@ -270,6 +272,40 @@ describe("a form's error", () => {
 		act(() => tree.update(<FormError message={null} />));
 		expect(texts(tree)).toHaveLength(0);
 		expect(announce).toHaveBeenCalledTimes(2);
+	});
+
+	it("leaves Android to its live region, so a new error is read once", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const os = Platform.OS;
+		Object.assign(Platform, { OS: "android" });
+		try {
+			const tree = render(<FormError message="Name is required." />);
+			expect(texts(tree)[0]?.props.accessibilityLiveRegion).toBe("polite");
+			expect(announce).not.toHaveBeenCalled();
+		} finally {
+			Object.assign(Platform, { OS: os });
+		}
+	});
+
+	it("brings the form back to its top, where the error shows, each time a new one appears", () => {
+		const scrolls: unknown[] = [];
+		function Form({ error }: { error: string | null }) {
+			const page = useErrorInView(error);
+			return (
+				<GroupedPage scrollRef={page}>
+					<FormError message={error} />
+				</GroupedPage>
+			);
+		}
+		const options = {
+			createNodeMock: (element: { type: unknown }) =>
+				element.type === "ScrollView" ? { scrollTo: (to: unknown) => scrolls.push(to) } : null,
+		};
+		const tree = render(<Form error={null} />, options);
+		expect(scrolls).toEqual([]);
+		act(() => tree.update(<Form error="Name is required." />));
+		expect(scrolls).toEqual([{ y: 0, animated: true }]);
 	});
 });
 

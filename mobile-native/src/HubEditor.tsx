@@ -1,7 +1,16 @@
 import { useRef, useState } from "react";
 import type { TextInput } from "react-native";
 import type { HubProfile, HubUpdate } from "./connection";
-import { FormError, Group, GroupedPage, GroupFooter, Row, SwitchRow, TextFieldRow } from "./sheet/Grouped";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	Row,
+	SwitchRow,
+	TextFieldRow,
+	useErrorInView,
+} from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 
 const TOKEN_REPLACED = "Leave empty to remove the saved token.";
@@ -25,6 +34,7 @@ export function HubEditor({
 	const pending = useRef(false);
 	const [error, setError] = useState<string | null>(null);
 	const tokenInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	async function submit() {
 		// The return key reaches here too, so it holds a blank name as Save does.
 		if (pending.current || !name.trim()) return;
@@ -58,7 +68,7 @@ export function HubEditor({
 			}}
 			onRequestClose={cancel}
 		>
-			<GroupedPage>
+			<GroupedPage scrollRef={page}>
 				<FormError message={error} />
 				<Group label="Name">
 					<TextFieldRow

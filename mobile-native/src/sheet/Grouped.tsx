@@ -4,7 +4,7 @@
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode, type Ref, useEffect } from "react";
+import { Children, Fragment, isValidElement, type ReactNode, type Ref, type RefObject, useEffect, useRef } from "react";
 import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -449,17 +449,30 @@ export function TextFieldRow({
 	);
 }
 
-/** What went wrong with a form, at its top in danger ink. VoiceOver hears each
- * new message, since the Save that caused it sits up in the header. */
+/** What went wrong with a form, at its top in danger ink. The Save that
+ * caused it sits up in the header, so each new message is spoken: iOS has no
+ * live region, so it's announced there; Android reads the polite live region
+ * on its own, and announcing too would say it twice. */
 export function FormError({ message }: { message: string | null }) {
 	useEffect(() => {
-		if (message) AccessibilityInfo.announceForAccessibility(message);
+		if (message && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(message);
 	}, [message]);
 	return message ? (
 		<GroupFooter tone="danger" live>
 			{message}
 		</GroupFooter>
 	) : null;
+}
+
+/** A ref for a form's GroupedPage that scrolls back to the top, where its
+ * FormError shows, each time a new error appears: a person scrolled down to
+ * the last field who taps Save in the header would otherwise miss it. */
+export function useErrorInView(error: string | null): RefObject<ScrollView | null> {
+	const page = useRef<ScrollView>(null);
+	useEffect(() => {
+		if (error) page.current?.scrollTo({ y: 0, animated: true });
+	}, [error]);
+	return page;
 }
 
 /** A group's footer: ink-mid, or the attention or danger ink when it reports
@@ -472,7 +485,7 @@ export function GroupFooter({
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
-	/** Android reads it again when it changes (FormError announces on iOS). */
+	/** A polite live region: Android reads it again when it changes. */
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;

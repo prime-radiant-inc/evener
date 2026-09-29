@@ -282,3 +282,13 @@ it("leads from each field to the next, and saves from the last", async () => {
 	});
 	expect(onCreate).toHaveBeenCalledOnce();
 });
+
+it("answers a return key on an unfinished form with the reason, and sends nothing", async () => {
+	const onCreate = vi.fn(async () => true);
+	const tree = mountCreate({ onCreate });
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Credential header" }).props.onSubmitEditing();
+	});
+	expect(onCreate).not.toHaveBeenCalled();
+	expect(renderedText(tree)).toContain("Select an available base provider.");
+});
