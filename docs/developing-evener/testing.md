@@ -398,7 +398,9 @@ openssh, curl, lsof, and procps — the host tools the product's ssh paths
 invoke), and removes its container when the run finishes; remove the cached
 image with `docker rmi evener-e2e-ssh:local`. When Docker or its daemon is
 unavailable (and no `EVENER_SSH_E2E_HOST` is set), the check skips with that
-reason.
+reason; so does a `DOCKER_HOST` — or an active docker context — naming a
+non-local daemon, because the check publishes the container's sshd on this
+controller's `127.0.0.1` and cannot reach a remote daemon's port.
 
 How the container is reached: a per-run ed25519 key authorized in the container,
 the container's sshd published on a per-run loopback port, and a per-run
