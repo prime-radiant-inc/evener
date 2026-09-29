@@ -42,6 +42,17 @@ const (
 // directs the user to run `evener openai login`.
 var ErrLoginRequired = errors.New("openai login required")
 
+// refreshLocks serializes refresh-and-persist for a single auth record so
+// concurrent ResolveRuntimeCredentials callers cannot each redeem the same
+// rotating refresh token or overwrite a newer record (#2370). It is keyed by
+// the record's path rather than held on a Service because one process can hold
+// several Services for the same credential (each Codex scope lazily builds its
+// own; see llm/providers/tokenauth), and the path is the resource load,
+// refresh and save all touch. Entries are never removed: the number of
+// distinct auth records one process resolves is small and fixed by its
+// configuration.
+var refreshLocks sync.Map // record path -> *sync.Mutex
+
 // AuthStatus is a read-only snapshot of an instance's authentication state, as
 // returned by Service.Status, Service.Login, and Service.LoginWithDevice.
 type AuthStatus struct {
@@ -480,21 +491,51 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 		return RuntimeCredentials{}, loginRequiredError(errors.New("stored auth cannot be refreshed"))
 	}
 
+	return s.refreshExpiredRecord(ctx, stateDir, instanceName)
+}
+
+// refreshExpiredRecord redeems the stored refresh token and persists the
+// result, holding the record's refreshLocks entry so only one caller for a
+// given record can redeem a rotating refresh token at a time (#2370). It
+// re-reads the record after taking the lock, so a caller that arrives after
+// another refresh has landed reuses the newer record instead of redeeming the
+// token that just rotated out from under it.
+func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceName string) (RuntimeCredentials, error) {
+	lockAny, _ := refreshLocks.LoadOrStore(AuthFilePath(stateDir, instanceName), &sync.Mutex{})
+	lock := lockAny.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-read under the lock: a concurrent caller may already have refreshed
+	// this record, whose access token is now fresh. Reuse it (and its rotated
+	// refresh token) rather than redeeming the token that just rotated out.
+	current, err := LoadAuth(stateDir, instanceName)
+	if err != nil {
+		return RuntimeCredentials{}, err
+	}
+	if !needsRefresh(s.now(), current.Expiry) {
+		return RuntimeCredentials{
+			BearerToken: current.AccessToken,
+			Source:      AuthSourceOAuth,
+			Expiry:      current.Expiry,
+		}, nil
+	}
+
 	tokens, err := s.refreshToken(ctx, s.client, s.config(), RefreshTokenRequest{
-		RefreshToken: record.RefreshToken,
+		RefreshToken: current.RefreshToken,
 	})
 	if err != nil {
 		if isPermanentRefreshError(err) {
 			// Note the refusal where status can read it (#2479). Best effort:
 			// the turn fails with ErrLoginRequired either way, and the next
 			// attempt refreshes again rather than trusting the note.
-			_ = RecordRefreshRejection(stateDir, instanceName, record, s.now())
+			_ = RecordRefreshRejection(stateDir, instanceName, current, s.now())
 			return RuntimeCredentials{}, loginRequiredError(err)
 		}
 		return RuntimeCredentials{}, fmt.Errorf("refresh OpenAI auth: %w", err)
 	}
 
-	refreshed := refreshedAuthRecord(s.now(), record, tokens)
+	refreshed := refreshedAuthRecord(s.now(), current, tokens)
 	if claims, err := ParseIDTokenClaims(refreshed.IDToken); err == nil {
 		applyClaims(&refreshed, claims)
 	}
