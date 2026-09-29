@@ -49,6 +49,18 @@ type stallDriver struct {
 	err     error
 }
 
+// stallHandshakeTimeout bounds ONE blocking step of a stallDriver handshake. The
+// driver is deterministic (frozen fake clock, hand-synchronized channels), so a
+// step that has not completed within this window is a genuine hang in the drain
+// loop, never scheduler contention. The driver's context is deliberately
+// deadline-free (#2680: drainJobTreeWith returns ctx.Err() when the caller's
+// context ends, so a wall-clock deadline turns a slow handshake into a spurious
+// behavior failure), which means these per-step bounds — not the context — are
+// what keep a wedged driver from hanging the whole test process: t.Context() is
+// only cancelled at cleanup, which a hung handshake never reaches. Generous by
+// construction: a correct single step completes in microseconds.
+const stallHandshakeTimeout = 30 * time.Second
+
 func newStallDriver(ctx context.Context, sess *Session) *stallDriver {
 	return newStallDriverWithProcess(ctx, sess, stallProcess)
 }
@@ -81,6 +93,8 @@ func (d *stallDriver) releaseKick(t *testing.T) {
 	case <-d.top:
 	case <-d.done:
 		t.Fatal("drain returned before reaching the next iteration's kick")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("drain did not reach the next iteration's kick")
 	}
 	d.release <- struct{}{}
 }
@@ -337,15 +351,21 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	// caller's context ends, so a wall-clock deadline spanning all of this
 	// test's handshake steps lets host-load scheduling turn the give-up's nil
 	// return into a spurious "context deadline exceeded" at the d.err check
-	// below (#2680). t.Context() is cancelled at test cleanup, which still
-	// releases a parked driver; the per-step "// TRIPWIRE:" selects are the
-	// hang guards.
+	// below (#2680). Every blocking handshake is instead bounded by
+	// stallHandshakeTimeout (releaseKick, the recheck send, and the selects), so
+	// a wedged driver still fails the test rather than hanging the process.
 	d := newStallDriver(t.Context(), sess)
 	d.releaseKick(t)
 	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
 	clk.Advance(DrainStallTimeout + time.Second)
-	d.recheck <- time.Time{}
+	select {
+	case d.recheck <- time.Time{}:
+	case <-d.done:
+		t.Fatal("drain returned before consuming the recheck tick")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("drain did not consume the recheck tick")
+	}
 	// Release the pass whose stall check will read the expired clock, raising a
 	// wake AFTER the pass consumed its top-of-loop edge (the kick blocks after
 	// takeDrainWake) and BEFORE its stall check runs.
@@ -353,6 +373,8 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	case <-d.top:
 	case <-d.done:
 		t.Fatal("drain returned before reaching the give-up pass")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("drain did not reach the give-up pass")
 	}
 	sess.notify()
 	d.release <- struct{}{}
@@ -362,10 +384,9 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	case <-d.top:
 	case <-d.done:
 		t.Fatal("stall give-up returned on a torn verdict: a wake was raised mid-pass and the drain did not re-check it")
-	// TRIPWIRE: waits for the drain to arrive at the NEXT iteration's kick,
-	// which the fake-clock driver reaches immediately after the continue. 30s
-	// only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
+	// waits for the drain to arrive at the NEXT iteration's kick, which the
+	// fake-clock driver reaches immediately after the continue.
+	case <-time.After(stallHandshakeTimeout):
 		t.Fatal("drain neither returned nor re-ran the pass")
 	}
 	d.release <- struct{}{}
@@ -374,9 +395,7 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	// gives up, with the one warning.
 	select {
 	case <-d.done:
-	// TRIPWIRE: awaits the drain goroutine's completion signal. 30s only
-	// fires on a genuine hang.
-	case <-time.After(30 * time.Second):
+	case <-time.After(stallHandshakeTimeout):
 		t.Fatal("drain did not return on the confirming pass")
 	}
 	if d.err != nil {
