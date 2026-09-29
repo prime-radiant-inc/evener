@@ -220,6 +220,12 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 // redirect the save into a file of the attacker's choosing, the same class
 // #1040 fixed for the target. The mode is set outright so the umask the
 // process runs under has no say in it.
+//
+// Because the temp name is random, a save killed between the exclusive create
+// and the rename (crash, SIGKILL, power loss) leaves a unique
+// <target>.tmp-* file behind that nothing reclaims; the old fixed-name scheme
+// revisited that one file on the next save, so this is the accepted cost of
+// never reusing a name an attacker could plant.
 func WriteConfigFile(path string, l *Layer) error {
 	data, err := MarshalConfig(l)
 	if err != nil {

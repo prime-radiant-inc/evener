@@ -189,6 +189,10 @@ func restoreEntry(providers map[string]providerSection, name string, prev provid
 // predictable temp name would otherwise redirect the saved credentials into a
 // file of the attacker's choosing, the same class #1040 fixed for the target
 // itself.
+// Because the temp name is random, a save killed between the exclusive create
+// and the rename (crash, SIGKILL, power loss) leaves a unique
+// credentials.toml.tmp-* file behind that nothing reclaims; that is the
+// accepted cost of never reusing a name an attacker could plant.
 func (s *Store) save() error {
 	if s.path == "" {
 		return nil
