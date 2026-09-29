@@ -204,9 +204,7 @@ export function TimelineItem({
 				break;
 			}
 			if (item.label === "delegate") {
-				content = (
-					<Subagent row={item} delegates={delegates} tree={subagentTree} openSubagent={openSubagent} />
-				);
+				content = <Subagent row={item} delegates={delegates} tree={subagentTree} openSubagent={openSubagent} />;
 				break;
 			}
 			if (item.label === "ask_user") {

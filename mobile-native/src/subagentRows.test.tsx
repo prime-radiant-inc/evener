@@ -507,7 +507,9 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		await act(async () => {
 			await held.setClient(client as never);
 		});
-		const screen = transcript({ delegates: [finished("dlg_reported"), finished("dlg_stopped", { outcome: "completed" })] });
+		const screen = transcript({
+			delegates: [finished("dlg_reported"), finished("dlg_stopped", { outcome: "completed" })],
+		});
 		await act(async () => {});
 		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
 		expect(jobsLists(client)).toHaveLength(1);
