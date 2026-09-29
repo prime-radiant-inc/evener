@@ -25,10 +25,12 @@ func (m hubModel) sessionHeaderLines() []string {
 	// Line 1: section divider rule with breadcrumb + turn count
 	rule := tuiprim.SectionDivider(m.sessionHeaderWidth(), "EVENER / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
 
-	// Line 2: title + state badge (truncate title if needed to fit width)
-	// Use stateLabel to normalize raw states (e.g. "closed" → "ended").
-	normalizedState := stateLabel(state)
-	badge := tuiprim.StatusBadge(stateColor(normalizedState), displayWord(state, m.detail.AskPending))
+	// Line 2: title + state badge (truncate title if needed to fit width).
+	// A pending approval reads as awaiting (never working): the viewed
+	// session's escalation queue is the live source, seeded from the
+	// thread/read snapshot on entry.
+	attention := attentionState(state, m.headEscalation() != nil)
+	badge := tuiprim.StatusBadge(stateColor(attention), displayWord(attention, m.detail.AskPending))
 	badgeW := lipgloss.Width(badge)
 	maxTitleW := max(m.sessionHeaderWidth()-2-3-badgeW, 4) // 2-space indent + 3-space gap
 	displayTitle := title

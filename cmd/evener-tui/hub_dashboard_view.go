@@ -159,7 +159,7 @@ func needsYouCount(rows []hubRow) int {
 		if row.kind != hubRowSession || !row.live {
 			continue
 		}
-		switch stateLabel(row.state) {
+		switch attentionState(row.state, row.approvalPending) {
 		case "awaiting", "warning", "errored", "restartRequired":
 			count++
 		}
@@ -314,27 +314,28 @@ func stateColor(state string) lipgloss.Color {
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, _ string) string {
+	attention := attentionState(row.state, row.approvalPending)
 	// Single-glyph marker either way. tuiprim.FocusedStateBar would render
 	// ▍▍ which, after ANSI-stripping for the selected highlight,
 	// shifts the row content one cell right on selection. The
 	// SurfaceSecondary bg highlight is the selection indicator;
 	// the marker stays one cell wide for column stability.
-	marker := tuiprim.StateBar(stateColor(row.state))
-	// Per-row ask-pending marker: same ◆ glyph/color the header's
+	marker := tuiprim.StateBar(stateColor(attention))
+	// Per-row needs-you marker (question or approval): same ◆ glyph/color the header's
 	// needsYouBadge and the composer's question chip use for "question
 	// waiting" (one vocabulary, folded-in spec §6). Joined in here (rather
 	// than appended after ansi.Truncate below) so it naturally participates
 	// in truncation and the selected-row ANSI-strip.
 	askMarker := ""
-	if row.askPending {
+	if row.askPending || row.approvalPending {
 		askMarker = lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting).Render("◆")
 	}
 	styles := tuitheme.DefaultTUIStyles()
 	line := strings.Join(tuitext.NonEmptyStrings([]string{
 		marker,
 		askMarker,
-		statusDot(row.state),
-		stateLabel(row.state),
+		statusDot(attention),
+		stateLabel(attention),
 		dashboardCell(row.sourceLabel),
 		dashboardCell(row.project),
 		dashboardTitle(row.title),
@@ -357,9 +358,9 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		// indicator; inner state colors are not needed on selected rows.
 		return styles.Selected.Width(width).Render(ansi.Strip(line))
 	}
-	switch stateLabel(row.state) {
+	switch attention {
 	case "awaiting", "active", "warning", "errored":
-		clr := stateColor(row.state)
+		clr := stateColor(attention)
 		line = lipgloss.NewStyle().Foreground(clr).Render(line)
 	}
 	return line
@@ -586,13 +587,13 @@ func displayWord(state string, askPending bool) string {
 
 func projectSummary(project hubRow, rows []hubRow) string {
 	liveCount, recentCount := projectSessionCounts(project, rows)
-	worstState := project.state
+	worstState := attentionState(project.state, project.approvalPending)
 	worstAsk := project.askPending
 	for _, row := range rows {
 		if row.kind != hubRowSession || dashboardGroupKey(row) != dashboardGroupKey(project) {
 			continue
 		}
-		contribution := rollupContribution(row.state, row.isSubagent)
+		contribution := rollupContribution(attentionState(row.state, row.approvalPending), row.isSubagent)
 		if attentionRankLabel(contribution) > attentionRankLabel(worstState) {
 			worstState = contribution
 			worstAsk = row.askPending
@@ -610,4 +611,14 @@ func projectSummary(project hubRow, rows []hubRow) string {
 // on ordering (Track A rank consolidation).
 func attentionRankLabel(state string) int {
 	return hubapi.AttentionRank(stateLabel(state))
+}
+
+// attentionState is the state a session's attention is judged by: its
+// normalized state, except that a pending approval reads as "awaiting" (a
+// failure still outranks it). Mirrors the web rail's displayState through the
+// shared hubapi.AttentionState, so an approval shows in the needs-you
+// marker/count/color/summary rather than as working — the escalation blocks
+// the turn mid-tool, so the wire state stays "active".
+func attentionState(state string, approvalPending bool) string {
+	return hubapi.AttentionState(stateLabel(state), approvalPending)
 }

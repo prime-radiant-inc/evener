@@ -123,24 +123,25 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			sourceLabel = sourceLabelFromRef(ref)
 		}
 		row := hubRow{
-			kind:        hubRowSession,
-			ref:         ref,
-			sourceLabel: sourceLabel,
-			title:       title,
-			project:     project,
-			projectKey:  projectKey,
-			groupKey:    groupKey,
-			state:       n.State,
-			isSubagent:  n.IsSubagent,
-			askPending:  n.AskPending,
-			live:        n.Live,
-			model:       n.Model,
-			age:         n.Age,
-			rowID:       rowID,
-			createdAt:   n.CreatedAt,
-			updatedAt:   n.UpdatedAt,
+			kind:            hubRowSession,
+			ref:             ref,
+			sourceLabel:     sourceLabel,
+			title:           title,
+			project:         project,
+			projectKey:      projectKey,
+			groupKey:        groupKey,
+			state:           n.State,
+			isSubagent:      n.IsSubagent,
+			askPending:      n.AskPending,
+			approvalPending: n.ApprovalPending,
+			live:            n.Live,
+			model:           n.Model,
+			age:             n.Age,
+			rowID:           rowID,
+			createdAt:       n.CreatedAt,
+			updatedAt:       n.UpdatedAt,
 		}
-		contribution := rollupContribution(n.State, n.IsSubagent)
+		contribution := rollupContribution(attentionState(n.State, n.ApprovalPending), n.IsSubagent)
 		group := ensureGroup(groupKey, projectKey, project, contribution)
 		group.sessions = append(group.sessions, row)
 		if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
@@ -232,13 +233,13 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 }
 
 func dashboardRowLess(a, b hubRow) bool {
-	ar, br := attentionRankLabel(a.state), attentionRankLabel(b.state)
+	ar, br := attentionRankLabel(attentionState(a.state, a.approvalPending)), attentionRankLabel(attentionState(b.state, b.approvalPending))
 	if ar != br {
 		return ar > br
 	}
-	// The dashboard shows no approvals: it reads the ask from its thread/list
-	// rows but not their pending escalations, so it ranks no approval either.
-	aBand, bBand := hubapi.NeedsYouBand(stateLabel(a.state), a.askPending, false), hubapi.NeedsYouBand(stateLabel(b.state), b.askPending, false)
+	// Like the web, an approval shares the questions' blocked band (NeedsYouBand)
+	// and is ranked through the same attention state as the working rows.
+	aBand, bBand := hubapi.NeedsYouBand(attentionState(a.state, a.approvalPending), a.askPending, a.approvalPending), hubapi.NeedsYouBand(attentionState(b.state, b.approvalPending), b.askPending, b.approvalPending)
 	if aBand != bBand {
 		return aBand > bBand
 	}
@@ -289,20 +290,21 @@ func buildProjectRows(project hubTreeProject) []hubRow {
 			sourceLabel = sourceLabelFromRef(ref)
 		}
 		row := hubRow{
-			kind:        hubRowSession,
-			ref:         ref,
-			sourceLabel: sourceLabel,
-			title:       title,
-			project:     project.Name,
-			projectKey:  projectKey,
-			groupKey:    groupKey,
-			state:       state,
-			live:        n.Live,
-			model:       n.Model,
-			age:         n.Age,
-			rowID:       rowID,
-			createdAt:   n.CreatedAt,
-			updatedAt:   n.UpdatedAt,
+			kind:            hubRowSession,
+			ref:             ref,
+			sourceLabel:     sourceLabel,
+			title:           title,
+			project:         project.Name,
+			projectKey:      projectKey,
+			groupKey:        groupKey,
+			state:           state,
+			approvalPending: n.ApprovalPending,
+			live:            n.Live,
+			model:           n.Model,
+			age:             n.Age,
+			rowID:           rowID,
+			createdAt:       n.CreatedAt,
+			updatedAt:       n.UpdatedAt,
 		}
 		if n.Live {
 			liveRows = append(liveRows, row)
