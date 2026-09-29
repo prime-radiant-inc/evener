@@ -2212,6 +2212,20 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
+// Remove the dispatch arm only when this click owns the only claim to it: it
+// added the arm, the ref is not pinned, and no other enqueue for the ref is in
+// flight (this click's own entry is released by now, so a nonzero count is
+// another enqueue). An arm a concurrent in-flight enqueue also needs must
+// survive: removing it leaves that enqueue's committed row dispatched only via
+// the hydration re-arm (publishAndReconcileThreadHydration's
+// `if (pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref)`), not by
+// the scheduler, so it waits on a hydration round-trip instead of dispatching.
+function disarmOwnedMutationArm(ref: string, armAddedByThisClick: boolean): void {
+  if (armAddedByThisClick && !pinnedMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
+    dispatchableMutationRefs.delete(ref);
+  }
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
@@ -2308,7 +2322,7 @@ async function enqueueMutationIntent(
     // (A Stop therefore lands here, not in the fallback below, so its
     // fail-closed decision lives with its invariant.)
     if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
-      if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+      disarmOwnedMutationArm(ref, armAddedByThisClick);
       throw error;
     }
     // Persistent storage failure on a composer send: the durable write could
@@ -2344,15 +2358,12 @@ async function enqueueMutationIntent(
     const dispatchClient = currentDispatchClient(ref, intent.method, false);
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
     if (dispatchClient === null || pinnedMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
-      if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+      disarmOwnedMutationArm(ref, armAddedByThisClick);
       throw error;
     }
-    // Disarm only the arm this click added (a pin is not this click's to drop,
-    // and neither is an arm a concurrent enqueue placed for its own durable
-    // row). The admission check above already guarantees the ref is not pinned,
-    // so a bare pin guard here would be a no-op; the arm this click added is the
-    // one thing this click owns.
-    if (armAddedByThisClick && !pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+    // Disarm the arm only if this click owns the only claim to it - see
+    // disarmOwnedMutationArm.
+    disarmOwnedMutationArm(ref, armAddedByThisClick);
     //
     // The forfeited cross-tab Stop fence: this send carries no click-time stop
     // epoch - whether the capture read timed out, or the capture succeeded and
