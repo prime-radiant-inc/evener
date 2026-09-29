@@ -1,4 +1,5 @@
 import {
+	createNavigationContainerRef,
 	DarkTheme,
 	DefaultTheme,
 	NavigationContainer,
@@ -10,6 +11,8 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { AlertBannerHost } from "./src/alerts/AlertBannerHost";
+import { AlertsProvider, useReportRoutes } from "./src/alerts/AlertsProvider";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
@@ -62,6 +65,14 @@ import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
+const navigationRef = createNavigationContainerRef<Routes>();
+
+/** The root stack's routes up to the focused one, as alerts read them. */
+function stackRoutes(state: NavigationState) {
+	return state.routes
+		.slice(0, state.index + 1)
+		.map((route) => ({ name: route.name, params: route.params }));
+}
 
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
@@ -71,7 +82,9 @@ export default function App() {
 			<SafeAreaProvider>
 				<ConnectionProvider>
 					<NativePreferencesProvider>
-						<Navigation />
+						<AlertsProvider>
+							<Navigation />
+						</AlertsProvider>
 					</NativePreferencesProvider>
 				</ConnectionProvider>
 			</SafeAreaProvider>
@@ -83,6 +96,8 @@ function Navigation() {
 		useConnection();
 	const [state, setState] = useState<NavigationState>();
 	const [saveError, setSaveError] = useState<string | null>(null);
+	// In-app alerts follow what is on screen (spec 13.3).
+	const reportRoutes = useReportRoutes();
 	useEffect(() => {
 		if (!state || loading) return;
 		const route = routeToSave(state);
@@ -114,8 +129,16 @@ function Navigation() {
 		<View style={{ flex: 1, backgroundColor: colors.background }}>
 			<ErrorMessage message={saveError || restorationError} />
 			<NavigationContainer
+				ref={navigationRef}
 				initialState={restoredStack(initialLocation)}
-				onStateChange={setState}
+				onReady={() => {
+					const root = navigationRef.getRootState();
+					if (root) reportRoutes(stackRoutes(root));
+				}}
+				onStateChange={(next) => {
+					setState(next);
+					if (next) reportRoutes(stackRoutes(next));
+				}}
 				theme={dark ? DarkTheme : DefaultTheme}
 			>
 				<StatusBar style={dark ? "light" : "dark"} />
@@ -310,6 +333,7 @@ function Navigation() {
 						/>
 					</Stack.Group>
 				</Stack.Navigator>
+				<AlertBannerHost navigation={navigationRef} />
 			</NavigationContainer>
 		</View>
 	);
