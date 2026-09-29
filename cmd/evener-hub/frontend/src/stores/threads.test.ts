@@ -59,6 +59,7 @@ import {
   hasBlockedUnknown,
   hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
+  notifyReadyForMutationDispatch,
   putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
@@ -12751,6 +12752,81 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       vi.useRealTimers();
       openSpy.mockRestore();
     }
+  });
+
+  // Round-8 Medium/Low: the arm is shared state, so ownership cannot clean it
+  // up - two clicks can each decline to remove it (A because B was still in
+  // flight, B because B never added it) and leave it stale with no durable row.
+  // The disarm is quiescence-based instead. A ref whose only row is canceled
+  // keeps the outbox non-empty (so no refresh clears the arm) but has no
+  // undelivered work; after A and B both fail, the arm must be gone.
+  test("the dispatch arm does not survive two concurrent failures on a ref with only a canceled row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-arm-quiescence";
+    const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await seeder.enqueueIntent(queueIntent("queued"));
+    await seeder.cancelUnattempted("ref_a");
+    seeder.close();
+
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    await threadsStore.getState().refreshThread("ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let aAttempts = 0;
+    let releaseA: () => void = () => {};
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let bStarted: () => void = () => {};
+    const bReached = new Promise<void>((resolve) => {
+      bStarted = resolve;
+    });
+    let releaseB: () => void = () => {};
+    const bGate = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    storage.enqueueIntent = async (intent) => {
+      if (intent.composerText === "A") {
+        aAttempts += 1;
+        if (aAttempts === 1) await aGate;
+      } else {
+        bStarted();
+        await bGate;
+      }
+      throw new MutationStorageTimeoutError();
+    };
+
+    // A clicks first and arms the ref; B clicks while A is in flight.
+    const sendA = threadsStore.getState().send("ref_a", "A");
+    await flushUntil(() => aAttempts === 1);
+    const sendB = threadsStore.getState().send("ref_a", "B");
+    await bReached;
+    releaseA();
+    // A's fallback refuses (B is in flight), so it must leave the arm.
+    await expect(sendA).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+    // B's fallback runs with nothing in flight and no undelivered work: it
+    // dispatches directly and must drop the now-idle arm.
+    releaseB();
+    await sendB;
+    // The ref is idle, so the arm must be gone: the scheduler acts only on
+    // armed refs, and it must not be asked to dispatch ref_a.
+    const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+    try {
+      notifyReadyForMutationDispatch(["ref_a"]);
+      expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
+    } finally {
+      dispatchTargets.mockRestore();
+    }
+    // B reached the daemon (A refused).
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   });
 
   // Round-7 Medium: the fallback re-runs the dispatcher's own admission, so a

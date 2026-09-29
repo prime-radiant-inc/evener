@@ -2229,16 +2229,18 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
-// Remove the dispatch arm only when this click owns the only claim to it: it
-// added the arm, the ref is not pinned, and no other enqueue for the ref is in
-// flight (this click's own entry is released by now, so a nonzero count is
-// another enqueue). An arm a concurrent in-flight enqueue also needs must
-// survive: removing it leaves that enqueue's committed row dispatched only via
-// the hydration re-arm (publishAndReconcileThreadHydration's
-// `if (pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref)`), not by
-// the scheduler, so it waits on a hydration round-trip instead of dispatching.
-function disarmOwnedMutationArm(ref: string, armAddedByThisClick: boolean): void {
-  if (armAddedByThisClick && !pinnedMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
+// Remove a ref's dispatch arm once the ref is genuinely idle: it has no
+// undelivered durable work (a non-canceled outbox row) and no durable enqueue
+// still in flight. Ownership is deliberately NOT consulted - the arm is shared
+// state, and with ownership two clicks can each decline to remove it (A's
+// because B was still in flight at A's failure, B's because B never added it),
+// leaving a stale arm with no durable row behind it. Quiescence is exactly the
+// state in which an arm has nothing left to dispatch, so a stale one should go.
+// pinnedMutationRefs is NOT read here either: it is a retention pin, and a ref
+// whose only row is canceled (which leaves only on an explicit Retry or the
+// thread going away) stays pinned forever.
+function disarmQuiescedMutationArm(ref: string): void {
+  if (!undeliveredMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
     dispatchableMutationRefs.delete(ref);
   }
 }
@@ -2296,14 +2298,13 @@ async function enqueueMutationIntent(
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
   const pending = pendingThreadHydrations.get(ref);
-  // Whether THIS click is the one that put the ref into dispatchableMutationRefs.
-  // Only an arm this click added is this click's to remove later: a concurrent
-  // healthy enqueue for the same ref can arm it (and then pin it) while this
-  // click is in its watchdogs, and that arm belongs to the durable row it is
-  // writing, not to this click's failed one.
-  const armAddedByThisClick =
-    (pending?.client !== wiredClient || pending.epoch !== readyEpoch) && !dispatchableMutationRefs.has(ref);
-  if (armAddedByThisClick) dispatchableMutationRefs.add(ref);
+  // The click arms the ref for dispatch; a matching pending hydration keeps the
+  // replay gate closed instead. Whether this click added the value or found it
+  // already set no longer matters - the disarm is quiescence-based, not
+  // ownership-based (see disarmQuiescedMutationArm).
+  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
+    dispatchableMutationRefs.add(ref);
+  }
   // Register this click's durable write as in flight for the ordering guard
   // below. It stays counted until the write settles, so a concurrent enqueue
   // the fallback must not jump stays visible even though it has not committed
@@ -2336,13 +2337,12 @@ async function enqueueMutationIntent(
     // (applyClearResponse) and notes/human/set needs its onCommitted to mark
     // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
     // A storage-unavailable failure on any of those propagates exactly as every
-    // other submission failure: the caller sees the refusal, and only the arm
-    // THIS click added is disarmed - a ref another enqueue armed keeps its own
-    // arm, so that in-flight send is still dispatched by the next discovery.
-    // (A Stop therefore lands here, not in the fallback below, so its
-    // fail-closed decision lives with its invariant.)
+    // other submission failure: the caller sees the refusal. This click's own
+    // write has settled, so drop the ref's arm if it is now idle - see
+    // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
+    // fallback below, so its fail-closed decision lives with its invariant.)
     if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
-      disarmOwnedMutationArm(ref, armAddedByThisClick);
+      disarmQuiescedMutationArm(ref);
       throw error;
     }
     // Persistent storage failure on a composer send: the durable write could
@@ -2379,12 +2379,12 @@ async function enqueueMutationIntent(
     const dispatchClient = currentDispatchClient(ref, intent.method, false);
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
     if (dispatchClient === null || undeliveredMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
-      disarmOwnedMutationArm(ref, armAddedByThisClick);
+      disarmQuiescedMutationArm(ref);
       throw error;
     }
-    // Disarm the arm only if this click owns the only claim to it - see
-    // disarmOwnedMutationArm.
-    disarmOwnedMutationArm(ref, armAddedByThisClick);
+    // The admission above proved the ref has no undelivered work and no enqueue
+    // in flight, so it is idle: drop the arm - see disarmQuiescedMutationArm.
+    disarmQuiescedMutationArm(ref);
     //
     // The forfeited cross-tab Stop fence: this send carries no click-time stop
     // epoch - whether the capture read timed out, or the capture succeeded and
