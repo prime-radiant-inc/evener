@@ -542,9 +542,15 @@ function Board({
 		list.setInteraction("menu", true);
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
 	};
+	/** Whether a change of this kind waits in the hold for this session. A
+	 * new one on it goes through the hold too, even online, so it replaces,
+	 * undoes or queues behind the held one instead of racing its replay. */
+	const waitsFor = (ref: string, kind: HeldAction["kind"]) =>
+		heldFor(heldNow.current, ref).some((record) => record.action.kind === kind);
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
-		if (!actionsConnected) holdRowAction(row, action);
+		const kind = action === "pin" ? "pin" : action === "stop" ? "stop" : "archive";
+		if (!actionsConnected || (kind !== "stop" && waitsFor(row.ref, kind))) holdRowAction(row, action);
 		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && actionsConnected && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
@@ -587,7 +593,7 @@ function Board({
 			});
 		else if (action === "rename")
 			promptRename(row, (name) => {
-				const on = liveNow.current ? clientNow.current : null;
+				const on = liveNow.current && !waitsFor(row.ref, "rename") ? clientNow.current : null;
 				if (!on) {
 					if (name.trim()) holdAction({ kind: "rename", ref: row.ref, title: row.title, name: name.trim() });
 					return;
@@ -861,7 +867,12 @@ function Board({
 	/** A project's change: held while offline, or through the journal. */
 	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
 		const target = { key: project.key, workingDir: project.working_dir };
-		if (!liveNow.current) holdAction({ kind: "project", project: target, action });
+		// A change waiting on the same setting goes through the hold too, as a
+		// row's does (waitsFor).
+		const pending = heldProjectState(heldNow.current, project.key);
+		const waits =
+			action === "pin" || action === "unpin" ? pending.favorite !== undefined : pending.archived !== undefined;
+		if (!liveNow.current || waits) holdAction({ kind: "project", project: target, action });
 		else {
 			// Asked at the press: the journal may have moved since the render.
 			const now = organizationNow.current;
@@ -885,13 +896,7 @@ function Board({
 			},
 		);
 		return actions.length
-			? () =>
-					openProjectMenu(
-						project,
-						actions,
-						() => !liveNow.current || organizationOpen(organizationNow.current),
-						(action) => actOnProject(project, action),
-					)
+			? () => openProjectMenu(project, actions, (action) => actOnProject(project, action))
 			: undefined;
 	};
 	const treeItem = (section: ProjectSection, item: Exclude<ProjectTreeItem, { kind: "session" }>) => {
@@ -1393,19 +1398,15 @@ function promptRename(row: NavigationSessionSummary, rename: (name: string) => v
 }
 
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
- * Archive or Unarchive, as an action sheet, or an alert off iOS. `canAct`
- * is asked at the press, since the connection or the journal may have
- * moved. */
+ * Archive or Unarchive, as an action sheet, or an alert off iOS. `act`
+ * decides at the press whether the change is held, goes through the
+ * journal, or can't go, since the connection or the journal may have moved
+ * while the menu was up. */
 function openProjectMenu(
 	project: NavigationProjectSummary,
 	actions: readonly ProjectMenuAction[],
-	canAct: () => boolean,
 	act: (action: ProjectMenuAction) => void,
 ) {
-	if (!canAct()) return;
-	const choose = (action: ProjectMenuAction) => {
-		if (canAct()) act(action);
-	};
 	const title = projectName(project);
 	if (Platform.OS === "ios") {
 		ActionSheetIOS.showActionSheetWithOptions(
@@ -1416,13 +1417,13 @@ function openProjectMenu(
 			},
 			(index) => {
 				const action = actions[index];
-				if (action) choose(action);
+				if (action) act(action);
 			},
 		);
 		return;
 	}
 	Alert.alert(title, undefined, [
-		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => choose(action) })),
+		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
 		{ text: "Cancel", style: "cancel" },
 	]);
 }

@@ -345,6 +345,23 @@ it("leaves a record another replay is sending to that replay, sending nothing tw
 	expect(methods(client)).toEqual(["thread/shutdown"]);
 });
 
+it("keeps a held Stop its guard dropped over a connection that dropped", async () => {
+	const { hold, client, toasts } = setup();
+	const replay = new BoardReplay(hold, {
+		stop: async () => {
+			// The guard read a thread that came back over a dropped connection.
+			client.emitStateChange("reconnecting");
+			client.emitStateChange("ready");
+			return "dropped";
+		},
+		toast: (text) => toasts.push(text),
+	});
+	hold.hold(stopOf("b"), 1);
+	await replay.sendImmediate(client, () => client.state === "ready");
+	expect(toasts).toEqual([]);
+	expect(hold.getSnapshot().map((record) => record.action.kind)).toEqual(["stop"]);
+});
+
 it("runs one replay at a time", async () => {
 	const { hold, client, stops, replay, isLive } = setup();
 	hold.hold(stopOf("b"), 1);

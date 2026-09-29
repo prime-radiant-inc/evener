@@ -120,7 +120,9 @@ export class BoardReplay {
 		try {
 			if (action.kind === "stop") {
 				const outcome = await this.deps.stop(client, action.ref, (thread) => turnStillSeen(action.seen, thread));
-				if (outcome === "unavailable" && lost()) return this.#keep(record);
+				// Anything short of an admitted interrupt, decided over a connection
+				// that dropped since, is unknown: it stays held.
+				if (outcome !== "stopped" && lost()) return this.#keep(record);
 				toast(stopToast(outcome, action.title));
 			} else if (action.kind === "shutDown") {
 				const { thread } = await client.request("thread/read", { ref: action.ref, includeTurns: false });

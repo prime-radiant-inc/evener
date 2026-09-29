@@ -2992,6 +2992,55 @@ it("reflects a project change held offline in its menu and on its row, and its o
 	act(() => tree.unmount());
 });
 
+it("queues a project change behind the held one it answers, even once back online", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	let answerPin: () => void = () => {};
+	const request = fake.client.request;
+	let favorites = 0;
+	fake.client.request = ((method: string, params: unknown) => {
+		// The held Pin to top's write hangs while it is on its way.
+		if (method === "evener/favorite/set" && favorites++ === 0) {
+			const answer = request(method as never, params as never);
+			return new Promise((resolve) => {
+				answerPin = () => resolve(answer as never);
+			});
+		}
+		return request(method as never, params as never);
+	}) as typeof request;
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [, pin] = openMenu();
+	act(() => pin(0));
+	await settle();
+	// The menu, opened offline, offers Unpin, and stays up across the
+	// reconnect while the held Pin to top goes out.
+	const [sheet, unpin] = openMenu();
+	expect(sheet.options?.[0]).toBe("Unpin");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await vi.waitFor(() => expect(favorites).toBe(1));
+	act(() => unpin(0));
+	await settle();
+	answerPin();
+	await vi.waitFor(() =>
+		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
+			{ kind: "project", id: "evener", favorited: true },
+			{ kind: "project", id: "evener", favorited: false },
+		]),
+	);
+	await vi.waitFor(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
+	act(() => tree.unmount());
+});
+
 it("offers no menu for a project another host shares", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3593,6 +3642,43 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		expect(fake.mutations).toEqual([
 			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
 		]);
+	});
+
+	it("queues a row's change behind the held one it answers, even once back online", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		let answerArchive: () => void = () => {};
+		const request = fake.client.request;
+		let archives = 0;
+		fake.client.request = ((method: string, params: unknown) => {
+			// The held archive's write hangs while it is on its way.
+			if (method === "evener/archive/set" && archives++ === 0) {
+				const answer = request(method as never, params as never);
+				return new Promise((resolve) => {
+					answerArchive = () => resolve(answer as never);
+				});
+			}
+			return request(method as never, params as never);
+		}) as typeof request;
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		// The menu, opened offline, stays up across the reconnect.
+		const menu = menuHost(id);
+		const item = menuItem(menu, `local:${SESSION_ID}`);
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(archives).toBe(1));
+		act(() => menu.act(item, "unarchive"));
+		await settle();
+		answerArchive();
+		await vi.waitFor(() =>
+			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
