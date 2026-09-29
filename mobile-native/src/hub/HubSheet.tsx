@@ -2,6 +2,7 @@
 // own stack, so each page pushes inside the sheet (ruling 1). Pages read the
 // hub, its client and the connection's readiness from the sheet's context
 // (hubSheetContext.tsx).
+import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useMemo } from "react";
 import { Pressable, Text } from "react-native";
@@ -31,7 +32,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	useClosesOnHubChange(hubId, close, leave);
 	const ready = isReady(state);
 	const updates = useHubUpdates(renderClient, ready);
-	const { hosts, live } = useHubFleet(renderClient);
+	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const value = useMemo<HubSheetContextValue>(
 		() => ({
 			hubId,

@@ -2,17 +2,23 @@
 // shows them. No host lifecycle notification exists, so a started controller
 // reads every 2 seconds, as the web's hosts section does (HOST_POLL_MS,
 // cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx), and keeps its
-// last rows when a read fails.
-import { friendlyErrorMessage, type HostRow } from "@evener/appwire-client";
+// last rows when a read fails. Edit and Remove go through the package's guarded
+// host mutations (hostMutations.ts), the core the web's hosts store wraps.
+import {
+	createHostMutations,
+	friendlyErrorMessage,
+	HOST_GATE_TIMEOUT_MS,
+	type HostEntry,
+	type HostMutations,
+	type HostRow,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 export const HOST_POLL_MS = 2_000;
-/** Connect waits on that host's gate, which the hub's
- * supervisor may hold for a whole reconnect cycle, well past the client's
- * 30-second default. The web allows them 35 minutes (HOST_GATE_TIMEOUT_MS,
- * cmd/evener-hub/frontend/src/stores/hosts.ts), so a slow attach isn't
- * reported as a failure while the hub is still working on it. */
-export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
+
+const noMutationIds = (): string => {
+	throw new Error("HostsController: editing or removing a host needs a mutation id source");
+};
 
 export interface HostsState {
 	/** null until the first read lands; removed hosts are left out. */
@@ -35,10 +41,25 @@ export class HostsController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private disposed = false;
 
+	private readonly mutations: HostMutations;
+
+	/** newMutationId is the random id each edit or removal attempt carries
+	 * (expo-crypto's randomUUID in the app). */
 	constructor(
 		private readonly client: Pick<ConversationClientLike, "request">,
+		newMutationId: () => string = noMutationIds,
 		private readonly pollMs = HOST_POLL_MS,
-	) {}
+	) {
+		this.mutations = createHostMutations({
+			client: () => this.client,
+			heldPair: (name) => {
+				const row = this.state.rows?.find((candidate) => candidate.name === name);
+				return row && { generation: row.generation, incarnationId: row.incarnationId };
+			},
+			reRead: () => this.read(),
+			newMutationId,
+		});
+	}
 
 	getSnapshot = (): HostsState => this.state;
 
@@ -126,6 +147,19 @@ export class HostsController {
 		// clearing it first would show Offline and Connect for a moment.
 		await this.read();
 		this.publish({ connecting: new Set([...this.state.connecting].filter((host) => host !== name)) });
+	}
+
+	/** Edits a host (evener/host/update), then re-reads the rows. A refusal
+	 * rejects, so the edit page can put it under the field it names. */
+	async update(name: string, entry: HostEntry): Promise<void> {
+		await this.mutations.update({ name, entry });
+		await this.read();
+	}
+
+	/** Removes a host (evener/host/remove), then re-reads the rows. */
+	async remove(name: string): Promise<void> {
+		await this.mutations.remove(name);
+		await this.read();
 	}
 
 	dispose(): void {
