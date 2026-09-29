@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Switch, TextInput, View } from "react-native";
 import type { HubProfile, HubUpdate } from "./connection";
+import { Group, GroupedPage, GroupFooter, Row, SwitchRow, TextFieldRow } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
+/** Edit hub (spec 12, Hubs): the saved hub's name, its address to read, and
+ * its token, replaced only when asked. */
 export function HubEditor({
 	profile,
 	save,
@@ -13,14 +14,12 @@ export function HubEditor({
 	save: (id: string, update: HubUpdate) => Promise<void>;
 	close: () => void;
 }) {
-	const colors = useColors();
 	const [name, setName] = useState(profile.name);
 	const [replaceToken, setReplaceToken] = useState(false);
 	const [token, setToken] = useState("");
 	const [saving, setSaving] = useState(false);
 	const pending = useRef(false);
 	const [error, setError] = useState<string | null>(null);
-	const inputStyle = [styles.input, { color: colors.text, borderColor: colors.border }];
 	async function submit() {
 		if (pending.current) return;
 		pending.current = true;
@@ -41,58 +40,39 @@ export function HubEditor({
 		if (!pending.current) close();
 	}
 	return (
-		<ModalSheet title="Edit hub" onCancel={cancel} cancelDisabled={saving} onRequestClose={cancel}>
-			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
-					<TextInput
-						accessibilityLabel="Hub name"
-						value={name}
-						onChangeText={setName}
-						editable={!saving}
-						style={inputStyle}
-					/>
-					<Copy muted>{profile.origin}</Copy>
-					<Copy muted>To connect to another address, add a separate hub.</Copy>
-					<View style={[styles.row, { justifyContent: "space-between" }]}>
-						<Copy>Replace saved token</Copy>
-						<Switch
-							accessibilityLabel="Replace saved token"
-							value={replaceToken}
-							disabled={saving}
-							onValueChange={setReplaceToken}
-						/>
-					</View>
+		<ModalSheet
+			title="Edit hub"
+			onCancel={cancel}
+			cancelDisabled={saving}
+			done={{ label: "Save", disabled: saving || !name.trim(), onPress: () => void submit() }}
+			onRequestClose={cancel}
+		>
+			<GroupedPage>
+				<Group label="Name">
+					<TextFieldRow label="Hub name" value={name} onChangeText={setName} machine={false} disabled={saving} />
+				</Group>
+				<Group label="Address">
+					<Row label={profile.origin} machineLabel accessibilityLabel={`Address, ${profile.origin}`} />
+				</Group>
+				<GroupFooter>To connect to another address, add a separate hub.</GroupFooter>
+				<Group label="Token">
+					<SwitchRow label="Replace saved token" value={replaceToken} disabled={saving} onChange={setReplaceToken} />
 					{replaceToken ? (
-						<>
-							<TextInput
-								accessibilityLabel="New bearer token"
-								placeholder="New bearer token"
-								placeholderTextColor={colors.secondary}
-								value={token}
-								onChangeText={setToken}
-								editable={!saving}
-								secureTextEntry
-								autoCapitalize="none"
-								autoCorrect={false}
-								style={inputStyle}
-							/>
-							<Copy muted>Leave empty to remove the saved token.</Copy>
-						</>
-					) : (
-						<Copy muted>The saved token will be kept.</Copy>
-					)}
-					<ErrorMessage message={error} />
-					<Action
-						tone="primary"
-						disabled={saving || !name.trim()}
-						onPress={() => {
-							void submit();
-						}}
-					>
-						{saving ? "Saving…" : "Save changes"}
-					</Action>
-				</ScrollView>
-			</KeyboardAvoidingView>
+						<TextFieldRow
+							label="New bearer token"
+							placeholder="New bearer token"
+							value={token}
+							onChangeText={setToken}
+							secure
+							disabled={saving}
+						/>
+					) : null}
+				</Group>
+				<GroupFooter>
+					{replaceToken ? "Leave empty to remove the saved token." : "The saved token will be kept."}
+				</GroupFooter>
+				{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
+			</GroupedPage>
 		</ModalSheet>
 	);
 }
