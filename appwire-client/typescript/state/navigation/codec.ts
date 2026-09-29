@@ -454,7 +454,9 @@ const failureValue = (value: unknown): boolean =>
   optional(value.provider, (item) => identity(item)) &&
   optional(value.status, count);
 
-function sessionValue(value: unknown): value is Record<string, unknown> {
+// sessionFieldsValue checks every field of a session summary except its
+// children, whose rule depends on where the summary travels.
+function sessionFieldsValue(value: unknown): value is Record<string, unknown> & { children: unknown[] } {
   return (
     knownKeys(value, SESSION_KEYS) &&
     identity(value.ref) &&
@@ -466,7 +468,6 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     identity(value.kind) &&
     bool(value.live) &&
     Array.isArray(value.children) &&
-    value.children.length === 0 &&
     optional(value.branch, (item) => boundedString(item, 512)) &&
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
@@ -494,6 +495,29 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue)) &&
     optional(value.tasks, tasksValue)
   );
+}
+
+// A graph entity's children are edges, so its own children array is empty.
+function sessionValue(value: unknown): value is Record<string, unknown> {
+  return sessionFieldsValue(value) && value.children.length === 0;
+}
+
+// An evener/archived/list row is a plain summary with its children (fork
+// originals) nested inline, as the hub projects them.
+function sessionTreeValue(value: unknown, depth: number): boolean {
+  return (
+    depth <= MAX_NAVIGATION_DEPTH &&
+    sessionFieldsValue(value) &&
+    value.children.every((child) => sessionTreeValue(child, depth + 1))
+  );
+}
+
+/** Validates the `sessions` of an evener/archived/list response: plain
+ * session summaries whose children are nested inline. Throws on any
+ * malformed row. */
+export function decodeArchivedListSessions(value: unknown): NavigationSessionSummary[] {
+  if (!Array.isArray(value) || !value.every((row) => sessionTreeValue(row, 1))) throw schemaError("archived list");
+  return value as NavigationSessionSummary[];
 }
 
 function projectValue(value: unknown): value is Record<string, unknown> {

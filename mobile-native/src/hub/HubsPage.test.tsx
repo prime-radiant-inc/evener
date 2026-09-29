@@ -3,6 +3,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { render, renderedText } from "../renderNative.testkit";
+import { Row } from "../sheet/Grouped";
 import { HubsPage } from "./HubsPage";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -12,8 +13,13 @@ const connection = vi.hoisted(() => ({
 	selectHub: vi.fn(),
 	removeHub: vi.fn(),
 	updateHub: vi.fn(),
+	state: "ready",
+	fatal: false,
+	downSince: null as number | null,
+	lastLiveAt: null as number | null,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
+vi.mock("./hubSheetContext", () => ({ useHubSheet: () => ({ ready: connection.state === "ready" }) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
@@ -28,6 +34,9 @@ beforeEach(() => {
 	connection.selectHub.mockReset();
 	connection.removeHub.mockReset();
 	connection.updateHub.mockReset();
+	connection.state = "ready";
+	connection.downSince = null;
+	connection.lastLiveAt = null;
 });
 
 function mount() {
@@ -77,10 +86,10 @@ it("lists every saved hub with its address, and checks the selected one", () => 
 
 it("shows each hub's address in Menlo", () => {
 	const { tree } = mount();
-	const address = tree.root.find(
-		(node) => String(node.type) === "Text" && node.props.children === "https://magic-kingdom:9180",
-	);
-	expect(JSON.stringify(address.props.style)).toContain("Menlo");
+	for (const line of ["https://magic-kingdom:9180", "http://100.113.28.18:9180"]) {
+		const address = tree.root.find((node) => String(node.type) === "Text" && node.props.children === line);
+		expect(JSON.stringify(address.props.style)).toContain("Menlo");
+	}
 });
 
 it("selects another hub and leaves closing the sheet to the sheet", () => {
@@ -132,4 +141,31 @@ it("says where the pairing code lives, and never asks to reconnect", () => {
 	const text = renderedText(tree);
 	expect(text).toContain("In Evener on your computer, open Settings, then Mobile app, to show a pairing code.");
 	expect(text).not.toMatch(/\bReconnect\b/);
+});
+
+function rowOf(tree: ReactTestRenderer, name: string) {
+	return tree.root.findAll((node) => node.type === Row && node.props.label === name)[0]?.props;
+}
+
+it("says the selected hub is connected, in the UI font beside its address, and says nothing of the others", () => {
+	const { tree } = mount();
+	expect(rowOf(tree, "magic-kingdom")).toMatchObject({ sub: "https://magic-kingdom:9180", value: "Connected" });
+	expect(rowOf(tree, "paradise-park")).toMatchObject({ sub: "http://100.113.28.18:9180", value: undefined });
+	const word = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "Connected");
+	expect(JSON.stringify(word.props.style)).not.toContain("Menlo");
+});
+
+it("says the selected hub's connection state in the words the Hub's header uses", () => {
+	vi.useFakeTimers();
+	try {
+		const now = Date.now();
+		connection.state = "reconnecting";
+		connection.downSince = now - 5_000;
+		connection.lastLiveAt = now;
+		const { tree } = mount();
+		expect(rowOf(tree, "magic-kingdom")?.value).toBe("Reconnecting…");
+		act(() => tree.unmount());
+	} finally {
+		vi.useRealTimers();
+	}
 });
