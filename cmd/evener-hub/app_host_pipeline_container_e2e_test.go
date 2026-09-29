@@ -175,17 +175,14 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	addr := hostPipelineHostAddr(t, host)
 
 	// The same precondition discipline as the sibling deploy check: the test
-	// creates the host directory itself, refuses an existing path before
-	// anything is created, and proves the run target carries no evener yet.
+	// creates the host directory itself and refuses an existing path before
+	// anything is created. The cleanup is registered immediately after that
+	// check and BEFORE anything is created, so a failure in the creation steps
+	// or the run-target check cannot leave the test-owned directory — or a hub
+	// started from it — behind on the host.
 	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
 		t.Fatalf("host %s already has %s; the pipeline check creates and removes this directory itself, so it must not adopt an existing one", host.target, hostDir)
 	}
-	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
-	if _, err := host.run("test -e " + shellquote.RemoteWord(runTarget)); err == nil {
-		t.Fatalf("host %s already has %s at the start of the case; the pipeline case needs a run target with no evener", host.target, runTarget)
-	}
-	host.writeFile(hostDir+"/"+hostDeployToml, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, hostDir+"/state")))
-
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
 	t.Cleanup(func() {
@@ -203,6 +200,12 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 			t.Errorf("the host's own install %s changed during the pipeline case (sha256 %s -> %s); it must write only to the test-owned %s", installPath, installHash, got, runTarget)
 		}
 	})
+
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
+	if _, err := host.run("test -e " + shellquote.RemoteWord(runTarget)); err == nil {
+		t.Fatalf("host %s already has %s at the start of the case; the pipeline case needs a run target with no evener", host.target, runTarget)
+	}
+	host.writeFile(hostDir+"/"+hostDeployToml, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, hostDir+"/state")))
 
 	stack := startDeployStack(t, provider, hubBin, "-deploy-binary", staged)
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeployAttachTimeout+2*hostPipelineOperationTimeout)
@@ -886,6 +889,56 @@ func hostPipelinePickFreePort(draw func() (int, error), probe func(port int) ([]
 	return 0, fmt.Errorf("no candidate port proved free in %d attempts (last probe answer %q)", hostPipelineHostPortAttempts, last)
 }
 
+// hostPipelineDockerHostIsRemote reports whether a DOCKER_HOST value names a
+// daemon this controller cannot reach the container's published loopback port
+// on: anything that is not a local unix socket.
+func hostPipelineDockerHostIsRemote(dockerHost string) bool {
+	host := strings.TrimSpace(dockerHost)
+	return host != "" && !strings.HasPrefix(host, "unix://")
+}
+
+// hostPipelineRequireLocalDocker skips the check when Docker is configured to
+// talk to a daemon on another machine: the container's sshd is published on the
+// DAEMON host's loopback, which this controller cannot reach, so the readiness
+// wait could only time out. The check can run only against a local daemon (the
+// accepted D-7 plan's per-run loopback publish).
+func hostPipelineRequireLocalDocker(t *testing.T, docker string) {
+	t.Helper()
+	if hostPipelineDockerHostIsRemote(os.Getenv("DOCKER_HOST")) {
+		t.Skipf("DOCKER_HOST=%s names a non-local docker daemon; this check publishes the container's sshd on this controller's 127.0.0.1 and cannot reach a remote daemon's port", os.Getenv("DOCKER_HOST"))
+	}
+	out, err := hostPipelineDockerRun(docker, 15*time.Second, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
+	if err != nil {
+		// A client without contexts: DOCKER_HOST is the only remote mechanism.
+		return
+	}
+	if host := strings.TrimSpace(string(out)); hostPipelineDockerHostIsRemote(host) {
+		t.Skipf("the active docker context talks to %s, not a local unix socket; this check publishes the container's sshd on this controller's 127.0.0.1 and cannot reach a remote daemon's port", host)
+	}
+}
+
+// hostPipelineAwaitPublishedPort proves the container's published sshd port is
+// reachable from THIS controller before the ssh readiness wait spends its
+// budget on it; with a remote daemon the publish lands on the daemon's host.
+// The dial is retried briefly because the publish takes a moment after
+// `docker run`.
+func hostPipelineAwaitPublishedPort(t *testing.T, port int) {
+	t.Helper()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.Now().Add(15 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		last = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("the container's published sshd port %s is not reachable from this controller (%v); if Docker is configured for a remote daemon, its published port lives on that host", addr, last)
+}
+
 // hostPipelineContainer is one disposable alpine+sshd container standing in for
 // a fresh host, plus the per-run pieces that reach it.
 type hostPipelineContainer struct {
@@ -914,6 +967,7 @@ func startHostPipelineContainer(t *testing.T) *hostPipelineContainer {
 	if out, err := exec.CommandContext(infoCtx, docker, "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
 		t.Skipf("the docker daemon is unavailable (%v): %s; set EVENER_SSH_E2E_HOST to run this check against an existing host", err, strings.TrimSpace(string(out)))
 	}
+	hostPipelineRequireLocalDocker(t, docker)
 	image := ensureHostPipelineImage(t, docker)
 
 	dir := t.TempDir()
@@ -959,6 +1013,7 @@ func startHostPipelineContainer(t *testing.T) *hostPipelineContainer {
 		dir:           dir,
 		sshConfigPath: configPath,
 	}
+	hostPipelineAwaitPublishedPort(t, port)
 
 	if err := os.WriteFile(configPath, []byte(hostPipelineSSHConfig(alias, port, keyPath)), 0o600); err != nil {
 		t.Fatalf("write the per-run ssh_config %s: %v", configPath, err)
@@ -1350,6 +1405,28 @@ func TestHostPipelineBindFreePortScriptGatesOnItsTools(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("the allocation script does not carry %q:\n%s", want, script)
+		}
+	}
+}
+
+// TestHostPipelineDockerHostIsRemote pins the local-daemon predicate the
+// container check skips on: a unix socket (or an unset value) is local, and
+// every other scheme — tcp, ssh, npipe — names a daemon whose published
+// loopback port this controller cannot reach.
+func TestHostPipelineDockerHostIsRemote(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{host: "", want: false},
+		{host: "unix:///var/run/docker.sock", want: false},
+		{host: "unix:///run/user/1000/docker.sock", want: false},
+		{host: "tcp://10.0.0.5:2375", want: true},
+		{host: "ssh://builder.example", want: true},
+		{host: "npipe:////./pipe/docker_engine", want: true},
+	} {
+		if got := hostPipelineDockerHostIsRemote(tc.host); got != tc.want {
+			t.Fatalf("hostPipelineDockerHostIsRemote(%q) = %t, want %t", tc.host, got, tc.want)
 		}
 	}
 }
