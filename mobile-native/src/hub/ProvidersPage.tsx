@@ -33,7 +33,7 @@ import { isReady, whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
 import { destructiveButton } from "../haptics";
 import { ProviderEditor } from "../ProviderEditor";
-import { providerStatus, signInKind } from "../providers/providerStatus";
+import { signInKind, statusOf } from "../providers/providerStatus";
 import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
@@ -193,7 +193,7 @@ function Providers({
 	onSignIn,
 }: {
 	store: CredentialInstancesStore;
-	auth: ReadonlyMap<string, AuthStatusResponse>;
+	auth: ReadonlyMap<string, AuthStatusResponse> | null;
 	hubName: string;
 	ready: boolean;
 	canUseConnection: () => boolean;
@@ -442,7 +442,8 @@ function Providers({
 						{core.instances.length > 0 ? (
 							<Group>
 								{core.instances.map((item) => {
-									const status = providerStatus(item, auth.get(item.name));
+									// Nothing, while an account sign-in's state isn't read yet.
+									const status = statusOf(item, auth);
 									const sub = `${item.providerId}${item.isDefault ? " · default" : ""}`;
 									return (
 										<Row
@@ -450,13 +451,13 @@ function Providers({
 											label={item.name}
 											sub={sub}
 											value={
-												status.tone === "attention" ? (
+												status?.tone === "attention" ? (
 													<RowValue tag={{ text: status.word, tone: "amber" }} />
 												) : (
-													status.word
+													status?.word
 												)
 											}
-											accessibilityLabel={`${item.name}, ${sub}, ${status.word}`}
+											accessibilityLabel={[item.name, sub, status?.word].filter(Boolean).join(", ")}
 											chevron
 											onPress={() => {
 												editorVersion.current += 1;
@@ -535,7 +536,7 @@ function Providers({
 						) : (
 							instance && (
 								<>
-									<ProviderFacts instance={instance} auth={auth.get(instance.name)} />
+									<ProviderFacts instance={instance} auth={auth} />
 									{editingCredential ? (
 										<>
 											<Group>
@@ -789,17 +790,25 @@ function DetailHeader({ title, onDone }: { title: string; onDone(): void }) {
 /** What a provider is: its sign-in state (amber only when expired), its
  * type, how it signs in and where it points, where its credential comes
  * from, and the models it offers. */
-function ProviderFacts({ instance, auth }: { instance: InstanceEntry; auth: AuthStatusResponse | undefined }) {
-	const status = providerStatus(instance, auth);
+function ProviderFacts({
+	instance,
+	auth,
+}: {
+	instance: InstanceEntry;
+	auth: ReadonlyMap<string, AuthStatusResponse> | null;
+}) {
+	const status = statusOf(instance, auth);
 	const models = (instance.models ?? []).filter((model) => !model.disabled);
 	return (
 		<>
 			<Group>
-				<Row
-					label="Status"
-					value={<RowValue text={status.word} tone={status.tone === "attention" ? "attention" : "normal"} />}
-					accessibilityLabel={`Status, ${status.word}`}
-				/>
+				{status ? (
+					<Row
+						label="Status"
+						value={<RowValue text={status.word} tone={status.tone === "attention" ? "attention" : "normal"} />}
+						accessibilityLabel={`Status, ${status.word}`}
+					/>
+				) : null}
 				<Row label="Type" value={instance.providerId} />
 				<Row label="Sign-in" value={signInKind(instance)} />
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />

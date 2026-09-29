@@ -3,7 +3,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
-import { AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
+import { AUTH_RETRY_MAX_MS, AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -50,7 +50,7 @@ it("reads the hub's sign-in statuses on a client, by provider", async () => {
 	const { result } = renderHook(() => useAuthStatuses(fake.client));
 	await act(settle);
 	expect(fake.methods).toEqual(["evener/auth/list"]);
-	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 });
 
 it("reads again on evener/auth/updated", async () => {
@@ -63,7 +63,7 @@ it("reads again on evener/auth/updated", async () => {
 	fake.notify("evener/auth/updated");
 	await act(settle);
 	expect(fake.methods).toEqual(["evener/auth/list", "evener/auth/list"]);
-	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(false);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(false);
 });
 
 it("keeps the last statuses through a failed read", async () => {
@@ -73,7 +73,7 @@ it("keeps the last statuses through a failed read", async () => {
 	fake.notify("evener/auth/updated");
 	await act(settle);
 	expect(fake.methods).toHaveLength(2);
-	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 });
 
 it("reads again on its own after a failed read, until one lands", async () => {
@@ -90,14 +90,19 @@ it("reads again on its own after a failed read, until one lands", async () => {
 		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
 	});
 	expect(fake.methods).toHaveLength(2);
+	// Each wait doubles, so a hub that keeps refusing isn't asked every 5s.
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
+	});
+	expect(fake.methods).toHaveLength(2);
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
 	});
 	expect(fake.methods).toHaveLength(3);
-	expect(result.current.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 	// Once a read lands, nothing more is scheduled.
 	await act(async () => {
-		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS * 3);
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MAX_MS * 3);
 	});
 	expect(fake.methods).toHaveLength(3);
 });
@@ -105,10 +110,37 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-it("reads nothing without a client", async () => {
+it("waits no longer than a minute between tries", async () => {
+	vi.useFakeTimers();
+	const fake = hub([new Error("refused")]);
+	const { unmount } = renderHook(() => useAuthStatuses(fake.client));
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	// 5, 10, 20, 40, then 60 seconds each.
+	for (const wait of [5, 10, 20, 40, 60, 60]) {
+		const before = fake.methods.length;
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(wait * 1000);
+		});
+		expect(fake.methods).toHaveLength(before + 1);
+	}
+	expect(AUTH_RETRY_MAX_MS).toBe(60_000);
+	unmount();
+});
+
+it("reads nothing without a client, and knows nothing yet", async () => {
 	const { result } = renderHook(() => useAuthStatuses(null));
 	await act(settle);
-	expect(result.current.size).toBe(0);
+	expect(result.current).toBeNull();
+});
+
+it("knows nothing until a first read lands", async () => {
+	const fake = hub([new Error("the hub is busy")]);
+	const { result, unmount } = renderHook(() => useAuthStatuses(fake.client));
+	await act(settle);
+	expect(result.current).toBeNull();
+	unmount();
 });
 
 it("stops listening when it unmounts", async () => {

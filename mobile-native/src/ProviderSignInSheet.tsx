@@ -178,7 +178,9 @@ export function ProviderSignInSheet({
 					{device && waiting ? (
 						<>
 							<Section centered>
-								{statement("Waiting for you to finish signing in…")}
+								{/* After a failed poll nothing is being waited on: the next
+								    check is the person's (Check again, below). */}
+								{state.error ? null : statement("Waiting for you to finish signing in…")}
 								{/* The code stays selectable, and copyable, in case the
 								    automatic copy failed. */}
 								{body(

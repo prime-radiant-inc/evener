@@ -22,6 +22,18 @@ export function providerStatus(
 	return { word: "Key set", tone: "ink" };
 }
 
+/** A provider's state for the list, the Hub home and the detail: null while
+ * the hub's statuses haven't been read and the provider signs in with an
+ * account, whose "Signed in" or "Sign-in expired" only the statuses can tell
+ * apart. A key's state is on its row. */
+export function statusOf(
+	instance: Pick<InstanceEntry, "name" | "activeSource" | "authModes" | "credentialRequired">,
+	statuses: ReadonlyMap<string, Pick<AuthStatusResponse, "needsLogin">> | null,
+): ProviderStatus | null {
+	if (statuses === null && instance.activeSource === "oauth") return null;
+	return providerStatus(instance, statuses?.get(instance.name));
+}
+
 export function authByProvider(statuses: readonly AuthStatusResponse[]): ReadonlyMap<string, AuthStatusResponse> {
 	return new Map(statuses.map((status) => [status.provider, status]));
 }
