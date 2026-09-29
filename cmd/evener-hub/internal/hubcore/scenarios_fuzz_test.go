@@ -47,6 +47,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles,
 		fuzzScenarioBuildTree_EveryFailedRowSaysWhy,
 		fuzzScenarioBuildTree_EveryRowCarriesApprovalPending,
+		fuzzScenarioBuildTree_EveryRowCarriesEveryLiveFact,
 		fuzzScenarioBuildTree_EveryRowCarriesTheFirstApproval,
 		fuzzScenarioBuildTree_EveryRowCarriesTheTurnEndedTime,
 		fuzzScenarioBuildTree_EveryRowNamesThePendingQuestion,
