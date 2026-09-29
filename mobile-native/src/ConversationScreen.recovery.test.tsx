@@ -37,6 +37,9 @@ const navigationState = vi.hoisted(() => ({
 // One sqlite double per database name, keyed the way the singletons open them,
 // so the test can read the same rows the screen's own recovery hook reads.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// The app's outbox flush, which the screen asks to look when it lets go.
+const outbox = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
+vi.mock("./outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -191,6 +194,23 @@ function pendingClient() {
 		onNotification: () => () => {},
 	};
 }
+
+it("asks the outbox flush to look once it lets go of its session, so a message still waiting there goes (ruling 17)", async () => {
+	harness.connection = { ...screenConnection(pendingClient(), "ready"), error: null, disconnect: () => {} };
+	const ref = "ref-leave";
+	const runtime = getNativeMutationRuntime();
+	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
+	outbox.flush.mockClear();
+	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
+	await flush();
+	expect(runtime.targetClient("hub-1", ref)).toBeDefined();
+	expect(outbox.flush).not.toHaveBeenCalled();
+
+	act(() => tree.unmount());
+
+	expect(runtime.targetClient("hub-1", ref)).toBeUndefined();
+	expect(outbox.flush).toHaveBeenCalledTimes(1);
+});
 
 it("shows a refused message as a ghost above the composer, row-conditional under the #2247 contract", async () => {
 	harness.connection = {
