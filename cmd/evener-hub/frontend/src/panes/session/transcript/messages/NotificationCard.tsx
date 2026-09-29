@@ -6,10 +6,10 @@
 // seated at full strength in the head's rail: an "error" pill beside a title
 // that already says "Job failed" restated the fact without adding anything
 // the glyph doesn't show). The verbatim block is always kept inspectable in
-// a raw disclosure, and the excerpt is entity-decoded then rendered as
-// ESCAPED text (React's default), never as live HTML - a communicate
-// message is the one thing rendered as markdown, through the sanitizing
-// Markdown widget.
+// a raw disclosure, and the excerpt arrives from the parser already decoded
+// to plain text (issue #3086), then rendered as ESCAPED text (React's
+// default), never as live HTML - a communicate message is the one thing
+// rendered as markdown, through the sanitizing Markdown widget.
 //
 // Scope-out recorded for T8's sweep: the legacy card's full communicate FACTS
 // list (status/commit_hashes/test_summary/artifacts as a <dl>) is not rebuilt -
@@ -17,13 +17,14 @@
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
 import {
-  decodeNotificationEntities,
+  entityOpenTarget,
   isValidTranscriptRef,
   type NotificationTone,
   type ParsedNotification,
   scopedDisclosureId,
 } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
+import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -114,16 +115,18 @@ function boundedShellTailPreview(decoded: string): string {
 }
 
 function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
-  const decoded = decodeNotificationEntities(text.trim());
-  if (decoded === "") return null;
+  // The parser hands the excerpt already decoded (issue #3086), so this slice
+  // and the tail bound work on plain text.
+  const body = text.trim();
+  if (body === "") return null;
   // Direction matches the parse mode: a shell excerpt (ansi) is bounded to
   // its tail, a delegate report head (non-ansi) keeps its existing
   // head-truncated preview.
   const preview = ansi
-    ? boundedShellTailPreview(decoded)
-    : decoded.length <= EXCERPT_PREVIEW
-      ? decoded
-      : `${decoded.slice(0, EXCERPT_PREVIEW)}…`;
+    ? boundedShellTailPreview(body)
+    : body.length <= EXCERPT_PREVIEW
+      ? body
+      : `${body.slice(0, EXCERPT_PREVIEW)}…`;
   // Keep unstructured output bounded in the primary card. The complete
   // diagnostic payload remains available in the card's one raw disclosure.
   return (
@@ -228,6 +231,7 @@ export function NotificationCard({
   disclosureId?: string;
 }) {
   const context = useTranscriptRenderContext();
+  const entities = useEntityViews();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // The disclosure identity prefers the watch id for watch cards: two
@@ -263,10 +267,17 @@ export function NotificationCard({
   // the job-log surface rather than a subagent transcript - so job
   // notifications of any type never show the control. The job log stays
   // reachable through the card's job-id trigger and the activity tree.
+  // The frame's own transcript_ref, when it carries one. A REAL daemon frame
+  // does not (agent/delegate_delivery.go's delegateNotificationContent stamps
+  // delegate_id and name only), so on a live report the ref below is absent and
+  // the entity map answers the delegate id with its transcript — the same
+  // resolution the phone makes by delegate id (#3075). Unresolved leaves the
+  // control off, never a dead one.
+  const delegateView =
+    notification.type === "delegate" && notification.delegateId ? entities?.get(notification.delegateId) : undefined;
+  const resolvedRef = delegateView?.kind === "delegate" ? entityOpenTarget(delegateView)?.ref : undefined;
   const transcriptRef =
-    notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
-      ? notification.transcriptRef
-      : undefined;
+    notification.type === "delegate" ? [notification.transcriptRef, resolvedRef].find(isValidTranscriptRef) : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The title-only branch (no secondary) splits the title the same way, so
   // its chevron rides the title's final word atomically. Computed eagerly: the
@@ -383,7 +394,7 @@ export function NotificationCard({
             <NotificationMetadata notification={notification} />
             {notification.prose && (
               <pre className={CLASS.prose} data-testid="notification-prose">
-                {decodeNotificationEntities(notification.prose)}
+                {notification.prose}
               </pre>
             )}
             {notification.message ? (

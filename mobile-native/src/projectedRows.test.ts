@@ -1671,8 +1671,8 @@ describe("a streamed reply's key once history records its round", () => {
 	});
 
 	it("leaves the round's key to its stream when a communicate preview comes first", () => {
-		// A communicate message is recorded with no round id, so its preview
-		// has nothing to share a key with.
+		// A communicate preview keys by its call, so it leaves the round's key
+		// to the round's own stream.
 		const preview = {
 			key: "preview:call-9",
 			kind: "preview",
@@ -1691,8 +1691,48 @@ describe("a streamed reply's key once history records its round", () => {
 			},
 		};
 		const live = keys(streaming([preview]));
-		expect(live).toContain("preview:call-9");
+		expect(live).toContain("call:call-9:agentMessage");
 		expect(live.at(-1)).toBe(keys(streaming()).at(-1));
+	});
+
+	it("keeps a communicate preview's key when history records its message", () => {
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("call:call-9:agentMessage");
+		// The recorded message carries the call id the preview keyed by, so it
+		// keeps the same row key.
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							ask,
+							recorded("item_assistant_9_0", "agentMessage", 0, { callId: "call-9", text: "Heads up" }),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(after).toContain("call:call-9:agentMessage");
+		expect(after).not.toContain("preview:call-9");
 	});
 
 	it("keeps every key unique when a round records two replies around a delegate_send", () => {

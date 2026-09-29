@@ -1,5 +1,5 @@
 import {
-	presetContent,
+	contentVectorForConfig,
 	sessionTokens,
 	tokenUnitLabel,
 	type EvenerUsage,
@@ -196,7 +196,7 @@ export function projectNativeTranscript(
 			usage: null,
 			showDuration: true,
 		};
-	const content = config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
+	const content = contentVectorForConfig(config);
 	return {
 		items,
 		activityPresentation,

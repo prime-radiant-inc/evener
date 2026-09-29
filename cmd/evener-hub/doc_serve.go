@@ -303,15 +303,21 @@ func readDocFile(root, abs string) (docFileRead, error) {
 
 // openDocInRoot opens abs for reading through an os.Root at root, which
 // refuses any path, symlinks included, that resolves outside root at the
-// moment of the open. abs is the symlink-resolved path ResolveInRoot returned,
-// so it is expressed relative to the symlink-resolved root. docOpenNonblock
-// keeps the open from waiting on a FIFO; a regular file reads the same.
+// moment of the open. Both root and abs are symlink-resolved before the
+// relative path is taken, so an abs expressed in terms of an unresolved root
+// (on macOS t.TempDir sits under /var, a symlink to /private/var) is still
+// expressed relative to the resolved root. docOpenNonblock keeps the open from
+// waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(realRoot, abs)
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(realRoot, realAbs)
 	if err != nil {
 		return nil, err
 	}

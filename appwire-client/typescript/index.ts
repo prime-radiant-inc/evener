@@ -319,7 +319,7 @@ export type {
   LaunchConfigStoreState,
   LaunchSettingsState,
 } from "./launchConfig";
-export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
+export { createLaunchConfigStore, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
@@ -589,6 +589,7 @@ export {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -636,7 +637,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

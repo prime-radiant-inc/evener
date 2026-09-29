@@ -7,6 +7,7 @@ import {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -102,6 +103,26 @@ describe("transcript display config", () => {
     expect(decodeLocalConfig(encodeLocalConfig(custom))).toEqual(custom);
     expect(configFingerprint(custom)).not.toBe(configFingerprint(preset));
     expect(contentSummary(custom.content)).toBe("Custom");
+  });
+
+  test("contentVectorForConfig reads the preset vector or the custom one (the one lookup web and native share)", () => {
+    for (const level of LEVELS)
+      expect(contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level }))).toEqual(
+        presetContent(level),
+      );
+    const config = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
+    expect(contentVectorForConfig(config)).toMatchObject({
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
   });
 
   test("normalizes named presets and retains non-preset Custom vectors", () => {
