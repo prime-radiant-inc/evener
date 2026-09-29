@@ -25,6 +25,7 @@ import {
 	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
+	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { expect, vi } from "vitest";
@@ -499,11 +500,13 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
-/** Mounts `element` and flushes its effects, returning the test renderer. */
-export function render(element: ReactElement): ReactTestRenderer {
+/** Mounts `element` and flushes its effects, returning the test renderer.
+ * `options.createNodeMock` hands host components' refs a stand-in, such as a
+ * ScrollView whose scrollTo a test records. */
+export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
-		tree = create(element);
+		tree = create(element, options);
 	});
 	return tree;
 }

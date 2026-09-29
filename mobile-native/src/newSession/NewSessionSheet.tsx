@@ -55,13 +55,16 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 	useEffect(() => () => stopOpening.current(), []);
 
 	const service = useMemo(() => (ready && client ? createNewSessionService(client) : null), [ready, client]);
+	// A new or lost connection rebinds the store, which makes anything in
+	// flight on the old one obsolete. Closing the sheet doesn't: a start the
+	// sheet was swiped away from still lands, so the form can say the session
+	// started and clear its draft rather than leave it to be started twice.
 	useEffect(() => {
 		store.getState().bind(service);
 		if (service) {
 			void store.getState().loadMetadata();
 			void store.getState().loadModels(true);
 		}
-		return () => store.getState().bind(null);
 	}, [store, service]);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
