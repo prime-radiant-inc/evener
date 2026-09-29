@@ -148,6 +148,9 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
     </ClientProvider>,
   );
   await settleActivityDiscovery(REF);
+  // The mount starts its own pending-turns refresh; settle it here so its
+  // state update lands inside act rather than during a later bare await.
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 
