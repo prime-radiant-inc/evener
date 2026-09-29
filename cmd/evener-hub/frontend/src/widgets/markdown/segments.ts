@@ -503,13 +503,16 @@ export function splitLiveMarkdownSegments(
       return splitMarkdownSegments(closeOpenMarkdown(realSource), realSource);
     }
     if (entry.tailKey !== split.head) {
+      const prefixSegments = splitMarkdownSegments(split.head, split.head);
+      // The frozen head is empty whenever it was rejected (a nested
+      // list-continuation fence), so the tail is the whole source and the
+      // settled prefix can still carry an earlier top-level closed diagram.
+      // Windowing keeps only markdown tokens; decline rather than drop it.
+      if (prefixSegments.some((segment) => segment.kind !== "markdown")) {
+        return splitMarkdownSegments(closeOpenMarkdown(realSource), realSource);
+      }
       entry.tailKey = split.head;
-      // The settled prefix sits after the frozen head, so it carries no closed
-      // mermaid fence; its split is one markdown run (any other shape would
-      // have declined the window gate above).
-      entry.tailTokens = splitMarkdownSegments(split.head, split.head).flatMap((segment) =>
-        segment.kind === "markdown" ? segment.tokens : [],
-      );
+      entry.tailTokens = prefixSegments.flatMap((segment) => (segment.kind === "markdown" ? segment.tokens : []));
     }
     // A fresh segment object each render (never cached whole) so MarkdownSlice
     // re-renders and picks up the grown window while reusing the settled tokens.
