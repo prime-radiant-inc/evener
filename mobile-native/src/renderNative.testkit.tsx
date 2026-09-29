@@ -27,7 +27,9 @@ import {
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
+import { expect } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
@@ -508,4 +510,25 @@ export function textOf(node: ReactTestInstance): string {
  * the way VoiceOver finds a button; undefined when there is none. */
 export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
 	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+}
+
+/** The one scrolling body of the dock whose card carries `testID` (spec 8.4),
+ * checked to shrink with its card; `holds` says whether the Pressable
+ * labelled `label` scrolls inside it or stays put outside it. */
+export function dockBody(tree: ReactTestRenderer, testID: string) {
+	const card = tree.root.findByProps({ testID });
+	expect(card.props.style).toMatchObject({ flexShrink: 1 });
+	const [scroller, ...others] = card.findAll((node) => String(node.type) === "ScrollView");
+	if (!scroller) throw new Error(`the dock ${testID} has no scroller`);
+	expect(others).toHaveLength(0);
+	// No floor: the answer controls outside it win whatever room is short.
+	expect(scroller.props.style).toEqual(shrinkingScroller);
+	return {
+		scroller,
+		holds(label: string) {
+			const target = pressable(tree, label);
+			if (!target) throw new Error(`no pressable labelled ${label}`);
+			return scroller.findAll((node) => node === target).length > 0;
+		},
+	};
 }

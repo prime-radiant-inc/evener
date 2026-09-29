@@ -94,3 +94,19 @@ func TestRosterReadSpawnedThreadPublishesTheCurrentModel(t *testing.T) {
 		t.Fatalf("published entry = %+v, want the model the read carried", live)
 	}
 }
+
+// A live entry that carries neither the model it runs now nor the one it
+// started on (a daemon that predates S17, or a probe that has not answered)
+// still names the model its meta holds, rather than naming none (#2962).
+func TestBuildTree_LiveRowWithoutAModelFallsBackToTheMeta(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", Model: "gpt-5.5", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusIdle}}
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	row, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
+	if !inLive || !inProject || row.Model != "gpt-5.5" || projectRow.Model != "gpt-5.5" {
+		t.Fatalf("Live row %q (%v), project row %q (%v): a live entry with neither model must name its meta's", row.Model, inLive, projectRow.Model, inProject)
+	}
+}
