@@ -467,6 +467,25 @@ describe("native demonstration hub's redesign fleet", () => {
 		}
 	});
 
+	it("answers thread/start late with startDelaySeconds, so the sheet can be swiped away first", async () => {
+		const hub = await createDemoHub(0, undefined, {}, { startDelaySeconds: 0.3 });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const began = Date.now();
+			const started = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
+			expect(Date.now() - began).toBeGreaterThanOrEqual(300);
+			expect(started.thread.evener.ref).toBe("demo:created-1");
+			// Every other method answers at once.
+			const read = Date.now();
+			await client.request("evener/projects/recent", {});
+			expect(Date.now() - read).toBeLessThan(300);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("marks paradise-park's manifest source offline when the fleet starts with offlineHost", async () => {
 		const hub = await createDemoHub(0, undefined, { offlineHost: true });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
