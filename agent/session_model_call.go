@@ -1456,12 +1456,14 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 		return
 	}
 	// A clamp that holds round after round is one fact: a long conversation
-	// clamps every round, and a notice each time floods the transcript. Warn
-	// when the clamp first applies, when its model or allocation changes, and
-	// when it returns after an unclamped round.
+	// clamps every round, and a notice each time floods the transcript. Once
+	// input fills the window the admitted allocation is what the window
+	// leaves, so it shrinks every round and cannot tell one clamp from the
+	// next. Warn when the clamp first applies, when its model or requested
+	// allocation changes, and when it returns after an unclamped round.
 	clamp := ""
 	if budget.LimitedOutput {
-		clamp = fmt.Sprintf("%s/%s:%d:%d", profile.ID(), profile.Model(), budget.RequestedOutput, budget.AdmittedOutput)
+		clamp = fmt.Sprintf("%s/%s:%d", profile.ID(), profile.Model(), budget.RequestedOutput)
 	}
 	s.outputReductionMu.Lock()
 	unchanged := clamp == s.outputReductionWarned
