@@ -12,6 +12,8 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
  * opened for; Hubs and its pages are about the phone's saved hubs. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
+	Display: { hubId: string };
+	DetailLevel: { hubId: string };
 	/** focus opens that host's detail once. */
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };

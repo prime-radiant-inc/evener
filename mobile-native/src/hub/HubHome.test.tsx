@@ -112,7 +112,7 @@ const ROWS = [
 	"Hosts",
 	"Providers",
 	"Plugins",
-	"Display",
+	"Display, System",
 	"Hubs, 2",
 	"Keyboard shortcuts",
 	"Launch defaults",
@@ -166,7 +166,6 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
-		["Display", "TranscriptPreferences"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -274,6 +273,13 @@ it("says so when the hub restarts without the update", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
+});
+
+it("opens Display inside the sheet, valued with this phone's appearance", async () => {
+	const { sheet, press, find } = await mount();
+	expect(find("Display, System")).not.toBeNull();
+	press("Display, System");
+	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });
 
 it("says the update couldn't be confirmed when the hub's first answer after the restart fails", async () => {

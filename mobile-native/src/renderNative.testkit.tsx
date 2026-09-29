@@ -157,6 +157,7 @@ export function nativeModuleMock() {
 		// mocks its own.
 		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 		Animated,
+		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert },
 		FlatList,
 		KeyboardAvoidingView,
