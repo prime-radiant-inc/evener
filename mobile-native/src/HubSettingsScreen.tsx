@@ -1,7 +1,7 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, View } from "react-native";
+import { ActivityIndicator, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -172,17 +172,7 @@ function HubSettings({
 	const hub = data?.hub;
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<ScrollView
-				contentContainerStyle={{ padding: 20, gap: 12 }}
-				refreshControl={
-					<RefreshControl
-						refreshing={state.loading && !!data}
-						onRefresh={() => {
-							if (canUseConnection()) void state.refresh();
-						}}
-					/>
-				}
-			>
+			<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 				<Copy>{hubName}</Copy>
 				{state.loading && !data && <ActivityIndicator accessibilityLabel="Loading hub information" />}
 				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />

@@ -381,3 +381,16 @@ it("keeps the last hub information under the status line when the versions stop 
 	expect(text).toContain("Evener 1.2.3");
 	expect(text).toContain("Update needed");
 });
+
+it("offers no pull to refresh: the screen keeps itself current", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({ hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 } }));
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	// The list's own pull-to-refresh is a prop, not a child it renders.
+	expect(
+		tree.root.findAll((node) => node.props.refreshControl !== undefined || node.props.onRefresh !== undefined),
+	).toEqual([]);
+	tree.unmount();
+});
