@@ -45,3 +45,21 @@ export function editProviderParams(
 	if (instance.endpointFingerprint) params.expectedEndpointFingerprint = instance.endpointFingerprint;
 	return params;
 }
+
+/** Whether a draft differs from the one the editor opened with, field by
+ * field, as the saved request would: spaces around a value, or a variable
+ * typed and cleared again, are no change. */
+export function draftChanged(opened: ProviderDraft, draft: ProviderDraft): boolean {
+	// Compared as the request would carry them: trimmed, and a variable left
+	// blank is unset.
+	const setVars = (vars: Record<string, string>) =>
+		Object.entries(vars)
+			.map(([key, value]) => [key, value.trim()] as const)
+			.filter(([, value]) => value !== "")
+			.sort(([a], [b]) => a.localeCompare(b));
+	const fields = ["name", "base", "baseUrl", "apiKeyEnv", "credentialHeader"] as const;
+	return (
+		fields.some((field) => opened[field].trim() !== draft[field].trim()) ||
+		JSON.stringify(setVars(opened.vars)) !== JSON.stringify(setVars(draft.vars))
+	);
+}
