@@ -8,16 +8,20 @@ import { createContext, useContext } from "react";
 import type { HostsController } from "../hosts/hostsController";
 import type { LiveSessionsReader } from "../hosts/liveCounts";
 import type { createNewSessionStore } from "../newSession";
+import type { PluginPreviewLoadState } from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { LaunchMemory } from "./launchMemory";
+import type { LaunchDefaults } from "./useLaunchDefaults";
 
-/** The sheet's pages. SessionOptions is interim until PR 10. */
+/** The sheet's pages. */
 export type NewSessionRoutes = {
 	Form: undefined;
 	Host: undefined;
 	Project: undefined;
 	Browse: { dir: string };
 	Model: undefined;
-	SessionOptions: undefined;
+	Plugins: undefined;
+	Access: undefined;
+	MoreOptions: undefined;
 };
 
 export type NewSessionStore = ReturnType<typeof createNewSessionStore>;
@@ -34,6 +38,11 @@ export interface NewSessionContextValue {
 	hosts: HostsController | null;
 	live: LiveSessionsReader | null;
 	memory: LaunchMemory;
+	/** The one plugin preview for the chosen host and project (sheetPlugins.ts). */
+	plugins: PluginPreviewLoadState;
+	/** The hub's launch defaults for the chosen host and project, read once for
+	 * the sheet (useLaunchDefaults.ts); null until the hub says them. */
+	launchDefaults: LaunchDefaults | null;
 	/** A host's name on screen: the hub's own machine is named after the hub
 	 * (ruling 3). */
 	hostLabel(host: string): string;

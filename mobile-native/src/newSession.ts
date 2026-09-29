@@ -578,9 +578,19 @@ export function createNewSessionStore(
 		try {
 			const draft = storage().read(hubId);
 			if (draft) {
-				const { unconfirmed, source, harness: _harness, ...fields } = draft;
+				const { unconfirmed, source, harness: _harness, launchOverrides, ...fields } = draft;
+				// A per-launch model or effort, which only an older build could set,
+				// becomes the form's own choice, as a session's does (applySeed): the
+				// host's list finds the model, or the form says Hub default and sends
+				// none, so the form never shows one model while sending another.
+				const savedModel = launchOverrides.model?.trim();
+				const savedEffort = launchOverrides.reasoningEffort?.trim();
+				if (savedModel) pendingModelId = savedModel;
 				store.setState({
 					...fields,
+					...(savedModel ? { model: null } : {}),
+					...(savedEffort ? { reasoning: savedEffort } : {}),
+					launchOverrides: withoutModelChoice(launchOverrides),
 					// A draft saved before hosts has none: the hub's own machine
 					// (ruling 28).
 					source: source || LOCAL_HOST,

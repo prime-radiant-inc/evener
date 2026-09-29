@@ -1,4 +1,4 @@
-import { type HostRow, type ModelDescriptor, WireError } from "@evener/appwire-client";
+import { type HostRow, type ModelDescriptor, type PluginPreviewResponse, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
 import { act } from "react-test-renderer";
@@ -12,8 +12,8 @@ import { createNewSessionStore } from "../newSession";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { NewSessionForm } from "./NewSessionForm";
-import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
-import { memoryStorage, sheetContext } from "./newSessionTestUtils";
+import type { NewSessionRoutes } from "./newSessionContext";
+import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -65,6 +65,15 @@ interface Options {
 	holdStart?: boolean;
 	/** How often the form's hosts controller reads the hub's hosts. */
 	hostPollMs?: number;
+	/** How evener/plugin/preview answers; no plugins when absent, a refusal
+	 * when an Error. */
+	plugins?: PluginPreviewResponse | Error;
+	/** The project's branch; "" outside a repository. */
+	branch?: string;
+	/** The hub's launch defaults for the project. */
+	defaults?: Record<string, unknown>;
+	/** evener/launch/resolve fails, so the hub's defaults stay unknown. */
+	refuseDefaults?: boolean;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -85,6 +94,15 @@ async function mount(options: Options = {}) {
 				return { data: [glm] };
 			}
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
+			if (forwarded === "evener/plugin/preview") {
+				if (options.plugins instanceof Error) throw options.plugins;
+				return options.plugins ?? { plugins: [] };
+			}
+			if (forwarded === "evener/git/head") return { head: options.branch ?? "" };
+			if (forwarded === "evener/launch/resolve") {
+				if (options.refuseDefaults) throw new Error("hub away");
+				return { effective: options.defaults ?? {}, layers: {}, provenance: {} };
+			}
 			if (method === "thread/start") {
 				if (options.refuseStart) throw options.refuseStart;
 				if (options.holdStart) await held;
@@ -132,12 +150,12 @@ async function mount(options: Options = {}) {
 		}),
 	};
 	const form = () => (
-		<NewSessionProvider value={context}>
+		<TestSheet value={context}>
 			<NewSessionForm
 				navigation={navigation as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
 				route={{ key: "Form", name: "Form", params: undefined }}
 			/>
-		</NewSessionProvider>
+		</TestSheet>
 	);
 	const tree = render(form());
 	await settle();
@@ -474,5 +492,140 @@ it("remembers the model and effort a per-launch setting started the session with
 		model: { provider: "lunaroute", model: "glm-5.3-vision" },
 		effort: "high",
 	});
+	form.dispose();
+});
+
+/** Past usePluginPreview's 250ms debounce. */
+const debounce = () =>
+	act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 300));
+	});
+
+const plugin = (name: string, selected: boolean) => ({
+	name,
+	source: "installed" as const,
+	marketplace: "superpowers-marketplace",
+	selected,
+	skillCount: 1,
+	agentCount: 0,
+	commandCount: 0,
+	hookCount: 0,
+	mcpCount: 0,
+});
+
+it("counts the plugins the session starts with, and opens the checklist", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener" },
+		plugins: { plugins: [plugin("superpowers", true), plugin("go", false)] },
+	});
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, …");
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 of 2");
+	await act(async () => form.row("Plugins")?.props.onPress());
+	expect(form.navigation.navigate).toHaveBeenLastCalledWith("Plugins");
+	form.dispose();
+});
+
+it("holds Start while a chosen plugin has a blocking problem, and says which", async () => {
+	const form = await mount({
+		draft: {
+			cwd: "/home/jesse/git/evener",
+			prompt: "go",
+			launchOverrides: { enabledPlugins: ["superpowers", "gone"] },
+		},
+		plugins: { plugins: [plugin("superpowers", true)] },
+	});
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 1 of 1");
+	expect(form.header("headerRight").props.disabled).toBe(true);
+	expect(form.text()).toContain("gone: not present in current preview");
+	form.dispose();
+});
+
+it("shows the project's branch after Project, with nothing to open", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, branch: "main" });
+	await settle();
+	const branch = form.row("Branch");
+	expect(branch?.props.accessibilityLabel).toBe("Branch, main");
+	expect(branch?.props.onPress).toBeUndefined();
+	expect(form.calls).toContainEqual({ method: "evener/git/head", params: { cwd: "/home/jesse/git/evener" } });
+	form.dispose();
+});
+
+it("leaves Branch out for a folder that isn't a repository", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, branch: "" });
+	await settle();
+	expect(form.row("Branch")).toBeNull();
+	form.dispose();
+});
+
+it("names the access the session gets, the hub's own by default, and opens Access", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, defaults: { sandbox: "workspace-write" } });
+	await settle();
+	expect(form.row("Access")?.props.accessibilityLabel).toBe(
+		"Access, Writes only in the project; reads anywhere but secrets, Workspace write",
+	);
+	await act(async () => form.store.getState().setLaunchOverrides({ sandbox: "read-only" }));
+	expect(form.row("Access")?.props.accessibilityLabel).toBe(
+		"Access, Writes nothing; reads anywhere but secrets, Read-only",
+	);
+	await act(async () => form.row("Access")?.props.onPress());
+	expect(form.navigation.navigate).toHaveBeenLastCalledWith("Access");
+	form.dispose();
+});
+
+it("says More options is Custom once one of its settings is set, and opens it", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
+	expect(form.row("More options")?.props.accessibilityLabel).toBe(
+		"More options, Context strategy, subagent depth, turn limit",
+	);
+	await act(async () => form.store.getState().setLaunchOverrides({ maxRounds: 100 }));
+	expect(form.row("More options")?.props.accessibilityLabel).toBe(
+		"More options, Context strategy, subagent depth, turn limit, Custom",
+	);
+	await act(async () => form.row("More options")?.props.onPress());
+	expect(form.navigation.navigate).toHaveBeenLastCalledWith("MoreOptions");
+	expect(form.text()).not.toContain("Session options");
+	form.dispose();
+});
+
+it("names no access until the hub says its default, unless the person chose one", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, refuseDefaults: true });
+	await settle();
+	expect(form.row("Access")).toBeNull();
+	expect(form.tree.root.findAll((node) => node.props.accessibilityLabel === "Access")).not.toHaveLength(0);
+	expect(form.text()).not.toContain("Full access");
+	await act(async () => form.store.getState().setLaunchOverrides({ sandbox: "restricted" }));
+	expect(form.row("Access")?.props.accessibilityLabel).toBe("Access, Reads and writes only in the project, Restricted");
+	form.dispose();
+});
+
+it("says the Plugins row waits for a project", async () => {
+	const form = await mount({ draft: { prompt: "go" } });
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, Listed once a project is chosen");
+	form.dispose();
+});
+
+it("says the host's plugins couldn't be listed when the first preview fails", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, plugins: new Error("plugin cache locked") });
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, Couldn't list this host's plugins");
+	form.dispose();
+});
+
+it("forgets the last project's plugin problems as soon as the project changes", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["gone"] } },
+		plugins: { plugins: [plugin("superpowers", true)] },
+	});
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 0 of 1");
+	expect(form.text()).toContain("gone: not present in current preview");
+	await act(async () => form.store.setState({ cwd: "/home/jesse/git/docs" }));
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, …");
+	expect(form.text()).not.toContain("gone: not present in current preview");
+	await debounce();
+	expect(form.row("Plugins")?.props.accessibilityLabel).toBe("Plugins, 1 need attention, 0 of 1");
 	form.dispose();
 });

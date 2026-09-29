@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	accessOf,
+	knownAccess,
 	effortLabel,
 	type LaunchSetup,
 	modelFromId,
@@ -151,5 +152,17 @@ describe("from the form and from a session", () => {
 		expect(modelFromId("muse-spark-1.3", models)).toBe(models[2]);
 		expect(modelFromId("glm-5.3", models)).toBeNull();
 		expect(modelFromId("gpt-5.6", models)).toBeNull();
+	});
+});
+
+describe("the access a form can name", () => {
+	it("is the person's own choice, or the hub's default once the hub has said it", () => {
+		expect(knownAccess("restricted", null)?.label).toBe("Restricted");
+		expect(knownAccess(undefined, { sandbox: "workspace-write" })?.label).toBe("Workspace write");
+		expect(knownAccess(undefined, {})?.label).toBe("Full access");
+	});
+
+	it("is nothing while the hub's default is unknown, never the least safe level", () => {
+		expect(knownAccess(undefined, null)).toBeNull();
 	});
 });
