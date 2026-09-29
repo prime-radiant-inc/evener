@@ -63,13 +63,17 @@ func (m *hubModel) hubConnectionLost() tea.Cmd {
 // that is down is a hub somebody is about to restart, and a TUI that stopped
 // trying looks exactly like the silent failure this whole path exists to end.
 func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
-	if msg.err != nil {
-		ctx := m.reconnectContext()
-		// The TUI exited and canceled its lifetime context: there is no model
-		// to reconnect for, so do not spin the loop back up.
-		if ctx.Err() != nil {
-			return nil
+	ctx := m.reconnectContext()
+	// The TUI exited and canceled its lifetime context: there is no model to
+	// reconnect for. Do not install a connection that succeeded at quit time
+	// (close it so it does not leak), and do not spin the retry loop back up.
+	if ctx.Err() != nil {
+		if msg.client != nil {
+			_ = msg.client.Close()
 		}
+		return nil
+	}
+	if msg.err != nil {
 		attempt := msg.attempt + 1
 		m.reconnectAttempt = attempt
 		delay := hubReconnectDelay(attempt)
@@ -146,6 +150,11 @@ func reconnectHub(ctx context.Context, dial hubDialer, attempt int, delay time.D
 		if err := llm.DefaultSleep(ctx, delay); err != nil {
 			// The TUI exited while this retry was parked; report the
 			// cancellation instead of dialing after the model is gone.
+			return hubReconnectMsg{attempt: attempt, err: err}
+		}
+		// A zero delay never consults ctx inside the sleep, so an
+		// already-canceled lifetime must still never dial.
+		if err := ctx.Err(); err != nil {
 			return hubReconnectMsg{attempt: attempt, err: err}
 		}
 		client, frames, err := dial(ctx)

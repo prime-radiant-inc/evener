@@ -328,6 +328,12 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if isTerminalStartupError(err) {
 		return fail(err)
 	}
+	// A canceled parent context is not "hub unavailable": the caller (the TUI
+	// on exit) has given up on this connection, so never fall through to
+	// autostart and launch a hub nobody will use.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(ctxErr)
+	}
 	if !cfg.AutoStart {
 		return fail(StartupError{Kind: StartupErrorHubUnavailable, Addr: addr.BaseURL, Err: err})
 	}
@@ -361,6 +367,9 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if err != nil {
 		if isTerminalStartupError(err) {
 			return fail(err)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fail(ctxErr)
 		}
 		return fail(StartupError{Kind: StartupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
 	}

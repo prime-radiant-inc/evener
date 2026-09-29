@@ -185,6 +185,36 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 	}
 }
 
+// A canceled parent context means the caller (the TUI on exit) no longer wants
+// a connection. StartHubClient must not read it as "hub unavailable" and fall
+// through to autostart, which would launch a detached hub nobody will use.
+func TestStartHubClientDoesNotAutoStartWhenContextCanceled(t *testing.T) {
+	started := false
+	hubBin := filepath.Join(t.TempDir(), "evener")
+	writeExecutable(t, hubBin)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := StartHubClient(ctx, HubStartConfig{
+		RawAddr:       "127.0.0.1:9180",
+		HubBin:        hubBin,
+		AutoStart:     true,
+		HealthTimeout: 5 * time.Second,
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
+			return nil, errors.New("connection refused")
+		},
+		StartLocalHub: func(HubStartRequest) error {
+			started = true
+			return nil
+		},
+	})
+	if started {
+		t.Fatal("a canceled context still auto-started a hub after the caller gave up")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
 func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
