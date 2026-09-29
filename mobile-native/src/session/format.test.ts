@@ -27,9 +27,17 @@ it.each([
 	[39_800, "39.8K"],
 	[99_950, "100K"],
 	[412_000, "412K"],
+	[999_499, "999K"],
+	// From here it would round to 1000K, which reads better as the next unit.
+	[999_500, "1M"],
 	[999_950, "1M"],
+	[1_000_000, "1M"],
 	[1_200_000, "1.2M"],
 	[46_000_000, "46M"],
+	[99_950_000, "100M"],
+	[412_000_000, "412M"],
+	// M is the last unit: past a thousand millions it keeps counting in M.
+	[1_500_000_000, "1500M"],
 	[-3, "0"],
 	[Number.NaN, "0"],
 ])("a count of %d reads %s", (n, text) => {

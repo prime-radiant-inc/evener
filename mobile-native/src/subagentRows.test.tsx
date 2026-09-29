@@ -180,9 +180,11 @@ describe("a stopped subagent", () => {
 	});
 });
 
-// A subagent whose run ended but can take another message (idle, resumable)
-// is not terminal, so it reads running here as it does in the Subagents list
-// and on its chip: one rule (subagentState) for all three.
+// A resumable subagent with no ended run (queued, or its run still open) is
+// not terminal, so it reads running here as it does in the Subagents list and
+// on its chip: one rule (subagentState) for all three. Once a run ends the
+// wire marks it terminal (agent/subagent_tally.go delegateRunTerminal), idle
+// or not.
 describe("an idle subagent", () => {
 	it.each(LEVELS)("reads as running, as the list and chip count it, at %s", (level) => {
 		const idle = subagent({ phase: "idle", status: "idle", terminal: false, resumable: true });
