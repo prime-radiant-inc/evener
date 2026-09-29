@@ -56,6 +56,19 @@ describe("subagentIsCurrent", () => {
     const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
     expect(subagentIsCurrent(child)).toBe(false);
   });
+
+  test("approval_pending makes an idle subagent current (it displays as awaiting)", () => {
+    // displayState folds approval_pending into "awaiting" - the rail's badge
+    // counts such a node as needs-you, so the activity surfaces must not
+    // fold it as inactive about the same node.
+    expect(subagentIsCurrent(session({ state: "idle", approval_pending: true }))).toBe(true);
+  });
+
+  test("a descendant's approval_pending makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle", approval_pending: true });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
 });
 
 function session(overrides: Partial<RailSession> = {}): RailSession {

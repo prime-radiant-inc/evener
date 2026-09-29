@@ -13,6 +13,22 @@ import { lazy } from "react";
 import { parseKeybinding } from "tinykeys";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { createKeybindingDispatcher } from "../../keybindings/dispatcher";
+
+// Counts deriveScope calls through the REAL implementation (the wrap keeps
+// every other test's behavior identical) so the closed-sidebar test can
+// prove no derivation happens while nothing is showing.
+const deriveScopeCalls = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../statusbar/statusScope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../statusbar/statusScope")>();
+  return {
+    ...actual,
+    deriveScope: (...args: Parameters<typeof actual.deriveScope>) => {
+      deriveScopeCalls.count += 1;
+      return actual.deriveScope(...args);
+    },
+  };
+});
+
 import { MotionProvider } from "../../motion";
 import { navigationStore } from "../../stores/navigation/store";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
@@ -115,6 +131,20 @@ describe("ActivitySidebar", () => {
     workspaceStore.getState().openPane("session", { ref: "local:a" });
     const { container } = renderSidebar();
     expect(container.firstChild).toBeNull();
+  });
+
+  test("a closed sidebar derives no scope, on mount or on navigation updates", () => {
+    // The sidebar is mounted for the whole desktop session; a derivation per
+    // polling update while closed duplicates the StatusBar's own walk for a
+    // surface nothing shows.
+    installTree();
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    const before = deriveScopeCalls.count;
+    renderSidebar();
+    act(() => {
+      navigationStore.setState({ resources: new Map(navigationStore.getState().resources) });
+    });
+    expect(deriveScopeCalls.count).toBe(before);
   });
 
   test("open shows the breadcrumb and the four tabs with counts", () => {

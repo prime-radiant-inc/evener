@@ -33,8 +33,14 @@ export function ActivitySidebar() {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  // Closed derives nothing: the sidebar is mounted for the whole desktop
+  // session, and a location lookup plus recursive walk per polling update
+  // duplicates the StatusBar's own derivation for a surface nothing shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
-  const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
+  const scope = useMemo(
+    () => (!open || ref === null ? null : deriveScope(navigationStore.getState(), ref)),
+    [open, resources, ref],
+  );
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
   // style pass), and the token changes with the theme at most, so paying
