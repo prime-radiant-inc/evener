@@ -1,4 +1,5 @@
-import { type AttachmentRef, ERROR_EVENT_KIND, type MobileTimelineItem } from "./projectedRows";
+import { ERROR_EVENT_KIND } from "@evener/appwire-client";
+import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 

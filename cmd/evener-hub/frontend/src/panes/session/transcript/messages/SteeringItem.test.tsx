@@ -216,7 +216,7 @@ test("claims nothing when the wire carries no kind", () => {
 });
 
 // The OTHER half of "no colon": a kind the wire DID send, but this UI has no
-// label for - a daemon newer than this UI (steeringKindLabel, @evener/appwire-client), or -
+// label for - a daemon newer than this UI (steeringLabel, @evener/appwire-client), or -
 // live today - a "notification" kind whose markup fails to parse and falls
 // through to the divider path instead of a card. Absent and unmapped must
 // both render bare; only one of the two was pinned before this test.
@@ -244,7 +244,7 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
   expect(container.firstChild).toBeNull();
 });
 
-// task-nudge is a labeled kind (steeringKindLabel), NOT a suppressed one -
+// task-nudge is a labeled kind (STEERING_KIND_LABELS), NOT a suppressed one -
 // only current-task/task-list are in SUPPRESSED. Before wave-8/this task,
 // classifySteering's cascade suppressed task-nudge outright (a one-time
 // tool-availability nudge, judged not user-meaningful); the brief's

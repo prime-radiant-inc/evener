@@ -111,14 +111,17 @@ export default defineConfig({
       // authwire/responses.json through a `?raw` import, and Vitest's jsdom
       // suites transform that import through this server, which denies any
       // file outside the allow list. The daemon's recorded notification frames
-      // (agent/testdata/notificationwire) reach the same suites the same way,
-      // through testing/notificationWireFixtures.ts.
+      // (agent/testdata/notificationwire) and its system events and steers
+      // (agent/testdata/systemeventwire) reach the same suites the same way,
+      // through testing/notificationWireFixtures.ts and
+      // testing/systemEventWireFixtures.ts.
       allow: [
         searchForWorkspaceRoot(__dirname),
         fs.realpathSync(path.join(__dirname, "node_modules")),
         appwirePackageDir,
         path.join(__dirname, "..", "testdata"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
       ],
     },
     proxy: {
