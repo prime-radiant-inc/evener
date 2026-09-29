@@ -494,9 +494,12 @@ export function TextFieldRow({
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkHi,
-				...(machine
-					? { fontFamily: fonts.mono, fontSize: uiType.subheadline.fontSize * scale }
-					: { fontSize: uiType.listRow.fontSize * scale }),
+				// React Native draws a TextInput's placeholder in the input's
+				// own font, so a machine field shows hint words in the UI font
+				// while empty and its value in Menlo once there is one (spec
+				// 16.2).
+				...(machine && value !== "" ? { fontFamily: fonts.mono } : null),
+				fontSize: (machine ? uiType.subheadline : uiType.listRow).fontSize * scale,
 				minHeight: multiline ? 88 : 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,
